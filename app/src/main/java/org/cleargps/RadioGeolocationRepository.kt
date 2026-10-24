@@ -100,7 +100,12 @@ class RadioGeolocationRepository(private val context: Context) {
         }
         return try {
             manager.scanResults.asSequence()
-                .filter { it.BSSID.isNotBlank() && it.BSSID.matches(MAC_REGEX) && it.level in -110..0 }
+                .filter { result ->
+                    val ssidForOptOutOnly = result.SSID.orEmpty()
+                    // Respect the common Wi-Fi location opt-out suffix; never store the SSID.
+                    !ssidForOptOutOnly.endsWith("_nomap", ignoreCase = true) &&
+                        result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) && result.level in -110..0
+                }
                 .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
                 .sortedByDescending { it.level }
                 .take(MAX_WIFI)
