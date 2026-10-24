@@ -209,6 +209,20 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             .putBoolean(ClearGpsPreferences.KEY_USE_BLE, useBle).apply()
     }
 
+    fun applyPositionMode(mode: PositionMode) {
+        positionMode = mode
+        prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
+        currentRadioEstimate = null
+        if (mode == PositionMode.RADIO_ONLY) liveLocation = null
+        if (monitorEnabled) {
+            val intent = Intent(context, LocationMonitorService::class.java)
+                .setAction(LocationMonitorService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+        }
+        if (mode == PositionMode.RADIO_ONLY) showRadioOnlyInfo = true
+    }
+
     val performScan: suspend (Boolean) -> Unit = { recordNow ->
         if (!scanBusy) {
             scanBusy = true
@@ -516,12 +530,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
                                     scanMessage = scanMessage, lastScanAt = lastScanAt, monitorEnabled = monitorEnabled,
                                     mockEnabled = mockEnabled, filterState = filterState, riskScore = riskScore, serviceStatus = serviceStatus,
-                                    onMode = {
-                                        positionMode = it
-                                        prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, it.key).apply()
-                                        currentRadioEstimate = null
-                                        if (it == PositionMode.RADIO_ONLY) showRadioOnlyInfo = true
-                                    },
+                                    onMode = { applyPositionMode(it) },
                                     onScan = { startScan(recording) },
                                     onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
                                     onRecording = { recording = it },
@@ -570,13 +579,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 AppTab.SETTINGS -> SettingsScreen(
                                     mode = positionMode, mapTheme = mapThemeMode, useWifi = useWifi, useCells = useCells,
                                     useBle = useBle, showRadioPoints = showRadioPointsOnMap,
+                                    manualFallbackEnabled = manualFallbackEnabled,
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
-                                    onMode = {
-                                        positionMode = it
-                                        prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, it.key).apply()
-                                        currentRadioEstimate = null
-                                        if (it == PositionMode.RADIO_ONLY) showRadioOnlyInfo = true
-                                    },
+                                    onMode = { applyPositionMode(it) },
                                     onMapTheme = {
                                         mapThemeMode = it
                                         prefs.edit().putString(ClearGpsPreferences.KEY_MAP_STYLE, it.key).apply()
@@ -585,6 +590,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onCells = { useCells = it; saveUseFlags() },
                                     onBle = { useBle = it; saveUseFlags() },
                                     onShowPoints = { showRadioPointsOnMap = it },
+                                    onManualFallback = {
+                                        manualFallbackEnabled = it
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, it).apply()
+                                    },
                                     onManualAnchor = { mapTapMode = MapTapMode.PLACE_ANCHOR },
                                     onClearData = { showDeleteAllDialog = true },
                                     onOpenLocationSettings = {
@@ -1060,10 +1069,10 @@ private fun ZonesScreen(
 @Composable
 private fun SettingsScreen(
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
-    showRadioPoints: Boolean, databaseFacts: String,
+    showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
-    onShowPoints: (Boolean) -> Unit, onManualAnchor: () -> Unit,
+    onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -1101,6 +1110,11 @@ private fun SettingsScreen(
         SettingSwitch("Bluetooth LE", "Только адрес и RSSI; имена устройств не читаются.", useBle, onBle)
         Divider(color = colors.outlineVariant)
         SettingSwitch("Радиоточки на карте", "До 400 последних координатных точек.", showRadioPoints, onShowPoints)
+        SettingSwitch(
+            "Ручной ориентир как крайний резерв",
+            "Только если нет другой позиции. Точность условная ±1,5 км; не включать, если ориентир может быть устаревшим.",
+            manualFallbackEnabled, onManualFallback
+        )
         OutlinedButton(onClick = onManualAnchor, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
             Icon(Icons.Outlined.LocationOn, null); Spacer(Modifier.width(8.dp)); Text("Поставить ручной ориентир на карте")
         }
