@@ -123,13 +123,18 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
     var permissionRevision by remember { mutableStateOf(0) }
 
-    var lookupPhase by remember { mutableStateOf(LookupPhase.IDLE) }
-    var lookupMessage by remember { mutableStateOf("Подготовь источники или обнови оценку местоположения.") }
+    var lookupPhase by remember { mutableStateOf(if (radioEstimate != null) LookupPhase.CACHED else LookupPhase.IDLE) }
+    var lookupMessage by remember {
+        mutableStateOf(
+            if (radioEstimate != null) "Показана последняя сохранённая оценка. Обнови источники, чтобы проверить текущее положение."
+            else "Нажми «Обновить источники», чтобы запустить сканирование."
+        )
+    }
     var lookupError by remember { mutableStateOf(false) }
     var lookupBusy by remember { mutableStateOf(false) }
-    var wifiCount by remember { mutableStateOf(0) }
-    var cellCount by remember { mutableStateOf(0) }
-    var beaconCount by remember { mutableStateOf(0) }
+    var wifiCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, 0)) }
+    var cellCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_CELL_COUNT, 0)) }
+    var beaconCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_BLE_COUNT, 0)) }
     var fromCache by remember { mutableStateOf(false) }
 
     var monitoring by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
@@ -882,6 +887,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             .remove(ClearGpsPreferences.KEY_LAST_FINGERPRINT)
                             .remove(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT)
                             .remove(ClearGpsPreferences.KEY_LAST_PAYLOAD_CAPTURED_AT)
+                            .remove(ClearGpsPreferences.KEY_LAST_WIFI_COUNT)
+                            .remove(ClearGpsPreferences.KEY_LAST_CELL_COUNT)
+                            .remove(ClearGpsPreferences.KEY_LAST_BLE_COUNT)
                             .remove(ClearGpsPreferences.KEY_LAST_REFRESH_AT)
                             .remove(ClearGpsPreferences.KEY_LAST_LAT)
                             .remove(ClearGpsPreferences.KEY_LAST_LON)
