@@ -13,12 +13,18 @@ function Test-GradleHome {
     param([string]$GradleHomePath)
     $GradleExe = Join-Path $GradleHomePath 'bin\gradle.bat'
     if (-not (Test-Path -LiteralPath $GradleExe)) { return $false }
+    $PreviousErrorActionPreference = $ErrorActionPreference
     try {
+        # Gradle is a .bat file. Capture native stderr without PowerShell 5 converting
+        # it into a terminating error when ErrorActionPreference is Stop.
+        $ErrorActionPreference = 'Continue'
         $VersionOutput = (& $GradleExe --version 2>&1 | Out-String)
         $ExitCode = $LASTEXITCODE
         return ($ExitCode -eq 0 -and $VersionOutput -match "(?m)^\s*Gradle\s+$([regex]::Escape($GradleVersion))\s*$")
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
     }
 }
 
