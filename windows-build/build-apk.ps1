@@ -6,7 +6,7 @@ function Invoke-SetupHelper {
 
     $ResultFile = Join-Path $env:TEMP ("cleargps-setup-" + [guid]::NewGuid().ToString('N') + '.txt')
     try {
-        & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -ResultFile $ResultFile
+        & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -ResultFile $ResultFile | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Setup helper failed: $([IO.Path]::GetFileName($ScriptPath)) (exit code $LASTEXITCODE)." }
         if (-not (Test-Path -LiteralPath $ResultFile)) { throw "Setup helper did not return a path: $([IO.Path]::GetFileName($ScriptPath))." }
         return [IO.File]::ReadAllText($ResultFile, [System.Text.Encoding]::UTF8).Trim()
@@ -67,7 +67,7 @@ try {
 } catch {
     Write-Host ''
     Write-Host 'BUILD FAILED'
-    Write-Error $_
+    Write-Host "Error: $($_.Exception.Message)"
     Write-Host 'No source files were changed by the build script. Check network access, disk space, and the first detailed error above.'
     exit 1
 }
