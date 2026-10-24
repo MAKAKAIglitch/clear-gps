@@ -1,31 +1,134 @@
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 $GradleVersion = '8.14.6'
 $ExpectedSha256 = '7988ed071b2a07900e2ec715fca15c6ab72bce6db433af301fa7fa7e9407bd24'
 $InstallRoot = Join-Path $env:USERPROFILE '.gradle\clear-gps'
 $InstallDir = Join-Path $InstallRoot "gradle-$GradleVersion"
-if (Test-Path (Join-Path $InstallDir 'bin\gradle.bat')) { exit 0 }
-New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 $ZipPath = Join-Path $env:TEMP "gradle-$GradleVersion-bin.zip"
 $ExtractRoot = Join-Path $env:TEMP "clear-gps-gradle-$GradleVersion"
-$Uri = "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip"
+
+function Test-GradleHome {
+    param([string]$Home)
+    $GradleExe = Join-Path $Home 'bin\gradle.bat'
+    if (-not (Test-Path -LiteralPath $GradleExe)) { return $false }
+    try {
+        $VersionOutput = (& $GradleExe --version 2>&1 | Out-String)
+        $ExitCode = $LASTEXITCODE
+        return ($ExitCode -eq 0 -and $VersionOutput -match "(?m)^\s*Gradle\s+$([regex]::Escape($GradleVersion))\s*$")
+    } catch {
+        return $false
+    }
+}
+
+function Get-FallbackGradleHome {
+    $Homes = New-Object 'System.Collections.Generic.List[string]'
+    $Seen = @{}
+    foreach ($Home in @($env:GRADLE_HOME)) {
+        if (-not [string]::IsNullOrWhiteSpace($Home)) {
+            $Full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Home.Trim('"')))
+            if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
+                $Seen[$Full.ToLowerInvariant()] = $true
+                $Homes.Add($Full) | Out-Null
+            }
+        }
+    }
+
+    Get-Command gradle.bat, gradle.cmd, gradle -All -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Source -and (Test-Path -LiteralPath $_.Source -PathType Leaf)) {
+            $Home = Split-Path -Parent (Split-Path -Parent $_.Source)
+            try { $Full = [IO.Path]::GetFullPath($Home) } catch { $Full = $Home }
+            if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
+                $Seen[$Full.ToLowerInvariant()] = $true
+                $Homes.Add($Full) | Out-Null
+            }
+        }
+    }
+
+    foreach ($Pattern in @(
+        (Join-Path $env:USERPROFILE ".gradle\wrapper\dists\gradle-$GradleVersion-bin\*"),
+        (Join-Path $env:USERPROFILE ".gradle\wrapper\dists\gradle-$GradleVersion-all\*")
+    )) {
+        Get-ChildItem -Path $Pattern -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -LiteralPath $_.FullName -Filter 'gradle.bat' -File -Recurse -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    $Home = Split-Path -Parent (Split-Path -Parent $_.FullName)
+                    try { $Full = [IO.Path]::GetFullPath($Home) } catch { $Full = $Home }
+                    if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
+                        $Seen[$Full.ToLowerInvariant()] = $true
+                        $Homes.Add($Full) | Out-Null
+                    }
+                }
+        }
+    }
+
+    foreach ($Home in $Homes) {
+        if ((Test-Path -LiteralPath (Join-Path $Home 'bin\gradle.bat')) -and (Test-GradleHome -Home $Home)) {
+            return $Home
+        }
+    }
+    return $null
+}
+
+# Reuse a valid managed installation; reject a partial or different Gradle version.
+if (Test-Path -LiteralPath (Join-Path $InstallDir 'bin\gradle.bat')) {
+    if (Test-GradleHome -Home $InstallDir) {
+        Write-Host "Using verified Gradle $GradleVersion at $InstallDir"
+        exit 0
+    }
+    Write-Warning "The cached Gradle directory exists but does not run as Gradle $GradleVersion; rebuilding the managed copy."
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
+$DownloadFailure = $null
 try {
     Write-Host "Downloading official Gradle $GradleVersion..."
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $Uri = "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip"
     Invoke-WebRequest -Uri $Uri -OutFile $ZipPath -UseBasicParsing
     $ActualSha256 = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($ActualSha256 -ne $ExpectedSha256) { throw "SHA-256 mismatch: expected $ExpectedSha256; got $ActualSha256. Archive rejected." }
-    if (Test-Path $ExtractRoot) { Remove-Item -LiteralPath $ExtractRoot -Recurse -Force }
+    if ($ActualSha256 -ne $ExpectedSha256) {
+        throw "SHA-256 mismatch: expected $ExpectedSha256; got $ActualSha256. Archive rejected."
+    }
+    if (Test-Path -LiteralPath $ExtractRoot) { Remove-Item -LiteralPath $ExtractRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $ExtractRoot | Out-Null
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractRoot -Force
     $Extracted = Join-Path $ExtractRoot "gradle-$GradleVersion"
-    if (-not (Test-Path (Join-Path $Extracted 'bin\gradle.bat'))) { throw 'Expected Gradle executable not found in archive.' }
-    if (Test-Path $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
+    if (-not (Test-Path -LiteralPath (Join-Path $Extracted 'bin\gradle.bat'))) {
+        throw 'Expected Gradle executable not found in the verified archive.'
+    }
+    if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
     Move-Item -LiteralPath $Extracted -Destination $InstallDir
-    Write-Host "Gradle installed under $InstallDir"
+    if (-not (Test-GradleHome -Home $InstallDir)) {
+        throw "Downloaded Gradle did not pass the exact-version launch check."
+    }
+    Write-Host "Gradle installed and verified under $InstallDir"
+    exit 0
 } catch {
-    Write-Error "Gradle setup failed: $($_.Exception.Message)"
-    exit 1
+    $DownloadFailure = $_.Exception.Message
+    Write-Warning "Gradle download/setup failed: $DownloadFailure"
 } finally {
-    if (Test-Path $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $ExtractRoot) { Remove-Item -LiteralPath $ExtractRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $ExtractRoot) { Remove-Item -LiteralPath $ExtractRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
+
+# Network fallback: reuse an exact-version Gradle already installed or cached on this computer.
+$FallbackHome = Get-FallbackGradleHome
+if ($FallbackHome) {
+    try {
+        Write-Host "Fallback: found a working Gradle $GradleVersion at $FallbackHome"
+        if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
+        Copy-Item -LiteralPath $FallbackHome -Destination $InstallDir -Recurse -Force
+        if (Test-GradleHome -Home $InstallDir) {
+            Write-Host "Fallback Gradle copy is ready at $InstallDir"
+            exit 0
+        }
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Warning "Gradle cache fallback failed: $($_.Exception.Message)"
+    }
+}
+
+Write-Error "Could not install Gradle $GradleVersion. Download error: $DownloadFailure. No working copy of the exact version was found in PATH or the standard Gradle cache."
+exit 1
