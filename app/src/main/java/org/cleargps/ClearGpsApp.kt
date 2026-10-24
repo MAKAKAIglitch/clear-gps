@@ -377,6 +377,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     SideEffect {
+        // Push the initial position and saved shapes before MapLibre's asynchronous style load completes.
+        mapController.updatePrimary(mappedCoordinate, mappedAccuracy)
+        mapController.updateManualAnchor(manualAnchor)
+        mapController.updateZone(savedZone, draftZone)
         mapController.setTapMode(mapTapMode)
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
@@ -398,11 +402,6 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    LaunchedEffect(mappedCoordinate, mappedAccuracy, manualAnchor, savedZone, draftZone) {
-        mapController.updatePrimary(mappedCoordinate, mappedAccuracy)
-        mapController.updateManualAnchor(manualAnchor)
-        mapController.updateZone(savedZone, draftZone)
-    }
 
     ClearGpsTheme {
         val colors = MaterialTheme.colorScheme
