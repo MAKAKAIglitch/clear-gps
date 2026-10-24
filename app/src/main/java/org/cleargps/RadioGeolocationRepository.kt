@@ -147,9 +147,11 @@ class RadioGeolocationRepository(private val context: Context) {
         val cells = snapshot.cellCount
         val beacons = snapshot.beaconCount
         if (cells == 0 && wifi + beacons < 2) {
+            val previousEstimate = loadLastEstimate(context)
+            val detail = "Нужно минимум две Wi‑Fi/Bluetooth-точки или данные мобильной соты. Проверь разрешения и доступность сканирования."
             return RadioLookupResult(
-                loadLastEstimate(context), wifi, cells, beacons, false,
-                "Нужно минимум две Wi‑Fi/Bluetooth-точки или данные мобильной соты. Проверь разрешения и доступность сканирования."
+                previousEstimate, wifi, cells, beacons, previousEstimate != null,
+                detail + if (previousEstimate != null) " Показываю последнюю сохранённую оценку." else ""
             )
         }
 
