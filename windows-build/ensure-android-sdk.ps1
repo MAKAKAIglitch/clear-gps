@@ -138,13 +138,29 @@ try {
     $SdkRoot = [IO.Path]::GetFullPath($SdkRoot)
     New-Item -ItemType Directory -Path $SdkRoot -Force | Out-Null
     Write-Host 'Accepting Android SDK licenses after confirmation...'
-    $LicenseAnswers = 1..100 | ForEach-Object { 'y' }
-    $LicenseAnswers | & $SdkManager "--sdk_root=$SdkRoot" '--licenses' | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "sdkmanager --licenses failed with exit code $LASTEXITCODE." }
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # sdkmanager.bat is a native command wrapper; keep stderr diagnostic output
+        # from becoming a terminating ErrorRecord under Windows PowerShell 5.
+        $ErrorActionPreference = 'Continue'
+        $LicenseAnswers = 1..100 | ForEach-Object { 'y' }
+        $LicenseAnswers | & $SdkManager "--sdk_root=$SdkRoot" '--licenses' | Out-Host
+        $LicenseExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    if ($LicenseExitCode -ne 0) { throw "sdkmanager --licenses failed with exit code $LicenseExitCode." }
 
     Write-Host 'Installing Android SDK Platform 36 and Build-Tools 36.0.0...'
-    & $SdkManager "--sdk_root=$SdkRoot" 'platforms;android-36' 'build-tools;36.0.0' | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "sdkmanager package installation failed with exit code $LASTEXITCODE." }
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $SdkManager "--sdk_root=$SdkRoot" 'platforms;android-36' 'build-tools;36.0.0' | Out-Host
+        $InstallExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    if ($InstallExitCode -ne 0) { throw "sdkmanager package installation failed with exit code $InstallExitCode." }
 
     if (-not (Test-SdkComplete -Root $SdkRoot)) {
         throw "sdkmanager returned success, but required Android SDK files are still missing under $SdkRoot."
