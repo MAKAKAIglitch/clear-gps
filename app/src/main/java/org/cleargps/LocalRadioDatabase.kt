@@ -350,7 +350,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     fun importWigleCsv(input: InputStream): Int {
-        val raw = readBounded(input, MAX_IMPORT_BYTES)
+        val raw = input.use { readBounded(it, MAX_IMPORT_BYTES) }
         val decoded = if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
             GZIPInputStream(ByteArrayInputStream(raw)).use { readBounded(it, MAX_IMPORT_BYTES) }
         } else raw
