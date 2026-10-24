@@ -1237,7 +1237,7 @@ private fun EmptyState(title: String, body: String) {
 private fun MapAttribution(modifier: Modifier = Modifier, dark: Boolean, onClick: () -> Unit) {
     Surface(modifier = modifier, shape = RoundedCornerShape(9.dp),
         color = (if (dark) Color(0xFF222631) else Color.White).copy(alpha = 0.92f), shadowElevation = 2.dp, onClick = onClick) {
-        Text("© OpenFreeMap · © OSM", modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+        Text("OpenFreeMap · OpenMapTiles · © OpenStreetMap", modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
             color = if (dark) Color.White else Color(0xFF253044), style = MaterialTheme.typography.labelSmall)
     }
 }
