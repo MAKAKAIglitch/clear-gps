@@ -10,6 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Windows bootstrap PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in (Get-ChildItem windows-build -Filter '*.ps1' -File)) {
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count -gt 0) {
+              $details = ($parseErrors | ForEach-Object { '{0}: {1}' -f $_.Extent.StartLineNumber, $_.Message }) -join [Environment]::NewLine
+              throw ('PowerShell syntax error(s) in ' + $file.Name + ':' + [Environment]::NewLine + $details)
+            }
+          }
+          Write-Host 'PowerShell syntax check passed.'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
