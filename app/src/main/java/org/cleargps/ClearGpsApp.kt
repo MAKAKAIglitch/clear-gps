@@ -396,6 +396,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
+            if (positionMode == PositionMode.RADIO_ONLY && monitorEnabled) {
+                val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
+                    val age = System.currentTimeMillis() - it.updatedAt
+                    age in 0..30L * 60L * 1000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
+                }
+                if (stored != currentRadioEstimate) currentRadioEstimate = stored
+            }
             delay(1_500L)
         }
     }
