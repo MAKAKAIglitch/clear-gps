@@ -12,6 +12,14 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.cleargps.core.FilterDecision
 import org.cleargps.core.FilterState
 import org.cleargps.core.LocationFilterEngine
@@ -26,6 +34,8 @@ class LocationMonitorService : Service(), LocationListener {
     private lateinit var prefs: android.content.SharedPreferences
     private val engine = LocationFilterEngine()
     private var mock: MockLocationOutput? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var radioOnlyJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -56,11 +66,11 @@ class LocationMonitorService : Service(), LocationListener {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startForeground(NOTIFICATION_ID, notification("Monitoring GNSS; mock output off"))
+                startTracking()
                 return START_STICKY
             }
             else -> {
-                startForeground(NOTIFICATION_ID, notification("Monitoring GNSS anomalies"))
+                startForeground(NOTIFICATION_ID, notification("Starting location monitor"))
                 prefs.edit().putBoolean(KEY_MONITORING, true).apply()
                 startTracking()
                 return START_STICKY
@@ -75,13 +85,31 @@ class LocationMonitorService : Service(), LocationListener {
             stopSelf()
             return
         }
+
         try {
             manager.removeUpdates(this)
-            if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
-            }
-            if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
-                manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2_000L, 0f, this)
+            radioOnlyJob?.cancel()
+            radioOnlyJob = null
+
+            when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
+                "radio" -> {
+                    saveServiceStatus("Radio-only mode: GPS provider is not requested")
+                    startRadioOnlyLoop()
+                    return
+                }
+                "gps" -> {
+                    if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                    }
+                }
+                else -> {
+                    if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                    }
+                    if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
+                        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2_000L, 0f, this)
+                    }
+                }
             }
             saveServiceStatus("Monitoring")
         } catch (_: SecurityException) {
@@ -92,31 +120,80 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    private fun startRadioOnlyLoop() {
+        radioOnlyJob?.cancel()
+        radioOnlyJob = serviceScope.launch {
+            val repository = RadioGeolocationRepository(applicationContext)
+            while (isActive && prefs.getBoolean(KEY_MONITORING, false) &&
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio") {
+                try {
+                    val result = repository.scan(
+                        record = false,
+                        reference = null,
+                        mode = "radio",
+                        useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
+                        useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
+                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                    )
+                    val estimate = result.estimate
+                    if (estimate != null && estimate.matchedCount >= RADIO_MIN_MATCHES &&
+                        estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
+                        val output = Location(LocationManager.NETWORK_PROVIDER).apply {
+                            latitude = estimate.latitude
+                            longitude = estimate.longitude
+                            accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
+                            time = System.currentTimeMillis()
+                            elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                        }
+                        prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
+                            .putInt(KEY_SCORE, 0).putString(KEY_SOURCE, "LOCAL_RADIO")
+                            .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
+                            .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
+                        if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && mock?.publish(output) != true) {
+                            saveServiceStatus("Radio match found, but mock output is unavailable; check Developer options")
+                        } else {
+                            saveServiceStatus("Radio-only · " + estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m")
+                        }
+                    } else {
+                        if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
+                        prefs.edit().putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                            .putString(KEY_STATE, FilterState.NO_FALLBACK.name).apply()
+                        saveServiceStatus("Radio-only · no reliable local match yet")
+                    }
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
+                        notification(prefs.getString(KEY_SERVICE_STATUS, "Radio-only") ?: "Radio-only"))
+                } catch (error: Exception) {
+                    saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
+                }
+                delay(RADIO_SCAN_INTERVAL_MS)
+            }
+        }
+    }
+
     private fun stopTracking() {
+        radioOnlyJob?.cancel()
+        radioOnlyJob = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         mock?.disable()
     }
 
-    /**
-     * A recent, accurate radio estimate is preferred. A manually placed anchor is considered
-     * only after an explicit checkbox opt-in and only when no other fallback exists.
-     */
     private fun createLastResortFallback(decision: FilterDecision): LastResortFallback? {
         if (decision.state != FilterState.NO_FALLBACK || decision.outputLocation != null) return null
         val now = System.currentTimeMillis()
         val estimate = RadioGeolocationRepository.loadLastEstimate(this)
         if (estimate != null) {
             val age = now - estimate.updatedAt
-            if (age in 0..RADIO_FALLBACK_MAX_AGE_MS &&
+            if (estimate.matchedCount >= RADIO_MIN_MATCHES &&
+                age in 0..RADIO_FALLBACK_MAX_AGE_MS &&
                 estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
                 val location = Location(LocationManager.NETWORK_PROVIDER).apply {
                     latitude = estimate.latitude
                     longitude = estimate.longitude
                     accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
-                    time = estimate.updatedAt
+                    time = now
                     elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                 }
-                return LastResortFallback("RADIO_DB", location)
+                return LastResortFallback("LOCAL_RADIO", location)
             }
         }
 
@@ -124,7 +201,6 @@ class LocationMonitorService : Service(), LocationListener {
         val anchor = ManualLocationStore.load(this) ?: return null
         val anchorSetAt = prefs.getLong(ClearGpsPreferences.KEY_MANUAL_SET_AT, 0L)
         if (anchorSetAt <= 0L || now - anchorSetAt !in 0..MANUAL_FALLBACK_MAX_AGE_MS) return null
-
         val location = Location(LocationManager.NETWORK_PROVIDER).apply {
             latitude = anchor.latitude
             longitude = anchor.longitude
@@ -137,46 +213,32 @@ class LocationMonitorService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
+        val point = ZonePoint(location.latitude, location.longitude)
         val inZone = if (gpsFix) {
-            ZoneGeometry.contains(ZonePoint(location.latitude, location.longitude), ZoneStore.load(this))
-        } else {
-            engine.currentDecision().inRiskZone
-        }
+            ZoneStore.loadAll(this).any { zone -> zone.enabled && ZoneGeometry.contains(point, zone.points) }
+        } else engine.currentDecision().inRiskZone
+
         val observedDecision = engine.observe(location, inZone)
-        val lastResortFallback = createLastResortFallback(observedDecision)
-        val result = if (lastResortFallback != null) {
-            observedDecision.copy(
-                state = FilterState.CORRECTING,
-                source = lastResortFallback.source,
-                outputLocation = lastResortFallback.location
-            )
-        } else {
-            observedDecision
-        }
+        val fallback = createLastResortFallback(observedDecision)
+        val result = if (fallback != null) {
+            observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
+        } else observedDecision
         persist(result)
 
-        when (lastResortFallback?.source) {
-            "RADIO_DB" -> saveServiceStatus(
-                "Radio DB fallback active · about ±" + lastResortFallback.location.accuracy.toInt() + " m"
-            )
-            "MANUAL_ANCHOR" -> saveServiceStatus(
-                "Manual anchor fallback active · about ±" + lastResortFallback.location.accuracy.toInt() + " m"
-            )
+        when (fallback?.source) {
+            "LOCAL_RADIO" -> saveServiceStatus("Local radio fallback active · about ±" + fallback.location.accuracy.toInt() + " m")
+            "MANUAL_ANCHOR" -> saveServiceStatus("Manual anchor fallback active · about ±" + fallback.location.accuracy.toInt() + " m")
             else -> {
                 val status = prefs.getString(KEY_SERVICE_STATUS, "") ?: ""
-                if (status.startsWith("Radio DB fallback") || status.startsWith("Manual anchor fallback")) {
-                    saveServiceStatus("Monitoring")
-                }
+                if (status.startsWith("Local radio fallback") || status.startsWith("Manual anchor fallback")) saveServiceStatus("Monitoring")
             }
         }
 
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
-            if (mock?.publish(result.outputLocation) != true) {
-                saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
-            }
+            if (mock?.publish(result.outputLocation) != true) saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
         }
         val sourceHint = when (result.source) {
-            "RADIO_DB" -> " · radio fallback"
+            "LOCAL_RADIO" -> " · local radio fallback"
             "MANUAL_ANCHOR" -> " · manual anchor fallback"
             else -> ""
         }
@@ -192,6 +254,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     override fun onDestroy() {
         stopTracking()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -203,8 +266,7 @@ class LocationMonitorService : Service(), LocationListener {
             .putString(KEY_SOURCE, result.source)
             .putBoolean(KEY_HAS_OUTPUT, result.outputLocation != null)
         result.outputLocation?.let {
-            edit.putString(KEY_LAT, it.latitude.toString())
-                .putString(KEY_LON, it.longitude.toString())
+            edit.putString(KEY_LAT, it.latitude.toString()).putString(KEY_LON, it.longitude.toString())
                 .putFloat(KEY_ACCURACY, if (it.hasAccuracy()) it.accuracy else -1f)
         }
         edit.apply()
@@ -217,11 +279,8 @@ class LocationMonitorService : Service(), LocationListener {
     private fun notification(text: String): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL)
             else Notification.Builder(this)
-        return builder.setContentTitle("Clear GPS")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setOngoing(true)
-            .build()
+        return builder.setContentTitle("Clear GPS").setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation).setOngoing(true).build()
     }
 
     companion object {
@@ -242,6 +301,8 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_SERVICE_STATUS = "service_status"
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
+        private const val RADIO_SCAN_INTERVAL_MS = 12_000L
+        private const val RADIO_MIN_MATCHES = 3
         private const val RADIO_FALLBACK_MAX_AGE_MS = 30L * 60L * 1000L
         private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 1_000.0
         private const val MANUAL_FALLBACK_ACCURACY_METERS = 1_500f
