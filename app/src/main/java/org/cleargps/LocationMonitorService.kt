@@ -156,8 +156,18 @@ class LocationMonitorService : Service(), LocationListener {
                         }
                     } else {
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
-                        prefs.edit().putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
-                            .putString(KEY_STATE, FilterState.NO_FALLBACK.name).apply()
+                        prefs.edit()
+                            .putBoolean(KEY_HAS_OUTPUT, false)
+                            .putString(KEY_SOURCE, "NONE")
+                            .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
+                            // Do not leave an older position displayed as if it matched this scan.
+                            .remove(ClearGpsPreferences.KEY_LAST_LAT)
+                            .remove(ClearGpsPreferences.KEY_LAST_LON)
+                            .remove(ClearGpsPreferences.KEY_LAST_ACCURACY)
+                            .remove(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT)
+                            .remove(ClearGpsPreferences.KEY_LAST_FINGERPRINT)
+                            .remove(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT)
+                            .apply()
                         saveServiceStatus("Radio-only · no reliable local match yet")
                     }
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
