@@ -5,10 +5,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
-import okhttp3.OkHttpClient
 import org.maplibre.android.MapLibre
 import org.maplibre.android.maps.MapView
-import org.maplibre.android.module.http.HttpRequestUtil
 
 class MainActivity : ComponentActivity() {
     private var mapView: MapView? = null
@@ -22,12 +20,6 @@ class MainActivity : ComponentActivity() {
         window.navigationBarColor = Color.TRANSPARENT
 
         MapLibre.getInstance(this)
-        HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
-            chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "ClearGPS/0.2 (https://github.com/MAKAKAIglitch/clear-gps)")
-                .build())
-        }.build())
-
         setContent {
             ClearGpsApp(onMapViewCreated = ::attachMapView)
         }
