@@ -41,8 +41,16 @@ try {
         throw "Gradle 8.14.6 is still unavailable at $GradleExe."
     }
     Write-Host "Running Gradle 8.14.6 with JDK from $env:JAVA_HOME"
-    & $GradleExe @GradleArguments
-    $GradleExitCode = $LASTEXITCODE
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # A Gradle .bat can write diagnostics to stderr. Do not let legacy
+        # Windows PowerShell turn those native diagnostics into a terminating exception.
+        $ErrorActionPreference = 'Continue'
+        & $GradleExe @GradleArguments
+        $GradleExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if ($null -eq $GradleExitCode) { $GradleExitCode = 0 }
     exit [int]$GradleExitCode
 } catch {
