@@ -19,6 +19,8 @@ import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
 
+private data class LastResortFallback(val source: String, val location: Location)
+
 class LocationMonitorService : Service(), LocationListener {
     private lateinit var manager: LocationManager
     private lateinit var prefs: android.content.SharedPreferences
@@ -96,23 +98,41 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     /**
-     * Only use a database-derived position if the GNSS filter detected a risk but has no
-     * system/network/trusted fallback. A manually placed map anchor is never auto-published.
+     * A recent, accurate radio estimate is preferred. A manually placed anchor is considered
+     * only after an explicit checkbox opt-in and only when no other fallback exists.
      */
-    private fun createRadioFallback(decision: FilterDecision): Location? {
+    private fun createLastResortFallback(decision: FilterDecision): LastResortFallback? {
         if (decision.state != FilterState.NO_FALLBACK || decision.outputLocation != null) return null
-        val estimate = RadioGeolocationRepository.loadLastEstimate(this) ?: return null
-        val age = System.currentTimeMillis() - estimate.updatedAt
-        if (age !in 0..RADIO_FALLBACK_MAX_AGE_MS || estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS) {
-            return null
+        val now = System.currentTimeMillis()
+        val estimate = RadioGeolocationRepository.loadLastEstimate(this)
+        if (estimate != null) {
+            val age = now - estimate.updatedAt
+            if (age in 0..RADIO_FALLBACK_MAX_AGE_MS &&
+                estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
+                val location = Location(LocationManager.NETWORK_PROVIDER).apply {
+                    latitude = estimate.latitude
+                    longitude = estimate.longitude
+                    accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
+                    time = estimate.updatedAt
+                    elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                }
+                return LastResortFallback("RADIO_DB", location)
+            }
         }
-        return Location(LocationManager.NETWORK_PROVIDER).apply {
-            latitude = estimate.latitude
-            longitude = estimate.longitude
-            accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
-            time = estimate.updatedAt
+
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, false)) return null
+        val anchor = ManualLocationStore.load(this) ?: return null
+        val anchorSetAt = prefs.getLong(ClearGpsPreferences.KEY_MANUAL_SET_AT, 0L)
+        if (anchorSetAt <= 0L || now - anchorSetAt !in 0..MANUAL_FALLBACK_MAX_AGE_MS) return null
+
+        val location = Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = anchor.latitude
+            longitude = anchor.longitude
+            accuracy = MANUAL_FALLBACK_ACCURACY_METERS
+            time = anchorSetAt
             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
         }
+        return LastResortFallback("MANUAL_ANCHOR", location)
     }
 
     override fun onLocationChanged(location: Location) {
@@ -123,22 +143,31 @@ class LocationMonitorService : Service(), LocationListener {
             engine.currentDecision().inRiskZone
         }
         val observedDecision = engine.observe(location, inZone)
-        val radioFallback = createRadioFallback(observedDecision)
-        val result = if (radioFallback != null) {
+        val lastResortFallback = createLastResortFallback(observedDecision)
+        val result = if (lastResortFallback != null) {
             observedDecision.copy(
                 state = FilterState.CORRECTING,
-                source = "RADIO_DB",
-                outputLocation = radioFallback
+                source = lastResortFallback.source,
+                outputLocation = lastResortFallback.location
             )
         } else {
             observedDecision
         }
         persist(result)
 
-        if (result.source == "RADIO_DB" && radioFallback != null) {
-            saveServiceStatus("Radio DB fallback active · about ±" + radioFallback.accuracy.toInt() + " m")
-        } else if (prefs.getString(KEY_SERVICE_STATUS, "")?.startsWith("Radio DB fallback") == true) {
-            saveServiceStatus("Monitoring")
+        when (lastResortFallback?.source) {
+            "RADIO_DB" -> saveServiceStatus(
+                "Radio DB fallback active · about ±" + lastResortFallback.location.accuracy.toInt() + " m"
+            )
+            "MANUAL_ANCHOR" -> saveServiceStatus(
+                "Manual anchor fallback active · about ±" + lastResortFallback.location.accuracy.toInt() + " m"
+            )
+            else -> {
+                val status = prefs.getString(KEY_SERVICE_STATUS, "") ?: ""
+                if (status.startsWith("Radio DB fallback") || status.startsWith("Manual anchor fallback")) {
+                    saveServiceStatus("Monitoring")
+                }
+            }
         }
 
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
@@ -146,7 +175,11 @@ class LocationMonitorService : Service(), LocationListener {
                 saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
             }
         }
-        val sourceHint = if (result.source == "RADIO_DB") " · radio fallback" else ""
+        val sourceHint = when (result.source) {
+            "RADIO_DB" -> " · radio fallback"
+            "MANUAL_ANCHOR" -> " · manual anchor fallback"
+            else -> ""
+        }
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
             notification(result.state.name + " · risk " + result.riskScore + "%" + sourceHint))
     }
@@ -211,5 +244,7 @@ class LocationMonitorService : Service(), LocationListener {
         private const val NOTIFICATION_ID = 4101
         private const val RADIO_FALLBACK_MAX_AGE_MS = 30L * 60L * 1000L
         private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 1_000.0
+        private const val MANUAL_FALLBACK_ACCURACY_METERS = 1_500f
+        private const val MANUAL_FALLBACK_MAX_AGE_MS = 24L * 60L * 60L * 1000L
     }
 }
