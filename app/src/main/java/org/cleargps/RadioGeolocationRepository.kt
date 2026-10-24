@@ -80,7 +80,8 @@ private data class RadioSnapshot(
     val payload: JSONObject,
     val wifiCount: Int,
     val cellCount: Int,
-    val beaconCount: Int
+    val beaconCount: Int,
+    val observedAt: Long
 ) {
     val fingerprint: String = stableRadioFingerprint(payload)
 }
@@ -92,6 +93,7 @@ object ClearGpsPreferences {
     const val KEY_LAST_PAYLOAD = "radio_last_payload"
     const val KEY_LAST_FINGERPRINT = "radio_last_fingerprint"
     const val KEY_LAST_PAYLOAD_FINGERPRINT = "radio_last_payload_fingerprint"
+    const val KEY_LAST_PAYLOAD_CAPTURED_AT = "radio_last_payload_captured_at"
     const val KEY_LAST_REFRESH_AT = "radio_last_refresh_at"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
@@ -163,9 +165,12 @@ class RadioGeolocationRepository(private val context: Context) {
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_LAST_PAYLOAD, snapshot.payload.toString())
             .putString(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT, snapshot.fingerprint)
+            .putLong(ClearGpsPreferences.KEY_LAST_PAYLOAD_CAPTURED_AT, snapshot.observedAt)
             .apply()
 
-        val response = withContext(Dispatchers.IO) { requestBeaconDb(snapshot.payload, snapshot.fingerprint) }
+        val response = withContext(Dispatchers.IO) {
+            requestBeaconDb(snapshot.payload, snapshot.fingerprint, snapshot.observedAt)
+        }
         if (response.estimate != null) {
             saveEstimate(context, response.estimate)
             prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
@@ -204,7 +209,7 @@ class RadioGeolocationRepository(private val context: Context) {
             beacons.sortedBy { it.optString("macAddress") }.forEach(array::put)
             payload.put("bluetoothBeacons", array)
         }
-        return RadioSnapshot(payload, wifi.size, cells.size, beacons.size)
+        return RadioSnapshot(payload, wifi.size, cells.size, beacons.size, System.currentTimeMillis())
     }
 
     @Suppress("DEPRECATION")
@@ -381,7 +386,7 @@ class RadioGeolocationRepository(private val context: Context) {
         return client.newCall(request).execute().use { response -> HttpBody(response.code, response.body?.string()) }
     }
 
-    private fun requestBeaconDb(payload: JSONObject, fingerprint: String): LookupResponse {
+    private fun requestBeaconDb(payload: JSONObject, fingerprint: String, observedAt: Long): LookupResponse {
         val client = OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
@@ -434,7 +439,7 @@ class RadioGeolocationRepository(private val context: Context) {
         }
         val fallbackUsed = json.has("fallback") || json.has("fallbacks")
         val estimate = RadioEstimate(lat, lon, accuracy.coerceAtMost(100_000.0),
-            System.currentTimeMillis(), fingerprint, fallbackUsed)
+            observedAt, fingerprint, fallbackUsed)
         val message = if (fallbackUsed) {
             "Получена резервная оценка; ориентируйся на радиус точности."
         } else {
@@ -494,11 +499,15 @@ class RadioGeolocationRepository(private val context: Context) {
             val prefs = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
             val raw = prefs.getString(ClearGpsPreferences.KEY_LAST_PAYLOAD, null) ?: return false
             val fingerprint = prefs.getString(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT, null) ?: return false
+            val observedAt = prefs.getLong(ClearGpsPreferences.KEY_LAST_PAYLOAD_CAPTURED_AT, 0L)
+            if (observedAt <= 0L) return false
             if (!prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_CONSENT, false) ||
                 !prefs.getBoolean(ClearGpsPreferences.KEY_DAILY_REFRESH, true)) return false
 
             val repository = RadioGeolocationRepository(context)
-            val response = withContext(Dispatchers.IO) { repository.requestSaved(JSONObject(raw), fingerprint) }
+            val response = withContext(Dispatchers.IO) {
+                repository.requestSaved(JSONObject(raw), fingerprint, observedAt)
+            }
             if (response.estimate != null) {
                 saveEstimate(context, response.estimate)
                 prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
@@ -519,8 +528,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
     }
 
-    private fun requestSaved(payload: JSONObject, fingerprint: String): LookupResponse =
-        requestBeaconDb(payload, fingerprint)
+    private fun requestSaved(payload: JSONObject, fingerprint: String, observedAt: Long): LookupResponse =
+        requestBeaconDb(payload, fingerprint, observedAt)
 }
 
 class DailyBeaconRefreshWorker(
