@@ -125,7 +125,8 @@ if ($FallbackHome) {
     try {
         Write-Host "Fallback: found a working Gradle $GradleVersion at $FallbackHome"
         if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
-        Copy-Item -LiteralPath $FallbackHome -Destination $InstallDir -Recurse -Force
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        Copy-Item -Path (Join-Path $FallbackHome '*') -Destination $InstallDir -Recurse -Force
         if (Test-GradleHome -GradleHomePath $InstallDir) {
             Write-Host "Fallback Gradle copy is ready at $InstallDir"
             exit 0
