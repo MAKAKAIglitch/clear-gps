@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clear GPS</string>
+    <string name="subtitle">GNSS anomaly filter · experimental</string>
+    <string name="draw_zone">Draw risk zone</string>
+    <string name="finish_zone">Save zone</string>
+    <string name="clear_zone">Clear zone</string>
+    <string name="center_location">My location</string>
+    <string name="start_filter">Start monitoring</string>
+    <string name="stop_filter">Stop monitoring</string>
+    <string name="enable_mock">Enable corrected location</string>
+    <string name="disable_mock">Disable corrected location</string>
+    <string name="zone_hint">Tap the map to add points; save at least 3 points.</string>
+    <string name="attribution">© OpenStreetMap contributors</string>
+    <string name="need_location">Location permission is needed for monitoring.</string>
+    <string name="zone_saved">Risk zone saved on this device.</string>
+    <string name="zone_too_small">Add at least 3 points to form a zone.</string>
+    <string name="mock_warning">Choose Clear GPS in Developer options → Mock location app. Output stays off until enabled.</string>
+    <string name="no_location">No cached location is available yet.</string>
+</resources>
