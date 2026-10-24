@@ -78,6 +78,15 @@ Write-Host 'Clear GPS: locating a compatible JDK (17-24)...'
 # Keep JAVA_HOME first, but do not trust it blindly: an old JDK must not block fallback detection.
 Add-JavaCandidate -Path $env:JAVA_HOME -Source 'JAVA_HOME'
 
+# Also inspect versioned Java environment variables used by CI images and multi-JDK setups.
+foreach ($JavaHomeVariable in @(
+    'JAVA_HOME_24_X64', 'JAVA_HOME_21_X64', 'JAVA_HOME_17_X64',
+    'JAVA_HOME_24_ARM64', 'JAVA_HOME_21_ARM64', 'JAVA_HOME_17_ARM64'
+)) {
+    $ConfiguredJavaHome = [Environment]::GetEnvironmentVariable($JavaHomeVariable)
+    if ($ConfiguredJavaHome) { Add-JavaCandidate -Path $ConfiguredJavaHome -Source $JavaHomeVariable }
+}
+
 # Android Studio / JetBrains Runtime.
 $ProgramFilesRoot = $env:ProgramFiles
 $LocalPrograms = Join-Path $env:LOCALAPPDATA 'Programs'
