@@ -52,9 +52,17 @@ try {
     $BuildLog = Join-Path $BuildLogRoot ("build-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
     Write-Host "Build log: $BuildLog"
 
-    & $GradleWrapper --no-daemon --stacktrace testDebugUnitTest assembleDebug 2>&1 |
-        Tee-Object -FilePath $BuildLog | Out-Host
-    $GradleExitCode = $LASTEXITCODE
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Gradle's diagnostics may use stderr. In Windows PowerShell 5 this can
+        # become an ErrorRecord, so Continue is required while collecting the process output.
+        $ErrorActionPreference = 'Continue'
+        & $GradleWrapper --no-daemon --stacktrace testDebugUnitTest assembleDebug 2>&1 |
+            Tee-Object -FilePath $BuildLog | Out-Host
+        $GradleExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if ($GradleExitCode -ne 0) {
         $LogText = Get-Content -LiteralPath $BuildLog -Raw -ErrorAction SilentlyContinue
         $RetryPattern = '(?i)(UnknownHostException|Unknown host|Could not resolve host|Could not GET|Could not HEAD|Connection timed out|Read timed out|Connection reset|Connection refused|TLS handshake|PKIX path building failed|503 Service Unavailable|502 Bad Gateway|429 Too Many Requests|Temporary failure in name resolution|Network is unreachable|No route to host)'
