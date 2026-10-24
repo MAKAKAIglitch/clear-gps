@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import org.cleargps.core.FilterDecision
+import org.cleargps.core.FilterState
 import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
@@ -94,6 +95,26 @@ class LocationMonitorService : Service(), LocationListener {
         mock?.disable()
     }
 
+    /**
+     * Only use a database-derived position if the GNSS filter detected a risk but has no
+     * system/network/trusted fallback. A manually placed map anchor is never auto-published.
+     */
+    private fun createRadioFallback(decision: FilterDecision): Location? {
+        if (decision.state != FilterState.NO_FALLBACK || decision.outputLocation != null) return null
+        val estimate = RadioGeolocationRepository.loadLastEstimate(this) ?: return null
+        val age = System.currentTimeMillis() - estimate.updatedAt
+        if (age !in 0..RADIO_FALLBACK_MAX_AGE_MS || estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS) {
+            return null
+        }
+        return Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = estimate.latitude
+            longitude = estimate.longitude
+            accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
+            time = estimate.updatedAt
+            elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+        }
+    }
+
     override fun onLocationChanged(location: Location) {
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
         val inZone = if (gpsFix) {
@@ -101,15 +122,33 @@ class LocationMonitorService : Service(), LocationListener {
         } else {
             engine.currentDecision().inRiskZone
         }
-        val result = engine.observe(location, inZone)
+        val observedDecision = engine.observe(location, inZone)
+        val radioFallback = createRadioFallback(observedDecision)
+        val result = if (radioFallback != null) {
+            observedDecision.copy(
+                state = FilterState.CORRECTING,
+                source = "RADIO_DB",
+                outputLocation = radioFallback
+            )
+        } else {
+            observedDecision
+        }
         persist(result)
+
+        if (result.source == "RADIO_DB" && radioFallback != null) {
+            saveServiceStatus("Radio DB fallback active · about ±" + radioFallback.accuracy.toInt() + " m")
+        } else if (prefs.getString(KEY_SERVICE_STATUS, "")?.startsWith("Radio DB fallback") == true) {
+            saveServiceStatus("Monitoring")
+        }
+
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
             if (mock?.publish(result.outputLocation) != true) {
                 saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
             }
         }
+        val sourceHint = if (result.source == "RADIO_DB") " · radio fallback" else ""
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
-            notification(result.state.name + " · risk " + result.riskScore + "%"))
+            notification(result.state.name + " · risk " + result.riskScore + "%" + sourceHint))
     }
 
     @Deprecated("Deprecated by Android")
@@ -170,5 +209,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_SERVICE_STATUS = "service_status"
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
+        private const val RADIO_FALLBACK_MAX_AGE_MS = 30L * 60L * 1000L
+        private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 1_000.0
     }
 }
