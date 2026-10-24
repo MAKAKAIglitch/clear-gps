@@ -10,8 +10,8 @@ $ZipPath = Join-Path $env:TEMP "gradle-$GradleVersion-bin.zip"
 $ExtractRoot = Join-Path $env:TEMP "clear-gps-gradle-$GradleVersion"
 
 function Test-GradleHome {
-    param([string]$Home)
-    $GradleExe = Join-Path $Home 'bin\gradle.bat'
+    param([string]$GradleHomePath)
+    $GradleExe = Join-Path $GradleHomePath 'bin\gradle.bat'
     if (-not (Test-Path -LiteralPath $GradleExe)) { return $false }
     try {
         $VersionOutput = (& $GradleExe --version 2>&1 | Out-String)
@@ -23,25 +23,25 @@ function Test-GradleHome {
 }
 
 function Get-FallbackGradleHome {
-    $Homes = New-Object 'System.Collections.Generic.List[string]'
+    $GradleHomePaths = New-Object 'System.Collections.Generic.List[string]'
     $Seen = @{}
-    foreach ($Home in @($env:GRADLE_HOME)) {
-        if (-not [string]::IsNullOrWhiteSpace($Home)) {
-            $Full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Home.Trim('"')))
+    foreach ($GradleHomePath in @($env:GRADLE_HOME)) {
+        if (-not [string]::IsNullOrWhiteSpace($GradleHomePath)) {
+            $Full = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($GradleHomePath.Trim('"')))
             if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
                 $Seen[$Full.ToLowerInvariant()] = $true
-                $Homes.Add($Full) | Out-Null
+                $GradleHomePaths.Add($Full) | Out-Null
             }
         }
     }
 
     Get-Command gradle.bat, gradle.cmd, gradle -All -ErrorAction SilentlyContinue | ForEach-Object {
         if ($_.Source -and (Test-Path -LiteralPath $_.Source -PathType Leaf)) {
-            $Home = Split-Path -Parent (Split-Path -Parent $_.Source)
-            try { $Full = [IO.Path]::GetFullPath($Home) } catch { $Full = $Home }
+            $GradleHomePath = Split-Path -Parent (Split-Path -Parent $_.Source)
+            try { $Full = [IO.Path]::GetFullPath($GradleHomePath) } catch { $Full = $GradleHomePath }
             if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
                 $Seen[$Full.ToLowerInvariant()] = $true
-                $Homes.Add($Full) | Out-Null
+                $GradleHomePaths.Add($Full) | Out-Null
             }
         }
     }
@@ -53,19 +53,19 @@ function Get-FallbackGradleHome {
         Get-ChildItem -Path $Pattern -Directory -ErrorAction SilentlyContinue | ForEach-Object {
             Get-ChildItem -LiteralPath $_.FullName -Filter 'gradle.bat' -File -Recurse -ErrorAction SilentlyContinue |
                 ForEach-Object {
-                    $Home = Split-Path -Parent (Split-Path -Parent $_.FullName)
-                    try { $Full = [IO.Path]::GetFullPath($Home) } catch { $Full = $Home }
+                    $GradleHomePath = Split-Path -Parent (Split-Path -Parent $_.FullName)
+                    try { $Full = [IO.Path]::GetFullPath($GradleHomePath) } catch { $Full = $GradleHomePath }
                     if (-not $Seen.ContainsKey($Full.ToLowerInvariant())) {
                         $Seen[$Full.ToLowerInvariant()] = $true
-                        $Homes.Add($Full) | Out-Null
+                        $GradleHomePaths.Add($Full) | Out-Null
                     }
                 }
         }
     }
 
-    foreach ($Home in $Homes) {
-        if ((Test-Path -LiteralPath (Join-Path $Home 'bin\gradle.bat')) -and (Test-GradleHome -Home $Home)) {
-            return $Home
+    foreach ($GradleHomePath in $GradleHomePaths) {
+        if ((Test-Path -LiteralPath (Join-Path $GradleHomePath 'bin\gradle.bat')) -and (Test-GradleHome -GradleHomePath $GradleHomePath)) {
+            return $GradleHomePath
         }
     }
     return $null
@@ -73,7 +73,7 @@ function Get-FallbackGradleHome {
 
 # Reuse a valid managed installation; reject a partial or different Gradle version.
 if (Test-Path -LiteralPath (Join-Path $InstallDir 'bin\gradle.bat')) {
-    if (Test-GradleHome -Home $InstallDir) {
+    if (Test-GradleHome -GradleHomePath $InstallDir) {
         Write-Host "Using verified Gradle $GradleVersion at $InstallDir"
         exit 0
     }
@@ -100,7 +100,7 @@ try {
     }
     if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
     Move-Item -LiteralPath $Extracted -Destination $InstallDir
-    if (-not (Test-GradleHome -Home $InstallDir)) {
+    if (-not (Test-GradleHome -GradleHomePath $InstallDir)) {
         throw "Downloaded Gradle did not pass the exact-version launch check."
     }
     Write-Host "Gradle installed and verified under $InstallDir"
@@ -120,7 +120,7 @@ if ($FallbackHome) {
         Write-Host "Fallback: found a working Gradle $GradleVersion at $FallbackHome"
         if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
         Copy-Item -LiteralPath $FallbackHome -Destination $InstallDir -Recurse -Force
-        if (Test-GradleHome -Home $InstallDir) {
+        if (Test-GradleHome -GradleHomePath $InstallDir) {
             Write-Host "Fallback Gradle copy is ready at $InstallDir"
             exit 0
         }
