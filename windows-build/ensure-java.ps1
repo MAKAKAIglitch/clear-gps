@@ -38,12 +38,12 @@ function Add-PatternCandidates {
 }
 
 function Get-CompatibleJava {
-    param([string]$Home, [string]$Source)
-    $Java = Join-Path $Home 'bin\java.exe'
-    $Javac = Join-Path $Home 'bin\javac.exe'
+    param([string]$JavaHomePath, [string]$Source)
+    $Java = Join-Path $JavaHomePath 'bin\java.exe'
+    $Javac = Join-Path $JavaHomePath 'bin\javac.exe'
     if (-not (Test-Path -LiteralPath $Java)) { return $null }
     if (-not (Test-Path -LiteralPath $Javac)) {
-        Write-Host "  Rejected $Home - javac.exe is missing (this is not a full JDK)."
+        Write-Host "  Rejected $JavaHomePath - javac.exe is missing (this is not a full JDK)."
         return $null
     }
     $VersionOutput = (& $Java -version 2>&1 | Out-String)
@@ -53,7 +53,7 @@ function Get-CompatibleJava {
     } else {
         $VersionMatch = [regex]::Match($VersionOutput, '(?m)^\s*openjdk\s+(\d+)(?:[.\s]|$)')
         if (-not $VersionMatch.Success) {
-            Write-Host "  Rejected $Home - could not determine Java version."
+            Write-Host "  Rejected $JavaHomePath - could not determine Java version."
             return $null
         }
         $Version = $VersionMatch.Groups[1].Value
@@ -62,15 +62,15 @@ function Get-CompatibleJava {
     if ($MajorText -eq '1') { $MajorText = ($Version -split '[._+\-]')[1] }
     $Major = 0
     if (-not [int]::TryParse($MajorText, [ref]$Major)) {
-        Write-Host "  Rejected $Home - unrecognized Java version $Version."
+        Write-Host "  Rejected $JavaHomePath - unrecognized Java version $Version."
         return $null
     }
     if ($Major -lt 17 -or $Major -gt 24) {
-        Write-Host "  Rejected Java $Version at $Home; this Gradle/Android build supports JDK 17-24."
+        Write-Host "  Rejected Java $Version at $JavaHomePath; this Gradle/Android build supports JDK 17-24."
         return $null
     }
-    Write-Host "  Selected JDK $Version from $Source - $Home"
-    return [pscustomobject]@{ Home = $Home; Version = $Version }
+    Write-Host "  Selected JDK $Version from $Source - $JavaHomePath"
+    return [pscustomobject]@{ Home = $JavaHomePath; Version = $Version }
 }
 
 Write-Host 'Clear GPS: locating a compatible JDK (17-24)...'
