@@ -94,6 +94,9 @@ object ClearGpsPreferences {
     const val KEY_LAST_FINGERPRINT = "radio_last_fingerprint"
     const val KEY_LAST_PAYLOAD_FINGERPRINT = "radio_last_payload_fingerprint"
     const val KEY_LAST_PAYLOAD_CAPTURED_AT = "radio_last_payload_captured_at"
+    const val KEY_LAST_WIFI_COUNT = "radio_last_wifi_count"
+    const val KEY_LAST_CELL_COUNT = "radio_last_cell_count"
+    const val KEY_LAST_BLE_COUNT = "radio_last_ble_count"
     const val KEY_LAST_REFRESH_AT = "radio_last_refresh_at"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
@@ -146,6 +149,11 @@ class RadioGeolocationRepository(private val context: Context) {
         val wifi = snapshot.wifiCount
         val cells = snapshot.cellCount
         val beacons = snapshot.beaconCount
+        prefs.edit()
+            .putInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, wifi)
+            .putInt(ClearGpsPreferences.KEY_LAST_CELL_COUNT, cells)
+            .putInt(ClearGpsPreferences.KEY_LAST_BLE_COUNT, beacons)
+            .apply()
         if (cells == 0 && wifi + beacons < 2) {
             val previousEstimate = loadLastEstimate(context)
             val detail = "Нужно минимум две Wi‑Fi/Bluetooth-точки или данные мобильной соты. Проверь разрешения и доступность сканирования."
@@ -192,7 +200,7 @@ class RadioGeolocationRepository(private val context: Context) {
         val beacons = scanBluetoothBeacons()
         val payload = JSONObject()
             .put("considerIp", false)
-            .put("fallbacks", JSONObject().put("ipf", false).put("lacf", false))
+            .put("fallbacks", JSONObject().put("ipf", false).put("lacf", true))
 
         if (wifi.isNotEmpty()) {
             val array = JSONArray()
