@@ -47,10 +47,31 @@ try {
     Write-Host ''
     Write-Host 'Running unit tests and building the debug APK...'
     $GradleWrapper = Join-Path $ProjectRoot 'gradlew.bat'
-    & $GradleWrapper --no-daemon --stacktrace testDebugUnitTest assembleDebug
+    $BuildLogRoot = Join-Path $env:LOCALAPPDATA 'ClearGPS\logs'
+    New-Item -ItemType Directory -Path $BuildLogRoot -Force | Out-Null
+    $BuildLog = Join-Path $BuildLogRoot ("build-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+    Write-Host "Build log: $BuildLog"
+
+    & $GradleWrapper --no-daemon --stacktrace testDebugUnitTest assembleDebug 2>&1 |
+        Tee-Object -FilePath $BuildLog | Out-Host
     $GradleExitCode = $LASTEXITCODE
     if ($GradleExitCode -ne 0) {
-        throw "Gradle failed with exit code $GradleExitCode. The first compiler/dependency error above is the most useful diagnostic."
+        $LogText = Get-Content -LiteralPath $BuildLog -Raw -ErrorAction SilentlyContinue
+        $RetryPattern = '(?i)(UnknownHostException|Unknown host|Could not resolve host|Could not GET|Could not HEAD|Connection timed out|Read timed out|Connection reset|Connection refused|TLS handshake|PKIX path building failed|503 Service Unavailable|502 Bad Gateway|429 Too Many Requests|Temporary failure in name resolution|Network is unreachable|No route to host)'
+        if ($LogText -match $RetryPattern) {
+            $RetryLog = Join-Path $BuildLogRoot (([IO.Path]::GetFileNameWithoutExtension($BuildLog)) + '-retry.log')
+            Write-Host ''
+            Write-Host 'A network/dependency-server error was detected. Retrying once with --refresh-dependencies...'
+            Write-Host "Retry log: $RetryLog"
+            & $GradleWrapper --no-daemon --stacktrace --refresh-dependencies testDebugUnitTest assembleDebug 2>&1 |
+                Tee-Object -FilePath $RetryLog | Out-Host
+            $GradleExitCode = $LASTEXITCODE
+            if ($GradleExitCode -ne 0) {
+                throw "Gradle retry also failed (exit code $GradleExitCode). Logs: $BuildLog and $RetryLog"
+            }
+        } else {
+            throw "Gradle failed with exit code $GradleExitCode. The detailed build log is: $BuildLog"
+        }
     }
 
     $ApkSource = Join-Path $ProjectRoot 'app\build\outputs\apk\debug\app-debug.apk'
