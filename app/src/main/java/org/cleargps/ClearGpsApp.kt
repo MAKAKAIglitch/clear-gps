@@ -118,6 +118,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var liveLocation by remember { mutableStateOf<Location?>(null) }
     var radioEstimate by remember { mutableStateOf(RadioGeolocationRepository.loadLastEstimate(context)) }
     var manualAnchor by remember { mutableStateOf(ManualLocationStore.load(context)) }
+    var manualFallbackEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, false))
+    }
     var savedZone by remember { mutableStateOf(ZoneStore.load(context)) }
     var draftZone by remember { mutableStateOf(emptyList<ZonePoint>()) }
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
@@ -645,10 +648,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         )
                                         Text("Показан янтарной точкой; не считается подтверждённым местоположением.",
                                             style = MaterialTheme.typography.labelSmall, color = colors.onTertiaryContainer)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = manualFallbackEnabled,
+                                                onCheckedChange = { checked ->
+                                                    manualFallbackEnabled = checked
+                                                    prefs.edit().putBoolean(
+                                                        ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, checked
+                                                    ).apply()
+                                                }
+                                            )
+                                            Text(
+                                                "Использовать как крайний резерв ±1,5 км (только при включённой коррекции)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = colors.onTertiaryContainer
+                                            )
+                                        }
                                     }
                                     IconButton(onClick = {
                                         ManualLocationStore.save(context, null)
                                         manualAnchor = null
+                                        manualFallbackEnabled = false
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, false).apply()
                                     }) {
                                         Icon(Icons.Outlined.DeleteOutline, "Удалить ориентир", tint = colors.onTertiaryContainer)
                                     }
