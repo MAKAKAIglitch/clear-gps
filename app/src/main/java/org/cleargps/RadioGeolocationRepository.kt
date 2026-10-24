@@ -71,7 +71,7 @@ private data class CellObservation(
         .put("radioType", radioType)
         .put("mobileCountryCode", mcc)
         .put("mobileNetworkCode", mnc)
-        .put(if (radioType == "lte" || radioType == "nr") "trackingAreaCode" else "locationAreaCode", area)
+        .put("locationAreaCode", area)
         .put(if (radioType == "nr") "newRadioCellId" else "cellId", cellId)
         .put("signalStrength", signalDbm)
 }
