@@ -1032,5 +1032,6 @@ private fun isMockLocation(location: Location): Boolean =
 
 
 
+@Composable
 private fun Modifier.navigationBarsPaddingCompat(): Modifier =
     this.padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
