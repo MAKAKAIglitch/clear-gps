@@ -1030,21 +1030,7 @@ private fun hasLocationPermission(context: Context): Boolean =
 private fun isMockLocation(location: Location): Boolean =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock else location.isFromMockProvider
 
-private fun isBetterLocation(candidate: Location, previous: Location): Boolean {
-    val now = System.currentTimeMillis()
-    val candidateAge = (now - candidate.time).coerceAtLeast(0L)
-    val previousAge = (now - previous.time).coerceAtLeast(0L)
-    if (candidateAge < 30_000L && previousAge > 120_000L) return true
-    if (candidate.provider.equals(LocationManager.GPS_PROVIDER, true) &&
-        !previous.provider.equals(LocationManager.GPS_PROVIDER, true) &&
-        candidateAge < 120_000L) return true
-    if (previous.provider.equals(LocationManager.GPS_PROVIDER, true) &&
-        candidate.provider.equals(LocationManager.NETWORK_PROVIDER, true) &&
-        previousAge < 120_000L) return false
-    val candidateAccuracy = if (candidate.hasAccuracy()) candidate.accuracy else Float.MAX_VALUE
-    val previousAccuracy = if (previous.hasAccuracy()) previous.accuracy else Float.MAX_VALUE
-    return candidateAge < 120_000L && (candidateAccuracy < previousAccuracy || candidateAge < previousAge)
-}
+
 
 private fun Modifier.navigationBarsPaddingCompat(): Modifier =
     this.padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
