@@ -881,6 +881,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         prefs.edit()
                             .remove(ClearGpsPreferences.KEY_LAST_PAYLOAD)
                             .remove(ClearGpsPreferences.KEY_LAST_FINGERPRINT)
+                            .remove(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT)
                             .remove(ClearGpsPreferences.KEY_LAST_REFRESH_AT)
                             .remove(ClearGpsPreferences.KEY_LAST_LAT)
                             .remove(ClearGpsPreferences.KEY_LAST_LON)
