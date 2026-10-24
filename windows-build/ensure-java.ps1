@@ -143,7 +143,7 @@ Get-Command java.exe -All -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 foreach ($Candidate in $Candidates) {
-    $Valid = Get-CompatibleJava -Home $Candidate.Home -Source $Candidate.Source
+    $Valid = Get-CompatibleJava -JavaHomePath $Candidate.Home -Source $Candidate.Source
     if ($Valid) {
         [IO.Directory]::CreateDirectory((Split-Path -Parent $ResultFile)) | Out-Null
         [IO.File]::WriteAllText($ResultFile, $Valid.Home, [System.Text.UTF8Encoding]::new($false))
@@ -154,7 +154,7 @@ foreach ($Candidate in $Candidates) {
 # If no compatible JDK is installed, fetch a user-local Eclipse Temurin JDK 21.
 $InstallDir = Join-Path $env:LOCALAPPDATA 'ClearGPS\tools\jdk-21'
 if (Test-Path -LiteralPath (Join-Path $InstallDir 'bin\java.exe')) {
-    $Valid = Get-CompatibleJava -Home $InstallDir -Source 'Clear GPS managed JDK'
+    $Valid = Get-CompatibleJava -JavaHomePath $InstallDir -Source 'Clear GPS managed JDK'
     if ($Valid) {
         [IO.File]::WriteAllText($ResultFile, $Valid.Home, [System.Text.UTF8Encoding]::new($false))
         exit 0
@@ -186,7 +186,7 @@ try {
     New-Item -ItemType Directory -Path $InstallParent -Force | Out-Null
     if (Test-Path -LiteralPath $InstallDir) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
     Move-Item -LiteralPath $JdkFolder.FullName -Destination $InstallDir
-    $Valid = Get-CompatibleJava -Home $InstallDir -Source 'automatically downloaded Eclipse Temurin'
+    $Valid = Get-CompatibleJava -JavaHomePath $InstallDir -Source 'automatically downloaded Eclipse Temurin'
     if (-not $Valid) { throw 'The downloaded JDK did not pass compatibility checks.' }
     [IO.File]::WriteAllText($ResultFile, $Valid.Home, [System.Text.UTF8Encoding]::new($false))
     Write-Host 'JDK setup finished successfully.'
