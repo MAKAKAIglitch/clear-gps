@@ -900,7 +900,7 @@ private fun DatabaseScreen(
             IconButton(onClick = onClear) { Icon(Icons.Outlined.DeleteOutline, "Удалить базу") }
         }
         Text(if (selectedView == PointsView.POINTS)
-            "SSID не записываются при сканировании. Подпись — только вручную заданное имя или имя из импортированного CSV."
+            "SSID не сохраняется. Он кратко проверяется только для соблюдения суффикса _nomap и сразу отбрасывается. Подпись — вручную заданное имя или имя из импортированного CSV."
         else "Хранятся последние 500 сканирований. История остаётся на устройстве.",
             style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
 
@@ -1106,7 +1106,7 @@ private fun SettingsScreen(
         Text("Источники для радиопозиции", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text("Переключатели влияют на расчёт положения. Новые сигналы записываются только при явно включённой записи.",
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        SettingSwitch("Wi‑Fi-точки", "BSSID и уровень сигнала; без SSID.", useWifi, onWifi)
+        SettingSwitch("Wi‑Fi-точки", "BSSID и уровень сигнала; SSID кратко проверяется на _nomap и не сохраняется.", useWifi, onWifi)
         SettingSwitch("Мобильные соты", "GSM / WCDMA / LTE / NR, если доступны.", useCells, onCells)
         SettingSwitch("Bluetooth LE", "Только адрес и RSSI; имена устройств не читаются.", useBle, onBle)
         Divider(color = colors.outlineVariant)
