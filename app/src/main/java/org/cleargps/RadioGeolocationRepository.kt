@@ -7,11 +7,11 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
-import android.location.CellInfo
-import android.location.CellInfoGsm
-import android.location.CellInfoLte
-import android.location.CellInfoNr
-import android.location.CellInfoWcdma
+import android.telephony.CellInfo
+import android.telephony.CellInfoGsm
+import android.telephony.CellInfoLte
+import android.telephony.CellInfoNr
+import android.telephony.CellInfoWcdma
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
