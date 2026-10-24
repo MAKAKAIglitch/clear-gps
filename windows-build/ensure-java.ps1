@@ -46,7 +46,36 @@ function Get-CompatibleJava {
         Write-Host "  Rejected $JavaHomePath - javac.exe is missing (this is not a full JDK)."
         return $null
     }
-    $VersionOutput = (& $Java -version 2>&1 | Out-String)
+    # java -version writes to stderr on many JDKs. ProcessStartInfo captures it
+    # without PowerShell 5 treating native stderr as a terminating ErrorRecord.
+    $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $ProcessInfo.FileName = $Java
+    $ProcessInfo.Arguments = '-version'
+    $ProcessInfo.UseShellExecute = $false
+    $ProcessInfo.RedirectStandardOutput = $true
+    $ProcessInfo.RedirectStandardError = $true
+    $ProcessInfo.CreateNoWindow = $true
+    $VersionProcess = New-Object System.Diagnostics.Process
+    $VersionProcess.StartInfo = $ProcessInfo
+    try {
+        if (-not $VersionProcess.Start()) {
+            Write-Host "  Rejected $JavaHomePath - failed to launch java.exe."
+            return $null
+        }
+        $VersionStdOut = $VersionProcess.StandardOutput.ReadToEnd()
+        $VersionStdErr = $VersionProcess.StandardError.ReadToEnd()
+        $VersionProcess.WaitForExit()
+        $VersionOutput = $VersionStdOut + [Environment]::NewLine + $VersionStdErr
+        if ($VersionProcess.ExitCode -ne 0) {
+            Write-Host "  Rejected $JavaHomePath - java -version returned exit code $($VersionProcess.ExitCode)."
+            return $null
+        }
+    } catch {
+        Write-Host "  Rejected $JavaHomePath - java version probe failed: $($_.Exception.Message)"
+        return $null
+    } finally {
+        $VersionProcess.Dispose()
+    }
     $VersionMatch = [regex]::Match($VersionOutput, 'version\s+"([^"]+)"')
     if ($VersionMatch.Success) {
         $Version = $VersionMatch.Groups[1].Value
