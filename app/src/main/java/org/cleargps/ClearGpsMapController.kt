@@ -151,10 +151,14 @@ class ClearGpsMapController {
             PropertyFactory.circleStrokeColor("#FFFFFF"),
             PropertyFactory.circleStrokeWidth(2f)
         ))
-        style.addLayer(CircleLayer(ACCURACY_LAYER, ACCURACY_SOURCE).withProperties(
-            PropertyFactory.circleRadius(26f),
-            PropertyFactory.circleColor("#4285F4"),
-            PropertyFactory.circleOpacity(0.14f)
+        style.addLayer(FillLayer(ACCURACY_LAYER, ACCURACY_SOURCE).withProperties(
+            PropertyFactory.fillColor("#4285F4"),
+            PropertyFactory.fillOpacity(0.12f)
+        ))
+        style.addLayer(LineLayer(ACCURACY_OUTLINE_LAYER, ACCURACY_SOURCE).withProperties(
+            PropertyFactory.lineColor("#4285F4"),
+            PropertyFactory.lineWidth(1.25f),
+            PropertyFactory.lineOpacity(0.42f)
         ))
         style.addLayer(CircleLayer(LOCATION_HALO_LAYER, LOCATION_SOURCE).withProperties(
             PropertyFactory.circleRadius(12f),
@@ -173,29 +177,58 @@ class ClearGpsMapController {
         if (!mapReady) return
         val position = primaryLocation
         locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
-        accuracySource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
+        accuracySource?.setGeoJson(position?.let {
+            accuracyCollection(it, primaryAccuracyMeters)
+        } ?: emptyCollection())
         anchorSource?.setGeoJson(manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection())
 
-        val points = savedZone.map { Point.fromLngLat(it.longitude, it.latitude) }
-        val savedPolygon = if (points.size >= 3) {
-            val ring = points.toMutableList()
+        val savedPoints = savedZone.map { Point.fromLngLat(it.longitude, it.latitude) }
+        val savedPolygon = if (savedPoints.size >= 3) {
+            val ring = savedPoints.toMutableList()
             if (ring.first() != ring.last()) ring.add(ring.first())
             FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))))
         } else emptyCollection()
         polygonSource?.setGeoJson(savedPolygon)
 
-        val combinedLine = savedZone + draftZone
-        val linePoints = combinedLine.map { Point.fromLngLat(it.longitude, it.latitude) }
-        val lineCollection = if (linePoints.size >= 2) {
-            FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(LineString.fromLngLats(linePoints))))
-        } else emptyCollection()
-        lineSource?.setGeoJson(lineCollection)
-        val pointFeatures = draftZone.map { Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)) }.toTypedArray()
-        zonePointsSource?.setGeoJson(FeatureCollection.fromFeatures(pointFeatures))
+        val lineFeatures = mutableListOf<Feature>()
+        val savedLinePoints = if (savedPoints.size >= 3) savedPoints + savedPoints.first() else savedPoints
+        if (savedLinePoints.size >= 2) lineFeatures.add(Feature.fromGeometry(LineString.fromLngLats(savedLinePoints)))
+        val draftPoints = draftZone.map { Point.fromLngLat(it.longitude, it.latitude) }
+        if (draftPoints.size >= 2) lineFeatures.add(Feature.fromGeometry(LineString.fromLngLats(draftPoints)))
+        lineSource?.setGeoJson(FeatureCollection.fromFeatures(lineFeatures.toTypedArray()))
+
+        val visibleVertices = if (draftPoints.isNotEmpty()) draftPoints else savedPoints
+        zonePointsSource?.setGeoJson(FeatureCollection.fromFeatures(
+            visibleVertices.map { Feature.fromGeometry(it) }.toTypedArray()
+        ))
     }
 
     private fun pointCollection(point: MapCoordinate) =
         FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude))))
+
+    private fun accuracyCollection(center: MapCoordinate, accuracyMeters: Double?): FeatureCollection {
+        val radiusMeters = (accuracyMeters ?: return emptyCollection()).coerceIn(1.0, 100_000.0)
+        val latitude = Math.toRadians(center.latitude)
+        val longitude = Math.toRadians(center.longitude)
+        val angularDistance = radiusMeters / 6_371_000.0
+        val ring = ArrayList<Point>(49)
+        for (step in 0..48) {
+            val bearing = 2.0 * Math.PI * step / 48.0
+            val destinationLatitude = kotlin.math.asin(
+                kotlin.math.sin(latitude) * kotlin.math.cos(angularDistance) +
+                    kotlin.math.cos(latitude) * kotlin.math.sin(angularDistance) * kotlin.math.cos(bearing)
+            )
+            val destinationLongitude = longitude + kotlin.math.atan2(
+                kotlin.math.sin(bearing) * kotlin.math.sin(angularDistance) * kotlin.math.cos(latitude),
+                kotlin.math.cos(angularDistance) - kotlin.math.sin(latitude) * kotlin.math.sin(destinationLatitude)
+            )
+            val normalizedLongitude = ((Math.toDegrees(destinationLongitude) + 540.0) % 360.0) - 180.0
+            ring.add(Point.fromLngLat(normalizedLongitude, Math.toDegrees(destinationLatitude)))
+        }
+        return FeatureCollection.fromFeatures(arrayOf(
+            Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))
+        ))
+    }
 
     private fun emptyCollection() = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
@@ -208,7 +241,8 @@ class ClearGpsMapController {
         private const val ZONE_POINTS_SOURCE = "cleargps-zone-points"
         private const val LOCATION_HALO_LAYER = "cleargps-location-halo"
         private const val LOCATION_DOT_LAYER = "cleargps-location-dot"
-        private const val ACCURACY_LAYER = "cleargps-accuracy-ring"
+        private const val ACCURACY_LAYER = "cleargps-accuracy-area"
+        private const val ACCURACY_OUTLINE_LAYER = "cleargps-accuracy-outline"
         private const val ANCHOR_HALO_LAYER = "cleargps-anchor-halo"
         private const val ANCHOR_DOT_LAYER = "cleargps-anchor-dot"
         private const val POLYGON_LAYER = "cleargps-risk-polygon-layer"
