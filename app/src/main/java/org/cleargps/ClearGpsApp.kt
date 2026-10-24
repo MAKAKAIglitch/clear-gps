@@ -354,20 +354,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     val currentLocation = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..15 * 60 * 1000L }
-    val primaryCoordinate = when {
+    // Only measured/system or database-derived positions become the blue location dot.
+    // A user-placed point remains a clearly labelled manual reference, not a GPS fix.
+    val mappedCoordinate = when {
         currentLocation != null -> MapCoordinate(currentLocation.latitude, currentLocation.longitude)
         radioEstimate != null -> MapCoordinate(radioEstimate!!.latitude, radioEstimate!!.longitude)
         else -> null
     }
-    val primaryAccuracy = when {
+    val mappedAccuracy = when {
         currentLocation?.hasAccuracy() == true -> currentLocation.accuracy.toDouble()
-        radioEstimate != null -> radioEstimate!!.accuracyMeters
+        radioEstimate != null && currentLocation == null -> radioEstimate!!.accuracyMeters
         else -> null
     }
+    val displayCoordinate = mappedCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+    val displayAccuracy = if (mappedCoordinate != null) mappedAccuracy else null
     val primarySource = when {
         currentLocation?.provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) -> "GPS"
         currentLocation != null -> "Сеть Android"
         radioEstimate != null -> "BeaconDB"
+        manualAnchor != null -> "Ориентир"
         else -> "Нет фикса"
     }
 
@@ -393,8 +398,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    LaunchedEffect(primaryCoordinate, primaryAccuracy, manualAnchor, savedZone, draftZone) {
-        mapController.updatePrimary(primaryCoordinate, primaryAccuracy)
+    LaunchedEffect(mappedCoordinate, mappedAccuracy, manualAnchor, savedZone, draftZone) {
+        mapController.updatePrimary(mappedCoordinate, mappedAccuracy)
         mapController.updateManualAnchor(manualAnchor)
         mapController.updateZone(savedZone, draftZone)
     }
@@ -463,6 +468,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 Text(
                                     if (currentLocation != null) "Системная геолокация активна"
                                     else if (radioEstimate != null) "Последняя оценка по радиосетям"
+                                    else if (manualAnchor != null) "Ручной ориентир для карты"
                                     else "Ждём первую точку",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.onSurfaceVariant
@@ -470,14 +476,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             }
                             StatusPill(
                                 text = primarySource,
-                                color = if (primaryCoordinate != null) colors.primaryContainer else colors.surfaceVariant,
-                                foreground = if (primaryCoordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
+                                color = if (displayCoordinate != null) colors.primaryContainer else colors.surfaceVariant,
+                                foreground = if (displayCoordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
                             )
                         }
 
-                        if (primaryCoordinate != null) {
+                        if (displayCoordinate != null) {
                             Text(
-                                String.format(Locale.US, "%.5f, %.5f", primaryCoordinate.latitude, primaryCoordinate.longitude),
+                                String.format(Locale.US, "%.5f, %.5f", displayCoordinate.latitude, displayCoordinate.longitude),
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Medium
                             )
@@ -485,7 +491,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 Icon(Icons.Outlined.GpsFixed, null, modifier = Modifier.size(16.dp), tint = colors.primary)
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    if (primaryAccuracy != null) "Точность примерно ±" + primaryAccuracy.toInt() + " м"
+                                    if (displayAccuracy != null) "Точность примерно ±" + displayAccuracy.toInt() + " м"
+                                    else if (manualAnchor != null && currentLocation == null && radioEstimate == null)
+                                        "Ручной ориентир · точность не измерена"
                                     else "Радиус точности неизвестен",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = colors.onSurfaceVariant
@@ -494,6 +502,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             if (radioEstimate != null && currentLocation == null) {
                                 Text(
                                     "Это оценка по базе радиосетей, а не измерение GPS. Фактическая ошибка может быть больше указанного радиуса.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            } else if (manualAnchor != null && mappedCoordinate == null) {
+                                Text(
+                                    "Эта точка выбрана вручную и помогает ориентироваться на карте. Она не является измерением GPS и сама по себе не подменяет координаты других приложений.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.onSurfaceVariant
                                 )
