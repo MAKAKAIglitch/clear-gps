@@ -91,6 +91,7 @@ object ClearGpsPreferences {
     const val KEY_DAILY_REFRESH = "daily_radio_refresh"
     const val KEY_LAST_PAYLOAD = "radio_last_payload"
     const val KEY_LAST_FINGERPRINT = "radio_last_fingerprint"
+    const val KEY_LAST_PAYLOAD_FINGERPRINT = "radio_last_payload_fingerprint"
     const val KEY_LAST_REFRESH_AT = "radio_last_refresh_at"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
@@ -161,17 +162,21 @@ class RadioGeolocationRepository(private val context: Context) {
 
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_LAST_PAYLOAD, snapshot.payload.toString())
-            .putString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, snapshot.fingerprint)
+            .putString(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT, snapshot.fingerprint)
             .apply()
 
         val response = withContext(Dispatchers.IO) { requestBeaconDb(snapshot.payload, snapshot.fingerprint) }
-        prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
         if (response.estimate != null) {
             saveEstimate(context, response.estimate)
+            prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
             scheduleDailyRefresh(context)
             return RadioLookupResult(response.estimate, wifi, cells, beacons, false, response.message)
         }
-        return RadioLookupResult(loadLastEstimate(context), wifi, cells, beacons, false, response.message)
+        val previousEstimate = loadLastEstimate(context)
+        return RadioLookupResult(
+            previousEstimate, wifi, cells, beacons, previousEstimate != null,
+            response.message + if (previousEstimate != null) " Предыдущая сохранённая оценка оставлена без изменений." else ""
+        )
     }
 
     private suspend fun collectSnapshot(): RadioSnapshot {
@@ -468,6 +473,7 @@ class RadioGeolocationRepository(private val context: Context) {
                 .putString(ClearGpsPreferences.KEY_LAST_LON, estimate.longitude.toString())
                 .putString(ClearGpsPreferences.KEY_LAST_ACCURACY, estimate.accuracyMeters.toString())
                 .putLong(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT, estimate.updatedAt)
+                .putString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, estimate.fingerprint)
                 .putBoolean(ClearGpsPreferences.KEY_LAST_FALLBACK, estimate.fallbackUsed)
                 .apply()
         }
@@ -487,15 +493,15 @@ class RadioGeolocationRepository(private val context: Context) {
         suspend fun refreshSavedObservation(context: Context): Boolean {
             val prefs = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
             val raw = prefs.getString(ClearGpsPreferences.KEY_LAST_PAYLOAD, null) ?: return false
-            val fingerprint = prefs.getString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, null) ?: return false
+            val fingerprint = prefs.getString(ClearGpsPreferences.KEY_LAST_PAYLOAD_FINGERPRINT, null) ?: return false
             if (!prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_CONSENT, false) ||
                 !prefs.getBoolean(ClearGpsPreferences.KEY_DAILY_REFRESH, true)) return false
 
             val repository = RadioGeolocationRepository(context)
             val response = withContext(Dispatchers.IO) { repository.requestSaved(JSONObject(raw), fingerprint) }
-            prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
             if (response.estimate != null) {
                 saveEstimate(context, response.estimate)
+                prefs.edit().putLong(ClearGpsPreferences.KEY_LAST_REFRESH_AT, System.currentTimeMillis()).apply()
                 return true
             }
             return false
@@ -521,13 +527,18 @@ class DailyBeaconRefreshWorker(
     appContext: Context,
     params: androidx.work.WorkerParameters
 ) : androidx.work.CoroutineWorker(appContext, params) {
-    override suspend fun doWork(): Result = try {
-        RadioGeolocationRepository.refreshSavedObservation(applicationContext)
-        Result.success()
-    } catch (_: IOException) {
-        Result.retry()
-    } catch (_: Exception) {
-        Result.failure()
+    override suspend fun doWork(): Result {
+        val prefs = applicationContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_CONSENT, false) ||
+            !prefs.getBoolean(ClearGpsPreferences.KEY_DAILY_REFRESH, true) ||
+            prefs.getString(ClearGpsPreferences.KEY_LAST_PAYLOAD, null) == null) return Result.success()
+        return try {
+            if (RadioGeolocationRepository.refreshSavedObservation(applicationContext)) Result.success() else Result.retry()
+        } catch (_: IOException) {
+            Result.retry()
+        } catch (_: Exception) {
+            Result.retry()
+        }
     }
 }
 
