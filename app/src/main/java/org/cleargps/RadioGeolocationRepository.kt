@@ -106,6 +106,7 @@ object ClearGpsPreferences {
     const val KEY_MANUAL_LAT = "manual_anchor_lat"
     const val KEY_MANUAL_LON = "manual_anchor_lon"
     const val KEY_MANUAL_SET_AT = "manual_anchor_set_at"
+    const val KEY_MANUAL_FALLBACK_ENABLED = "manual_anchor_fallback_enabled"
     const val KEY_OPEN_CELL_ID = "open_cell_id_token"
 }
 
