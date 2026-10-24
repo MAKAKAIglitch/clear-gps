@@ -248,7 +248,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     result.wifiCount + result.cellCount + result.beaconCount == 0 -> LookupPhase.ERROR
                     else -> LookupPhase.NO_MATCH
                 }
-                withContext(Dispatchers.IO) { refreshLocalUi() }
+                refreshLocalUi()
             } catch (_: SecurityException) {
                 scanMessage = "Android запретил сканирование. Проверь разрешения и системные настройки геолокации."
                 lookupPhase = LookupPhase.ERROR
