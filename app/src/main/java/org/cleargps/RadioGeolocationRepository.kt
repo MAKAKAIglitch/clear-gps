@@ -71,7 +71,7 @@ private data class CellObservation(
         .put("radioType", radioType)
         .put("mobileCountryCode", mcc)
         .put("mobileNetworkCode", mnc)
-        .put("locationAreaCode", area)
+        .put(if (radioType == "lte" || radioType == "nr") "trackingAreaCode" else "locationAreaCode", area)
         .put(if (radioType == "nr") "newRadioCellId" else "cellId", cellId)
         .put("signalStrength", signalDbm)
 }
@@ -82,7 +82,7 @@ private data class RadioSnapshot(
     val cellCount: Int,
     val beaconCount: Int
 ) {
-    val fingerprint: String = digest(payload.toString())
+    val fingerprint: String = stableRadioFingerprint(payload)
 }
 
 object ClearGpsPreferences {
@@ -330,9 +330,11 @@ class RadioGeolocationRepository(private val context: Context) {
                     val hasServiceUuids = !result.scanRecord?.serviceUuids.isNullOrEmpty()
                     // Keep named/service-advertising beacons; avoid uploading randomised phone IDs.
                     if (name.isNullOrBlank() && !hasServiceUuids) return
-                    val entry = JSONObject().put("macAddress", address).put("signalStrength", result.rssi).put("age", 0)
-                    if (!name.isNullOrBlank()) entry.put("name", name.take(64))
-                    seen[address] = entry
+                    // Device names can contain personal identifiers; never send them to the lookup service.
+                    seen[address] = JSONObject()
+                        .put("macAddress", address)
+                        .put("signalStrength", result.rssi)
+                        .put("age", 0)
                 }
 
                 override fun onBatchScanResults(results: MutableList<ScanResult>) {
@@ -539,3 +541,14 @@ private fun isPublicMac(address: String): Boolean {
 private fun digest(value: String): String =
     MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
+
+private fun stableRadioFingerprint(payload: JSONObject): String {
+    val canonical = JSONObject(payload.toString())
+    for (key in arrayOf("wifiAccessPoints", "cellTowers", "bluetoothBeacons")) {
+        val source = canonical.optJSONArray(key) ?: continue
+        for (index in 0 until source.length()) {
+            source.optJSONObject(index)?.remove("age")
+        }
+    }
+    return digest(canonical.toString())
+}
