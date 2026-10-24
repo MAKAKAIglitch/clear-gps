@@ -129,7 +129,7 @@ class LocationMonitorService : Service(), LocationListener {
             latitude = anchor.latitude
             longitude = anchor.longitude
             accuracy = MANUAL_FALLBACK_ACCURACY_METERS
-            time = anchorSetAt
+            time = now
             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
         }
         return LastResortFallback("MANUAL_ANCHOR", location)
