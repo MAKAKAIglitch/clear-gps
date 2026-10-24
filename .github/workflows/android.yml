@@ -38,3 +38,11 @@ jobs:
           name: ClearGPS-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  windows-bootstrap-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke-test standalone Java and Gradle bootstrap
+        shell: cmd
+        run: gradlew.bat --version
