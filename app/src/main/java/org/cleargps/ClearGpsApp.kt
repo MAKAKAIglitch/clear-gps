@@ -101,6 +101,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -1254,15 +1255,5 @@ private fun hasAnyLocationPermission(context: Context): Boolean =
         context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 private fun isMockLocation(location: Location): Boolean =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) location.isMock else location.isFromMockProvider
-private fun isBetterLocation(candidate: Location, previous: Location): Boolean {
-    val delta = candidate.time - previous.time
-    val candidateAcc = if (candidate.hasAccuracy()) candidate.accuracy else Float.MAX_VALUE
-    val previousAcc = if (previous.hasAccuracy()) previous.accuracy else Float.MAX_VALUE
-    if (candidate.provider.equals(LocationManager.GPS_PROVIDER, true) && !previous.provider.equals(LocationManager.GPS_PROVIDER, true)) return delta >= -120_000L
-    if (previous.provider.equals(LocationManager.GPS_PROVIDER, true) && candidate.provider.equals(LocationManager.NETWORK_PROVIDER, true) && delta < 120_000L) return false
-    if (delta > 30_000L) return true
-    if (delta < -120_000L) return false
-    return candidateAcc < previousAcc || (delta >= 0L && candidateAcc <= previousAcc * 1.5f)
-}
 private fun dateTime(time: Long): String = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(time))
 private const val RECORD_INTERVAL_MS = 15_000L
