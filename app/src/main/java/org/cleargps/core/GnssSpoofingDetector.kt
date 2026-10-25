@@ -98,7 +98,7 @@ internal class GnssSpoofingDetector {
             snapshot.satellitesVisible >= 8 &&
                 snapshot.strongSignalCount >= 5 &&
                 snapshot.meanCn0DbHz?.let { it.isFinite() && it >= 32.0 } == true &&
-                snapshot.satellitesUsedInFix <= max(2, snapshot.satellitesVisible / 6)
+                snapshot.satellitesUsedInFix <= max(2, snapshot.strongSignalCount / 4)
         if (underusedStrongSignals) {
             underusedStrongSignalStreak++
             if (underusedStrongSignalStreak >= 2) {
