@@ -110,6 +110,9 @@ class RadioGeolocationRepository(private val context: Context) {
                 accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0)
             )
         }
+        val matchCounts = withContext(Dispatchers.IO) {
+            database.countMatchingPoints(snapshot.signals, useWifi, useCells, useBle)
+        }
         // Radio-only coordinates are estimates from this very database, not independent
         // reference fixes. Never persist them as training coordinates, even if a caller passes one.
         val safeReference = if (mode == "radio" || mode == "radio_obd2") null else reference
@@ -139,7 +142,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 "Сканирование завершено: $summary. Метод расчёта: $method. Совпадений: ${estimate.matchedCount}; оценка приблизительная, радиус ±${estimate.accuracyMeters.toInt()} м."
             }
             else ->
-                "Сканирование завершено: $summary. Радиосигналы получены, но надёжная координата не подтверждена: подходящих записей с координатами мало, совпадения неоднозначны или противоречат друг другу."
+                "Сканирование завершено: $summary. Совпадений идентификаторов в локальной базе: ${matchCounts.knownRadios}; пригодных координатных записей: ${matchCounts.usableCoordinateRadios}. " +
+                    "Координата не построена: может не хватать согласованных координатных точек или совпадения неоднозначны."
         }
         val cacheAgeHints = buildList {
             snapshot.wifiAgeMillis
@@ -177,7 +181,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 bleCount = snapshot.bleCount,
                 bleAgeMillis = snapshot.bleAgeMillis
             ),
-            fullMessage, estimate?.matchedCount ?: 0, recorded
+            fullMessage, estimate?.matchedCount ?: 0, recorded,
+            matchCounts.knownRadios, matchCounts.usableCoordinateRadios
         )
     }
 
