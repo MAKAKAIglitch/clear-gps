@@ -50,6 +50,16 @@ class Obd2LocationFusionTest {
         )
         assertNull(
             Obd2LocationFusion.predictFromGps(
+                MapCoordinate(52.0, 39.0), 150.0, 90.0, 1_000L, 36, 10_000L, 11_000L
+            )
+        )
+        assertNull(
+            Obd2LocationFusion.predictFromGps(
+                MapCoordinate(52.0, 39.0), null, 90.0, 1_000L, 36, 10_000L, 11_000L
+            )
+        )
+        assertNull(
+            Obd2LocationFusion.predictFromGps(
                 MapCoordinate(52.0, 39.0), 10.0, 90.0, 1_000L, 100, 29_000L, 31_000L
             )
         )
