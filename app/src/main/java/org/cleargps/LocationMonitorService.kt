@@ -315,7 +315,7 @@ class LocationMonitorService : Service(), LocationListener {
                     // Radio-based modes never request Android GPS for their coordinates.
                     // A same-mode ACTION_START is often just a refresh-setting update: preserve
                     // the registered mock provider and last known output in that case.
-                    val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
+                    val radioObdMode = Obd2SharedState.freshSpeedKmh(prefs) != null
                     val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                     saveServiceStatus(
                         when {
@@ -341,9 +341,7 @@ class LocationMonitorService : Service(), LocationListener {
                         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
                         registerGnssStatus()
                     }
-                    if (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
-                        startObd2FallbackLoop()
-                    }
+                    startObd2FallbackLoop()
                 }
                 else -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
@@ -353,6 +351,7 @@ class LocationMonitorService : Service(), LocationListener {
                     if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
                     }
+                    startObd2FallbackLoop()
                 }
             }
             saveServiceStatus("Monitoring")
@@ -383,7 +382,7 @@ class LocationMonitorService : Service(), LocationListener {
         obd2FallbackJob = serviceScope.launch {
             while (isActive &&
                 prefs.getBoolean(KEY_MONITORING, false) &&
-                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("auto", "gps", "gps_obd2")) {
                 delay(configuredUpdateIntervalMillis())
 
                 val filterState = prefs.getString(KEY_STATE, FilterState.WAITING.name)
@@ -782,9 +781,8 @@ class LocationMonitorService : Service(), LocationListener {
                     }
                 }
                 val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
-                val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
-                val obdSpeedKmh = if (radioObdMode) Obd2SharedState.freshSpeedKmh(prefs) else null
                 val adaptive = prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)
+                val obdSpeedKmh = if (adaptive) Obd2SharedState.freshSpeedKmh(prefs) else null
                 // Respect the chosen interval; only halve it in faster motion when the user
                 // explicitly keeps adaptive scanning enabled.
                 val nextInterval = if (adaptive && obdSpeedKmh != null && obdSpeedKmh > 25f) {

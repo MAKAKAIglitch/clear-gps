@@ -156,14 +156,25 @@ private enum class PositionMode(
     val key: String,
     val title: String,
     val usesRadio: Boolean = false,
-    val usesObd2: Boolean = false,
     val gpsOnly: Boolean = false
 ) {
     AUTO("auto", "Авто"),
     GPS_ONLY("gps", "GPS", gpsOnly = true),
-    RADIO_ONLY("radio", "Только радио", usesRadio = true),
-    GPS_OBD2("gps_obd2", "GPS + OBD-II", usesObd2 = true, gpsOnly = true),
-    RADIO_OBD2("radio_obd2", "Радио + OBD-II", usesRadio = true, usesObd2 = true)
+    RADIO_ONLY("radio", "Только радио", usesRadio = true)
+}
+
+private fun loadPositionMode(prefs: android.content.SharedPreferences): PositionMode {
+    val storedKey = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+    val normalizedKey = when (storedKey) {
+        "gps_obd2" -> "gps"
+        "radio_obd2" -> "radio"
+        else -> storedKey
+    }
+    val mode = PositionMode.values().firstOrNull { it.key == normalizedKey } ?: PositionMode.AUTO
+    if (storedKey != mode.key) {
+        prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
+    }
+    return mode
 }
 private enum class MapThemeMode(val key: String, val title: String) {
     SYSTEM("system", "Система"), LIGHT("light", "Светлая"), DARK("dark", "Тёмная")
@@ -203,7 +214,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     var appVisible by remember { mutableStateOf(true) }
     var positionMode by remember {
-        mutableStateOf(PositionMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") } ?: PositionMode.AUTO)
+        mutableStateOf(loadPositionMode(prefs))
     }
     var mapThemeMode by remember {
         mutableStateOf(MapThemeMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_STYLE, "system") } ?: MapThemeMode.SYSTEM)
@@ -735,15 +746,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (positionMode.usesRadio || positionMode.gpsOnly) liveLocation = null
     }
 
-    LaunchedEffect(positionMode) {
-        if (positionMode.usesObd2) {
-            while (true) {
-                fusionNowMillis = System.currentTimeMillis()
-                delay(1_000L)
-            }
-        } else {
+    LaunchedEffect(obd2Connected) {
+        // Keep OBD-II sample age up to date while connected; after disconnect, let the last
+        // timestamped speed expire instead of leaving the UI on a stale prediction.
+        while (obd2Connected || Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis) != null) {
             fusionNowMillis = System.currentTimeMillis()
+            delay(1_000L)
         }
+        fusionNowMillis = System.currentTimeMillis()
     }
 
     DisposableEffect(positionMode, hasAnyLocationPermission(context), scanIntervalSeconds) {
@@ -787,9 +797,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             !(positionMode.usesRadio && monitorEnabled)) {
             while (recording && appVisible) {
                 performScan(true)
-                val obdSpeedKmh = if (positionMode.usesObd2) {
-                    Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
-                } else null
+                val obdSpeedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
                 val locationSpeedKmh = if (positionMode.usesRadio) null else liveLocation?.takeIf {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
                 }?.speed?.times(3.6f)
@@ -883,13 +891,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    val maxLiveAgeMillis = if (positionMode == PositionMode.GPS_OBD2) 30_000L else 15 * 60 * 1_000L
+    val freshObdSpeedKmh = Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
+    val maxLiveAgeMillis = if (freshObdSpeedKmh != null) 30_000L else 15 * 60 * 1_000L
     val validLive = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..maxLiveAgeMillis }
     val activeLocation = when (positionMode) {
-        PositionMode.GPS_ONLY, PositionMode.GPS_OBD2 ->
+        PositionMode.GPS_ONLY ->
             validLive?.takeIf { it.provider.equals(LocationManager.GPS_PROVIDER, true) }
         PositionMode.AUTO -> validLive
-        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> null
+        PositionMode.RADIO_ONLY -> null
     }
     val measuredCoordinate = activeLocation?.let { MapCoordinate(it.latitude, it.longitude) }
     val estimatedRadioCoordinate = currentRadioEstimate?.let { MapCoordinate(it.latitude, it.longitude) }
@@ -905,11 +914,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     } else {
         currentRadioEstimate?.accuracyMeters
     }
-    val freshObdSpeedKmh = if (positionMode.usesObd2) {
-        Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
-    } else null
     val obdSpeedUpdatedAt = prefs.getLong(Obd2SharedState.KEY_SPEED_AT, 0L)
-    val predictedGpsPosition = if (positionMode == PositionMode.GPS_OBD2 && activeLocation != null) {
+    val predictedGpsPosition = if (
+        activeLocation != null &&
+        activeLocation.provider.equals(LocationManager.GPS_PROVIDER, true) &&
+        freshObdSpeedKmh != null
+    ) {
         Obd2LocationFusion.predictFromGps(
             lastFix = MapCoordinate(activeLocation.latitude, activeLocation.longitude),
             baseAccuracyMeters = activeLocation.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
@@ -921,10 +931,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         )
     } else null
     val primaryCoordinate = when (positionMode) {
-        PositionMode.GPS_ONLY -> measuredCoordinate
-        PositionMode.GPS_OBD2 -> predictedGpsPosition?.coordinate ?: measuredCoordinate
-        PositionMode.AUTO -> measuredCoordinate ?: radioCoordinate
-        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> radioCoordinate
+        PositionMode.GPS_ONLY -> predictedGpsPosition?.coordinate ?: measuredCoordinate
+        PositionMode.AUTO -> predictedGpsPosition?.coordinate ?: measuredCoordinate ?: radioCoordinate
+        PositionMode.RADIO_ONLY -> radioCoordinate
     }
     val primaryAccuracy = when {
         predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
@@ -945,27 +954,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val primarySource = when {
         positionMode.usesRadio && publishedMockCoordinate != null ->
             "Mock GPS · опубликованная радиопозиция"
-        positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null ->
+        predictedGpsPosition != null ->
             "GPS + OBD-II · расчёт по скорости (" + predictedGpsPosition.travelledMeters.toInt() + " м)"
-        positionMode == PositionMode.GPS_OBD2 && activeLocation != null && freshObdSpeedKmh != null ->
-            "GPS + OBD-II"
-        positionMode == PositionMode.GPS_OBD2 && activeLocation != null ->
-            "GPS · резерв без скорости OBD-II"
-        positionMode == PositionMode.GPS_OBD2 ->
-            "Ожидание GPS · OBD-II не заменяет координаты"
-        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null && radioEstimateStale ->
-            "Последняя оценка радио · свежего совпадения нет"
-        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null && freshObdSpeedKmh != null ->
-            "Локальная радиобаза + OBD-II"
-        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null ->
-            "Локальная радиобаза · резерв без OBD-II"
-        positionMode == PositionMode.RADIO_OBD2 ->
-            "Ожидание совпадений · OBD-II не задаёт координаты"
         positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null && radioEstimateStale ->
             "Последняя оценка радио · свежего совпадения нет"
+        positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null && freshObdSpeedKmh != null ->
+            "Локальная радиобаза + OBD-II"
         positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null -> "Локальная радиобаза"
         positionMode == PositionMode.RADIO_ONLY -> "Ожидание совпадений в радиобазе"
+        activeLocation?.provider.equals(LocationManager.GPS_PROVIDER, true) && freshObdSpeedKmh != null ->
+            "GPS + OBD-II"
         activeLocation?.provider.equals(LocationManager.GPS_PROVIDER, true) -> "GPS"
+        positionMode == PositionMode.GPS_ONLY && activeLocation == null && freshObdSpeedKmh != null ->
+            "Ожидание GPS · OBD-II не заменяет координаты"
         positionMode == PositionMode.GPS_ONLY && activeLocation == null -> "Ожидание GPS"
         activeLocation != null -> "Сеть Android"
         currentRadioEstimate != null -> "Локальная база"
@@ -973,12 +974,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         else -> "Нет фикса"
     }
     val mapPrimaryCoordinate = when (positionMode) {
-        PositionMode.AUTO, PositionMode.GPS_ONLY -> measuredCoordinate
-        PositionMode.GPS_OBD2 -> predictedGpsPosition?.coordinate ?: measuredCoordinate
-        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> null
+        PositionMode.AUTO, PositionMode.GPS_ONLY -> predictedGpsPosition?.coordinate ?: measuredCoordinate
+        PositionMode.RADIO_ONLY -> null
     }
     val mapPrimaryAccuracy = when {
-        positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
+        predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
         else -> null
     }
@@ -1736,8 +1736,8 @@ private fun MapHomeScreen(
                 } else {
                     Text(
                         when (mode) {
-                            PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> "Нет совпадений в локальной базе"
-                            PositionMode.GPS_ONLY, PositionMode.GPS_OBD2 -> "Ожидание GPS-фикса"
+                            PositionMode.RADIO_ONLY -> "Нет совпадений в локальной базе"
+                            PositionMode.GPS_ONLY -> "Ожидание GPS-фикса"
                             PositionMode.AUTO -> "Пока нет координат"
                         },
                         style = MaterialTheme.typography.titleSmall,
@@ -1749,7 +1749,6 @@ private fun MapHomeScreen(
                                 "В базе $pointCount радиоточек, но последний скан не подтвердил положение. Нужны актуальные сигналы и координатированные совпадения; Wi‑Fi может ограничивать Android."
                             mode.usesRadio ->
                                 "Сначала запиши радиоточки в известных местах или импортируй локальный CSV с координатами."
-                            mode == PositionMode.GPS_OBD2 -> "Нужен GPS-фикс. OBD-II сможет кратко продолжить его только при свежей скорости и известном курсе."
                             else -> "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -1971,17 +1970,7 @@ private fun MapHomeScreen(
                 }
                 if (mode.usesRadio) {
                     Text(
-                        if (mode == PositionMode.RADIO_OBD2)
-                            "В режиме «Радио + OBD-II» координаты берутся из локальной радиобазы, а скорость OBD-II помогает учащать сканирование. GPS не запрашивается. Без курса движения скорость сама по себе не задаёт координаты."
-                        else
-                            "В режиме «Только радио» приложение не запрашивает GPS. Это не выключает GNSS для других приложений.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant
-                    )
-                }
-                if (mode == PositionMode.GPS_OBD2) {
-                    Text(
-                        "OBD-II используется как резерв скорости. Краткий прогноз позиции строится только по свежему GPS-курсу и свежей скорости; при отсутствии данных остаётся обычный GPS-фикс.",
+                        "В режиме «Только радио» приложение не запрашивает GPS. При подключённом OBD-II свежая скорость может адаптивно учащать сканирование, но без надёжного курса сама по себе не определяет координаты.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -2511,11 +2500,9 @@ private fun SettingsScreen(
                             Text(item.title, fontWeight = FontWeight.Medium)
                             Text(
                                 when (item) {
-                                    PositionMode.AUTO -> "Android location с резервом локальной радиобазы."
-                                    PositionMode.GPS_ONLY -> "Только координаты GPS-провайдера."
-                                    PositionMode.RADIO_ONLY -> "Только совпадения с локальной радиобазой; GPS не запрашивается приложением."
-                                    PositionMode.GPS_OBD2 -> "GPS — основной источник координат. Свежая скорость OBD-II помогает краткому прогнозу по последнему GPS-курсу."
-                                    PositionMode.RADIO_OBD2 -> "Радиобаза остаётся источником координат. Скорость OBD-II помогает выбирать частоту сканирования; без курса не заменяет координаты."
+                                    PositionMode.AUTO -> "Android location с резервом локальной радиобазы; свежая скорость OBD-II учитывается автоматически, когда доступна."
+                                    PositionMode.GPS_ONLY -> "GPS — основной источник; при подключённом OBD-II свежая скорость помогает краткому прогнозу по достоверному GPS-курсу."
+                                    PositionMode.RADIO_ONLY -> "Локальная радиобаза; OBD-II может адаптировать частоту сканирования, но без курса не определяет координаты. GPS не запрашивается."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant,
