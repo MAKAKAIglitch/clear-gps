@@ -730,11 +730,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             while (recording && appVisible) {
                 performScan(true)
                 val obdSpeedKmh = if (positionMode.usesObd2) {
-                    Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
+                    Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
                 } else null
                 val locationSpeedKmh = if (positionMode.usesRadio) null else liveLocation?.takeIf {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
-                }?.speed?.times(3.6f)?.toInt()
+                }?.speed?.times(3.6f)
                 val speedKmh = obdSpeedKmh ?: locationSpeedKmh
                 delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
             }
