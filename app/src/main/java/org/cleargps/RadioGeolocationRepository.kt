@@ -67,9 +67,10 @@ class RadioGeolocationRepository(private val context: Context) {
                 sdkInt = Build.VERSION.SDK_INT,
                 fineLocationGranted = fineLocationGranted,
                 useWifi = useWifi,
-                useCells = useCells
+                useCells = useCells,
+                useBle = useBle
             )) {
-            " Android requires the app's precise-location permission to read Wi‑Fi scan results on Android 10+ and cell identifiers; grant Precise location in app permissions. Radio-only mode still does not request GPS positions."
+            " Precise location permission is required for this app to use nearby Wi‑Fi, cellular and Bluetooth identifiers for positioning. Grant Precise location in app permissions. Radio-only mode still does not request GPS fixes."
         } else ""
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
@@ -314,6 +315,9 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     private suspend fun collectBluetooth(): TimedRadioSignals {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return TimedRadioSignals(emptyList(), null)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
             return TimedRadioSignals(emptyList(), null)
