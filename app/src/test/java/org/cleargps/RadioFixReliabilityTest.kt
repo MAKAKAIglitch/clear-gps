@@ -113,6 +113,15 @@ class RadioFixReliabilityTest {
         assertFalse(RadioFixReliability.canRetainLastEstimate(0L, 10_000L, 3, Double.NaN))
     }
 
+    @Test fun mapKeepsApproximateRadioFixLongerThanMockRecovery() {
+        assertTrue(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 400_000L, 2, 4_500.0))
+        assertTrue(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 699_999L, 1, 50_000.0))
+        assertFalse(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 700_001L, 3, 100.0))
+        assertFalse(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 90_000L, 3, 100.0))
+        assertFalse(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 110_000L, 0, 100.0))
+        assertFalse(RadioFixReliability.canDisplayLastRadioEstimateOnMap(100_000L, 110_000L, 2, 50_001.0))
+    }
+
     @Test fun lastRadioFixHasABoundedHoldWindow() {
         assertTrue(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_000L, 1_000L))
         assertFalse(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_001L, 1_000L))
