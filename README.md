@@ -9,13 +9,16 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 - **Pixel-inspired Material 3 UI** with dynamic Android 12+ colours, light/dark/system map themes, and explicit scan/status feedback.
 - **MapLibre map** using OpenFreeMap styles based on OpenStreetMap data. Includes light Liberty and Dark styles, a blue location dot and accuracy area, a manual amber reference point, coloured radio-point overlays and separately named spoofing-risk zones.
 - **Local radio recorder:** manually started scans of nearby Wi-Fi access points (BSSID + RSSI + frequency), available GSM/WCDMA/LTE/NR cell identities and Bluetooth LE addresses/RSSI.
-- **Private SQLite database:** point labels and notes, optional manually edited coordinates, sightings, bounded observation history and scan history. SSIDs and Bluetooth device names are not read/stored during live scans.
+- **Private SQLite database:** Wi-Fi SSIDs and BSSIDs, available cell identifiers, BLE addresses/RSSI, editable labels and coordinates, and bounded observation history. Radio identifiers remain in the app-private database; no radio IDs are uploaded.
 - **Radio-only mode:** Clear GPS stops requesting system location providers in the app and estimates a position only when current radio observations match coordinates already recorded in the local database. It does not switch off the GNSS hardware for Android or other apps.
 - **WiGLE interchange:** import a user-selected WiGLE-compatible CSV (plain or gzip) and export the local point table as a WiGLE-style CSV. Import/export is file-based; nothing is uploaded automatically.
 - **Risk-zone management:** draw multiple named polygons, rename/delete them and enable/disable each zone.
 - **Explicit recording control:** while the app is visible, the recorder scans approximately every 15 seconds when the recording switch is on. The foreground GNSS monitor is separate.
 - **Guarded fallback:** previously recorded radio estimates are considered only when recent, matched against enough local points and within a conservative accuracy threshold. A manual reference can be enabled as a final, coarse fallback.
 - **Storage limits:** up to 20,000 detailed observations and 500 scan-history entries are retained; the map renders at most 400 saved radio points at once.
+- **Memory-aware Windows build:** Gradle heap is sized from installed/free RAM with a safety reserve for Windows; the daemon, parallel execution and build cache are enabled.
+- **Scan cadence:** configurable interval from 10 to 120 seconds; optionally request a faster interval above 25 km/h, subject to Android throttling.
+- **Private map fallback:** a tile-free offline canvas retains local radio markers without requesting map data, but does not display streets or labels.
 - **Windows build script** and GitHub Actions workflow for unit tests and debug APK generation.
 
 ## Radio positioning and WiGLE
@@ -28,7 +31,7 @@ A Wi-Fi/Bluetooth identifier by itself does not reveal coordinates. For radio-on
 
 - **No BeaconDB requests and no WiGLE API requests.** No network geolocation lookup runs in the background.
 - **No automatic upload.** Scans, labels, coordinates, zones and history are stored locally in app-private SQLite/preferences.
-- **No SSID or Bluetooth-name retention.** The scanner reads an SSID only transiently to respect the common Wi-Fi "_nomap" opt-out suffix and immediately discards it; it is never stored. Bluetooth device names and advertisement payloads are not read or stored. Wi-Fi BSSID, signal strength/frequency, available cell identifiers, and Bluetooth LE addresses/signal strength are used for local matching.
+- **Local radio identifiers.** SSIDs and BSSIDs are stored in the private local database for search and editing. Bluetooth device names and advertisement payloads are not read or stored. SSIDs, BSSIDs, cell IDs and BLE addresses are never added to map requests or uploaded by Clear GPS.
 - **Maps are still online by default.** OpenFreeMap serves map styles/tiles from its public service, so ordinary map requests expose the device's IP address and which map area is being viewed to that map provider. Wireless identifiers are not attached to those requests. For more private use, the map component must be pointed at a self-hosted or offline map source.
 - **Permissions matter.** Android can throttle Wi-Fi scans, limit cell information, randomize Bluetooth addresses, and refuse scans when permissions or system settings do not allow them. Turning off global Android location can also block Wi-Fi scanning on some versions/devices.
 - **Radio-only is an app-level mode.** A regular Android application cannot force the system-wide GNSS hardware switch off without privileged/system access. Clear GPS can stop requesting GPS updates itself; supplying locations to other apps additionally requires selecting Clear GPS as the mock-location app in Developer options. Some apps detect or ignore mock locations.
@@ -61,12 +64,15 @@ This is a research/learning project. The app has automated build and unit-test c
 - **Интерфейс в духе Pixel / Material 3:** динамические цвета Android 12+, темы карты «система / светлая / тёмная», понятные статусы сканирования.
 - **Карта MapLibre** на основе OpenFreeMap и данных OpenStreetMap: тёмная и светлая темы, синяя точка позиции с радиусом точности, янтарный ручной ориентир, цветные радио-точки и несколько именованных зон риска.
 - **Локальный сканер:** Wi-Fi BSSID/уровень сигнала/частота, доступные Android идентификаторы сотовых сот GSM/WCDMA/LTE/NR, адреса и RSSI Bluetooth LE.
-- **Локальная SQLite-база:** подписи и заметки, координаты точек с возможностью редактирования, счётчик наблюдений, история наблюдений и сканирований. Во время живого сканирования SSID и имена Bluetooth-устройств не читаются и не сохраняются.
+- **Локальная SQLite-база:** SSID и MAC/BSSID Wi-Fi, доступные идентификаторы сот и адреса BLE; редактируемые подписи и координаты, ограниченная история наблюдений. Радиоидентификаторы остаются в приватной базе приложения; они не загружаются на сервер.
 - **Режим «Только радио»:** Clear GPS перестаёт запрашивать системные провайдеры геолокации и рассчитывает положение только при совпадении текущих радиосигналов с координатными точками локальной базы. Режим не выключает GNSS-модуль для всей системы Android.
 - **Обмен с WiGLE:** импорт выбранного пользователем WiGLE-совместимого CSV (обычный или gzip) и экспорт локальной таблицы в WiGLE-style CSV. Это обмен файлами — автоматической отправки нет.
 - **Зоны спуфинга:** рисование нескольких полигонов, переименование, удаление и отдельное включение каждой зоны.
 - **Явная запись:** при открытом приложении сканирование повторяется примерно раз в 15 секунд только пока переключатель записи включён. Фоновый GNSS-монитор — отдельная функция.
 - **Ограничение объёма данных:** до 20 000 подробных наблюдений и 500 записей истории; на карте одновременно показывается не более 400 сохранённых радио-точек.
+- **Сборка с учётом ОЗУ:** heap Gradle рассчитывается по доступной/установленной памяти с резервом для Windows; включены daemon, параллельная сборка и кэш.
+- **Частота сканирования:** интервал 10–120 секунд и необязательное ускорение выше 25 км/ч с учётом ограничений Android.
+- **Приватный режим карты:** офлайн-холст не запрашивает тайлы, но показывает локальные радиоточки без улиц и подписей.
 - **Сборка для Windows** и GitHub Actions для тестов и создания debug APK.
 
 ## Локальная навигация и WiGLE
@@ -79,7 +85,7 @@ WiGLE здесь поддерживается как **формат импорт
 
 - **Никаких запросов к BeaconDB или WiGLE API.** Удалённого геолокационного поиска и фоновой отправки радио-данных нет.
 - **Нет автоматической загрузки.** Сканирования, подписи, координаты, зоны и история хранятся в приватных SQLite/preferences на устройстве.
-- **SSID и имена Bluetooth не сохраняются.** SSID считывается на мгновение только для соблюдения распространённого Wi-Fi opt-out суффикса "_nomap", затем отбрасывается; имена Bluetooth и содержимое BLE-рекламы не читаются. Для локального сопоставления используются BSSID, уровень сигнала/частота, доступные идентификаторы сот, адреса BLE и RSSI.
+- **Радиоидентификаторы остаются локально.** SSID и MAC/BSSID Wi-Fi сохраняются в локальной базе для поиска и редактирования. Имена Bluetooth и содержимое BLE-рекламы не читаются. SSID, BSSID, идентификаторы сот и адреса BLE не добавляются к запросам карты и не отправляются приложением на сервер.
 - **Карта по умолчанию всё ещё онлайн.** OpenFreeMap отдаёт стили и тайлы с публичного сервиса, поэтому его сервер видит обычный IP-адрес устройства и запрашиваемые участки карты. Радиоидентификаторы к картографическим запросам не добавляются. Для более приватного режима нужно подключить собственный сервер или локальную карту.
 - **Ограничения Android остаются.** Система может ограничивать частоту Wi-Fi-сканирования, скрывать часть информации о сотах и использовать рандомизированные Bluetooth-адреса. На некоторых версиях/устройствах выключение глобальной геолокации блокирует и Wi-Fi-сканирование.
 - **«Только радио» — режим самого приложения.** Обычное Android-приложение не может принудительно выключить GNSS-модуль для всей системы без системных привилегий. Clear GPS может перестать запрашивать GPS-провайдер; передача координат другим приложениям дополнительно требует выбора Clear GPS как приложения фиктивной геолокации в настройках разработчика. Некоторые приложения распознают или игнорируют фиктивные координаты.
