@@ -113,6 +113,56 @@ class LocalSignalPositionTest {
         assertNull(estimateRadioFingerprintPosition(current, history, now))
     }
 
+    @Test fun radioAnchorAgePenaltyGrowsAndDiffersByRadioType() {
+        val day = 24L * 60L * 60L * 1_000L
+        val wifiOneDay = radioAnchorAgePenaltyMeters("wifi", day)
+        val wifiTwoYears = radioAnchorAgePenaltyMeters("wifi", 730L * day)
+        val cellTwoYears = radioAnchorAgePenaltyMeters("cell", 730L * day)
+        val bleOneDay = radioAnchorAgePenaltyMeters("ble", day)
+
+        assertTrue(wifiOneDay > 0.0)
+        assertTrue(wifiTwoYears > wifiOneDay)
+        assertTrue(cellTwoYears > 0.0)
+        assertTrue(bleOneDay > wifiOneDay)
+        assertEquals(750.0, radioAnchorAgePenaltyMeters("wifi", 20L * 365L * day), 0.0)
+        assertEquals(300.0, radioAnchorAgePenaltyMeters("ble", 20L * 365L * day), 0.0)
+    }
+
+    @Test fun oldWifiAnchorsRemainUsableButIncreaseUncertainty() {
+        val now = 1_000_000L
+        fun point(id: Long, identifier: String, lat: Double, lon: Double) =
+            RadioPointRecord(
+                id = id, type = "wifi", identifier = identifier, label = "", ssid = "", notes = "",
+                latitude = lat, longitude = lon, accuracyMeters = 100.0,
+                rssi = -60, peakRssi = -55, frequency = 2412,
+                firstSeen = now - 10_000, lastSeen = now - 1_000, sightings = 4,
+                positionSource = "wigle-import"
+            )
+        val matches = listOf(
+            RadioSignal("wifi", "old-a", -60) to point(1, "old-a", 55.0000, 40.0000),
+            RadioSignal("wifi", "old-b", -62) to point(2, "old-b", 55.0002, 40.0001),
+            RadioSignal("wifi", "old-c", -59) to point(3, "old-c", 54.9999, 40.0002),
+            RadioSignal("wifi", "old-d", -65) to point(4, "old-d", 55.0001, 39.9999)
+        )
+        val fresh = requireNotNull(estimateRadioAnchorPosition(matches, now))
+        val twoYearsAgo = 730L * 24L * 60L * 60L * 1_000L
+        val oldMatches = matches.map { (signal, record) ->
+            signal to record.copy(lastSeen = now - twoYearsAgo)
+        }
+        val old = requireNotNull(estimateRadioAnchorPosition(oldMatches, now))
+
+        assertTrue(abs(old.latitude - fresh.latitude) < 0.002)
+        assertTrue(abs(old.longitude - fresh.longitude) < 0.002)
+        assertTrue(old.accuracyMeters > fresh.accuracyMeters)
+    }
+
+    @Test fun bleAnchorsExpireEarlierThanWifiAnchors() {
+        val day = 24L * 60L * 60L * 1_000L
+        assertTrue(radioAnchorMaxAgeMillis("wifi") >= 5L * 365L * day)
+        assertEquals(180L * day, radioAnchorMaxAgeMillis("ble"))
+        assertEquals(0L, radioAnchorMaxAgeMillis("unknown"))
+    }
+
     @Test fun anchorEstimatorRejectsAHighSignalSpatialOutlier() {
         val now = 1_000_000L
         fun point(id: Long, identifier: String, lat: Double, lon: Double, accuracy: Double, rssi: Int, source: String = "recorded") =
