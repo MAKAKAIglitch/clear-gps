@@ -40,6 +40,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core-detect"))
     val composeBom = platform("androidx.compose:compose-bom:2025.12.00")
     implementation(composeBom)
 

@@ -9,7 +9,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** Normalized inputs are independent of Android so that the detector can be unit-tested. */
-internal data class PositionFix(
+data class PositionFix(
     val provider: String,
     val latitude: Double,
     val longitude: Double,
@@ -21,7 +21,7 @@ internal data class PositionFix(
     val bearingAccuracyDegrees: Double? = null
 )
 
-internal data class GnssSignalSnapshot(
+data class GnssSignalSnapshot(
     val elapsedRealtimeNanos: Long,
     val satellitesVisible: Int,
     val satellitesUsedInFix: Int,
@@ -32,7 +32,7 @@ internal data class GnssSignalSnapshot(
 )
 
 /** Aggregate RF metrics only; no location, wall-clock timestamp, or raw measurement payload. */
-internal data class GnssRfSnapshot(
+data class GnssRfSnapshot(
     val elapsedRealtimeNanos: Long,
     val signalCount: Int,
     val constellationCount: Int,
@@ -41,7 +41,7 @@ internal data class GnssRfSnapshot(
     val agcSampleCount: Int
 )
 
-internal data class SpoofingAssessment(
+data class SpoofingAssessment(
     val score: Int,
     val confirmed: Boolean,
     val reasons: List<String>
@@ -51,7 +51,7 @@ internal data class SpoofingAssessment(
  * Multi-signal heuristic, not a probability estimator. Strong evidence can trigger immediately;
  * medium evidence needs repeated fixes; once triggered, the alert clears after three clean fixes.
  */
-internal class GnssSpoofingDetector {
+class GnssSpoofingDetector {
     private var previousGps: PositionFix? = null
     private var currentSignal: GnssSignalSnapshot? = null
     private var recentSignalAlertUntilNanos = 0L

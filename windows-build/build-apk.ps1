@@ -93,7 +93,7 @@ try {
         }
     }
 
-    $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', 'testDebugUnitTest', 'assembleDebug') -LogPath $BuildLog
+    $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', ':core-detect:test', 'testDebugUnitTest', 'assembleDebug') -LogPath $BuildLog
     if ($GradleExitCode -ne 0) {
         $LogText = Get-Content -LiteralPath $BuildLog -Raw -ErrorAction SilentlyContinue
         $RetryPattern = '(?i)(UnknownHostException|Unknown host|Could not resolve host|Could not GET|Could not HEAD|Connection timed out|Read timed out|Connection reset|Connection refused|TLS handshake|PKIX path building failed|503 Service Unavailable|502 Bad Gateway|429 Too Many Requests|Temporary failure in name resolution|Network is unreachable|No route to host)'
@@ -102,7 +102,7 @@ try {
             Write-Host ''
             Write-Host 'A network/dependency-server error was detected. Retrying once with --refresh-dependencies...'
             Write-Host "Retry log: $RetryLog"
-            $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', '--refresh-dependencies', 'testDebugUnitTest', 'assembleDebug') -LogPath $RetryLog
+            $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', '--refresh-dependencies', ':core-detect:test', 'testDebugUnitTest', 'assembleDebug') -LogPath $RetryLog
             if ($GradleExitCode -ne 0) {
                 throw "Gradle retry also failed (exit code $GradleExitCode). Logs: $BuildLog and $RetryLog"
             }
