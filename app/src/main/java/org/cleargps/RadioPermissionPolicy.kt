@@ -1,20 +1,21 @@
 package org.cleargps
 
-/** Platform permission rules for radio sources that Android uses to reveal nearby location data. */
+/** Permission rules for radio sources that the app uses to derive physical position. */
 internal object RadioPermissionPolicy {
-    /** Android 10+ requires ACCESS_FINE_LOCATION for WifiManager scan results. */
-    fun canReadWifiScan(sdkInt: Int, fineLocationGranted: Boolean, coarseLocationGranted: Boolean): Boolean =
-        fineLocationGranted || (sdkInt < 29 && coarseLocationGranted)
+    /**
+     * This app targets Android 10+ SDKs, where WifiManager scan results require
+     * ACCESS_FINE_LOCATION, even if a coarse permission was also granted.
+     */
+    fun canReadWifiScan(fineLocationGranted: Boolean): Boolean = fineLocationGranted
 
     /** TelephonyManager.getAllCellInfo() requires ACCESS_FINE_LOCATION. */
     fun canReadCellInfo(fineLocationGranted: Boolean): Boolean = fineLocationGranted
 
     fun shouldExplainPreciseLocationRequirement(
-        sdkInt: Int,
         fineLocationGranted: Boolean,
         useWifi: Boolean,
         useCells: Boolean,
         useBle: Boolean
     ): Boolean =
-        !fineLocationGranted && (useCells || useBle || (sdkInt >= 29 && useWifi))
+        !fineLocationGranted && (useWifi || useCells || useBle)
 }
