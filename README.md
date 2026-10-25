@@ -117,6 +117,18 @@ OBD-II запускается только по действию пользов�
 
 После успешной сборки APK будет в **dist/ClearGPS-debug.apk**. Также его можно получить как артефакт в [GitHub Actions](https://github.com/MAKAKAIglitch/clear-gps/actions).
 
+## Сборка на Linux и macOS
+
+Требуются JDK 17 или новее и Android SDK с **Platform 36** и совместимыми Build-Tools. Укажи путь к SDK в `ANDROID_SDK_ROOT` или `ANDROID_HOME`, если он не определяется автоматически.
+
+Из корня репозитория выполни:
+
+```bash
+./gradlew --no-daemon --stacktrace :core-detect:test testDebugUnitTest assembleDebug
+```
+
+Wrapper скачивает Gradle 8.14.6 при первом запуске и проверяет SHA-256 дистрибутива по значению из `gradle/wrapper/gradle-wrapper.properties`. Для первого запуска требуется доступ к `services.gradle.org`. Готовый debug APK будет в `app/build/outputs/apk/debug/app-debug.apk`.
+
 ## Карты и атрибуция
 
 По умолчанию используются стили [OpenFreeMap](https://openfreemap.org/) на основе OpenMapTiles / OpenStreetMap. Атрибуция показывается в приложении. Публичные стили OpenFreeMap удобны, но требуют интернет; перед реализацией офлайн-загрузки или более крупного кэширования изучи актуальные [условия сервиса](https://openfreemap.org/tos/). Карты не включены в APK.

@@ -29,6 +29,17 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Verify official Gradle Wrapper JAR SHA-256
+        shell: bash
+        run: |
+          # Reference: https://gradle.org/release-checksums/
+          expected='ad16bca46cb71bb5887c546860d93992aeee35c1fdaf4a242b0a612375d937e0'
+          actual="$(sha256sum gradle/wrapper/gradle-wrapper.jar | cut -d ' ' -f 1)"
+          if [ "$actual" != "$expected" ]; then
+            printf 'Gradle Wrapper JAR SHA-256 mismatch: expected %s, got %s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+          echo 'Gradle Wrapper JAR SHA-256 verified.'
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
         run: ./gradlew --no-daemon --stacktrace :core-detect:test testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4

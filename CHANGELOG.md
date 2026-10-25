@@ -26,6 +26,24 @@
 
 ---
 
+## 2026-10-26 — Документирована сборка Unix и закреплена проверка wrapper JAR
+
+**Зачем:** сделать добавленный launcher понятным для контрибьюторов и проверить целостность исполняемого Gradle Wrapper до его запуска в CI.
+
+**Изменённые файлы:**
+
+- `README.md` — добавлена инструкция сборки на Linux/macOS, требования к JDK/Android SDK, команда проверок/сборки и путь к APK.
+- `.github/workflows/android.yml` — перед запуском wrapper добавлена проверка SHA-256 JAR по официальному справочнику Gradle: [release checksums](https://gradle.org/release-checksums/).
+- `CHANGELOG.md` — записан фактический успешный результат первого CI с Unix wrapper.
+
+**Поведение:** рабочая команда CI не меняет версии проекта; она использует pinned Gradle 8.14.6. Windows bootstrap сохранён. Новый checksum-step сравнивает JAR с официальным SHA-256 до исполнения.
+
+**Проверки:** предыдущий wrapper-коммит [`b367a06`](https://github.com/MAKAKAIglitch/clear-gps/commit/b367a0647b153b7155ee41d79e09fb24ae674f55) прошёл run [40238945244](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40238945244). CI для текущего изменения запущен после push; его результат будет записан после завершения.
+
+**Ограничения:** инструкция не устанавливает Android SDK автоматически, а инструментальные испытания приложения на физическом телефоне не проводились.
+
+---
+
 ## 2026-10-26 — Добавлен переносимый Gradle Wrapper для Unix
 
 **Зачем:** обеспечить воспроизводимый запуск сборки на Linux/macOS и проверять в CI именно закреплённую версию Gradle, а не только системную команду из runner image.
@@ -39,7 +57,7 @@
 
 **Поведение:** Linux CI использует версию и SHA-256 дистрибутива, уже закреплённые в `gradle/wrapper/gradle-wrapper.properties`. Существующий `gradlew.bat` и Windows bootstrap не менялись.
 
-**Проверки:** для этого коммита CI запускается с новым wrapper; результат будет записан после завершения workflow. Сборка локально в этой среде не выполнялась.
+**Проверки:** GitHub Actions run [40238945244](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40238945244) завершился `success`: новый `./gradlew` выполнил `:core-detect:test`, Android unit-тесты и `assembleDebug`; Windows bootstrap smoke-test тоже прошёл. Локальная сборка в этой среде не выполнялась.
 
 **Ограничения:** наличие wrapper не устанавливает Android SDK автоматически на Linux/macOS; для сборки всё ещё нужен установленный SDK с платформой 36 и подходящие JDK/SDK пути.
 
