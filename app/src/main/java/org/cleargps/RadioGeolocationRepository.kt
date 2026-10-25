@@ -45,6 +45,7 @@ private data class ScanSnapshot(
     val cellCount: Int,
     val bleCount: Int,
     val wifiAgeMillis: Long?,
+    val cellAgeMillis: Long?,
     val bleAgeMillis: Long?
 )
 
@@ -84,12 +85,17 @@ class RadioGeolocationRepository(private val context: Context) {
                 wifiSignalCount = snapshot.wifiCount,
                 totalSignalCount = snapshot.signals.size
             )
+            val staleCellPenalty = RadioFixReliability.cellAgePenaltyMeters(
+                ageMillis = snapshot.cellAgeMillis,
+                cellSignalCount = snapshot.cellCount,
+                totalSignalCount = snapshot.signals.size
+            )
             val staleBlePenalty = RadioFixReliability.bleAgePenaltyMeters(
                 ageMillis = snapshot.bleAgeMillis,
                 bleSignalCount = snapshot.bleCount,
                 totalSignalCount = snapshot.signals.size
             )
-            val totalStalePenalty = staleWifiPenalty + staleBlePenalty
+            val totalStalePenalty = staleWifiPenalty + staleCellPenalty + staleBlePenalty
             if (totalStalePenalty <= 0.0) candidate
             else candidate.copy(
                 accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0)
@@ -130,6 +136,9 @@ class RadioGeolocationRepository(private val context: Context) {
             snapshot.wifiAgeMillis
                 ?.takeIf { it > RadioFixReliability.WIFI_FRESH_AGE_MS }
                 ?.let { add("Wi‑Fi: кэш ${it / 1_000} с") }
+            snapshot.cellAgeMillis
+                ?.takeIf { it > RadioFixReliability.CELL_INFO_FRESH_AGE_MS }
+                ?.let { add("соты: кэш ${it / 1_000} с") }
             snapshot.bleAgeMillis
                 ?.takeIf { it > RadioFixReliability.BLE_FRESH_AGE_MS }
                 ?.let { add("Bluetooth: кэш ${it / 1_000} с") }
@@ -140,7 +149,8 @@ class RadioGeolocationRepository(private val context: Context) {
         DiagnosticLogStore.log(
             context, "RADIO",
             "Сканирование завершено: Wi-Fi=${snapshot.wifiCount}, соты=${snapshot.cellCount}, BLE=${snapshot.bleCount}, " +
-                "Wi-Fi age=${snapshot.wifiAgeMillis?.div(1_000) ?: "unknown"}s, BLE age=${snapshot.bleAgeMillis?.div(1_000) ?: "unknown"}s, " +
+                "Wi-Fi age=${snapshot.wifiAgeMillis?.div(1_000) ?: "unknown"}s, cell age=${snapshot.cellAgeMillis?.div(1_000) ?: "unknown"}s, " +
+                "BLE age=${snapshot.bleAgeMillis?.div(1_000) ?: "unknown"}s, " +
                 (estimate?.let { "оценка есть, совпадений=${it.matchedCount}, точность≈${it.accuracyMeters.toInt()} м, fallback=${it.fallbackUsed}" }
                     ?: "координата не рассчитана")
         )
@@ -151,6 +161,7 @@ class RadioGeolocationRepository(private val context: Context) {
         RadioLookupResult(
             estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
             snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true ||
+                snapshot.cellAgeMillis?.let { it > RadioFixReliability.CELL_INFO_FRESH_AGE_MS } == true ||
                 snapshot.bleAgeMillis?.let { it > RadioFixReliability.BLE_FRESH_AGE_MS } == true,
             fullMessage, estimate?.matchedCount ?: 0, recorded
         )
@@ -169,15 +180,16 @@ class RadioGeolocationRepository(private val context: Context) {
         val bleTask = async {
             if (useBle) collectBluetooth() else TimedRadioSignals(emptyList(), null)
         }
-        val cells = if (useCells) collectCells() else emptyList()
+        val cells = if (useCells) collectCells() else TimedRadioSignals(emptyList(), null)
         val wifi = wifiTask.await()
         val ble = bleTask.await()
         ScanSnapshot(
-            signals = wifi.signals + cells + ble.signals,
+            signals = wifi.signals + cells.signals + ble.signals,
             wifiCount = wifi.signals.size,
-            cellCount = cells.size,
+            cellCount = cells.signals.size,
             bleCount = ble.signals.size,
             wifiAgeMillis = wifi.ageMillis,
+            cellAgeMillis = cells.ageMillis,
             bleAgeMillis = ble.ageMillis
         )
     }
@@ -281,44 +293,51 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private fun collectCells(): List<RadioSignal> {
+    private fun collectCells(): TimedRadioSignals {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Сотовые данные пропущены: нет разрешения точной геолокации")
-            return emptyList()
+            return TimedRadioSignals(emptyList(), null)
         }
         val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: run {
             DiagnosticLogStore.log(context, "RADIO_CELL", "TelephonyManager недоступен", "ERROR")
-            return emptyList()
+            return TimedRadioSignals(emptyList(), null)
         }
         return try {
             val allCellInfo = telephony.allCellInfo.orEmpty()
             val nowElapsedMs = SystemClock.elapsedRealtime()
+            fun timestampMillis(info: CellInfo): Long =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) info.timestampMillis
+                else info.timeStamp / 1_000_000L
+
             val freshCellInfo = allCellInfo.filter { info ->
-                val timestampMillis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    info.timestampMillis
-                } else {
-                    info.timeStamp / 1_000_000L
+                RadioFixReliability.isCellInfoFresh(timestampMillis(info), nowElapsedMs)
+            }
+            val parsed = freshCellInfo.mapNotNull { info ->
+                parseCell(info)?.let { observation -> info to observation }
+            }
+                .distinctBy { (_, observation) ->
+                    "${observation.type}:${observation.mcc}:${observation.mnc}:${observation.area}:${observation.cellId}"
                 }
-                RadioFixReliability.isCellInfoFresh(timestampMillis, nowElapsedMs)
+                .sortedByDescending { (_, observation) -> observation.rssi }
+                .take(MAX_CELLS)
+            val ageMillis = parsed.maxOfOrNull { (info, _) ->
+                (nowElapsedMs - timestampMillis(info)).coerceAtLeast(0L)
             }
             DiagnosticLogStore.log(
                 context, "RADIO_CELL",
                 "CellInfo от Android: всего=${allCellInfo.size}, актуальных=${freshCellInfo.size}, " +
+                    "используется=${parsed.size}, возраст самого старого=${ageMillis?.div(1_000) ?: "unknown"}s, " +
                     "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}"
             )
-            freshCellInfo.mapNotNull(::parseCell)
-                .distinctBy { "${it.type}:${it.mcc}:${it.mnc}:${it.area}:${it.cellId}" }
-                .sortedByDescending { it.rssi }
-                .take(MAX_CELLS)
-                .map { it.toSignal() }
+            TimedRadioSignals(parsed.map { (_, observation) -> observation.toSignal() }, ageMillis)
         } catch (error: SecurityException) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Чтение CellInfo запрещено: ${error.message ?: "SecurityException"}", "ERROR")
-            emptyList()
+            TimedRadioSignals(emptyList(), null)
         } catch (error: RuntimeException) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Ошибка чтения CellInfo: ${error.javaClass.simpleName}", "ERROR")
-            emptyList()
+            TimedRadioSignals(emptyList(), null)
         }
     }
 
