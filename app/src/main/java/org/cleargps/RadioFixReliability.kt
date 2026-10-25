@@ -110,6 +110,29 @@ internal object RadioFixReliability {
             accuracyMeters.isFinite() && accuracyMeters in 1.0..1_000.0
     }
 
+    /**
+     * A cached radio scan may repeat an old coordinate. It can be published to mock GPS only
+     * while a previously confirmed fix is still inside its bounded hold window. The estimate's
+     * evidence timestamp, not the time we read Android's cache, determines its age.
+     */
+    fun canPublishRadioEstimate(
+        estimateUpdatedAtMillis: Long,
+        nowWallMillis: Long,
+        fromCache: Boolean,
+        lastConfirmedAtElapsedMillis: Long,
+        nowElapsedMillis: Long,
+        updateIntervalMillis: Long
+    ): Boolean {
+        val evidenceAgeMillis = nowWallMillis - estimateUpdatedAtMillis
+        if (evidenceAgeMillis !in 0..WIFI_MAX_CACHE_AGE_MS) return false
+        if (!fromCache) return true
+        return shouldHoldLastRadioMockFix(
+            lastConfirmedAtElapsedMillis,
+            nowElapsedMillis,
+            updateIntervalMillis
+        )
+    }
+
     fun mockHoldWindowMillis(updateIntervalMillis: Long): Long {
         val interval = updateIntervalMillis.coerceIn(1_000L, 30_000L)
         return maxOf(15_000L, interval * 2L).coerceAtMost(60_000L)
