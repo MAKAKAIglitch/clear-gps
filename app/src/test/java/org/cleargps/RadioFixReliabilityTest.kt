@@ -127,4 +127,60 @@ class RadioFixReliabilityTest {
         assertEquals(5_000f, RadioFixReliability.mockAccuracyWithAge(80f, 1_000_000L), 0f)
         assertEquals(100f, RadioFixReliability.mockAccuracyWithAge(Float.NaN, 0L), 0f)
     }
+
+    @Test fun cachedEstimateCannotRefreshMockFixForever() {
+        assertTrue(
+            RadioFixReliability.canPublishRadioEstimate(
+                estimateUpdatedAtMillis = 100_000L,
+                nowWallMillis = 110_000L,
+                fromCache = true,
+                lastConfirmedAtElapsedMillis = 100_000L,
+                nowElapsedMillis = 110_000L,
+                updateIntervalMillis = 1_000L
+            )
+        )
+        assertFalse(
+            RadioFixReliability.canPublishRadioEstimate(
+                estimateUpdatedAtMillis = 100_000L,
+                nowWallMillis = 116_000L,
+                fromCache = true,
+                lastConfirmedAtElapsedMillis = 100_000L,
+                nowElapsedMillis = 116_000L,
+                updateIntervalMillis = 1_000L
+            )
+        )
+        assertFalse(
+            RadioFixReliability.canPublishRadioEstimate(
+                estimateUpdatedAtMillis = 100_000L,
+                nowWallMillis = 110_000L,
+                fromCache = true,
+                lastConfirmedAtElapsedMillis = 0L,
+                nowElapsedMillis = 110_000L,
+                updateIntervalMillis = 1_000L
+            )
+        )
+    }
+
+    @Test fun evenNonCachedEstimateMustHaveRecentEvidenceTimestamp() {
+        assertTrue(
+            RadioFixReliability.canPublishRadioEstimate(
+                estimateUpdatedAtMillis = 100_000L,
+                nowWallMillis = 145_000L,
+                fromCache = false,
+                lastConfirmedAtElapsedMillis = 0L,
+                nowElapsedMillis = 145_000L,
+                updateIntervalMillis = 1_000L
+            )
+        )
+        assertFalse(
+            RadioFixReliability.canPublishRadioEstimate(
+                estimateUpdatedAtMillis = 100_000L,
+                nowWallMillis = 145_001L,
+                fromCache = false,
+                lastConfirmedAtElapsedMillis = 0L,
+                nowElapsedMillis = 145_001L,
+                updateIntervalMillis = 1_000L
+            )
+        )
+    }
 }
