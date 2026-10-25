@@ -53,7 +53,9 @@ data class RadioImportResult(
 
 data class RadioEstimate(
     val latitude: Double, val longitude: Double, val accuracyMeters: Double, val updatedAt: Long,
-    val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0
+    val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0,
+    /** Radio types that actually contributed matched identifiers to this estimate. */
+    val matchedRadioTypes: Set<String> = emptySet()
 )
 
 data class RadioPointObservation(
@@ -461,7 +463,8 @@ internal fun lookupRadioFingerprintPosition(
             updatedAt = now,
             fingerprint = radioSignalHash(best.matchedSignals),
             fallbackUsed = false,
-            matchedCount = best.matchedSignals.size
+            matchedCount = best.matchedSignals.size,
+            matchedRadioTypes = best.matchedSignals.map { it.type }.toSet()
         )
     )
 }
@@ -587,7 +590,8 @@ internal fun estimateRadioAnchorPosition(
         updatedAt = now,
         fingerprint = radioSignalHash(inliers.map { it.signal }),
         fallbackUsed = true,
-        matchedCount = inliers.size
+        matchedCount = inliers.size,
+        matchedRadioTypes = inliers.map { it.signal.type }.toSet()
     )
 }
 
