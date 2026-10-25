@@ -10,12 +10,30 @@ import org.junit.Test
 class Obd2ProtocolTest {
     @Test
     fun requestsOnlyKnownMode01ReadPids() {
+        assertEquals("0100", Obd2Protocol.requestFor(0x00))
         assertEquals("010C", Obd2Protocol.requestFor(0x0C))
         assertEquals("010D", Obd2Protocol.requestFor(0x0D))
         assertEquals("0105", Obd2Protocol.requestFor(0x05))
         assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x04) }
         assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x04 + 0x10) }
         assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.decode(0x04, "4104 80") }
+    }
+
+    @Test
+    fun discoversSupportedPidsFromStandardBitmap() {
+        // 41 00 BE 1F A8 13 advertises common Mode 01 values including 05, 0C and 0D.
+        val supported = Obd2Protocol.supportedPids("7E8064100BE1FA813>")
+        assertTrue(supported!!.contains(0x05))
+        assertTrue(supported.contains(0x0C))
+        assertTrue(supported.contains(0x0D))
+        assertTrue(supported.contains(0x20))
+        assertFalse(supported.contains(0x08))
+    }
+
+    @Test
+    fun fallsBackToProbingWhenCapabilityBitmapIsMissing() {
+        assertNull(Obd2Protocol.supportedPids("NO DATA>"))
+        assertNull(Obd2Protocol.supportedPids("4100BE1F"))
     }
 
     @Test
