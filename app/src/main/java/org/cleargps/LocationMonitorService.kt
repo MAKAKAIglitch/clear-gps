@@ -265,6 +265,7 @@ class LocationMonitorService : Service(), LocationListener {
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             saveServiceStatus("Location permission missing")
+            DiagnosticLogStore.log(this, "SERVICE", "Мониторинг не запущен: отсутствует разрешение геолокации", "ERROR")
             stopSelf()
             return
         }
@@ -299,6 +300,11 @@ class LocationMonitorService : Service(), LocationListener {
             }
             activePositionMode = nextPositionMode
             lastTrustedGpsFixForObd2 = null
+            DiagnosticLogStore.log(
+                this, "SERVICE",
+                "Запуск трекинга: mode=$nextPositionMode, interval=${configuredUpdateIntervalMillis() / 1_000}s, " +
+                    "monitoring=true, mockRequested=${prefs.getBoolean(KEY_MOCK_ENABLED, false)}, modeChanged=$modeChanged"
+            )
 
             when (nextPositionMode) {
                 "radio", "radio_obd2" -> {
@@ -335,9 +341,11 @@ class LocationMonitorService : Service(), LocationListener {
             saveServiceStatus("Monitoring")
         } catch (_: SecurityException) {
             saveServiceStatus("Location permission denied")
+            DiagnosticLogStore.log(this, "SERVICE", "Android отказал в разрешении геолокации", "ERROR")
             stopSelf()
-        } catch (_: IllegalArgumentException) {
-            saveServiceStatus("Location provider unavailable")
+        } catch (error: IllegalArgumentException) {
+            saveServiceStatus("Location provider unavailable: " + (error.message ?: "unknown"))
+            DiagnosticLogStore.log(this, "SERVICE", "GPS provider недоступен: ${error.message ?: error.javaClass.simpleName}", "ERROR")
         }
     }
 
@@ -478,6 +486,13 @@ class LocationMonitorService : Service(), LocationListener {
                             "Оценка отклонена для mock GPS: погрешность ±${estimate.accuracyMeters.toInt()} м превышает лимит ±${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м."
                         else -> ""
                     }
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "RADIO_FIX",
+                        "Служба: сигналы Wi-Fi=${result.wifiCount}, соты=${result.cellCount}, BLE=${result.beaconCount}; " +
+                            "estimate=${estimate != null}, matches=${estimate?.matchedCount ?: 0}, " +
+                            "accuracy=${estimate?.accuracyMeters?.toInt() ?: -1}m, cached=${result.fromCache}, " +
+                            (rejectionReason.ifBlank { "оценка прошла пороги" })
+                    )
                     if (estimate != null && estimate.matchedCount >= RADIO_MIN_MATCHES &&
                         estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
                         val output = Location(LocationManager.NETWORK_PROVIDER).apply {
@@ -523,7 +538,9 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                                 .putString(KEY_SOURCE, "NONE")
                                 .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
-                            saveServiceStatus("Radio match found, but mock GPS was not published; choose Clear GPS in Developer options")
+                            val reason = mock?.lastError ?: "Проверь, что Clear GPS выбрано в настройках разработчика как приложение фиктивного местоположения."
+                            saveServiceStatus("Радиосовпадение найдено, но mock GPS не опубликован: $reason")
+                            DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", "Публикация радиопозиции не удалась: $reason", "ERROR")
                         }
                     } else {
                         val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
@@ -534,6 +551,10 @@ class LocationMonitorService : Service(), LocationListener {
                         val intervalMs = configuredUpdateIntervalMillis()
                         val canHold = mockRequested && confirmed != null &&
                             RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "RADIO_FIX",
+                            "Резерв radio fix: $canHold; возраст подтверждённой позиции=${if (ageMs == Long.MAX_VALUE) "unknown" else ageMs / 1_000} s; причина=$rejectionReason"
+                        )
                         if (canHold && confirmed != null) {
                             // A single missed/throttled radio scan must not unregister GPS.
                             // Briefly hold the last confirmed position with a growing accuracy
@@ -593,6 +614,11 @@ class LocationMonitorService : Service(), LocationListener {
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
                         notification(prefs.getString(KEY_SERVICE_STATUS, "Radio-only") ?: "Radio-only"))
                 } catch (error: Exception) {
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "RADIO_FIX",
+                        "Исключение во время радиообновления: ${error.javaClass.simpleName}: ${error.message ?: "без описания"}",
+                        "ERROR"
+                    )
                     // Exceptions can happen while querying radio hardware or the SQLite database.
                     // Do not leave an old mock fix active indefinitely if all future scans fail.
                     val nowElapsedMs = SystemClock.elapsedRealtime()
@@ -632,6 +658,7 @@ class LocationMonitorService : Service(), LocationListener {
                             saveServiceStatus("Mock GPS unavailable after radio scan error; choose Clear GPS in Developer options")
                         }
                     } else {
+                        DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_FIX", "Надёжный radio fix недоступен: $rejectionReason", "WARN")
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
                         lastRadioMockFix = null
                         lastRadioMockFixAtElapsedMs = 0L
@@ -712,7 +739,17 @@ class LocationMonitorService : Service(), LocationListener {
     override fun onLocationChanged(location: Location) {
         // Return before updating status, trusted-fix cache, or mock output: our own test-provider
         // updates must never be treated as new physical GPS fixes.
-        if (LocationFilterEngine.isMockLocation(location)) return
+        if (LocationFilterEngine.isMockLocation(location)) {
+            DiagnosticLogStore.log(this, "GNSS", "Mock-кallback от собственного провайдера проигнорирован")
+            return
+        }
+        if (!location.latitude.isFinite() || location.latitude !in -90.0..90.0 ||
+            !location.longitude.isFinite() || location.longitude !in -180.0..180.0 ||
+            location.elapsedRealtimeNanos <= 0L ||
+            !location.hasAccuracy() || !location.accuracy.isFinite() || location.accuracy < 0f) {
+            DiagnosticLogStore.log(this, "GNSS", "Некорректный Android location callback проигнорирован", "WARN")
+            return
+        }
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
         val point = ZonePoint(location.latitude, location.longitude)
         val inZone = if (gpsFix) {
@@ -725,6 +762,11 @@ class LocationMonitorService : Service(), LocationListener {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
         } else observedDecision
         persistDecision(result)
+        DiagnosticLogStore.log(
+            this, "GNSS",
+            "Позиция от Android: provider=${location.provider ?: "unknown"}, filter=${result.state}, source=${result.source}, " +
+                "risk=${result.riskScore}, hasOutput=${result.outputLocation != null}"
+        )
         if (gpsFix && result.state == FilterState.NORMAL && result.source == "GPS" && !inZone) {
             lastTrustedGpsFixForObd2 = Location(location)
             // A fresh physical GPS fix supersedes the synthetic prediction.
@@ -745,9 +787,12 @@ class LocationMonitorService : Service(), LocationListener {
                 prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true).apply()
                 val accuracyText = if (result.outputLocation.hasAccuracy()) " · ±" + result.outputLocation.accuracy.toInt() + " m" else ""
                 saveServiceStatus("Mock GPS published · " + result.source + accuracyText)
+                DiagnosticLogStore.log(this, "MOCK", "Mock GPS активен; источник=${result.source}, accuracy=${result.outputLocation.accuracy.toInt()} m")
             } else {
                 prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
-                saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
+                val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
+                saveServiceStatus("Mock GPS недоступен: $reason")
+                DiagnosticLogStore.log(this, "MOCK", "Mock-публикация из location filter не удалась: $reason", "ERROR")
             }
         } else if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
             // Never leave an older test-provider position active when the filter has no safe
