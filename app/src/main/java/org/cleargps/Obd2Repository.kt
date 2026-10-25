@@ -41,7 +41,9 @@ class Obd2Repository(context: Context) {
         val device: BluetoothDevice,
         val socket: BluetoothSocket,
         val input: InputStream,
-        val output: OutputStream
+        val output: OutputStream,
+        var supportedPids: Set<Int>? = null,
+        var supportProbeCompleted: Boolean = false
     )
 
     /**
@@ -83,8 +85,8 @@ class Obd2Repository(context: Context) {
                 val newSession = Session(device, socket, socket.inputStream, socket.outputStream)
                 activeSession = newSession
 
-                // These commands configure the adapter's text output only. No ECU reset,
-                // DTC clearing, coding, adaptation or non-Mode-01 service is sent.
+                // Adapter-local ELM settings: plain text, adaptive timing and automatic
+                // protocol detection. These do not write to the vehicle ECU.
                 ADAPTER_OUTPUT_SETUP.forEach { command ->
                     exchange(newSession, command, ADAPTER_COMMAND_TIMEOUT_MS)
                 }
@@ -106,10 +108,21 @@ class Obd2Repository(context: Context) {
         ioMutex.withLock {
             val current = activeSession ?: throw IllegalStateException("OBD-II адаптер не подключён.")
             try {
-                // Each request is generated from a fixed Mode 01 PID allowlist in Obd2Protocol.
-                val rpmResponse = queryPid(current, 0x0C)
-                val speedResponse = queryPid(current, 0x0D)
-                val coolantResponse = queryPid(current, 0x05)
+                // PID 00 reports the standard per-vehicle capability bitmap. If an adapter
+                // or ECU doesn't provide it, fall back to probing each known common PID.
+                if (!current.supportProbeCompleted) {
+                    val supportResponse = queryPid(current, 0x00)
+                    current.supportedPids = Obd2Protocol.supportedPids(supportResponse)
+                    current.supportProbeCompleted = true
+                }
+                val supported = current.supportedPids
+                fun canRead(pid: Int) = supported == null || pid in supported
+
+                // Speed is queried first because it is the only standard value used for
+                // short-term position fusion. RPM and coolant remain optional diagnostics.
+                val speedResponse = if (canRead(0x0D)) queryPid(current, 0x0D) else "NO DATA>"
+                val rpmResponse = if (canRead(0x0C)) queryPid(current, 0x0C) else "NO DATA>"
+                val coolantResponse = if (canRead(0x05)) queryPid(current, 0x05) else "NO DATA>"
                 Obd2Protocol.telemetry(
                     rpmResponse = rpmResponse,
                     speedResponse = speedResponse,
@@ -225,7 +238,8 @@ class Obd2Repository(context: Context) {
         private const val PID_RESPONSE_TIMEOUT_MS = 2_200L
         private const val MAX_RESPONSE_CHARS = 2_048
 
-        // Adapter-local output formatting only; deliberately no ATZ/ATWS reset command.
-        private val ADAPTER_OUTPUT_SETUP = listOf("ATE0", "ATL0", "ATS0", "ATH0")
+        // These AT commands configure only the ELM-compatible adapter, not the ECU.
+        // ATSP0 improves compatibility across standard vehicle OBD protocols.
+        private val ADAPTER_OUTPUT_SETUP = listOf("ATE0", "ATL0", "ATS0", "ATH0", "ATAT1", "ATSP0")
     }
 }
