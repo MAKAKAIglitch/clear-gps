@@ -46,6 +46,18 @@ try {
 
     Write-Host ''
     Write-Host 'Running unit tests and building the debug APK...'
+    # Size the Gradle heap from installed RAM, while reserving memory for Windows and other apps.
+    $OsMemory = Get-CimInstance -ClassName Win32_OperatingSystem
+    $TotalRamMb = [math]::Floor([double]$OsMemory.TotalVisibleMemorySize / 1024)
+    $FreeRamMb = [math]::Floor([double]$OsMemory.FreePhysicalMemory / 1024)
+    if ($TotalRamMb -lt 2048) { throw "At least 2 GiB RAM is recommended for Android builds; detected $TotalRamMb MiB." }
+    $ReserveMb = [math]::Max(2048, [math]::Floor($TotalRamMb * 0.25))
+    $HeapMb = [math]::Min([math]::Floor($TotalRamMb * 0.60), $TotalRamMb - $ReserveMb)
+    if ($FreeRamMb -lt 3072) { $HeapMb = [math]::Min($HeapMb, [math]::Max(1024, $FreeRamMb - 768)) }
+    $HeapMb = [math]::Min(8192, [math]::Max(1024, [math]::Floor($HeapMb / 256) * 256))
+    $MetaMb = [math]::Min(1024, [math]::Max(512, [math]::Floor($HeapMb * 0.20)))
+    $GradleJvmArgs = '-Xms256m -Xmx' + $HeapMb + 'm -XX:MaxMetaspaceSize=' + $MetaMb + 'm -Dfile.encoding=UTF-8'
+    Write-Host ("System RAM: {0} MiB total, {1} MiB free; Gradle heap: {2} MiB" -f $TotalRamMb, $FreeRamMb, $HeapMb)
     $GradleWrapper = Join-Path $ProjectRoot 'gradlew.bat'
     $BuildLogRoot = Join-Path $env:LOCALAPPDATA 'ClearGPS\logs'
     New-Item -ItemType Directory -Path $BuildLogRoot -Force | Out-Null
@@ -57,7 +69,7 @@ try {
         # Gradle's diagnostics may use stderr. In Windows PowerShell 5 this can
         # become an ErrorRecord, so Continue is required while collecting the process output.
         $ErrorActionPreference = 'Continue'
-        & $GradleWrapper --no-daemon --stacktrace testDebugUnitTest assembleDebug 2>&1 |
+        & $GradleWrapper --stacktrace --parallel --build-cache "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
             Tee-Object -FilePath $BuildLog | Out-Host
         $GradleExitCode = $LASTEXITCODE
     } finally {
@@ -71,7 +83,7 @@ try {
             Write-Host ''
             Write-Host 'A network/dependency-server error was detected. Retrying once with --refresh-dependencies...'
             Write-Host "Retry log: $RetryLog"
-            & $GradleWrapper --no-daemon --stacktrace --refresh-dependencies testDebugUnitTest assembleDebug 2>&1 |
+            & $GradleWrapper --stacktrace --parallel --build-cache --refresh-dependencies "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
                 Tee-Object -FilePath $RetryLog | Out-Host
             $GradleExitCode = $LASTEXITCODE
             if ($GradleExitCode -ne 0) {
