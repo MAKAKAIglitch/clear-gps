@@ -308,6 +308,41 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
+    // Ask for the app's runtime permissions as soon as the app opens.
+    // ACCESS_MOCK_LOCATION is not a runtime permission; its manifest declaration makes
+    // Clear GPS eligible for Android's Developer options mock-location picker.
+    val startupPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        val missing = mutableListOf<String>()
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            missing += "точная геолокация"
+        }
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            missing += "геолокация"
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                missing += "поиск Bluetooth-устройств"
+            }
+            if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                missing += "доступ к Bluetooth"
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            missing += "уведомления"
+        }
+        if (missing.isNotEmpty()) {
+            Toast.makeText(
+                context,
+                "Не все разрешения выданы: " + missing.distinct().joinToString(", ") +
+                    ". Часть функций будет ограничена.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -467,6 +502,36 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }?.speed?.times(3.6f)
                 delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
             }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val permissionsToRequest = mutableListOf<String>()
+
+        // Ask for precise and approximate location together so Android can offer
+        // the precise/approximate choice on supported versions.
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted || !coarseGranted) {
+            permissionsToRequest += Manifest.permission.ACCESS_FINE_LOCATION
+            permissionsToRequest += Manifest.permission.ACCESS_COARSE_LOCATION
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest += Manifest.permission.BLUETOOTH_SCAN
+            }
+            if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest += Manifest.permission.BLUETOOTH_CONNECT
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest += Manifest.permission.POST_NOTIFICATIONS
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            startupPermissionLauncher.launch(permissionsToRequest.distinct().toTypedArray())
         }
     }
 
