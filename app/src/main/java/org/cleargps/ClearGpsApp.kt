@@ -341,6 +341,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mutableStateOf(prefs.getLong(LocationMonitorService.KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L))
     }
     var gnssDiagnosticsNowNanos by remember { mutableStateOf(SystemClock.elapsedRealtimeNanos()) }
+    var gnssLiveSnapshot by remember {
+        mutableStateOf(GnssDiagnosticsLiveStore.snapshot(SystemClock.elapsedRealtimeNanos()))
+    }
     var detailedLogging by remember { mutableStateOf(prefs.getBoolean(DiagnosticLogStore.KEY_ENABLED, false)) }
     var diagnosticLogMaxKb by remember {
         mutableStateOf(prefs.getInt(DiagnosticLogStore.KEY_MAX_KB, DiagnosticLogStore.DEFAULT_MAX_KB)
@@ -1063,6 +1066,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             gnssBaselineDeviations = (prefs.getString(LocationMonitorService.KEY_GNSS_BASELINE_DEVIATIONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             gnssDiagnosticsAtNanos = prefs.getLong(LocationMonitorService.KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L)
             gnssDiagnosticsNowNanos = SystemClock.elapsedRealtimeNanos()
+            gnssLiveSnapshot = GnssDiagnosticsLiveStore.snapshot(gnssDiagnosticsNowNanos)
 
             // The foreground service owns radio scans while monitoring is active. Mirror its
             // latest persisted counters/message so the screen cannot stay stuck on an older scan.
@@ -1448,6 +1452,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     gnssEnvironment = gnssEnvironment, gnssEnvironmentReasons = gnssEnvironmentReasons,
                                     gnssBaselineReady = gnssBaselineReady, gnssBaselineDeviations = gnssBaselineDeviations,
                                     gnssDiagnosticsAtNanos = gnssDiagnosticsAtNanos, gnssDiagnosticsNowNanos = gnssDiagnosticsNowNanos,
+                                    gnssLiveSnapshot = gnssLiveSnapshot,
                                     onMode = { applyPositionMode(it) },
                                     onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
                                     onScan = { startScan(recording) },
@@ -1952,6 +1957,7 @@ private fun MapHomeScreen(
     gnssEnvironment: String, gnssEnvironmentReasons: List<String>,
     gnssBaselineReady: Boolean, gnssBaselineDeviations: List<String>,
     gnssDiagnosticsAtNanos: Long, gnssDiagnosticsNowNanos: Long,
+    gnssLiveSnapshot: GnssDiagnosticsLiveSnapshot?,
     onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
@@ -2360,6 +2366,11 @@ private fun MapHomeScreen(
                         )
                     }
                 }
+                GnssSatelliteDiagnosticsPanel(
+                    snapshot = gnssLiveSnapshot,
+                    monitorEnabled = monitorEnabled,
+                    radioOnly = mode.usesRadio
+                )
                 Text(
                     serviceStatus.ifBlank { if (monitorEnabled) "Фоновый мониторинг активен." else "Фоновый мониторинг выключен." },
                     style = MaterialTheme.typography.bodySmall,

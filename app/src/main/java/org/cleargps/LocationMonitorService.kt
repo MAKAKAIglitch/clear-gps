@@ -76,10 +76,42 @@ class LocationMonitorService : Service(), LocationListener {
                 .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
             lastStatusMeanCn0DbHz = mean
             lastStatusConstellationCount = constellations
-            lastStatusAtNanos = SystemClock.elapsedRealtimeNanos()
+            val nowNanos = SystemClock.elapsedRealtimeNanos()
+            lastStatusAtNanos = nowNanos
+            val liveSatellites = (0 until count).mapNotNull { index ->
+                val svid = status.getSvid(index)
+                if (svid !in 1..4096) return@mapNotNull null
+                val carrierFrequencyHz = try {
+                    if (status.hasCarrierFrequencyHz(index)) {
+                        status.getCarrierFrequencyHz(index).toDouble().takeIf { it.isFinite() && it > 0.0 }
+                    } else null
+                } catch (_: RuntimeException) {
+                    null
+                }
+                val basebandCn0 = if (Build.VERSION.SDK_INT >= 30) {
+                    try {
+                        if (status.hasBasebandCn0DbHz(index)) {
+                            status.getBasebandCn0DbHz(index).toDouble().takeIf { it.isFinite() && it > 0.0 }
+                        } else null
+                    } catch (_: RuntimeException) {
+                        null
+                    }
+                } else null
+                GnssSatelliteReading(
+                    constellationType = status.getConstellationType(index),
+                    svid = svid,
+                    cn0DbHz = status.getCn0DbHz(index).toDouble().takeIf { it.isFinite() && it > 0.0 },
+                    elevationDegrees = status.getElevationDegrees(index).toDouble().takeIf { it.isFinite() },
+                    azimuthDegrees = status.getAzimuthDegrees(index).toDouble().takeIf { it.isFinite() },
+                    usedInFix = status.usedInFix(index),
+                    reportedCarrierFrequencyHz = carrierFrequencyHz,
+                    basebandCn0DbHz = basebandCn0
+                )
+            }
+            GnssDiagnosticsLiveStore.updateSatelliteStatus(nowNanos, liveSatellites)
             val assessment = engine.observeGnssSignal(
                 org.cleargps.core.GnssSignalSnapshot(
-                    elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                    elapsedRealtimeNanos = nowNanos,
                     satellitesVisible = count,
                     satellitesUsedInFix = (0 until count).count { status.usedInFix(it) },
                     meanCn0DbHz = mean,
@@ -119,6 +151,44 @@ class LocationMonitorService : Service(), LocationListener {
                     }
                 }
                 val nowNanos = SystemClock.elapsedRealtimeNanos()
+                val liveMeasurements = measurements.mapNotNull { measurement ->
+                    try {
+                        val frequencyHz = measurement.carrierFrequencyHz.toDouble()
+                            .takeIf { it.isFinite() && it > 0.0 }
+                        val satelliteAgcDb = if (Build.VERSION.SDK_INT < 33) {
+                            try {
+                                if (measurement.hasAutomaticGainControlLevelDb()) {
+                                    measurement.getAutomaticGainControlLevelDb().takeIf(Double::isFinite)
+                                } else null
+                            } catch (_: RuntimeException) {
+                                null
+                            }
+                        } else null
+                        if (frequencyHz == null && satelliteAgcDb == null) null
+                        else GnssSatelliteMeasurement(
+                            constellationType = measurement.constellationType,
+                            svid = measurement.svid,
+                            carrierFrequencyHz = frequencyHz,
+                            agcDb = satelliteAgcDb
+                        )
+                    } catch (_: RuntimeException) {
+                        null
+                    }
+                }
+                val agcBands = if (Build.VERSION.SDK_INT >= 33) {
+                    event.gnssAutomaticGainControls.mapNotNull { reading ->
+                        val frequencyHz = reading.carrierFrequencyHz.toDouble()
+                            .takeIf { it.isFinite() && it > 0.0 }
+                        val levelDb = reading.levelDb.takeIf(Double::isFinite)
+                        if (frequencyHz == null || levelDb == null) null
+                        else GnssAgcBandReading(
+                            constellationType = reading.constellationType,
+                            carrierFrequencyHz = frequencyHz,
+                            levelDb = levelDb
+                        )
+                    }
+                } else emptyList()
+                GnssDiagnosticsLiveStore.updateMeasurements(nowNanos, liveMeasurements, agcBands)
                 val meanCn0FromMeasurements =
                     cn0Values.average().takeIf { cn0Values.isNotEmpty() && it.isFinite() }
                 val statusFresh = lastStatusAtNanos > 0L &&
@@ -1052,6 +1122,7 @@ class LocationMonitorService : Service(), LocationListener {
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         clearGnssReceptionDiagnostics()
+        GnssDiagnosticsLiveStore.clear()
         mock?.disable()
         // This method also runs from onDestroy(), not only from ACTION_STOP. Clear every
         // shared position flag here so the UI cannot claim GPS is active after service death.
