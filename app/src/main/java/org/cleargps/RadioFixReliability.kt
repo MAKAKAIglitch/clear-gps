@@ -138,6 +138,15 @@ internal object RadioFixReliability {
         return maxOf(15_000L, interval * 2L).coerceAtMost(60_000L)
     }
 
+    /**
+     * If the service stops receiving/publishing positions, do not leave the last mock coordinate
+     * active indefinitely. Allow several update periods and a floor for Android provider jitter.
+     */
+    fun mockPublicationTimeoutMillis(updateIntervalMillis: Long): Long {
+        val interval = updateIntervalMillis.coerceIn(1_000L, 30_000L)
+        return maxOf(30_000L, interval * 3L).coerceAtMost(90_000L)
+    }
+
     fun shouldHoldLastRadioMockFix(
         lastConfirmedAtMillis: Long,
         nowMillis: Long,
