@@ -824,6 +824,20 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun publishSignalDecision(result: FilterDecision) {
         persistDecision(result)
+        // A signal-only GNSS warning has no safe replacement coordinate. Stop mock publication
+        // immediately instead of leaving the last test-provider position looking current.
+        if (result.state != FilterState.NORMAL && prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+            mock?.disable()
+            prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            val status = "Mock GPS приостановлен: GNSS-фильтр сообщил ${result.state}"
+            saveServiceStatus(status)
+            DiagnosticLogStore.log(this, "MOCK", status, "WARN")
+        } else {
+            DiagnosticLogStore.log(
+                this, "GNSS",
+                "Оценка спутникового сигнала: state=${result.state}, risk=${result.riskScore}"
+            )
+        }
         getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID,
             notification(result.state.name + " · risk " + result.riskScore + "%")
@@ -858,6 +872,8 @@ class LocationMonitorService : Service(), LocationListener {
         result.outputLocation?.let {
             edit.putString(KEY_LAT, it.latitude.toString()).putString(KEY_LON, it.longitude.toString())
                 .putFloat(KEY_ACCURACY, if (it.hasAccuracy()) it.accuracy else -1f)
+        } ?: run {
+            edit.remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
         }
         edit.apply()
     }
