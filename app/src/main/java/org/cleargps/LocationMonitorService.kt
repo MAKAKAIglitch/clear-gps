@@ -220,6 +220,7 @@ class LocationMonitorService : Service(), LocationListener {
                 stopTracking()
                 prefs.edit()
                     .putBoolean(KEY_HAS_OUTPUT, false)
+                    .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                     .putString(KEY_SOURCE, "NONE")
                     .putString(KEY_STATE, FilterState.WAITING.name)
                     .putInt(KEY_SCORE, 0)
@@ -234,7 +235,10 @@ class LocationMonitorService : Service(), LocationListener {
                 return START_NOT_STICKY
             }
             ACTION_DISABLE_MOCK -> {
-                prefs.edit().putBoolean(KEY_MOCK_ENABLED, false).apply()
+                prefs.edit()
+                    .putBoolean(KEY_MOCK_ENABLED, false)
+                    .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                    .apply()
                 mock?.disable()
                 saveServiceStatus("Mock output disabled")
                 if (!prefs.getBoolean(KEY_MONITORING, false)) {
@@ -280,6 +284,7 @@ class LocationMonitorService : Service(), LocationListener {
             // interval. Unregister only for a real source change or when mock output was turned off.
             if (modeChanged || !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
                 mock?.disable()
+                prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
                 lastRadioMockFix = null
                 lastRadioMockFixAtElapsedMs = 0L
             }
@@ -394,6 +399,7 @@ class LocationMonitorService : Service(), LocationListener {
                         prefs.edit()
                             .putString(KEY_SOURCE, "OBD2_DEAD_RECKONING")
                             .putBoolean(KEY_HAS_OUTPUT, true)
+                            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockEnabled)
                             .putString(KEY_LAT, projected.latitude.toString())
                             .putString(KEY_LON, projected.longitude.toString())
                             .putFloat(KEY_ACCURACY, projected.accuracy)
@@ -435,6 +441,7 @@ class LocationMonitorService : Service(), LocationListener {
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
         prefs.edit()
             .putBoolean(KEY_HAS_OUTPUT, false)
+            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
             .putString(KEY_SOURCE, "NONE")
             .remove(KEY_LAT)
             .remove(KEY_LON)
@@ -487,7 +494,9 @@ class LocationMonitorService : Service(), LocationListener {
                             }
                             prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
                                 .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "").putString(KEY_SOURCE, "LOCAL_RADIO")
-                                .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
+                                .putBoolean(KEY_HAS_OUTPUT, true)
+                                .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockRequested)
+                                .putString(KEY_LAT, output.latitude.toString())
                                 .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
                             saveServiceStatus(
                                 (if (mockRequested) "Mock GPS published · " else "Radio estimate only · ") +
@@ -498,7 +507,9 @@ class LocationMonitorService : Service(), LocationListener {
                             lastRadioMockFixAtElapsedMs = 0L
                             mock?.disable()
                             // Keep the map's estimate separate from the system mock-provider state.
-                            prefs.edit().putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                            prefs.edit().putBoolean(KEY_HAS_OUTPUT, false)
+                                .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                                .putString(KEY_SOURCE, "NONE")
                                 .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
                             saveServiceStatus("Radio match found, but mock GPS was not published; choose Clear GPS in Developer options")
                         }
@@ -523,6 +534,7 @@ class LocationMonitorService : Service(), LocationListener {
                             if (mock?.publish(held) == true) {
                                 prefs.edit()
                                     .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
+                                    .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
                                     .putString(KEY_STATE, FilterState.CORRECTING.name)
                                     .putInt(KEY_SCORE, 0)
                                     .putString(KEY_REASONS, "Временный пропуск радиосканирования; точность последней позиции снижена.")
@@ -541,6 +553,7 @@ class LocationMonitorService : Service(), LocationListener {
                                 mock?.disable()
                                 prefs.edit()
                                     .putBoolean(KEY_HAS_OUTPUT, false)
+                                    .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                                     .putString(KEY_SOURCE, "NONE")
                                     .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
                                     .apply()
@@ -555,6 +568,7 @@ class LocationMonitorService : Service(), LocationListener {
                             lastRadioMockFixAtElapsedMs = 0L
                             prefs.edit()
                                 .putBoolean(KEY_HAS_OUTPUT, false)
+                                .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                                 .putString(KEY_SOURCE, "NONE")
                                 .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
                                 .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
@@ -592,6 +606,7 @@ class LocationMonitorService : Service(), LocationListener {
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         mock?.disable()
+        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
         lastRadioMockFix = null
         lastRadioMockFixAtElapsedMs = 0L
         activePositionMode = null
@@ -664,11 +679,20 @@ class LocationMonitorService : Service(), LocationListener {
 
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
             if (mock?.publish(result.outputLocation) == true) {
+                prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true).apply()
                 val accuracyText = if (result.outputLocation.hasAccuracy()) " · ±" + result.outputLocation.accuracy.toInt() + " m" else ""
                 saveServiceStatus("Mock GPS published · " + result.source + accuracyText)
             } else {
+                prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
                 saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
             }
+        } else if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+            // Never leave an older test-provider position active when the filter has no safe
+            // output candidate. The user can see that mock output is currently unavailable.
+            mock?.disable()
+            prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            saveServiceStatus("Mock GPS paused: no safe location candidate")
+        }
         }
         val sourceHint = when (result.source) {
             "LOCAL_RADIO" -> " · local radio fallback"
@@ -749,6 +773,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val PREFS = "clear_gps"
         const val KEY_MONITORING = "monitoring"
         const val KEY_MOCK_ENABLED = "mock_enabled"
+        const val KEY_MOCK_OUTPUT_ACTIVE = "mock_output_active"
         const val KEY_STATE = "state"
         const val KEY_SCORE = "risk_score"
         const val KEY_REASONS = "risk_reasons"
