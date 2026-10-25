@@ -693,7 +693,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(zones, draftZone) {
         mapController.updateZones(zones, draftZone)
     }
-    val pointsToRender = remember(selectedMapPoint?.id, selectedPointCenter, mapPointsRevision) {
+    val pointsToRender = remember(selectedMapPoint, selectedPointCenter, mapPointsRevision) {
         val detailPoint = selectedMapPoint
         val selectedCenter = selectedPointCenter
         if (detailPoint != null) {
