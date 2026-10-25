@@ -664,11 +664,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 selectedObd2Address = available.firstOrNull()?.address.orEmpty()
                 prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
             }
-            obd2StatusIsError = available.isEmpty()
-            obd2Status = if (available.isEmpty()) {
-                "Не найден сопряжённый OBD-II адаптер. Пробуем резервный вариант: выбранный GPS/радио источник продолжает работать без автомобильной скорости. Сопряги адаптер в настройках Bluetooth."
-            } else {
-                "Найдено сопряжённых Bluetooth-устройств: " + available.size + ". Поддерживаются адаптеры Classic SPP."
+            when {
+                available.isEmpty() -> {
+                    obd2StatusIsError = true
+                    obd2Status = "Не найден сопряжённый OBD-II адаптер. Пробуем резервный вариант: выбранный GPS/радио источник продолжает работать без автомобильной скорости. Сопряги адаптер в настройках Bluetooth."
+                }
+                obd2Connected && obd2Telemetry.updatedAt > 0L -> {
+                    // Refreshing the paired-device list must not hide a live speed-reading
+                    // error or overwrite a valid telemetry status with an unrelated message.
+                }
+                else -> {
+                    obd2StatusIsError = false
+                    obd2Status = "Найдено сопряжённых Bluetooth-устройств: " + available.size + ". Поддерживаются адаптеры Classic SPP."
+                }
             }
         } catch (error: Exception) {
             obd2Adapters = emptyList()
