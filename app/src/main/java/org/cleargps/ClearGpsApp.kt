@@ -21,7 +21,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -178,9 +177,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapSourceMode by remember {
         mutableStateOf(MapSourceMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") } ?: MapSourceMode.ONLINE)
     }
-    var panelTargetFraction by remember { mutableStateOf(0.34f) }
+    var panelTargetFraction by remember { mutableStateOf(0.46f) }
     var panelVisible by remember { mutableStateOf(true) }
-    val panelFraction by animateFloatAsState(targetValue = panelTargetFraction, label = "map-panel-height")
+    val panelFraction = panelTargetFraction
     var backExitArmed by remember { mutableStateOf(false) }
     var pendingMonitorStart by remember { mutableStateOf(false) }
     var pendingMockEnable by remember { mutableStateOf(false) }
