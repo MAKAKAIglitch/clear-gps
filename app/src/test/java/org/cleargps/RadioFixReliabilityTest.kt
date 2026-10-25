@@ -14,6 +14,14 @@ class RadioFixReliabilityTest {
         assertTrue(RadioFixReliability.shouldRequestWifiScan(9_000L, 10_000L))
     }
 
+    @Test fun cellInformationIsRejectedWhenTooOldOrFromFuture() {
+        assertTrue(RadioFixReliability.isCellInfoFresh(100_000L, 100_000L))
+        assertTrue(RadioFixReliability.isCellInfoFresh(100_000L, 100_000L + 300_000L))
+        assertFalse(RadioFixReliability.isCellInfoFresh(100_000L, 400_001L))
+        assertFalse(RadioFixReliability.isCellInfoFresh(0L, 100_000L))
+        assertFalse(RadioFixReliability.isCellInfoFresh(100_001L, 100_000L))
+    }
+
     @Test fun staleWifiIncreasesUncertaintyAndFreshWifiDoesNot() {
         assertEquals(0.0, RadioFixReliability.wifiAgePenaltyMeters(15_000L, 4, 4), 0.0)
         assertTrue(RadioFixReliability.wifiAgePenaltyMeters(25_000L, 4, 4) > 0.0)
