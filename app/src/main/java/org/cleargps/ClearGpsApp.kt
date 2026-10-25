@@ -201,6 +201,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
     var points by remember { mutableStateOf(database.listPoints(500)) }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
+    var mapPointsRevision by remember { mutableStateOf(0) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
@@ -252,6 +253,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
             }
             mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
+            mapPointsRevision++
             history = withContext(Dispatchers.IO) { database.listHistory(150) }
             pointCount = withContext(Dispatchers.IO) { database.pointCount() }
             observationCount = withContext(Dispatchers.IO) { database.observationCount() }
@@ -692,7 +694,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(zones, draftZone) {
         mapController.updateZones(zones, draftZone)
     }
-    val pointsToRender = remember(selectedMapPoint, selectedPointCenter, mapPoints) {
+    val pointsToRender = remember(selectedMapPoint?.id, selectedPointCenter, mapPointsRevision) {
         val detailPoint = selectedMapPoint
         val selectedCenter = selectedPointCenter
         if (detailPoint != null) {
