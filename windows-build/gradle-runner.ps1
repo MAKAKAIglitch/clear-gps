@@ -42,14 +42,37 @@ try {
     }
     Write-Host "Running Gradle 8.14.6 with JDK from $env:JAVA_HOME"
     $PreviousErrorActionPreference = $ErrorActionPreference
+    $PreviousGradleOpts = $env:GRADLE_OPTS
+    $JvmArgsOverride = $env:CLEARGPS_GRADLE_JVM_ARGS
     try {
         # A Gradle .bat can write diagnostics to stderr. Do not let legacy
         # Windows PowerShell turn those native diagnostics into a terminating exception.
         $ErrorActionPreference = 'Continue'
+
+        # Apply the dynamic daemon arguments via a quoted JVM system property.
+        # This avoids splitting the property value containing spaces while args
+        # are forwarded through the Windows batch/PowerShell launchers.
+        if (-not [string]::IsNullOrWhiteSpace($JvmArgsOverride)) {
+            if ($JvmArgsOverride -match '["\r\n]') {
+                throw 'Invalid characters in the dynamic Gradle JVM-arguments override.'
+            }
+            $QuotedJvmProperty = '"-Dorg.gradle.jvmargs=' + $JvmArgsOverride.Trim() + '"'
+            if ([string]::IsNullOrWhiteSpace($PreviousGradleOpts)) {
+                $env:GRADLE_OPTS = $QuotedJvmProperty
+            } else {
+                $env:GRADLE_OPTS = $PreviousGradleOpts.TrimEnd() + ' ' + $QuotedJvmProperty
+            }
+        }
+
         & $GradleExe @GradleArguments
         $GradleExitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $PreviousErrorActionPreference
+        if ($null -eq $PreviousGradleOpts) {
+            Remove-Item Env:GRADLE_OPTS -ErrorAction SilentlyContinue
+        } else {
+            $env:GRADLE_OPTS = $PreviousGradleOpts
+        }
     }
     if ($null -eq $GradleExitCode) { $GradleExitCode = 0 }
     exit [int]$GradleExitCode
