@@ -2,6 +2,8 @@ package org.cleargps
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -258,6 +260,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mutableStateOf((prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() })
     }
     var serviceStatus by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: "") }
+    var detailedLogging by remember { mutableStateOf(prefs.getBoolean(DiagnosticLogStore.KEY_ENABLED, false)) }
+    var diagnosticLogMaxKb by remember {
+        mutableStateOf(prefs.getInt(DiagnosticLogStore.KEY_MAX_KB, DiagnosticLogStore.DEFAULT_MAX_KB)
+            .coerceIn(DiagnosticLogStore.MIN_MAX_KB, DiagnosticLogStore.MAX_MAX_KB))
+    }
+    var showDiagnosticLogs by remember { mutableStateOf(false) }
+    var diagnosticLogText by remember { mutableStateOf("") }
 
     var pointToEdit by remember { mutableStateOf<RadioPointRecord?>(null) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
@@ -375,20 +384,36 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 bleCount = result.beaconCount
                 recordedCount = result.recordedCount
                 lastScanAt = System.currentTimeMillis()
-                currentRadioEstimate = result.estimate
+                val nowAfterScan = System.currentTimeMillis()
+                val lastCredibleEstimate = currentRadioEstimate?.takeIf {
+                    RadioFixReliability.canRetainLastEstimate(
+                        it.updatedAt, nowAfterScan, it.matchedCount, it.accuracyMeters
+                    )
+                }
+                // A single throttled/empty radio scan is not evidence that the previously
+                // confirmed coordinate vanished. Keep it briefly, with an explicit stale status,
+                // instead of flickering the map and mock UI to "no fix" every few seconds.
+                currentRadioEstimate = result.estimate ?: lastCredibleEstimate
+                val retainedHint = if (result.estimate == null && lastCredibleEstimate != null) {
+                    val ageSeconds = ((nowAfterScan - lastCredibleEstimate.updatedAt).coerceAtLeast(0L) / 1_000L)
+                    " Последняя подтверждённая радио-оценка сохранена на экране (${ageSeconds} с); текущий скан её не подтвердил."
+                } else ""
                 scanMessage = result.message +
                     (if (recordNow && result.recordedCount > 0) " Сохранено/обновлено записей: " + result.recordedCount + "." else "") +
-                    (if (recordNow && insideRiskZone) " Запись точек отключена: позиция попала в зону риска." else "")
+                    (if (recordNow && insideRiskZone) " Запись точек отключена: позиция попала в зону риска." else "") +
+                    retainedHint
                 lookupPhase = when {
                     result.estimate != null -> LookupPhase.UPDATED
                     result.wifiCount + result.cellCount + result.beaconCount == 0 -> LookupPhase.ERROR
                     else -> LookupPhase.NO_MATCH
                 }
                 refreshLocalUi()
-            } catch (_: SecurityException) {
+            } catch (error: SecurityException) {
+                DiagnosticLogStore.log(context, "RADIO_UI", "Сканирование отклонено Android: ${error.message ?: "SecurityException"}", "ERROR")
                 scanMessage = "Android запретил сканирование. Проверь разрешения и системные настройки геолокации."
                 lookupPhase = LookupPhase.ERROR
             } catch (error: Exception) {
+                DiagnosticLogStore.log(context, "RADIO_UI", "Ошибка локального сканирования: ${error.javaClass.simpleName}: ${error.message ?: "без описания"}", "ERROR")
                 scanMessage = "Ошибка локального сканирования: " + (error.message ?: "неизвестная ошибка")
                 lookupPhase = LookupPhase.ERROR
             } finally {
@@ -807,8 +832,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 // Keep a short-lived last-known estimate through a single failed scan, but never
                 // show it indefinitely as a current position when monitoring is off or matches stop.
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
-                    val age = System.currentTimeMillis() - it.updatedAt
-                    age in 0..45_000L && it.matchedCount >= 2 && it.accuracyMeters <= 1_000.0
+                    RadioFixReliability.canRetainLastEstimate(
+                        it.updatedAt, System.currentTimeMillis(), it.matchedCount, it.accuracyMeters
+                    )
                 }
                 if (stored != currentRadioEstimate) currentRadioEstimate = stored
             }
@@ -1258,6 +1284,27 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     manualFallbackEnabled = manualFallbackEnabled,
                                     mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
+                                    detailedLogging = detailedLogging,
+                                    diagnosticLogMaxKb = diagnosticLogMaxKb,
+                                    onDetailedLogging = { enabled ->
+                                        DiagnosticLogStore.setEnabled(context, enabled)
+                                        detailedLogging = enabled
+                                    },
+                                    onDiagnosticLogMaxKb = { requestedKb ->
+                                        val normalized = (((requestedKb + 32) / 64) * 64).coerceIn(
+                                            DiagnosticLogStore.MIN_MAX_KB, DiagnosticLogStore.MAX_MAX_KB
+                                        )
+                                        DiagnosticLogStore.setMaxKb(context, normalized)
+                                        diagnosticLogMaxKb = normalized
+                                    },
+                                    onViewDiagnosticLogs = {
+                                        diagnosticLogText = DiagnosticLogStore.read(context)
+                                        showDiagnosticLogs = true
+                                    },
+                                    onClearDiagnosticLogs = {
+                                        DiagnosticLogStore.clear(context)
+                                        diagnosticLogText = DiagnosticLogStore.read(context)
+                                    },
                                     onMode = { applyPositionMode(it) },
                                     onMapTheme = {
                                         mapThemeMode = it
@@ -1474,6 +1521,43 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showExportOptions = false }) { Text("Отмена") }
+            }
+        )
+    }
+
+    if (showDiagnosticLogs) {
+        AlertDialog(
+            onDismissRequest = { showDiagnosticLogs = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = { Text("Журнал диагностики Clear GPS") },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 500.dp).verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        diagnosticLogText.ifBlank { "Журнал пуст." },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    if (clipboard == null) {
+                        Toast.makeText(context, "Буфер обмена недоступен.", Toast.LENGTH_SHORT).show()
+                    } else {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Clear GPS diagnostic log", diagnosticLogText))
+                        Toast.makeText(context, "Весь журнал скопирован.", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Icon(Icons.Outlined.ContentCopy, null)
+                    Spacer(Modifier.width(5.dp))
+                    Text("Скопировать всё")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiagnosticLogs = false }) { Text("Закрыть") }
             }
         )
     }
@@ -2325,6 +2409,9 @@ private fun ZonesScreen(
 private fun SettingsScreen(
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
+    detailedLogging: Boolean, diagnosticLogMaxKb: Int,
+    onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
+    onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
     onScanInterval: (Int) -> Unit, onScanIntervalFinished: () -> Unit,
@@ -2337,6 +2424,7 @@ private fun SettingsScreen(
     var showMapOptions by remember { mutableStateOf(false) }
     var showRadioOptions by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
+    var showDiagnosticOptions by remember { mutableStateOf(false) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
 
     Column(
@@ -2519,6 +2607,58 @@ private fun SettingsScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
+                }
+            }
+        }
+
+        SettingsSectionToggle(
+            title = "Прочее и диагностика",
+            summary = "Подробные логи, просмотр и копирование для поиска ошибок",
+            expanded = showDiagnosticOptions,
+            onClick = { showDiagnosticOptions = !showDiagnosticOptions }
+        )
+        if (showDiagnosticOptions) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    SettingSwitch(
+                        "Подробное логирование",
+                        "Записывает результаты радио-сканов, причины отказа фикса, ошибки mock GPS и состояние службы.",
+                        detailedLogging,
+                        onDetailedLogging
+                    )
+                    Text(
+                        "Журнал хранится только на устройстве. В него не записываются точные координаты, MAC/BSSID и имена устройств. Логи приложения не включают системный Android logcat.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text("Максимальный размер: $diagnosticLogMaxKb КБ", style = MaterialTheme.typography.titleSmall)
+                    Slider(
+                        value = diagnosticLogMaxKb.toFloat(),
+                        onValueChange = { onDiagnosticLogMaxKb(it.roundToInt()) },
+                        valueRange = DiagnosticLogStore.MIN_MAX_KB.toFloat()..DiagnosticLogStore.MAX_MAX_KB.toFloat(),
+                        steps = 6,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = onViewDiagnosticLogs,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Outlined.History, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Смотреть логи")
+                        }
+                        OutlinedButton(
+                            onClick = onClearDiagnosticLogs,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Outlined.DeleteOutline, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Очистить")
+                        }
+                    }
                 }
             }
         }
