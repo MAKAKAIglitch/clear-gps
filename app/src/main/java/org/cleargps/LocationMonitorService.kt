@@ -240,6 +240,9 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    private fun configuredUpdateIntervalMillis(): Long =
+        prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30) * 1_000L
+
     private fun startTracking() {
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -280,7 +283,7 @@ class LocationMonitorService : Service(), LocationListener {
                 }
                 "gps", "gps_obd2" -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
                         registerGnssStatus()
                     }
                     if (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
@@ -289,11 +292,11 @@ class LocationMonitorService : Service(), LocationListener {
                 }
                 else -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
                         registerGnssStatus()
                     }
                     if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2_000L, 0f, this)
+                        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
                     }
                 }
             }
@@ -319,7 +322,7 @@ class LocationMonitorService : Service(), LocationListener {
             while (isActive &&
                 prefs.getBoolean(KEY_MONITORING, false) &&
                 prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
-                delay(1_000L)
+                delay(configuredUpdateIntervalMillis())
 
                 val filterState = prefs.getString(KEY_STATE, FilterState.WAITING.name)
                 val lastSource = prefs.getString(KEY_SOURCE, "NONE")
@@ -467,12 +470,15 @@ class LocationMonitorService : Service(), LocationListener {
                 } catch (error: Exception) {
                     saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
                 }
-                val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120)
+                val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
                 val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
                 val obdSpeedKmh = if (radioObdMode) Obd2SharedState.freshSpeedKmh(prefs) else null
-                // While the car is moving, shorten radio rescans; if speed is unavailable/stale,
-                // fall back to the user's normal scan interval without inventing a location.
-                val nextInterval = if (obdSpeedKmh != null && obdSpeedKmh >= 5) minOf(baseInterval, 10) else baseInterval
+                val adaptive = prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)
+                // Respect the chosen interval; only halve it in faster motion when the user
+                // explicitly keeps adaptive scanning enabled.
+                val nextInterval = if (adaptive && obdSpeedKmh != null && obdSpeedKmh > 25f) {
+                    (baseInterval / 2).coerceAtLeast(1)
+                } else baseInterval
                 delay(nextInterval * 1_000L)
             }
         }
