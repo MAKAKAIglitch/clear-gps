@@ -559,11 +559,30 @@ class LocationMonitorService : Service(), LocationListener {
                     )
                     val estimate = result.estimate
                     val currentSignalCount = result.wifiCount + result.cellCount + result.beaconCount
+                    val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                    val nowWallMillis = System.currentTimeMillis()
+                    val nowElapsedMillis = SystemClock.elapsedRealtime()
+                    val estimateAgeMillis = estimate?.let { nowWallMillis - it.updatedAt } ?: Long.MAX_VALUE
+                    val estimateEvidenceRecent = estimateAgeMillis in 0..RadioFixReliability.WIFI_MAX_CACHE_AGE_MS
+                    val cachedEstimateAllowed = estimate != null && RadioFixReliability.canPublishRadioEstimate(
+                        estimateUpdatedAtMillis = estimate.updatedAt,
+                        nowWallMillis = nowWallMillis,
+                        fromCache = result.fromCache,
+                        lastConfirmedAtElapsedMillis = lastRadioMockFixAtElapsedMs,
+                        nowElapsedMillis = nowElapsedMillis,
+                        updateIntervalMillis = configuredUpdateIntervalMillis()
+                    )
+                    val estimateAllowedForOutput = estimateEvidenceRecent &&
+                        (!mockRequested || cachedEstimateAllowed)
                     val rejectionReason = when {
                         estimate == null && currentSignalCount < 2 ->
                             "Сейчас обнаружено только $currentSignalCount радиосигналов. Для расчёта нужны минимум 2 актуальных сигнала; сохранённые точки, которые телефон не слышит, координату не дают."
                         estimate == null ->
                             "Текущий скан увидел $currentSignalCount радиосигналов, но не нашёл однозначную координату: совпадения могут быть неоднозначны или записи не содержат координат."
+                        !estimateEvidenceRecent ->
+                            "Оценка отклонена: возраст радиоданных ${(estimateAgeMillis.coerceAtLeast(0L) / 1_000L)} с превышает допустимый предел ${RadioFixReliability.WIFI_MAX_CACHE_AGE_MS / 1_000L} с."
+                        mockRequested && !cachedEstimateAllowed ->
+                            "Кэш радиосигналов больше не продлевает mock GPS: ожидаю новый подтверждённый скан или истечение ограниченного резерва."
                         estimate.matchedCount < RADIO_MIN_MATCHES ->
                             "Оценка отклонена для mock GPS: совпадений ${estimate.matchedCount}, нужно не меньше $RADIO_MIN_MATCHES."
                         estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ->
@@ -577,7 +596,8 @@ class LocationMonitorService : Service(), LocationListener {
                             "accuracy=${estimate?.accuracyMeters?.toInt() ?: -1}m, cached=${result.fromCache}, " +
                             (rejectionReason.ifBlank { "оценка прошла пороги" })
                     )
-                    if (estimate != null && estimate.matchedCount >= RADIO_MIN_MATCHES &&
+                    if (estimate != null && estimateAllowedForOutput &&
+                        estimate.matchedCount >= RADIO_MIN_MATCHES &&
                         estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
                         val output = Location(LocationManager.NETWORK_PROVIDER).apply {
                             latitude = estimate.latitude
@@ -586,18 +606,16 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                         }
-                        val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                         val mockPublished = !mockRequested || mock?.publish(output) == true
                         if (mockPublished) {
                             if (mockRequested) {
-                                // Cached Wi-Fi data can still support a useful short-term estimate,
-                                // but must not refresh the timer for our bounded last-confirmed fix.
-                                // Otherwise repeated reads of the same cache could keep a stale
-                                // coordinate alive indefinitely while the radio scan is throttled.
-                                if (!result.fromCache) {
-                                    lastRadioMockFix = Location(output)
-                                    lastRadioMockFixAtElapsedMs = SystemClock.elapsedRealtime()
-                                }
+                                // Anchor the hold timer to the oldest contributing evidence, not
+                                // to the moment we read the Android cache or finished calculation.
+                                val evidenceAge = (System.currentTimeMillis() - estimate.updatedAt)
+                                    .coerceIn(0L, RadioFixReliability.WIFI_MAX_CACHE_AGE_MS)
+                                lastRadioMockFix = Location(output)
+                                lastRadioMockFixAtElapsedMs =
+                                    (SystemClock.elapsedRealtime() - evidenceAge).coerceAtLeast(1L)
                             } else {
                                 lastRadioMockFix = null
                                 lastRadioMockFixAtElapsedMs = 0L
