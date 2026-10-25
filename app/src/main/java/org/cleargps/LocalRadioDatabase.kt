@@ -42,6 +42,77 @@ data class RadioEstimate(
     val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0
 )
 
+data class RadioPointObservation(
+    val id: Long,
+    val observedAt: Long,
+    val latitude: Double?,
+    val longitude: Double?,
+    val accuracyMeters: Double?,
+    val rssi: Int,
+    val frequency: Int,
+    val positionSource: String
+)
+
+data class RadioPointCenter(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val sampleCount: Int
+)
+
+/**
+ * Estimates the centre of recorded observation locations, not the physical transmitter position.
+ * More accurate fixes contribute more weight; spherical averaging also handles the date line.
+ */
+fun estimateObservationCenter(observations: List<RadioPointObservation>): RadioPointCenter? {
+    val located = observations.mapNotNull { observation ->
+        val lat = observation.latitude
+        val lon = observation.longitude
+        if (lat == null || lon == null || !lat.isFinite() || !lon.isFinite() ||
+            lat !in -90.0..90.0 || lon !in -180.0..180.0) return@mapNotNull null
+        val accuracy = observation.accuracyMeters
+            ?.takeIf { it.isFinite() && it > 0.0 }
+            ?.coerceIn(10.0, 100_000.0) ?: 250.0
+        Triple(observation, accuracy, 1.0 / (accuracy * accuracy))
+    }
+    if (located.isEmpty()) return null
+
+    var x = 0.0
+    var y = 0.0
+    var z = 0.0
+    var totalWeight = 0.0
+    located.forEach { (observation, _, weight) ->
+        val lat = Math.toRadians(observation.latitude!!)
+        val lon = Math.toRadians(observation.longitude!!)
+        x += kotlin.math.cos(lat) * kotlin.math.cos(lon) * weight
+        y += kotlin.math.cos(lat) * kotlin.math.sin(lon) * weight
+        z += kotlin.math.sin(lat) * weight
+        totalWeight += weight
+    }
+    if (totalWeight <= 0.0) return null
+    val horizontal = kotlin.math.sqrt(x * x + y * y)
+    if (!horizontal.isFinite() || (horizontal < 1e-12 && kotlin.math.abs(z) < 1e-12)) return null
+    val latitude = Math.toDegrees(kotlin.math.atan2(z, horizontal)).coerceIn(-90.0, 90.0)
+    val longitude = Math.toDegrees(kotlin.math.atan2(y, x))
+    val lat0 = Math.toRadians(latitude)
+    val lon0 = Math.toRadians(longitude)
+    val uncertaintySquared = located.sumOf { (observation, accuracy, weight) ->
+        val lat = Math.toRadians(observation.latitude!!)
+        val lon = Math.toRadians(observation.longitude!!)
+        val dLat = lat - lat0
+        val dLon = lon - lon0
+        val a = (kotlin.math.sin(dLat / 2).pow(2) +
+            kotlin.math.cos(lat0) * kotlin.math.cos(lat) * kotlin.math.sin(dLon / 2).pow(2)).coerceIn(0.0, 1.0)
+        val distance = 2.0 * 6_371_000.0 * kotlin.math.asin(kotlin.math.sqrt(a))
+        weight * (distance * distance + accuracy * accuracy)
+    } / totalWeight
+    return RadioPointCenter(
+        latitude, longitude,
+        kotlin.math.sqrt(uncertaintySquared).coerceIn(10.0, 100_000.0),
+        located.size
+    )
+}
+
 data class RadioLookupResult(
     val estimate: RadioEstimate?, val wifiCount: Int, val cellCount: Int, val beaconCount: Int,
     val fromCache: Boolean, val message: String, val matchedCount: Int = 0, val recordedCount: Int = 0
@@ -309,6 +380,34 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     fun findPoint(id: Long): RadioPointRecord? = readableDatabase.rawQuery(
         "SELECT * FROM radio_points WHERE id = ?", arrayOf(id.toString())
     ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
+
+    /** All retained observations for one radio point (the DB keeps at most 20,000). */
+    fun listObservations(point: RadioPointRecord, limit: Int = 20_000): List<RadioPointObservation> {
+        val result = ArrayList<RadioPointObservation>()
+        readableDatabase.rawQuery(
+            "SELECT id, observed_at, latitude, longitude, accuracy, rssi, frequency, position_source " +
+                "FROM radio_observations WHERE radio_type = ? AND identifier = ? " +
+                "ORDER BY observed_at DESC, id DESC LIMIT ?",
+            arrayOf(point.type, point.identifier, limit.coerceIn(1, 20_000).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val latIndex = cursor.getColumnIndexOrThrow("latitude")
+                val lonIndex = cursor.getColumnIndexOrThrow("longitude")
+                val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
+                result.add(RadioPointObservation(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    observedAt = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    latitude = if (cursor.isNull(latIndex)) null else cursor.getDouble(latIndex),
+                    longitude = if (cursor.isNull(lonIndex)) null else cursor.getDouble(lonIndex),
+                    accuracyMeters = if (cursor.isNull(accuracyIndex)) null else cursor.getDouble(accuracyIndex),
+                    rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                    frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                    positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                ))
+            }
+        }
+        return result
+    }
 
     /** Fetch geolocated points only; unlocated rows cannot consume the map marker limit. */
     fun listMapPoints(limit: Int = 1_500): List<RadioPointRecord> {
