@@ -264,6 +264,8 @@ class LocationMonitorService : Service(), LocationListener {
     private fun startTracking() {
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            mock?.disable()
             saveServiceStatus("Location permission missing")
             DiagnosticLogStore.log(this, "SERVICE", "Мониторинг не запущен: отсутствует разрешение геолокации", "ERROR")
             stopSelf()
@@ -339,13 +341,18 @@ class LocationMonitorService : Service(), LocationListener {
                 }
             }
             saveServiceStatus("Monitoring")
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            mock?.disable()
             saveServiceStatus("Location permission denied")
-            DiagnosticLogStore.log(this, "SERVICE", "Android отказал в разрешении геолокации", "ERROR")
+            DiagnosticLogStore.log(this, "SERVICE", "Android отказал в разрешении геолокации: ${error.message ?: "SecurityException"}", "ERROR")
             stopSelf()
         } catch (error: IllegalArgumentException) {
+            prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            mock?.disable()
             saveServiceStatus("Location provider unavailable: " + (error.message ?: "unknown"))
             DiagnosticLogStore.log(this, "SERVICE", "GPS provider недоступен: ${error.message ?: error.javaClass.simpleName}", "ERROR")
+            stopSelf()
         }
     }
 
@@ -849,12 +856,19 @@ class LocationMonitorService : Service(), LocationListener {
      */
     private fun persistDecision(result: FilterDecision) {
         if (result.source == "GNSS_SIGNAL_ONLY") {
+            // This decision carries no safe position. Clear the last candidate so stale values
+            // cannot remain visible or be mistaken for an active mock fix while GNSS is suspect.
             prefs.edit()
                 .putString(KEY_STATE, result.state.name)
                 .putInt(KEY_SCORE, result.riskScore)
                 .putBoolean(KEY_IN_ZONE, result.inRiskZone)
                 .putString(KEY_SOURCE, result.source)
                 .putString(KEY_REASONS, result.reasons.joinToString("\n"))
+                .putBoolean(KEY_HAS_OUTPUT, false)
+                .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                .remove(KEY_LAT)
+                .remove(KEY_LON)
+                .remove(KEY_ACCURACY)
                 .apply()
             return
         }
