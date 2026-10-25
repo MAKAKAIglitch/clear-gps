@@ -28,6 +28,7 @@ enum class MapTapMode { NONE, PLACE_ANCHOR, DRAW_ZONE }
 class ClearGpsMapController {
     private var map: MapLibreMap? = null
     private var locationSource: GeoJsonSource? = null
+    private var calculatedLocationSource: GeoJsonSource? = null
     private var accuracySource: GeoJsonSource? = null
     private var anchorSource: GeoJsonSource? = null
     private var polygonSource: GeoJsonSource? = null
@@ -37,6 +38,7 @@ class ClearGpsMapController {
     private var cellPointsSource: GeoJsonSource? = null
     private var blePointsSource: GeoJsonSource? = null
     private var primaryLocation: MapCoordinate? = null
+    private var calculatedLocation: MapCoordinate? = null
     private var primaryAccuracyMeters: Double? = null
     private var manualAnchor: ManualAnchor? = null
     private var savedZones: List<SavedRiskZone> = emptyList()
@@ -113,6 +115,7 @@ class ClearGpsMapController {
             renderAll()
             if (!cameraInitialized) {
                 val start = primaryLocation
+                    ?: calculatedLocation
                     ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
                     ?: radioPoints.firstOrNull()?.let { MapCoordinate(it.latitude!!, it.longitude!!) }
                 if (start != null) {
@@ -153,6 +156,15 @@ class ClearGpsMapController {
         renderAll()
     }
 
+    fun updateCalculatedLocation(location: MapCoordinate?) {
+        calculatedLocation = location
+        if (!cameraInitialized && mapReady && location != null) {
+            map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 14.0))
+            cameraInitialized = true
+        }
+        renderAll()
+    }
+
     fun updateZones(zones: List<SavedRiskZone>, draft: List<ZonePoint>) {
         savedZones = zones.toList()
         draftZone = draft.toList()
@@ -176,7 +188,7 @@ class ClearGpsMapController {
     }
 
     fun focusPrimary() {
-        val point = primaryLocation ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+        val point = primaryLocation ?: calculatedLocation ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
         if (point != null) map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(point.latitude, point.longitude), 16.0))
     }
 
@@ -188,13 +200,14 @@ class ClearGpsMapController {
         accuracySource = GeoJsonSource(ACCURACY_SOURCE, emptyCollection())
         locationSource = GeoJsonSource(LOCATION_SOURCE, emptyCollection())
         anchorSource = GeoJsonSource(ANCHOR_SOURCE, emptyCollection())
+        calculatedLocationSource = GeoJsonSource(CALCULATED_SOURCE, emptyCollection())
         polygonSource = GeoJsonSource(POLYGON_SOURCE, emptyCollection())
         lineSource = GeoJsonSource(LINE_SOURCE, emptyCollection())
         zonePointsSource = GeoJsonSource(ZONE_POINTS_SOURCE, emptyCollection())
         wifiPointsSource = GeoJsonSource(WIFI_POINTS_SOURCE, emptyCollection())
         cellPointsSource = GeoJsonSource(CELL_POINTS_SOURCE, emptyCollection())
         blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection())
-        listOf(locationSource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
+        listOf(locationSource, calculatedLocationSource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
             wifiPointsSource, cellPointsSource, blePointsSource).forEach { style.addSource(it!!) }
 
         style.addLayer(FillLayer(POLYGON_LAYER, POLYGON_SOURCE).withProperties(
@@ -239,12 +252,18 @@ class ClearGpsMapController {
             PropertyFactory.circleRadius(6f), PropertyFactory.circleColor("#1A73E8"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f)
         ))
+        style.addLayer(CircleLayer(CALCULATED_DOT_LAYER, CALCULATED_SOURCE).withProperties(
+            PropertyFactory.circleRadius(8f), PropertyFactory.circleColor("#DC2626"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f),
+            PropertyFactory.circleOpacity(0.98f)
+        ))
     }
 
     private fun renderAll() {
         if (!mapReady) return
         val position = primaryLocation
         locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
+        calculatedLocationSource?.setGeoJson(calculatedLocation?.let { pointCollection(it) } ?: emptyCollection())
         accuracySource?.setGeoJson(position?.let { accuracyCollection(it, primaryAccuracyMeters) } ?: emptyCollection())
         anchorSource?.setGeoJson(manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection())
 
@@ -281,6 +300,9 @@ class ClearGpsMapController {
         wifiPointsSource?.setGeoJson(pointsFor("wifi"))
         cellPointsSource?.setGeoJson(pointsFor("cell"))
         blePointsSource?.setGeoJson(pointsFor("ble"))
+        // GeoJSON updates are asynchronous in MapLibre; explicitly request the next frame
+        // so new anchors and zone vertices do not wait for the user to pan the map.
+        map?.triggerRepaint()
     }
 
     private fun pointCollection(point: MapCoordinate) =
@@ -313,6 +335,7 @@ class ClearGpsMapController {
         private const val LIGHT_STYLE_URI = "https://tiles.openfreemap.org/styles/liberty"
         private const val DARK_STYLE_URI = "https://tiles.openfreemap.org/styles/dark"
         private const val LOCATION_SOURCE = "cleargps-location"
+        private const val CALCULATED_SOURCE = "cleargps-calculated-location"
         private const val ACCURACY_SOURCE = "cleargps-accuracy"
         private const val ANCHOR_SOURCE = "cleargps-anchor"
         private const val POLYGON_SOURCE = "cleargps-risk-polygon"
@@ -323,6 +346,7 @@ class ClearGpsMapController {
         private const val BLE_POINTS_SOURCE = "cleargps-ble-points"
         private const val LOCATION_HALO_LAYER = "cleargps-location-halo"
         private const val LOCATION_DOT_LAYER = "cleargps-location-dot"
+        private const val CALCULATED_DOT_LAYER = "cleargps-calculated-location-dot"
         private const val ACCURACY_LAYER = "cleargps-accuracy-area"
         private const val ACCURACY_OUTLINE_LAYER = "cleargps-accuracy-outline"
         private const val ANCHOR_HALO_LAYER = "cleargps-anchor-halo"
