@@ -128,6 +128,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -278,6 +279,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
     var recording by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false)) }
     var scanBusy by remember { mutableStateOf(false) }
+    var explicitRadioScanJob by remember { mutableStateOf<Job?>(null) }
     var scanMessage by remember {
         mutableStateOf("Сканирование локальное. Запиши радиоточки на известном месте, чтобы затем ориентироваться по ним без GPS.")
     }
@@ -378,6 +380,18 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     fun applyPositionMode(mode: PositionMode) {
+        if (mode.gpsOnly) {
+            // Switching to GPS-only must stop any in-flight UI radio scan and turn off
+            // persistent radio recording so it cannot silently resume later.
+            explicitRadioScanJob?.cancel()
+            explicitRadioScanJob = null
+            if (recording) {
+                recording = false
+                prefs.edit().putBoolean(ClearGpsPreferences.KEY_RECORDING, false).apply()
+            }
+            scanMessage = "Радиосканирование отключено в режиме GPS."
+            lookupPhase = LookupPhase.IDLE
+        }
         positionMode = mode
         prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
         currentRadioEstimate = null
@@ -395,7 +409,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     val performScan: suspend (Boolean) -> Unit = { recordNow ->
-        if (!scanBusy) {
+        if (positionMode.gpsOnly) {
+            // Hard guard: no route to RadioGeolocationRepository from GPS-only mode,
+            // including stale callbacks that fire after the user changes mode.
+            scanMessage = "Радиосканирование отключено в режиме GPS."
+            lookupPhase = LookupPhase.IDLE
+        } else if (!scanBusy) {
             scanBusy = true
             lookupPhase = LookupPhase.SCANNING
             scanMessage = if (recordNow) "Сохраняю наблюдения в локальную SQLite-базу…" else "Сканирую Wi‑Fi, мобильные соты и Bluetooth LE…"
@@ -471,6 +490,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
+    fun launchRadioScan(recordNow: Boolean, afterScan: (() -> Unit)? = null) {
+        if (positionMode.gpsOnly) {
+            scanMessage = "Радиосканирование отключено в режиме GPS."
+            lookupPhase = LookupPhase.IDLE
+            return
+        }
+        if (scanBusy || explicitRadioScanJob?.isActive == true) return
+        explicitRadioScanJob = scope.launch {
+            performScan(recordNow)
+            afterScan?.invoke()
+        }
+    }
+
     // Selecting radio-only immediately calculates an estimate from the local radio database.
     // This effect never asks Android for a location fix; it only scans radio identifiers.
     LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context), monitorEnabled) {
@@ -524,8 +556,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        scope.launch {
-            performScan(pendingRecordScan)
+        launchRadioScan(pendingRecordScan) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && result[Manifest.permission.BLUETOOTH_SCAN] != true) {
                 scanMessage += " Bluetooth недоступен без разрешения, но Wi‑Fi и сотовое сканирование продолжены."
             }
@@ -566,12 +597,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 pendingMockEnable = false
                 Toast.makeText(context, "Мониторинг не запущен: разрешение геолокации отклонено.", Toast.LENGTH_LONG).show()
             }
+        } else if (positionMode.gpsOnly) {
+            scanMessage = "Радиосканирование отключено в режиме GPS."
+            lookupPhase = LookupPhase.IDLE
         } else if (result.values.any { it }) {
             if (useBle && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN))
             } else {
-                scope.launch { performScan(pendingRecordScan) }
+                launchRadioScan(pendingRecordScan)
             }
         } else {
             scanMessage = "Без разрешения геолокации Android ограничивает сканирование Wi‑Fi и сотовых сетей."
@@ -580,14 +614,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     val startScan: (Boolean) -> Unit = { recordNow ->
-        pendingRecordScan = recordNow
-        if (!hasAnyLocationPermission(context)) {
-            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-        } else if (useBle && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-            bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN))
+        if (positionMode.gpsOnly) {
+            scanMessage = "Радиосканирование отключено в режиме GPS."
+            lookupPhase = LookupPhase.IDLE
         } else {
-            scope.launch { performScan(recordNow) }
+            pendingRecordScan = recordNow
+            if (!hasAnyLocationPermission(context)) {
+                locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            } else if (useBle && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN))
+            } else {
+                launchRadioScan(recordNow)
+            }
         }
     }
 
@@ -832,10 +871,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan, monitorEnabled) {
-        // In radio mode the service performs the scan and honours the recording preference.
-        if (recording && appVisible && hasAnyLocationPermission(context) &&
+        // GPS-only mode never runs the radio collection loop. In radio mode the service
+        // performs the scan and honours the recording preference when monitoring is active.
+        if (recording && !positionMode.gpsOnly && appVisible && hasAnyLocationPermission(context) &&
             !(positionMode.usesRadio && monitorEnabled)) {
-            while (recording && appVisible) {
+            while (recording && appVisible && !positionMode.gpsOnly) {
                 performScan(true)
                 val obdSpeedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
                 val locationSpeedKmh = if (positionMode.usesRadio) null else liveLocation?.takeIf {
@@ -894,8 +934,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
             // The foreground service owns radio scans while monitoring is active. Mirror its
             // latest persisted counters/message so the screen cannot stay stuck on an older scan.
-            val storedScanAt = prefs.getLong(ClearGpsPreferences.KEY_LAST_SCAN_AT, 0L)
-            if (!scanBusy && storedScanAt > 0L && storedScanAt > lastScanAt) {
+            val storedScanAt = if (positionMode.gpsOnly) 0L
+                else prefs.getLong(ClearGpsPreferences.KEY_LAST_SCAN_AT, 0L)
+            if (!positionMode.gpsOnly && !scanBusy && storedScanAt > 0L && storedScanAt > lastScanAt) {
                 wifiCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, 0)
                 cellCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_CELL_COUNT, 0)
                 bleCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_BLE_COUNT, 0)
@@ -1031,8 +1072,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(mapSourceMode) {
         mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
     }
-    LaunchedEffect(selectedMapPoint != null, showRadioPointsOnMap) {
-        mapController.setShowRadioPoints(selectedMapPoint != null || showRadioPointsOnMap)
+    LaunchedEffect(selectedMapPoint != null, showRadioPointsOnMap, positionMode.gpsOnly) {
+        // Radio markers are hidden in GPS-only mode so the map does not imply they contribute
+        // to the current fix. They remain available in the database and radio modes.
+        mapController.setShowRadioPoints(
+            !positionMode.gpsOnly && (selectedMapPoint != null || showRadioPointsOnMap)
+        )
     }
     LaunchedEffect(mapPrimaryCoordinate, mapPrimaryAccuracy) {
         mapController.updatePrimary(mapPrimaryCoordinate, mapPrimaryAccuracy)
@@ -1869,90 +1914,94 @@ private fun MapHomeScreen(
                 color = colors.error
             )
         }
-        if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (!mode.gpsOnly) {
+            if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SourceChip(Icons.Outlined.Wifi, "Wi‑Fi $wifiCount", wifiCount > 0)
-            SourceChip(Icons.Outlined.SignalCellularAlt, "Соты $cellCount", cellCount > 0)
-            SourceChip(Icons.Outlined.Bluetooth, "BLE $bleCount", bleCount > 0)
-        }
-
-        Surface(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            color = if (lookupPhase == LookupPhase.ERROR) colors.errorContainer else colors.surfaceContainer
-        ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        when (lookupPhase) {
-                            LookupPhase.UPDATED -> Icons.Outlined.CheckCircle
-                            LookupPhase.ERROR -> Icons.Outlined.Info
-                            else -> Icons.Outlined.Refresh
-                        },
-                        null,
-                        tint = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.primary
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        when (lookupPhase) {
-                            LookupPhase.SCANNING -> "Сканирование"
-                            LookupPhase.UPDATED -> "Радиоданные обновлены"
-                            LookupPhase.STALE -> "Последняя оценка сохранена"
-                            LookupPhase.NO_MATCH -> "Нет совпадения в радиобазе"
-                            LookupPhase.ERROR -> "Не удалось завершить сканирование"
-                            LookupPhase.IDLE -> "Состояние радиопоиска"
-                        },
-                        modifier = Modifier.weight(1f),
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurface
-                    )
-                }
-                Text(
-                    scanMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SourceChip(Icons.Outlined.Wifi, "Wi‑Fi $wifiCount", wifiCount > 0)
+                SourceChip(Icons.Outlined.SignalCellularAlt, "Соты $cellCount", cellCount > 0)
+                SourceChip(Icons.Outlined.Bluetooth, "BLE $bleCount", bleCount > 0)
             }
-        }
 
-        Surface(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            color = if (recording) colors.secondaryContainer else colors.surfaceContainer
-        ) {
-            Row(
-                Modifier.padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = if (lookupPhase == LookupPhase.ERROR) colors.errorContainer else colors.surfaceContainer
             ) {
-                Icon(
-                    if (recording) Icons.Outlined.RadioButtonChecked else Icons.Outlined.RadioButtonUnchecked,
-                    null,
-                    tint = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
-                    modifier = Modifier.size(21.dp)
-                )
-                Spacer(Modifier.width(9.dp))
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            when (lookupPhase) {
+                                LookupPhase.UPDATED -> Icons.Outlined.CheckCircle
+                                LookupPhase.ERROR -> Icons.Outlined.Info
+                                else -> Icons.Outlined.Refresh
+                            },
+                            null,
+                            tint = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            when (lookupPhase) {
+                                LookupPhase.SCANNING -> "Сканирование"
+                                LookupPhase.UPDATED -> "Радиоданные обновлены"
+                                LookupPhase.STALE -> "Последняя оценка сохранена"
+                                LookupPhase.NO_MATCH -> "Нет совпадения в радиобазе"
+                                LookupPhase.ERROR -> "Не удалось завершить сканирование"
+                                LookupPhase.IDLE -> "Состояние радиопоиска"
+                            },
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurface
+                        )
+                    }
                     Text(
-                        if (recording) "Запись включена" else "Локальная запись",
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (recording) colors.onSecondaryContainer else colors.onSurface
-                    )
-                    Text(
-                        if (recording) "Сохраняет радионаблюдения на устройстве"
-                        else "Ничего не сохраняется без включения",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        scanMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurfaceVariant,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Switch(checked = recording, onCheckedChange = onRecording)
             }
+
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = if (recording) colors.secondaryContainer else colors.surfaceContainer
+            ) {
+                Row(
+                    Modifier.padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (recording) Icons.Outlined.RadioButtonChecked else Icons.Outlined.RadioButtonUnchecked,
+                        null,
+                        tint = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        modifier = Modifier.size(21.dp)
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (recording) "Запись включена" else "Локальная запись",
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (recording) colors.onSecondaryContainer else colors.onSurface
+                        )
+                        Text(
+                            if (recording) "Сохраняет радионаблюдения на устройстве"
+                            else "Ничего не сохраняется без включения",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Switch(checked = recording, onCheckedChange = onRecording)
+                }
+            }
+
+
         }
 
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
@@ -2003,18 +2052,26 @@ private fun MapHomeScreen(
 
         if (showDetails) {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                FilledTonalButton(
-                    onClick = onScan,
-                    enabled = !scanBusy,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Icon(Icons.Outlined.Refresh, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text(if (scanBusy) "Сканирую…" else "Сканировать сейчас")
-                }
-                if (lastScanAt > 0L) {
-                    Text("Последний скан: " + dateTime(lastScanAt), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                if (!mode.gpsOnly) {
+                    FilledTonalButton(
+                        onClick = onScan,
+                        enabled = !scanBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Outlined.Refresh, null)
+                        Spacer(Modifier.width(7.dp))
+                        Text(if (scanBusy) "Сканирую…" else "Сканировать сейчас")
+                    }
+                    if (lastScanAt > 0L) {
+                        Text("Последний скан: " + dateTime(lastScanAt), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                } else {
+                    Text(
+                        "В режиме GPS радиосканирование и обращение к локальной радиобазе отключены. Фильтр анализирует данные GPS/GNSS.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
                 }
                 if (mode.usesRadio) {
                     Text(
