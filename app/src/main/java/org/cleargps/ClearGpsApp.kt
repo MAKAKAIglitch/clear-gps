@@ -56,6 +56,7 @@ import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.EditLocationAlt
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -139,7 +140,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class AppTab { MAP, POINTS, ZONES, SETTINGS }
+private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY }
 private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     ALL("Все", null),
@@ -167,6 +168,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val repository = remember { RadioGeolocationRepository(context.applicationContext) }
     val database = remember { LocalRadioDatabase(context.applicationContext) }
     val mapController = remember { ClearGpsMapController() }
+    val obd2Repository = remember { Obd2Repository(context.applicationContext) }
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
 
     var appVisible by remember { mutableStateOf(true) }
@@ -198,6 +200,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var draftZone by remember { mutableStateOf(emptyList<ZonePoint>()) }
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
     var selectedTab by remember { mutableStateOf(AppTab.MAP) }
+    var obd2Adapters by remember { mutableStateOf(emptyList<Obd2Adapter>()) }
+    var selectedObd2Address by remember { mutableStateOf("") }
+    var obd2Connected by remember { mutableStateOf(false) }
+    var obd2Connecting by remember { mutableStateOf(false) }
+    var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
+    var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
     var points by remember { mutableStateOf(database.listPoints(500)) }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
@@ -565,6 +573,77 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 Toast.makeText(context, "Ошибка импорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    suspend fun loadPairedObdAdapters() {
+        try {
+            val available = obd2Repository.pairedAdapters()
+            obd2Adapters = available
+            if (available.none { it.address.equals(selectedObd2Address, ignoreCase = true) }) {
+                selectedObd2Address = available.firstOrNull()?.address.orEmpty()
+            }
+            obd2Status = if (available.isEmpty()) {
+                "Нет сопряжённых устройств. Сопряги адаптер в системных настройках Bluetooth."
+            } else {
+                "Найдено сопряжённых Bluetooth-устройств: " + available.size + ". Поддерживаются адаптеры Classic SPP."
+            }
+        } catch (error: Exception) {
+            obd2Adapters = emptyList()
+            obd2Status = error.message ?: "Не удалось получить список Bluetooth-устройств."
+        }
+    }
+
+    val obd2PermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            permissions[Manifest.permission.BLUETOOTH_CONNECT] != true) {
+            obd2Status = "Без разрешения «Устройства поблизости» нельзя подключиться к Bluetooth-адаптеру."
+        } else {
+            scope.launch { loadPairedObdAdapters() }
+        }
+    }
+
+    val refreshPairedObdAdapters: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            obd2PermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
+        } else {
+            scope.launch { loadPairedObdAdapters() }
+        }
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == AppTab.OBD2) refreshPairedObdAdapters()
+    }
+
+    LaunchedEffect(obd2Connected, selectedTab) {
+        if (obd2Connected && selectedTab == AppTab.OBD2) {
+            while (true) {
+                try {
+                    val latest = obd2Repository.readTelemetry()
+                    obd2Telemetry = latest
+                    obd2Status = if (latest.parametersReceived > 0) {
+                        "Адаптер подключён · только чтение Mode 01"
+                    } else {
+                        "Адаптер подключён, но ЭБУ не вернул эти параметры. Проверь зажигание, совместимость и доступность PID."
+                    }
+                    delay(1_500L)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    obd2Status = error.message ?: "Связь с OBD-II адаптером потеряна."
+                    obd2Connected = false
+                    obd2Telemetry = Obd2Telemetry()
+                    obd2Repository.disconnect()
+                    break
+                }
+            }
+        }
+    }
+
+    DisposableEffect(obd2Repository) {
+        onDispose { obd2Repository.close() }
     }
 
     DisposableEffect(lifecycleOwner) {
