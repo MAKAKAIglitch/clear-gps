@@ -664,6 +664,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 selectedObd2Address = available.firstOrNull()?.address.orEmpty()
                 prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
             }
+            val previousFailureCanNowBeCleared =
+                obd2Status.startsWith("Не найден сопряжённый OBD-II адаптер.") ||
+                    obd2Status.startsWith("Без разрешения «Устройства поблизости»")
             when {
                 available.isEmpty() -> {
                     obd2StatusIsError = true
@@ -672,6 +675,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 obd2Connected && obd2Telemetry.updatedAt > 0L -> {
                     // Refreshing the paired-device list must not hide a live speed-reading
                     // error or overwrite a valid telemetry status with an unrelated message.
+                }
+                obd2StatusIsError && !previousFailureCanNowBeCleared -> {
+                    // Keep a connection/read failure visible until a new connection attempt
+                    // succeeds or returns its own current status.
                 }
                 else -> {
                     obd2StatusIsError = false
