@@ -347,6 +347,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         positionMode = mode
         prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
         currentRadioEstimate = null
+        publishedMockCoordinate = null
+        publishedMockAccuracy = null
         pendingRadioMapFocus = mode.usesRadio
         if (mode.usesRadio || mode.gpsOnly) liveLocation = null
         if (monitorEnabled) {
@@ -939,6 +941,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         radioEstimateAgeMillis > maxOf(15_000L, scanIntervalSeconds * 2_000L)
 
     val primarySource = when {
+        positionMode.usesRadio && publishedMockCoordinate != null ->
+            "Mock GPS · опубликованная радиопозиция"
         positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null ->
             "GPS + OBD-II · расчёт по скорости (" + predictedGpsPosition.travelledMeters.toInt() + " м)"
         positionMode == PositionMode.GPS_OBD2 && activeLocation != null && freshObdSpeedKmh != null ->
