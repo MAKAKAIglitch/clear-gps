@@ -789,7 +789,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 // show it indefinitely as a current position when monitoring is off or matches stop.
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
                     val age = System.currentTimeMillis() - it.updatedAt
-                    age in 0..45_000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
+                    age in 0..45_000L && it.matchedCount >= 2 && it.accuracyMeters <= 1_000.0
                 }
                 if (stored != currentRadioEstimate) currentRadioEstimate = stored
             }
