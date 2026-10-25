@@ -428,14 +428,15 @@ internal fun lookupRadioFingerprintPosition(
     fun clusterRadius(a: Candidate, b: Candidate): Double =
         (2.0 * (a.accuracyMeters + b.accuracyMeters) + 50.0).coerceIn(100.0, 1_500.0)
 
-    // If practically identical fingerprints exist at distant places, don't guess which
-    // place is correct; this may happen in apartment blocks or with cloned SSIDs.
-    val ambiguous = candidates.drop(1).any { candidate ->
+    // Similar fingerprints can occur in multiple places (for example, apartment blocks
+    // or cloned SSIDs). Keep the best-ranked local cluster instead of suppressing the fix;
+    // enlarge its reported uncertainty to reflect the distance to competing candidates.
+    val ambiguousCandidates = candidates.drop(1).filter { candidate ->
         candidate.score >= best.score * 0.88 &&
             radioDistanceMeters(best.latitude, best.longitude, candidate.latitude, candidate.longitude) >
                 clusterRadius(best, candidate)
     }
-    if (ambiguous) return RadioFingerprintLookup(null, ambiguous = true)
+    val ambiguous = ambiguousCandidates.isNotEmpty()
 
     val selected = candidates.asSequence()
         .filter { it.score >= maxOf(0.12, best.score * 0.60) }
@@ -459,7 +460,14 @@ internal fun lookupRadioFingerprintPosition(
     val fixErrorSquared = weightedLocations.sumOf { it.weight * it.accuracyMeters.pow(2.0) } / totalWeight
     val sparsePenalty = max(0, 3 - best.matchedSignals.size) * 180.0
     val matchPenalty = (1.0 - best.score).coerceIn(0.0, 1.0) * 650.0
-    val accuracy = (sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + matchPenalty).coerceIn(30.0, 20_000.0)
+    // An equally plausible match far away must be reflected in the uncertainty radius.
+    // Keep the best candidate as the point estimate, but make the ambiguity visible on the map.
+    val ambiguityPenalty = ambiguousCandidates.maxOfOrNull { candidate ->
+        radioDistanceMeters(best.latitude, best.longitude, candidate.latitude, candidate.longitude) * 0.5
+    } ?: 0.0
+    val accuracy = (
+        sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + matchPenalty + ambiguityPenalty
+    ).coerceIn(30.0, 50_000.0)
 
     return RadioFingerprintLookup(
         estimate = RadioEstimate(
@@ -471,7 +479,8 @@ internal fun lookupRadioFingerprintPosition(
             fallbackUsed = false,
             matchedCount = best.matchedSignals.size,
             matchedRadioTypes = best.matchedSignals.map { it.type }.toSet()
-        )
+        ),
+        ambiguous = ambiguous
     )
 }
 
@@ -894,21 +903,18 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             now
         )
         if (fingerprintLookup.estimate != null) {
+            val estimate = fingerprintLookup.estimate
             DiagnosticLogStore.log(
                 appContext, "RADIO_DB",
-                "Найден исторический радиоснимок: совпадений=${fingerprintLookup.estimate.matchedCount}, " +
-                    "погрешность≈${fingerprintLookup.estimate.accuracyMeters.toInt()} м"
+                if (fingerprintLookup.ambiguous) {
+                    "Исторические радиоснимки неоднозначны: выбран лучший кандидат; погрешность увеличена до ±${estimate.accuracyMeters.toInt()} м"
+                } else {
+                    "Найден исторический радиоснимок: совпадений=${estimate.matchedCount}, " +
+                        "погрешность≈${estimate.accuracyMeters.toInt()} м"
+                },
+                if (fingerprintLookup.ambiguous) "WARN" else "INFO"
             )
-            return fingerprintLookup.estimate
-        }
-        // Do not bypass an explicit ambiguity decision by falling back to a weaker centroid.
-        if (fingerprintLookup.ambiguous) {
-            DiagnosticLogStore.log(
-                appContext, "RADIO_DB",
-                "Исторические радиоснимки неоднозначны: похожие сигнатуры найдены в удалённых местах; координата отклонена",
-                "WARN"
-            )
-            return null
+            return estimate
         }
 
         // Fallback for locally imported WiGLE points or manually geolocated radios.
