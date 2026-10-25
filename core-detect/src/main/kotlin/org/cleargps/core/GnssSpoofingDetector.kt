@@ -164,6 +164,21 @@ class GnssSpoofingDetector {
         previousRf = snapshot
     }
 
+    /**
+     * Returns read-only reception diagnostics for UI/logging. This does not alter risk, state,
+     * baseline learning, or mock publication.
+     */
+    fun receptionDiagnostics(nowElapsedRealtimeNanos: Long): GnssReceptionDiagnostics =
+        GnssReceptionDiagnostics(
+            environment = GnssEnvironmentClassifier.classify(currentSignal, nowElapsedRealtimeNanos),
+            baselineDeviation = GnssBaselineDeviationAnalyzer.assess(
+                signal = currentSignal,
+                rf = previousRf,
+                baseline = deviceBaseline.snapshot(),
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+            )
+        )
+
     /** Returns aggregate, coordinate-free baseline statistics for local persistence/diagnostics. */
     fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = deviceBaseline.snapshot()
 
