@@ -175,7 +175,7 @@ class LocationMonitorService : Service(), LocationListener {
                 } catch (error: Exception) {
                     saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
                 }
-                delay(RADIO_SCAN_INTERVAL_MS)
+                delay(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120) * 1_000L)
             }
         }
     }
