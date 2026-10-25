@@ -143,7 +143,7 @@ class LocationMonitorService : Service(), LocationListener {
                     )
                 )
                 persistGnssReceptionDiagnostics()
-            assessment?.let(::publishSignalDecision)
+                assessment?.let(::publishSignalDecision)
             } catch (_: RuntimeException) {
                 // Some receiver implementations provide incomplete measurements; keep monitoring.
             }

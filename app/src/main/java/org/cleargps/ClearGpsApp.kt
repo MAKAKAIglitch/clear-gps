@@ -2345,7 +2345,9 @@ private fun MapHomeScreen(
                                 when {
                                     !gnssBaselineReady -> "Индивидуальная норма устройства пока не готова: недостаточно принятых чистых измерений."
                                     gnssBaselineDeviations.isNotEmpty() -> "Отклонения от индивидуальной нормы: " + gnssBaselineDeviations.joinToString(" · ")
-                                    else -> "Крупных отклонений от доступной индивидуальной нормы не выявлено."
+                                    gnssEnvironment == "UNKNOWN" || gnssEnvironment == "GNSS_UNAVAILABLE" ->
+                                        "Недостаточно пригодных измерений, чтобы сравнить приём с индивидуальной нормой."
+                                    else -> "В доступных GNSS-измерениях крупных отклонений не выявлено."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (gnssBaselineReady && gnssBaselineDeviations.isNotEmpty()) colors.error else colors.onSurfaceVariant
