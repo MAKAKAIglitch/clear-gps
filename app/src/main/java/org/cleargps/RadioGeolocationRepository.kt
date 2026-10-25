@@ -61,6 +61,16 @@ class RadioGeolocationRepository(private val context: Context) {
     ): RadioLookupResult = scanMutex.withLock {
         // The UI, recording loop and foreground service can all request a scan. Serialize
         // them process-wide so concurrent Wi-Fi/BLE scans do not cancel or throttle each other.
+        val fineLocationGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val precisePermissionHint = if (RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(
+                sdkInt = Build.VERSION.SDK_INT,
+                fineLocationGranted = fineLocationGranted,
+                useWifi = useWifi,
+                useCells = useCells
+            )) {
+            " Android requires the app's precise-location permission to read Wi‑Fi scan results on Android 10+ and cell identifiers; grant Precise location in app permissions. Radio-only mode still does not request GPS positions."
+        } else ""
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
         }
@@ -124,7 +134,7 @@ class RadioGeolocationRepository(private val context: Context) {
         }.takeIf { it.isNotEmpty() }
             ?.joinToString(prefix = " Используется кэш радиосигналов (", postfix = "); погрешность увеличена.")
             .orEmpty()
-        val fullMessage = message + cacheAgeHints
+        val fullMessage = message + cacheAgeHints + precisePermissionHint
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, fullMessage)
             .putBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, estimate != null)
@@ -165,8 +175,11 @@ class RadioGeolocationRepository(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private suspend fun collectWifi(): TimedRadioSignals {
-        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val coarseGranted = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!RadioPermissionPolicy.canReadWifiScan(Build.VERSION.SDK_INT, fineGranted, coarseGranted)) {
             return TimedRadioSignals(emptyList(), null)
         }
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
@@ -241,8 +254,9 @@ class RadioGeolocationRepository(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private fun collectCells(): List<RadioSignal> {
-        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return emptyList()
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) return emptyList()
         val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return emptyList()
         return try {
             telephony.allCellInfo.orEmpty().mapNotNull(::parseCell)
