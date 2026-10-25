@@ -384,7 +384,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     // This effect never asks Android for a location fix; it only scans radio identifiers.
     LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context)) {
         if (positionMode == PositionMode.RADIO_ONLY && hasAnyLocationPermission(context)) {
-            performScan(false)
+            // A scan may still be finishing from the previous mode. Wait rather than silently
+            // skipping the first radio lookup when scanBusy is already true.
+            while (scanBusy && positionMode == PositionMode.RADIO_ONLY) delay(100L)
+            if (positionMode == PositionMode.RADIO_ONLY && hasAnyLocationPermission(context)) {
+                performScan(false)
+            }
         }
     }
 
