@@ -434,7 +434,9 @@ class LocationMonitorService : Service(), LocationListener {
                 prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2")) {
                 try {
                     val result = repository.scan(
-                        record = false,
+                        // Persist the same observations the UI recording toggle requests, but
+                        // never attach a self-derived radio estimate as a trusted coordinate.
+                        record = prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false),
                         reference = null,
                         mode = "radio",
                         useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
