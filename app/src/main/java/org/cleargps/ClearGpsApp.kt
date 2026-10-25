@@ -314,19 +314,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var showRadioOnlyInfo by remember { mutableStateOf(false) }
     var pendingRecordScan by remember { mutableStateOf(false) }
 
-    fun refreshLocalUi() {
+    // Load and publish the local database UI from the caller's existing coroutine.
+    // A scan must not start a nested rememberCoroutineScope job: that scope may already
+    // have left the composition by the time an asynchronous scan returns.
+    suspend fun refreshLocalUiInCurrentCoroutine() {
         val query = searchQuery
-        scope.launch {
-            points = withContext(Dispatchers.IO) {
-                if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
-            }
-            mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
-            mapPointsRevision++
-            history = withContext(Dispatchers.IO) { database.listHistory(150) }
-            pointCount = withContext(Dispatchers.IO) { database.pointCount() }
-            observationCount = withContext(Dispatchers.IO) { database.observationCount() }
-            zones = ZoneStore.loadAll(context)
+        points = withContext(Dispatchers.IO) {
+            if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
         }
+        mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
+        mapPointsRevision++
+        history = withContext(Dispatchers.IO) { database.listHistory(150) }
+        pointCount = withContext(Dispatchers.IO) { database.pointCount() }
+        observationCount = withContext(Dispatchers.IO) { database.observationCount() }
+        zones = ZoneStore.loadAll(context)
+    }
+
+    fun refreshLocalUi() {
+        scope.launch { refreshLocalUiInCurrentCoroutine() }
     }
 
     fun navigateToTab(tab: AppTab) {
@@ -447,7 +452,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     result.wifiCount + result.cellCount + result.beaconCount == 0 -> LookupPhase.ERROR
                     else -> LookupPhase.NO_MATCH
                 }
-                refreshLocalUi()
+                refreshLocalUiInCurrentCoroutine()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                // Leaving composition cancels the scan. Do not misreport cancellation as a
+                // radio/GPS scan failure, and never launch a new remembered scope from here.
+                throw cancelled
             } catch (error: SecurityException) {
                 DiagnosticLogStore.log(context, "RADIO_UI", "Сканирование отклонено Android: ${error.message ?: "SecurityException"}", "ERROR")
                 scanMessage = "Android запретил сканирование. Проверь разрешения и системные настройки геолокации."
