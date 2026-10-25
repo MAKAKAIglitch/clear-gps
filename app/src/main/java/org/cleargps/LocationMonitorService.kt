@@ -476,10 +476,74 @@ class LocationMonitorService : Service(), LocationListener {
             .notify(NOTIFICATION_ID, notification(reason))
     }
 
+    /**
+     * At service startup a scan can take several seconds and Android may throttle Wi-Fi/BLE.
+     * Re-publish only a still-credible, very recent radio estimate during that first scan.
+     * Its age continues from the original evidence timestamp; publishing it does not make it fresh.
+     */
+    private fun restoreRecentRadioMockFixWhileScanning() {
+        if (!prefs.getBoolean(KEY_MOCK_ENABLED, false) || lastRadioMockFix != null) return
+
+        val estimate = RadioGeolocationRepository.loadLastEstimate(applicationContext) ?: return
+        val nowWall = System.currentTimeMillis()
+        val ageMs = nowWall - estimate.updatedAt
+        val intervalMs = configuredUpdateIntervalMillis()
+        if (!RadioFixReliability.canRetainLastEstimate(
+                estimate.updatedAt, nowWall, estimate.matchedCount, estimate.accuracyMeters
+            ) || ageMs > RadioFixReliability.mockHoldWindowMillis(intervalMs)) {
+            return
+        }
+
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (ageMs < 0L || ageMs >= nowElapsed) return
+        val confirmedAt = nowElapsed - ageMs
+        if (!RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsed, intervalMs)) return
+
+        val confirmed = Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = estimate.latitude
+            longitude = estimate.longitude
+            accuracy = estimate.accuracyMeters.toFloat().coerceIn(1f, 100_000f)
+            time = estimate.updatedAt
+            elapsedRealtimeNanos = (nowElapsed - ageMs).coerceAtLeast(1L) * 1_000_000L
+        }
+        val held = Location(confirmed).apply {
+            accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
+            time = nowWall
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        }
+
+        if (mock?.publish(held) != true) {
+            prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
+            saveServiceStatus("Mock GPS не опубликован: $reason")
+            DiagnosticLogStore.log(this, "MOCK", "Не удалось восстановить недавнюю радиопозицию: $reason", "ERROR")
+            return
+        }
+
+        lastRadioMockFix = confirmed
+        lastRadioMockFixAtElapsedMs = confirmedAt
+        prefs.edit()
+            .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
+            .putString(KEY_STATE, FilterState.CORRECTING.name)
+            .putInt(KEY_SCORE, 0)
+            .putString(KEY_REASONS, "Используется недавняя позиция, пока запускается новый радиоскан.")
+            .putBoolean(KEY_HAS_OUTPUT, true)
+            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
+            .putString(KEY_LAT, held.latitude.toString())
+            .putString(KEY_LON, held.longitude.toString())
+            .putFloat(KEY_ACCURACY, held.accuracy)
+            .apply()
+        val status = "Mock GPS published · refreshing recent radio fix · cached age " +
+            (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m"
+        saveServiceStatus(status)
+        DiagnosticLogStore.log(this, "MOCK", "Недавняя радиопозиция опубликована до завершения нового сканирования; age=" + (ageMs / 1_000L) + "s")
+    }
+
     private fun startRadioOnlyLoop() {
         radioOnlyJob?.cancel()
         radioOnlyJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
+            restoreRecentRadioMockFixWhileScanning()
             while (isActive && prefs.getBoolean(KEY_MONITORING, false) &&
                 prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2")) {
                 try {
