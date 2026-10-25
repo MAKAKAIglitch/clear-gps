@@ -200,6 +200,8 @@ internal data class RadioFingerprintSample(
     val positionSource: String
 )
 
+internal data class RadioFingerprintLookup(val estimate: RadioEstimate?, val ambiguous: Boolean = false)
+
 private data class WeightedRadioLocation(
     val latitude: Double,
     val longitude: Double,
@@ -262,11 +264,11 @@ private fun fingerprintAccuracy(sample: RadioFingerprintSample): Double =
  * This tends to be stronger evidence than averaging the coordinates of transmitters,
  * because every sample records where the phone was when those signals were observed.
  */
-internal fun estimateRadioFingerprintPosition(
+internal fun lookupRadioFingerprintPosition(
     signals: List<RadioSignal>,
     history: List<RadioFingerprintSample>,
     now: Long = System.currentTimeMillis()
-): RadioEstimate? {
+): RadioFingerprintLookup {
     val currentSignals = signals.asSequence()
         .filter { it.radioTypeIsUsable() && it.identifier.isNotBlank() && it.rssi in -115..0 }
         .distinctBy { it.type + "|" + it.identifier }
@@ -280,7 +282,7 @@ internal fun estimateRadioFingerprintPosition(
             values.sortedByDescending { it.rssi }.take(limit)
         }
     val currentByType = currentSignals.groupBy { it.type }
-    if (currentSignals.size < 2) return null
+    if (currentSignals.size < 2) return RadioFingerprintLookup(null)
     val currentByKey = currentSignals.associateBy { it.type + "|" + it.identifier }
     val activeTypeWeight = currentByType.keys.sumOf(::radioTypeWeight).coerceAtLeast(1e-9)
     val historyMaxAge = 90L * 24 * 60 * 60 * 1_000L
@@ -351,7 +353,7 @@ internal fun estimateRadioFingerprintPosition(
                 .thenByDescending { it.matchedSignals.size }
                 .thenByDescending { it.observedAt }
         )
-    if (candidates.isEmpty()) return null
+    if (candidates.isEmpty()) return RadioFingerprintLookup(null)
     val best = candidates.first()
 
     fun clusterRadius(a: Candidate, b: Candidate): Double =
@@ -364,7 +366,7 @@ internal fun estimateRadioFingerprintPosition(
             radioDistanceMeters(best.latitude, best.longitude, candidate.latitude, candidate.longitude) >
                 clusterRadius(best, candidate)
     }
-    if (ambiguous) return null
+    if (ambiguous) return RadioFingerprintLookup(null, ambiguous = true)
 
     val selected = candidates.asSequence()
         .filter { it.score >= maxOf(0.12, best.score * 0.60) }
@@ -380,7 +382,7 @@ internal fun estimateRadioFingerprintPosition(
         val weight = candidate.score.pow(4.0) * recency * accuracyFactor
         WeightedRadioLocation(candidate.latitude, candidate.longitude, candidate.accuracyMeters, weight)
     }.filter { it.weight.isFinite() && it.weight > 0.0 }
-    val center = weightedRadioCenter(weightedLocations) ?: return null
+    val center = weightedRadioCenter(weightedLocations) ?: return RadioFingerprintLookup(null)
     val totalWeight = weightedLocations.sumOf { it.weight }.coerceAtLeast(1e-12)
     val spreadSquared = weightedLocations.sumOf {
         it.weight * radioDistanceMeters(center.first, center.second, it.latitude, it.longitude).pow(2.0)
@@ -390,16 +392,24 @@ internal fun estimateRadioFingerprintPosition(
     val matchPenalty = (1.0 - best.score).coerceIn(0.0, 1.0) * 650.0
     val accuracy = (sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + matchPenalty).coerceIn(30.0, 20_000.0)
 
-    return RadioEstimate(
-        latitude = center.first,
-        longitude = center.second,
-        accuracyMeters = accuracy,
-        updatedAt = now,
-        fingerprint = radioSignalHash(best.matchedSignals),
-        fallbackUsed = false,
-        matchedCount = best.matchedSignals.size
+    return RadioFingerprintLookup(
+        estimate = RadioEstimate(
+            latitude = center.first,
+            longitude = center.second,
+            accuracyMeters = accuracy,
+            updatedAt = now,
+            fingerprint = radioSignalHash(best.matchedSignals),
+            fallbackUsed = false,
+            matchedCount = best.matchedSignals.size
+        )
     )
 }
+
+internal fun estimateRadioFingerprintPosition(
+    signals: List<RadioSignal>,
+    history: List<RadioFingerprintSample>,
+    now: Long = System.currentTimeMillis()
+): RadioEstimate? = lookupRadioFingerprintPosition(signals, history, now).estimate
 
 private fun RadioSignal.radioTypeIsUsable(): Boolean = radioTypeWeight(type) > 0.0
 
@@ -683,12 +693,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val now = System.currentTimeMillis()
         // Prefer a past scan fingerprint: its coordinates are where the phone was,
         // not an average of the physical positions of nearby transmitters.
-        val fingerprintEstimate = estimateRadioFingerprintPosition(
+        val fingerprintLookup = lookupRadioFingerprintPosition(
             current,
             loadFingerprintSamples(current, now),
             now
         )
-        if (fingerprintEstimate != null) return fingerprintEstimate
+        if (fingerprintLookup.estimate != null) return fingerprintLookup.estimate
+        // Do not bypass an explicit ambiguity decision by falling back to a weaker centroid.
+        if (fingerprintLookup.ambiguous) return null
 
         // Fallback for locally imported WiGLE points or manually geolocated radios.
         val matches = ArrayList<Pair<RadioSignal, RadioPointRecord>>()
