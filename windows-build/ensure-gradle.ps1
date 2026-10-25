@@ -1,7 +1,5 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-# Ensure hashing cmdlets are available even when PowerShell module auto-loading is disabled.
-Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $GradleVersion = '8.14.6'
@@ -95,7 +93,15 @@ try {
     Write-Host "Downloading official Gradle $GradleVersion..."
     $Uri = "https://services.gradle.org/distributions/gradle-$GradleVersion-bin.zip"
     Invoke-WebRequest -Uri $Uri -OutFile $ZipPath -UseBasicParsing
-    $ActualSha256 = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $FileStream = $null
+    try {
+        $FileStream = [System.IO.File]::OpenRead($ZipPath)
+        $ActualSha256 = [BitConverter]::ToString($Sha256.ComputeHash($FileStream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        if ($null -ne $FileStream) { $FileStream.Dispose() }
+        if ($null -ne $Sha256) { $Sha256.Dispose() }
+    }
     if ($ActualSha256 -ne $ExpectedSha256) {
         throw "SHA-256 mismatch: expected $ExpectedSha256; got $ActualSha256. Archive rejected."
     }
