@@ -306,6 +306,111 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    /**
+     * Bounded dead-reckoning fallback for GPS + OBD-II.
+     *
+     * It is only allowed after a recently accepted NORMAL GPS fix, and is stopped as soon as
+     * the GNSS filter raises a warning, a required input becomes stale, or the prediction cap
+     * is reached. This is a fallback, not an extra input to the GNSS spoofing detector.
+     */
+    private fun startObd2FallbackLoop() {
+        obd2FallbackJob?.cancel()
+        obd2FallbackJob = serviceScope.launch {
+            while (isActive &&
+                prefs.getBoolean(KEY_MONITORING, false) &&
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
+                delay(1_000L)
+
+                val filterState = prefs.getString(KEY_STATE, FilterState.WAITING.name)
+                val lastSource = prefs.getString(KEY_SOURCE, "NONE")
+                val filterAllowsFallback = filterState == FilterState.NORMAL.name &&
+                    lastSource in setOf("GPS", "OBD2_DEAD_RECKONING") &&
+                    !prefs.getBoolean(KEY_IN_ZONE, false)
+                val lastFix = lastTrustedGpsFixForObd2
+                val now = System.currentTimeMillis()
+                val speedKmh = Obd2SharedState.freshSpeedKmh(prefs, now)
+                val speedAt = prefs.getLong(Obd2SharedState.KEY_SPEED_AT, 0L)
+                val prediction = if (filterAllowsFallback && lastFix != null && lastFix.hasBearing()) {
+                    Obd2LocationFusion.predictFromGps(
+                        lastFix = MapCoordinate(lastFix.latitude, lastFix.longitude),
+                        baseAccuracyMeters = lastFix.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
+                        bearingDegrees = lastFix.bearing.toDouble(),
+                        fixTimeMillis = lastFix.time,
+                        speedKmh = speedKmh,
+                        speedUpdatedAtMillis = speedAt,
+                        nowMillis = now
+                    )
+                } else null
+
+                if (prediction != null && speedKmh != null && lastFix != null) {
+                    val projected = Location(LocationManager.GPS_PROVIDER).apply {
+                        latitude = prediction.coordinate.latitude
+                        longitude = prediction.coordinate.longitude
+                        accuracy = prediction.accuracyMeters.toFloat().coerceAtLeast(1f)
+                        time = now
+                        elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                        speed = speedKmh / 3.6f
+                        bearing = lastFix.bearing
+                    }
+                    val mockEnabled = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                    val canPublish = !mockEnabled || mock?.publish(projected) == true
+                    if (canPublish) {
+                        val wasAlreadyPublished = obd2FallbackPublished
+                        prefs.edit()
+                            .putString(KEY_SOURCE, "OBD2_DEAD_RECKONING")
+                            .putBoolean(KEY_HAS_OUTPUT, true)
+                            .putString(KEY_LAT, projected.latitude.toString())
+                            .putString(KEY_LON, projected.longitude.toString())
+                            .putFloat(KEY_ACCURACY, projected.accuracy)
+                            .apply()
+                        obd2FallbackPublished = true
+                        if (!wasAlreadyPublished) {
+                            val status = "GPS + OBD-II short fallback · about ±" +
+                                projected.accuracy.toInt() + " m; " +
+                                prediction.travelledMeters.toInt() + " m projected"
+                            saveServiceStatus(status)
+                            getSystemService(NotificationManager::class.java)
+                                .notify(NOTIFICATION_ID, notification(status))
+                        }
+                    } else {
+                        if (obd2FallbackPublished) {
+                            clearObd2FallbackOutput("OBD-II fallback stopped; mock-location output is unavailable")
+                        } else {
+                            saveServiceStatus("OBD-II has speed data, but mock-location output is unavailable")
+                        }
+                    }
+                } else if (obd2FallbackPublished) {
+                    val reason = when {
+                        !filterAllowsFallback -> "OBD-II fallback stopped by GNSS filter state"
+                        lastFix == null -> "OBD-II fallback stopped; waiting for an accepted GPS fix"
+                        speedKmh == null -> "OBD-II fallback expired; waiting for fresh vehicle speed"
+                        else -> "OBD-II fallback reached its time/distance limit; waiting for GPS"
+                    }
+                    clearObd2FallbackOutput(reason)
+                }
+            }
+            if (obd2FallbackPublished) {
+                clearObd2FallbackOutput("OBD-II fallback stopped with location monitoring")
+            }
+        }
+    }
+
+    private fun clearObd2FallbackOutput(reason: String) {
+        if (!obd2FallbackPublished) return
+        if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
+        prefs.edit()
+            .putBoolean(KEY_HAS_OUTPUT, false)
+            .putString(KEY_SOURCE, "NONE")
+            .remove(KEY_LAT)
+            .remove(KEY_LON)
+            .remove(KEY_ACCURACY)
+            .apply()
+        obd2FallbackPublished = false
+        saveServiceStatus(reason)
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification(reason))
+    }
+
     private fun startRadioOnlyLoop() {
         radioOnlyJob?.cancel()
         radioOnlyJob = serviceScope.launch {
