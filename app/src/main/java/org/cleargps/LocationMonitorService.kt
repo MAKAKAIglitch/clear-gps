@@ -44,6 +44,10 @@ class LocationMonitorService : Service(), LocationListener {
     private var radioOnlyJob: Job? = null
     private var obd2FallbackJob: Job? = null
     private var mockFreshnessJob: Job? = null
+    private var beaconDbOutputJob: Job? = null
+    private var beaconDbOutputGeneration = 0L
+    private var beaconDbOutputPositionMode: String? = null
+    private var beaconDbOutputUntilElapsed = 0L
     private var lastTrustedGpsFixForObd2: Location? = null
     private var obd2FallbackPublished = false
     private var lastRadioMockFix: Location? = null
@@ -235,7 +239,33 @@ class LocationMonitorService : Service(), LocationListener {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_PUBLISH_BEACONDB_FIX -> {
+                startForeground(NOTIFICATION_ID, notification("Starting explicit BeaconDB mock-location output"))
+                val request = intent ?: return START_NOT_STICKY
+                val latitude = request.getDoubleExtra(EXTRA_BEACONDB_LATITUDE, Double.NaN)
+                val longitude = request.getDoubleExtra(EXTRA_BEACONDB_LONGITUDE, Double.NaN)
+                val accuracy = request.getDoubleExtra(EXTRA_BEACONDB_ACCURACY, Double.NaN)
+                val mayPublish = prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                    prefs.getBoolean(KEY_MONITORING, false) &&
+                    prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                if (!mayPublish) {
+                    saveServiceStatus(
+                        "BeaconDB mock output not started: keep BeaconDB access enabled and turn on «Включить фикс» + Mock GPS."
+                    )
+                    DiagnosticLogStore.log(this, "MOCK", "BeaconDB output refused because its opt-in/monitor/mock switch is off", "WARN")
+                    if (prefs.getBoolean(KEY_MONITORING, false)) {
+                        startTracking()
+                        return START_STICKY
+                    }
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                startBeaconDbMockOutput(latitude, longitude, accuracy)
+                return START_STICKY
+            }
             ACTION_DISABLE_MOCK -> {
+                cancelBeaconDbMockOutput()
                 prefs.edit()
                     .putBoolean(KEY_MOCK_ENABLED, false)
                     .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
@@ -262,7 +292,149 @@ class LocationMonitorService : Service(), LocationListener {
     private fun configuredUpdateIntervalMillis(): Long =
         prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30) * 1_000L
 
+    /**
+     * Broadcast one explicitly requested BeaconDB cell-only estimate for a short, bounded window.
+     * No additional BeaconDB request is made here. Both mock providers are updated while all
+     * physical input listeners are paused, then removed before the selected source resumes.
+     */
+    private fun startBeaconDbMockOutput(latitude: Double, longitude: Double, accuracyMeters: Double) {
+        if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+            !longitude.isFinite() || longitude !in -180.0..180.0 ||
+            !accuracyMeters.isFinite() || accuracyMeters !in 1.0..10_000_000.0) {
+            saveServiceStatus("BeaconDB output refused: invalid coordinates or accuracy.")
+            DiagnosticLogStore.log(this, "MOCK", "BeaconDB output refused because estimate was invalid", "ERROR")
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            saveServiceStatus("BeaconDB mock output unavailable: location permission is missing.")
+            return
+        }
+
+        // stopTracking cancels old output loops and removes previously registered test providers.
+        stopTracking()
+        if (!prefs.getBoolean(KEY_BEACONDB_LOOKUP_ENABLED, false) ||
+            !prefs.getBoolean(KEY_MONITORING, false) ||
+            !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+            saveServiceStatus("BeaconDB mock output cancelled because a required setting was turned off.")
+            return
+        }
+
+        val generation = beaconDbOutputGeneration
+        val selectedMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+        beaconDbOutputPositionMode = selectedMode
+        val startedAtElapsed = SystemClock.elapsedRealtime()
+        val deadlineElapsed = startedAtElapsed + BEACONDB_OUTPUT_WINDOW_MS
+        beaconDbOutputUntilElapsed = deadlineElapsed
+        startMockFreshnessWatchdog()
+        beaconDbOutputJob = serviceScope.launch {
+            var publicationFailure: String? = null
+            try {
+                while (isActive && generation == beaconDbOutputGeneration &&
+                    prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                    prefs.getBoolean(KEY_MONITORING, false) &&
+                    prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+                    val nowElapsed = SystemClock.elapsedRealtime()
+                    if (nowElapsed >= deadlineElapsed) break
+
+                    // The queried cell set is a snapshot, not continuous tracking. Grow the
+                    // reported uncertainty while the same estimate is held for external apps.
+                    val ageSeconds = (nowElapsed - startedAtElapsed).coerceAtLeast(0L) / 1_000.0
+                    val effectiveAccuracy = (accuracyMeters + ageSeconds * BEACONDB_ACCURACY_GROWTH_METERS_PER_SECOND)
+                        .coerceIn(1.0, 100_000.0)
+                    val location = Location(LocationManager.GPS_PROVIDER).apply {
+                        this.latitude = latitude
+                        this.longitude = longitude
+                        this.accuracy = effectiveAccuracy.toFloat()
+                        time = System.currentTimeMillis()
+                        elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    }
+
+                    if (mock?.publish(location, alsoPublishNetworkProvider = true) != true) {
+                        publicationFailure = mock?.lastError ?: "Android rejected the BeaconDB mock location."
+                        saveServiceStatus("BeaconDB result was calculated, but mock output failed: $publicationFailure")
+                        break
+                    }
+
+                    prefs.edit()
+                        .putBoolean(KEY_HAS_OUTPUT, true)
+                        .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
+                        .putString(KEY_SOURCE, "BEACONDB")
+                        .putString(KEY_STATE, FilterState.CORRECTING.name)
+                        .putInt(KEY_SCORE, 0)
+                        .putBoolean(KEY_IN_ZONE, false)
+                        .putString(KEY_REASONS, "Manual BeaconDB estimate from cellular identifiers; position is held, not continuously re-queried.")
+                        .putString(KEY_LAT, latitude.toString())
+                        .putString(KEY_LON, longitude.toString())
+                        .putFloat(KEY_ACCURACY, effectiveAccuracy.toFloat())
+                        .apply()
+
+                    val remainingSeconds = ((deadlineElapsed - nowElapsed).coerceAtLeast(0L) + 999L) / 1_000L
+                    val status = radioMockProviderStatus() + " · BeaconDB cell estimate · expires in " +
+                        remainingSeconds + " s · uncertainty ±" + effectiveAccuracy.toInt() + " m"
+                    saveServiceStatus(status)
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
+
+                    val remainingMs = (deadlineElapsed - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+                    delay(minOf(BEACONDB_REPUBLISH_INTERVAL_MS, remainingMs))
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } finally {
+                // A user stop/source switch invalidates the generation, so this block must not
+                // restart tracking over a newer service action.
+                if (generation == beaconDbOutputGeneration) {
+                    beaconDbOutputJob = null
+                    beaconDbOutputPositionMode = null
+                    beaconDbOutputUntilElapsed = 0L
+                    mock?.disable()
+                    prefs.edit()
+                        .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                        .putBoolean(KEY_HAS_OUTPUT, false)
+                        .putString(KEY_SOURCE, "NONE")
+                        .remove(KEY_LAT)
+                        .remove(KEY_LON)
+                        .remove(KEY_ACCURACY)
+                        .apply()
+                    val reason = publicationFailure
+                        ?: "BeaconDB mock estimate expired after 2 minutes; resuming the selected position source."
+                    saveServiceStatus(reason)
+                    DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", reason,
+                        if (publicationFailure == null) "INFO" else "ERROR")
+                    if (prefs.getBoolean(KEY_MONITORING, false)) {
+                        activePositionMode = null
+                        startTracking()
+                    } else {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cancelBeaconDbMockOutput() {
+        beaconDbOutputGeneration += 1L
+        beaconDbOutputUntilElapsed = 0L
+        beaconDbOutputPositionMode = null
+        beaconDbOutputJob?.cancel()
+        beaconDbOutputJob = null
+    }
+
     private fun startTracking() {
+        if (beaconDbOutputJob?.isActive == true &&
+            prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+            prefs.getBoolean(KEY_MONITORING, false) &&
+            prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+            val requestedMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+            if (requestedMode == beaconDbOutputPositionMode) {
+                // Same-mode refreshes (for example an interval change) must not replace the
+                // user-requested BeaconDB result before its bounded expiry.
+                return
+            }
+            // A real source-mode change immediately cancels the one-shot override.
+            cancelBeaconDbMockOutput()
+        }
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
@@ -850,6 +1022,7 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        cancelBeaconDbMockOutput()
         radioOnlyJob?.cancel()
         radioOnlyJob = null
         obd2FallbackJob?.cancel()
@@ -1074,6 +1247,10 @@ class LocationMonitorService : Service(), LocationListener {
         const val ACTION_START = "org.cleargps.START"
         const val ACTION_STOP = "org.cleargps.STOP"
         const val ACTION_DISABLE_MOCK = "org.cleargps.DISABLE_MOCK"
+        const val ACTION_PUBLISH_BEACONDB_FIX = "org.cleargps.PUBLISH_BEACONDB_FIX"
+        const val EXTRA_BEACONDB_LATITUDE = "beacondb_latitude"
+        const val EXTRA_BEACONDB_LONGITUDE = "beacondb_longitude"
+        const val EXTRA_BEACONDB_ACCURACY = "beacondb_accuracy"
         const val PREFS = "clear_gps"
         const val KEY_MONITORING = "monitoring"
         const val KEY_MOCK_ENABLED = "mock_enabled"
@@ -1092,6 +1269,9 @@ class LocationMonitorService : Service(), LocationListener {
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
         private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
+        private const val BEACONDB_OUTPUT_WINDOW_MS = 120_000L
+        private const val BEACONDB_REPUBLISH_INTERVAL_MS = 5_000L
+        private const val BEACONDB_ACCURACY_GROWTH_METERS_PER_SECOND = 15.0
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 2
         private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L

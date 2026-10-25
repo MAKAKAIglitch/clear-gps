@@ -689,6 +689,46 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         beaconDbLookupJob = queryJob
     }
 
+    fun publishBeaconDbEstimateAsMock() {
+        if (!beaconDbEnabled) {
+            beaconDbMessage = "BeaconDB отключён. Запрос на публикацию не отправлялся."
+            return
+        }
+        val coordinate = beaconDbLookupResult?.coordinate
+        if (coordinate == null) {
+            beaconDbMessage = "Нет пригодной оценки BeaconDB для публикации."
+            return
+        }
+        if (!monitorEnabled || !mockEnabled) {
+            beaconDbMessage = "Сначала включи «Включить фикс» на главном экране и Mock GPS. Оценка не опубликована."
+            Toast.makeText(
+                context,
+                "Сначала включи «Включить фикс» и Mock GPS на главном экране.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        try {
+            val intent = Intent(context, LocationMonitorService::class.java).apply {
+                action = LocationMonitorService.ACTION_PUBLISH_BEACONDB_FIX
+                putExtra(LocationMonitorService.EXTRA_BEACONDB_LATITUDE, coordinate.latitude)
+                putExtra(LocationMonitorService.EXTRA_BEACONDB_LONGITUDE, coordinate.longitude)
+                putExtra(LocationMonitorService.EXTRA_BEACONDB_ACCURACY, coordinate.accuracyMeters)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            beaconDbMessage =
+                "Запрошена публикация результата через Mock GPS + Network на 2 минуты. " +
+                "Новые запросы к BeaconDB не выполняются; погрешность будет консервативно увеличиваться."
+        } catch (error: Exception) {
+            beaconDbMessage = "Не удалось запустить публикацию mock-координат: " +
+                (error.message ?: error.javaClass.simpleName)
+        }
+    }
+
     val exportCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) scope.launch {
             try {
@@ -1088,16 +1128,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             (positionMode == PositionMode.AUTO && measuredCoordinate == null)) -> radioAccuracy
         else -> null
     }
-    val displayCoordinate = if (positionMode.usesRadio) {
-        radioCoordinate
-    } else {
-        primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+    val displayCoordinate = when {
+        mockOutputActive && publishedMockCoordinate != null -> publishedMockCoordinate
+        positionMode.usesRadio -> radioCoordinate
+        else -> primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+    }
+    val displayAccuracy = when {
+        mockOutputActive && publishedMockCoordinate != null -> publishedMockAccuracy ?: primaryAccuracy
+        positionMode.usesRadio -> radioAccuracy
+        else -> primaryAccuracy
     }
     val radioEstimateAgeMillis = currentRadioEstimate?.let { System.currentTimeMillis() - it.updatedAt } ?: Long.MAX_VALUE
     val radioEstimateStale = publishedMockCoordinate == null && currentRadioEstimate != null &&
         radioEstimateAgeMillis > maxOf(15_000L, scanIntervalSeconds * 2_000L)
 
     val primarySource = when {
+        mockOutputActive && publishedMockCoordinate != null &&
+            serviceStatus.contains("BeaconDB", ignoreCase = true) ->
+            "BeaconDB · временная публикация mock GPS"
         positionMode.usesRadio && publishedMockCoordinate != null ->
             "Mock GPS · опубликованная радиопозиция"
         predictedGpsPosition != null ->
@@ -1119,11 +1167,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         manualAnchor != null -> "Ориентир"
         else -> "Нет фикса"
     }
-    val mapPrimaryCoordinate = when (positionMode) {
-        PositionMode.AUTO, PositionMode.GPS_ONLY -> predictedGpsPosition?.coordinate ?: measuredCoordinate
-        PositionMode.RADIO_ONLY -> null
+    val mapPrimaryCoordinate = when {
+        positionMode.usesRadio -> null
+        mockOutputActive && publishedMockCoordinate != null -> publishedMockCoordinate
+        else -> predictedGpsPosition?.coordinate ?: measuredCoordinate
     }
     val mapPrimaryAccuracy = when {
+        mockOutputActive && publishedMockCoordinate != null -> publishedMockAccuracy ?: primaryAccuracy
         predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
         else -> null
@@ -1357,7 +1407,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             when (selectedTab) {
                                 AppTab.MAP -> MapHomeScreen(
                                     coordinate = displayCoordinate,
-                                    accuracy = if (displayCoordinate != null) primaryAccuracy else null,
+                                    accuracy = if (displayCoordinate != null) displayAccuracy else null,
                                     source = primarySource, mode = positionMode, currentEstimate = currentRadioEstimate,
                                     manualAnchor = manualAnchor, wifiCount = wifiCount, cellCount = cellCount, bleCount = bleCount,
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
@@ -1423,6 +1473,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         }
                                     },
                                     onBeaconDbLookup = { startBeaconDbLookup() },
+                                    onPublishBeaconDbLocation = { publishBeaconDbEstimateAsMock() },
                                     onOpenBeaconDbSettings = { navigateToTab(AppTab.SETTINGS) }
                                 )
                                 AppTab.ZONES -> ZonesScreen(
@@ -2256,7 +2307,8 @@ private fun DatabaseScreen(
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
     dataSource: DatabaseDataSource, beaconDbEnabled: Boolean, beaconDbLoading: Boolean,
     beaconDbResult: BeaconDbLookupResult?, beaconDbMessage: String,
-    onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit, onOpenBeaconDbSettings: () -> Unit
+    onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit,
+    onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
@@ -2371,6 +2423,7 @@ private fun DatabaseScreen(
                 result = beaconDbResult,
                 message = beaconDbMessage,
                 onLookup = onBeaconDbLookup,
+                onPublishAsMock = onPublishBeaconDbLocation,
                 onOpenSettings = onOpenBeaconDbSettings
             )
         }
@@ -2385,6 +2438,7 @@ private fun BeaconDbDatabaseContent(
     result: BeaconDbLookupResult?,
     message: String,
     onLookup: () -> Unit,
+    onPublishAsMock: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -2452,6 +2506,22 @@ private fun BeaconDbDatabaseContent(
                             Text(
                                 "Ориентировочная погрешность: ±" + coordinate.accuracyMeters.toInt() + " м",
                                 style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                            FilledTonalButton(
+                                onClick = onPublishAsMock,
+                                enabled = !loading,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Icon(Icons.Outlined.GpsFixed, null)
+                                Spacer(Modifier.width(7.dp))
+                                Text("Передать эту оценку в Mock GPS на 2 минуты")
+                            }
+                            Text(
+                                "Это отдельное действие: приложения получат mock-координату через GPS и Network. " +
+                                    "Позиция не обновляется запросами автоматически; погрешность увеличивается, затем исходный режим возобновляется.",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = colors.onSurfaceVariant
                             )
                         } else {
