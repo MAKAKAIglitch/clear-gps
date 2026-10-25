@@ -236,7 +236,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
     var useCells by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true)) }
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
-    var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120)) }
+    var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)) }
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
     var recording by remember { mutableStateOf(false) }
     var scanBusy by remember { mutableStateOf(false) }
@@ -690,7 +690,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    DisposableEffect(positionMode, hasAnyLocationPermission(context)) {
+    DisposableEffect(positionMode, hasAnyLocationPermission(context), scanIntervalSeconds) {
         if (!hasAnyLocationPermission(context) || positionMode.usesRadio) {
             onDispose { }
         } else {
@@ -713,7 +713,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             (!positionMode.gpsOnly || provider == LocationManager.GPS_PROVIDER) &&
                             (liveLocation == null || isBetterLocation(cached, liveLocation!!))) liveLocation = Location(cached)
                         if (manager.allProviders.contains(provider) && manager.isProviderEnabled(provider)) {
-                            manager.requestLocationUpdates(provider, 2_500L, 2f, listener, Looper.getMainLooper())
+                            manager.requestLocationUpdates(provider, scanIntervalSeconds.coerceIn(1, 30) * 1_000L, 0f, listener, Looper.getMainLooper())
                         }
                     } catch (_: SecurityException) {
                     } catch (_: IllegalArgumentException) {
@@ -941,9 +941,33 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
     val stopMonitoring: () -> Unit = {
         context.startService(Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_STOP))
-        prefs.edit().putBoolean(LocationMonitorService.KEY_MONITORING, false).apply()
+        prefs.edit()
+            .putBoolean(LocationMonitorService.KEY_MONITORING, false)
+            .putBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
+            .apply()
         monitorEnabled = false
-        serviceStatus = "Мониторинг остановлен"
+        mockEnabled = false
+        serviceStatus = "Фикс и мониторинг остановлены"
+    }
+    val runFix: () -> Unit = {
+        pendingMockEnable = true
+        if (!hasAnyLocationPermission(context)) {
+            pendingMonitorStart = true
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        } else {
+            startMonitoringWithPermission(enableMock = true)
+        }
+    }
+    val stopFix: () -> Unit = {
+        prefs.edit()
+            .putBoolean(LocationMonitorService.KEY_MONITORING, false)
+            .putBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
+            .apply()
+        context.startService(Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_STOP))
+        monitorEnabled = false
+        mockEnabled = false
+        serviceStatus = "Фикс отключён"
+        Toast.makeText(context, "Фикс и mock location отключены.", Toast.LENGTH_SHORT).show()
     }
     val enableMock: () -> Unit = {
         pendingMockEnable = true
@@ -1068,9 +1092,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     manualAnchor = manualAnchor, wifiCount = wifiCount, cellCount = cellCount, bleCount = bleCount,
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
                                     scanMessage = scanMessage, lastScanAt = lastScanAt, monitorEnabled = monitorEnabled,
-                                    mockEnabled = mockEnabled, filterState = filterState, riskScore = riskScore,
+                                    mockEnabled = mockEnabled, fixEnabled = monitorEnabled && mockEnabled,
+                                    scanIntervalSeconds = scanIntervalSeconds,
+                                    filterState = filterState, riskScore = riskScore,
                                     riskReasons = riskReasons, serviceStatus = serviceStatus,
                                     onMode = { applyPositionMode(it) },
+                                    onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
                                     onScan = { startScan(recording) },
                                     onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
                                     onRemoveManualAnchor = {
@@ -1204,8 +1231,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         prefs.edit().putString(ClearGpsPreferences.KEY_MAP_SOURCE, it.key).apply()
                                     },
                                     onScanInterval = {
-                                        scanIntervalSeconds = it.coerceIn(10, 120)
+                                        scanIntervalSeconds = it.coerceIn(1, 30)
                                         prefs.edit().putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, scanIntervalSeconds).apply()
+                                        if (monitorEnabled) {
+                                            val intent = Intent(context, LocationMonitorService::class.java)
+                                                .setAction(LocationMonitorService.ACTION_START)
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                                            else context.startService(intent)
+                                        }
                                     },
                                     onAdaptiveScan = {
                                         adaptiveScan = it
@@ -1451,9 +1484,10 @@ private fun MapHomeScreen(
     coordinate: MapCoordinate?, accuracy: Double?, source: String, mode: PositionMode,
     currentEstimate: RadioEstimate?, manualAnchor: ManualAnchor?, wifiCount: Int, cellCount: Int, bleCount: Int,
     pointCount: Int, recording: Boolean, scanBusy: Boolean, lookupPhase: LookupPhase, scanMessage: String,
-    lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, filterState: String, riskScore: Int,
+    lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, fixEnabled: Boolean,
+    scanIntervalSeconds: Int, filterState: String, riskScore: Int,
     riskReasons: List<String>, serviceStatus: String,
-    onMode: (PositionMode) -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
+    onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
 ) {
@@ -1520,7 +1554,7 @@ private fun MapHomeScreen(
                         when {
                             mode.usesRadio -> "Сначала запиши радиоточки в известных местах или импортируй локальный CSV."
                             mode == PositionMode.GPS_OBD2 -> "Нужен GPS-фикс. OBD-II сможет кратко продолжить его только при свежей скорости и известном курсе."
-                            else -> "Разреши геолокацию или запусти сканирование."
+                            else -> "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
@@ -1547,20 +1581,13 @@ private fun MapHomeScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(
-                onClick = onScan,
-                enabled = !scanBusy,
+                onClick = onFixToggle,
                 modifier = Modifier.weight(1.15f).heightIn(min = 48.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                if (scanBusy) {
-                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(7.dp))
-                    Text("Сканирую…", maxLines = 1)
-                } else {
-                    Icon(Icons.Outlined.Refresh, null)
-                    Spacer(Modifier.width(7.dp))
-                    Text("Сканировать", maxLines = 1)
-                }
+                Icon(if (fixEnabled) Icons.Outlined.CheckCircle else Icons.Outlined.GpsFixed, null)
+                Spacer(Modifier.width(7.dp))
+                Text(if (fixEnabled) "Отключить фикс" else "Включить фикс", maxLines = 1)
             }
             OutlinedButton(
                 onClick = onManualAnchor,
@@ -1577,6 +1604,12 @@ private fun MapHomeScreen(
                 }
             }
         }
+        Text(
+            if (fixEnabled) "Фикс активен · mock location · обновление примерно каждые $scanIntervalSeconds с"
+            else "Фикс выключен · координаты не передаются другим приложениям",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (fixEnabled) colors.primary else colors.onSurfaceVariant
+        )
         if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1710,6 +1743,16 @@ private fun MapHomeScreen(
 
         if (showDetails) {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                FilledTonalButton(
+                    onClick = onScan,
+                    enabled = !scanBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Outlined.Refresh, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (scanBusy) "Сканирую…" else "Сканировать сейчас")
+                }
                 if (lastScanAt > 0L) {
                     Text("Последний скан: " + dateTime(lastScanAt), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
@@ -2310,8 +2353,8 @@ private fun SettingsScreen(
         }
 
         SettingsSectionToggle(
-            title = "Радиосканирование",
-            summary = "Wi‑Fi, сотовые сети, Bluetooth и частота",
+            title = "Радиопоиск и частота фикса",
+            summary = "Источники радиоданных и интервал 1–30 секунд",
             expanded = showRadioOptions,
             onClick = { showRadioOptions = !showRadioOptions }
         )
@@ -2329,13 +2372,18 @@ private fun SettingsScreen(
                     Divider(color = colors.outlineVariant)
                     SettingSwitch("Bluetooth LE", "Адрес и уровень сигнала; имена устройств не читаются.", useBle, onBle)
                     Divider(color = colors.outlineVariant)
-                    Text("Интервал сканирования: " + scanIntervalSeconds + " с", style = MaterialTheme.typography.titleSmall)
+                    Text("Интервал обновления фикса: " + scanIntervalSeconds + " с", style = MaterialTheme.typography.titleSmall)
                     Slider(
                         value = scanIntervalSeconds.toFloat(),
-                        onValueChange = { onScanInterval(it.roundToInt().coerceIn(10, 120)) },
-                        valueRange = 10f..120f,
-                        steps = 10,
+                        onValueChange = { onScanInterval(it.roundToInt().coerceIn(1, 30)) },
+                        valueRange = 1f..30f,
+                        steps = 28,
                         modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Интервал применяется к GPS-обновлениям и повторному радиопоиску. Android может ограничивать фактическую частоту Wi‑Fi/Bluetooth-сканов.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
                     )
                     SettingSwitch(
                         "Ускорять в движении",
@@ -2539,9 +2587,9 @@ private fun MapAttribution(modifier: Modifier = Modifier, dark: Boolean, onClick
 }
 
 private fun effectiveScanIntervalSeconds(configuredSeconds: Int, speedKmh: Float?, adaptive: Boolean): Int {
-    val configured = configuredSeconds.coerceIn(10, 120)
+    val configured = configuredSeconds.coerceIn(1, 30)
     val movingFast = speedKmh != null && speedKmh.isFinite() && speedKmh > 25f
-    return if (adaptive && movingFast) (configured / 2).coerceAtLeast(10) else configured
+    return if (adaptive && movingFast) (configured / 2).coerceAtLeast(1) else configured
 }
 
 private fun recommendedMapPointLimit(context: Context): Int {
