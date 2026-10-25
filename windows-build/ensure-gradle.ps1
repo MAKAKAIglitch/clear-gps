@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Ensure hashing cmdlets are available even when PowerShell module auto-loading is disabled.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $GradleVersion = '8.14.6'
