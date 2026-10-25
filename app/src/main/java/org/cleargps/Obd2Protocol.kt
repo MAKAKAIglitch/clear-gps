@@ -3,7 +3,7 @@ package org.cleargps
 import java.util.Locale
 
 /** Why a current vehicle-speed sample could not be obtained. */
-internal enum class Obd2SpeedIssue {
+enum class Obd2SpeedIssue {
     PID_UNSUPPORTED,
     NO_VALID_RESPONSE
 }
