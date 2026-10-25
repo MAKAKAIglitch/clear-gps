@@ -314,9 +314,22 @@ class LocationMonitorService : Service(), LocationListener {
                     // A same-mode ACTION_START is often just a refresh-setting update: preserve
                     // the registered mock provider and last known output in that case.
                     val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
+                    val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                     saveServiceStatus(
-                        if (radioObdMode) "Radio + OBD-II mode: GPS provider is not requested; radio remains the coordinate source"
-                        else "Radio-only mode: GPS provider is not requested"
+                        when {
+                            radioObdMode && mockRequested ->
+                                "Radio + OBD-II: scanning local radio database; waiting for a reliable match before publishing mock GPS"
+                            radioObdMode ->
+                                "Radio + OBD-II: scanning local radio database; mock output is disabled"
+                            mockRequested ->
+                                "Radio-only: searching the local database; mock GPS will publish after a reliable match"
+                            else ->
+                                "Radio-only: searching the local database; mock output is disabled"
+                        }
+                    )
+                    DiagnosticLogStore.log(
+                        this, "RADIO_FIX",
+                        "Radio positioning started: mockRequested=$mockRequested; Android physical GPS input intentionally disabled"
                     )
                     startRadioOnlyLoop()
                     return
