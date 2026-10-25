@@ -87,6 +87,26 @@ class LocalSignalPositionTest {
         assertFalse(estimate.fallbackUsed)
     }
 
+    @Test fun fingerprintSearchMatchesMacKeysFromLegacySeparatorFormats() {
+        val now = 1_000_000L
+        val current = listOf(
+            RadioSignal("wifi", "aa:bb:cc:dd:ee:01", -50),
+            RadioSignal("wifi", "aa:bb:cc:dd:ee:02", -60),
+            RadioSignal("wifi", "aa:bb:cc:dd:ee:03", -65)
+        )
+        val history = listOf(
+            RadioFingerprintSample("wifi", "AA-BB-CC-DD-EE-01", 55.0, 40.0, 20.0, -51, now - 1_000, "android-location"),
+            RadioFingerprintSample("wifi", "aabb.ccdd.ee02", 55.0, 40.0, 20.0, -61, now - 1_000, "android-location"),
+            RadioFingerprintSample("wifi", "aabbccddee03", 55.0, 40.0, 20.0, -66, now - 1_000, "android-location")
+        )
+
+        val estimate = estimateRadioFingerprintPosition(current, history, now)
+        requireNotNull(estimate)
+        assertEquals(3, estimate.matchedCount)
+        assertTrue(abs(estimate.latitude - 55.0) < 0.001)
+        assertTrue(abs(estimate.longitude - 40.0) < 0.001)
+    }
+
     @Test fun fingerprintSearchRefusesIdenticalFingerprintsAtDistantPlaces() {
         val now = 1_000_000L
         val current = listOf(
