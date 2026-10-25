@@ -17,7 +17,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -181,7 +180,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapSourceMode by remember {
         mutableStateOf(MapSourceMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") } ?: MapSourceMode.ONLINE)
     }
-    var panelTargetFraction by remember { mutableStateOf(0.38f) }
+    var panelTargetFraction by remember { mutableStateOf(0.34f) }
     var panelVisible by remember { mutableStateOf(true) }
     val panelFraction by animateFloatAsState(targetValue = panelTargetFraction, label = "map-panel-height")
     var backExitArmed by remember { mutableStateOf(false) }
@@ -669,20 +668,36 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         else -> "Нет фикса"
     }
 
-    SideEffect {
+    // Update MapLibre only when its actual inputs change. Re-running every map layer update
+    // after unrelated UI state changes was rebuilding GeoJSON and causing visible stutter.
+    LaunchedEffect(mapIsDark) {
         mapController.setDarkMode(mapIsDark)
+    }
+    LaunchedEffect(mapSourceMode) {
         mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
+    }
+    LaunchedEffect(selectedMapPoint != null, showRadioPointsOnMap) {
         mapController.setShowRadioPoints(selectedMapPoint != null || showRadioPointsOnMap)
+    }
+    LaunchedEffect(measuredCoordinate, activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()) {
         mapController.updatePrimary(
             measuredCoordinate,
             activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()
         )
+    }
+    LaunchedEffect(radioCoordinate) {
         mapController.updateCalculatedLocation(radioCoordinate)
+    }
+    LaunchedEffect(manualAnchor) {
         mapController.updateManualAnchor(manualAnchor)
+    }
+    LaunchedEffect(zones, draftZone) {
         mapController.updateZones(zones, draftZone)
+    }
+    val pointsToRender = remember(selectedMapPoint, selectedPointCenter, mapPoints) {
         val detailPoint = selectedMapPoint
         val selectedCenter = selectedPointCenter
-        val pointsToRender = if (detailPoint != null) {
+        if (detailPoint != null) {
             val lat = selectedCenter?.latitude ?: detailPoint.latitude
             val lon = selectedCenter?.longitude ?: detailPoint.longitude
             if (lat != null && lon != null) listOf(detailPoint.copy(
@@ -690,8 +705,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 accuracyMeters = selectedCenter?.accuracyMeters ?: detailPoint.accuracyMeters
             )) else emptyList()
         } else mapPoints
+    }
+    LaunchedEffect(pointsToRender) {
         mapController.updateRadioPoints(pointsToRender)
+    }
+    LaunchedEffect(mapTapMode) {
         mapController.setTapMode(mapTapMode)
+    }
+    // Lightweight callback assignments keep handlers fresh without triggering map rendering.
+    SideEffect {
         mapController.onRadioPointTap = { pointId -> openRadioPointDetails(pointId) }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
@@ -699,14 +721,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     val anchor = ManualAnchor(latitude, longitude)
                     ManualLocationStore.save(context, anchor)
                     manualAnchor = anchor
-                    mapController.updateManualAnchor(anchor)
                     mapTapMode = MapTapMode.NONE
                     mapController.focus(MapCoordinate(latitude, longitude))
                     true
                 }
                 MapTapMode.DRAW_ZONE -> {
                     draftZone = draftZone + ZonePoint(latitude, longitude)
-                    mapController.updateZones(zones, draftZone)
                     true
                 }
                 MapTapMode.NONE -> false
@@ -798,12 +818,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 AnimatedVisibility(
                     visible = panelVisible,
                     modifier = Modifier.fillMaxWidth(),
-                    enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(280)) +
-                        expandVertically(expandFrom = Alignment.Bottom, animationSpec = tween(280)) +
-                        fadeIn(animationSpec = tween(180)),
-                    exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(240)) +
-                        shrinkVertically(shrinkTowards = Alignment.Bottom, animationSpec = tween(240)) +
-                        fadeOut(animationSpec = tween(160))
+                    enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(190)) +
+                        fadeIn(animationSpec = tween(140)),
+                    exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(170)) +
+                        fadeOut(animationSpec = tween(120))
                 ) {
                 Surface(
                     Modifier.fillMaxWidth().height(panelMaxHeight),
@@ -1139,175 +1157,318 @@ private fun MapHomeScreen(
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-        .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Текущее положение", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(source, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-            }
-            StatusPill(if (coordinate != null) "Позиция" else "Нет фикса",
-                if (coordinate != null) colors.primaryContainer else colors.surfaceVariant,
-                if (coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant)
-        }
-        if (coordinate != null) {
-            Text(String.format(Locale.US, "%.5f, %.5f", coordinate.latitude, coordinate.longitude),
-                style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Medium)
-            Text(if (accuracy != null) "Оценка: примерно ±" + accuracy.toInt() + " м" else "Точность неизвестна",
-                style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-            if (mode == PositionMode.RADIO_ONLY && currentEstimate != null) {
-                Text("Совпало локальных радио-точек: " + currentEstimate.matchedCount +
-                    ". Радиус рассчитан эвристически и не гарантирует такую же фактическую ошибку.",
-                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-            }
-        } else {
-            Text(when (mode) {
-                PositionMode.RADIO_ONLY -> "Нет совпадений в локальной базе"
-                PositionMode.GPS_ONLY -> "Ожидание GPS-фикса"
-                PositionMode.AUTO -> "Пока нет координат"
-            }, style = MaterialTheme.typography.titleMedium)
-            Text(if (mode == PositionMode.RADIO_ONLY)
-                "Сначала запиши точки при известном положении или импортируй локальный WiGLE CSV."
-            else "Разреши геолокацию и нажми «Сканировать». Для радиопозиционирования нужно предварительно записать точки.",
-                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        }
-        Text("Источник координат", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            PositionMode.values().forEach { item ->
-                AssistChip(onClick = { onMode(item) }, label = { Text(item.title) },
-                    leadingIcon = { if (mode == item) Icon(Icons.Outlined.CheckCircle, null, modifier = Modifier.size(16.dp)) })
-            }
-        }
-        if (mode == PositionMode.RADIO_ONLY) {
-            Text("Этот режим игнорирует GPS внутри Clear GPS. Он не выключает GNSS для других приложений.",
-                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.fillMaxWidth()) {
-            FilledTonalButton(onClick = onScan, enabled = !scanBusy,
-                modifier = Modifier.weight(1.2f).heightIn(min = 50.dp), shape = RoundedCornerShape(18.dp)) {
-                if (scanBusy) {
-                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp)); Text("Сканирую…")
+    var showDetails by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = colors.surfaceContainerHigh
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Текущее положение",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    StatusPill(
+                        if (coordinate != null) "Есть фиксация" else "Нет фикса",
+                        if (coordinate != null) colors.primaryContainer else colors.surfaceVariant,
+                        if (coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
+                    )
+                }
+                if (coordinate != null) {
+                    Text(
+                        String.format(Locale.US, "%.5f, %.5f", coordinate.latitude, coordinate.longitude),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        (if (accuracy != null) "Точность около ±" + accuracy.toInt() + " м" else "Точность неизвестна") + " · " + source,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (mode == PositionMode.RADIO_ONLY && currentEstimate != null) {
+                        Text(
+                            "Совпадений в базе: " + currentEstimate.matchedCount + ". Радиус — эвристическая оценка.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
                 } else {
-                    Icon(Icons.Outlined.Refresh, null); Spacer(Modifier.width(7.dp)); Text("Сканировать")
+                    Text(
+                        when (mode) {
+                            PositionMode.RADIO_ONLY -> "Нет совпадений в локальной базе"
+                            PositionMode.GPS_ONLY -> "Ожидание GPS-фикса"
+                            PositionMode.AUTO -> "Пока нет координат"
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (mode == PositionMode.RADIO_ONLY)
+                            "Сначала запиши радиоточки в известных местах или импортируй локальный CSV."
+                        else "Разреши геолокацию или запусти сканирование.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
                 }
             }
-            OutlinedButton(onClick = onManualAnchor, modifier = Modifier.weight(1f).heightIn(min = 50.dp),
-                shape = RoundedCornerShape(18.dp)) {
-                Icon(Icons.Outlined.EditLocationAlt, null); Spacer(Modifier.width(5.dp)); Text("Ориентир")
+        }
+
+        Text("Источник положения", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            PositionMode.values().forEach { item ->
+                AssistChip(
+                    onClick = { if (mode != item) onMode(item) },
+                    label = { Text(item.title) },
+                    leadingIcon = {
+                        if (mode == item) Icon(Icons.Outlined.CheckCircle, null, modifier = Modifier.size(16.dp))
+                    }
+                )
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            FilledTonalButton(
+                onClick = onScan,
+                enabled = !scanBusy,
+                modifier = Modifier.weight(1.15f).heightIn(min = 48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                if (scanBusy) {
+                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(7.dp))
+                    Text("Сканирую…", maxLines = 1)
+                } else {
+                    Icon(Icons.Outlined.Refresh, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text("Сканировать", maxLines = 1)
+                }
+            }
+            OutlinedButton(
+                onClick = onManualAnchor,
+                modifier = Modifier.weight(0.85f).heightIn(min = 48.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Icon(Icons.Outlined.EditLocationAlt, null)
+                Spacer(Modifier.width(5.dp))
+                Text("Ориентир", maxLines = 1)
             }
             if (manualAnchor != null) {
-                Surface(
-                    modifier = Modifier.size(50.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = colors.errorContainer
-                ) {
-                    IconButton(onClick = onRemoveManualAnchor) {
-                        Icon(Icons.Outlined.DeleteOutline, contentDescription = "Убрать ручной ориентир",
-                            tint = colors.onErrorContainer)
-                    }
+                IconButton(onClick = onRemoveManualAnchor, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "Убрать ручной ориентир", tint = colors.error)
                 }
             }
         }
         if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Surface(Modifier.fillMaxWidth().animateContentSize(), shape = RoundedCornerShape(18.dp),
-            color = if (lookupPhase == LookupPhase.ERROR) colors.errorContainer else colors.surfaceContainerHigh) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SourceChip(Icons.Outlined.Wifi, "Wi‑Fi $wifiCount", wifiCount > 0)
+            SourceChip(Icons.Outlined.SignalCellularAlt, "Соты $cellCount", cellCount > 0)
+            SourceChip(Icons.Outlined.Bluetooth, "BLE $bleCount", bleCount > 0)
+        }
+
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = if (lookupPhase == LookupPhase.ERROR) colors.errorContainer else colors.surfaceContainer
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(when (lookupPhase) {
-                        LookupPhase.UPDATED -> Icons.Outlined.CheckCircle
-                        LookupPhase.ERROR -> Icons.Outlined.Info
-                        else -> Icons.Outlined.Refresh
-                    }, null, tint = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.primary)
+                    Icon(
+                        when (lookupPhase) {
+                            LookupPhase.UPDATED -> Icons.Outlined.CheckCircle
+                            LookupPhase.ERROR -> Icons.Outlined.Info
+                            else -> Icons.Outlined.Refresh
+                        },
+                        null,
+                        tint = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.primary
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Text(when (lookupPhase) {
-                        LookupPhase.SCANNING -> "Сканирование активно"
-                        LookupPhase.UPDATED -> "Локальная позиция рассчитана"
-                        LookupPhase.NO_MATCH -> "Сигналы есть, координат пока нет"
-                        LookupPhase.ERROR -> "Сканирование требует внимания"
-                        LookupPhase.IDLE -> "Локальные источники"
-                    }, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        when (lookupPhase) {
+                            LookupPhase.SCANNING -> "Сканирование"
+                            LookupPhase.UPDATED -> "Радиоданные обновлены"
+                            LookupPhase.NO_MATCH -> "Нет совпадения в радиобазе"
+                            LookupPhase.ERROR -> "Не удалось завершить сканирование"
+                            LookupPhase.IDLE -> "Состояние радиопоиска"
+                        },
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurface
+                    )
                 }
-                Text(scanMessage, style = MaterialTheme.typography.bodySmall,
-                    color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurfaceVariant)
-                if (lastScanAt > 0) Text("Последний скан: " + dateTime(lastScanAt),
-                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                Text(
+                    scanMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (lookupPhase == LookupPhase.ERROR) colors.onErrorContainer else colors.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            SourceChip(Icons.Outlined.Wifi, "Wi‑Fi " + wifiCount, wifiCount > 0)
-            SourceChip(Icons.Outlined.SignalCellularAlt, "Соты " + cellCount, cellCount > 0)
-            SourceChip(Icons.Outlined.Bluetooth, "BLE " + bleCount, bleCount > 0)
-        }
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.secondaryContainer) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (recording) Icons.Outlined.RadioButtonChecked else Icons.Outlined.RadioButtonUnchecked,
-                    null, tint = colors.onSecondaryContainer, modifier = Modifier.size(24.dp))
-                Spacer(Modifier.width(10.dp))
+
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = if (recording) colors.secondaryContainer else colors.surfaceContainer
+        ) {
+            Row(
+                Modifier.padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (recording) Icons.Outlined.RadioButtonChecked else Icons.Outlined.RadioButtonUnchecked,
+                    null,
+                    tint = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                    modifier = Modifier.size(21.dp)
+                )
+                Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(if (recording) "Запись точек включена" else "Локальная запись выключена",
-                        fontWeight = FontWeight.SemiBold, color = colors.onSecondaryContainer)
-                    Text(if (recording)
-                        "Сканирование примерно раз в 15 секунд, пока приложение открыто. Наблюдения сохраняются на устройстве."
-                    else "Включи запись, чтобы сохранять обнаруженные сети и их координаты локально.",
-                        style = MaterialTheme.typography.bodySmall, color = colors.onSecondaryContainer)
+                    Text(
+                        if (recording) "Запись включена" else "Локальная запись",
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (recording) colors.onSecondaryContainer else colors.onSurface
+                    )
+                    Text(
+                        if (recording) "Сохраняет радионаблюдения на устройстве"
+                        else "Ничего не сохраняется без включения",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (recording) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 Switch(checked = recording, onCheckedChange = onRecording)
             }
         }
-        if (manualAnchor != null) {
-            Text("Ручной ориентир: " + String.format(Locale.US, "%.5f, %.5f", manualAnchor.latitude, manualAnchor.longitude),
-                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        }
-        Divider(color = colors.outlineVariant)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Shield, null, tint = colors.primary); Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Фильтр GNSS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(when (filterState) {
-                    FilterState.WAITING.name -> "Ожидание данных"
-                    FilterState.NORMAL.name -> "Аномалий не обнаружено"
-                    FilterState.SUSPECT.name -> "Подозрительные признаки — проверка продолжается"
-                    FilterState.ZONE_RISK.name -> "В зоне риска"
-                    FilterState.CORRECTING.name -> "Используется резервная позиция"
-                    FilterState.NO_FALLBACK.name -> "Нет пригодного резерва"
-                    else -> filterState
-                }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-            }
-            Text(riskScore.toString() + "/100", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-        LinearProgressIndicator(progress = { riskScore.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth(),
-            color = if (riskScore >= 60) colors.error else colors.primary, trackColor = colors.surfaceVariant)
-        Text("Индекс риска — эвристическая оценка, а не вероятность атаки.",
-            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-        if (riskReasons.isNotEmpty()) {
-            Text("Основания: " + riskReasons.joinToString(" · "),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (riskScore >= 60) colors.error else colors.onSurfaceVariant)
-        } else {
-            Text("Проверяются траектория, скорость, расхождение с сетевой позицией и статистика спутников. Отсутствие тревоги не доказывает отсутствие спуфинга.",
-                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        }
-        Text(serviceStatus.ifBlank { if (monitorEnabled) "Мониторинг активен." else "Фоновый мониторинг выключен." },
-            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onMonitoring, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                Text(if (monitorEnabled) "Стоп мониторинг" else "Мониторинг")
-            }
-            FilledTonalButton(onClick = onMock, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                Text(if (mockEnabled) "Выключить mock" else "Включить mock")
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Shield, null, tint = colors.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Фильтр GNSS", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when (filterState) {
+                                FilterState.WAITING.name -> "Ожидание данных"
+                                FilterState.NORMAL.name -> "Явных аномалий не обнаружено"
+                                FilterState.SUSPECT.name -> "Есть подозрительные признаки"
+                                FilterState.ZONE_RISK.name -> "Позиция в зоне риска"
+                                FilterState.CORRECTING.name -> "Используется резервная позиция"
+                                FilterState.NO_FALLBACK.name -> "Нет пригодного резерва"
+                                else -> filterState
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        riskScore.toString() + "/100",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (riskScore >= 60) colors.error else colors.primary
+                    )
+                }
+                LinearProgressIndicator(
+                    progress = { riskScore.coerceIn(0, 100) / 100f },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (riskScore >= 60) colors.error else colors.primary,
+                    trackColor = colors.surfaceVariant
+                )
+                Text("Индекс риска — эвристика, не вероятность атаки.", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onOpenPoints, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                Icon(Icons.Outlined.Storage, null); Spacer(Modifier.width(6.dp)); Text("База: " + pointCount)
-            }
-            OutlinedButton(onClick = onOpenZones, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                Icon(Icons.Outlined.Shield, null); Spacer(Modifier.width(6.dp)); Text("Зоны")
+
+        TextButton(onClick = { showDetails = !showDetails }, modifier = Modifier.fillMaxWidth()) {
+            Icon(if (showDetails) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null)
+            Spacer(Modifier.width(6.dp))
+            Text(if (showDetails) "Скрыть диагностику и инструменты" else "Диагностика и дополнительные инструменты")
+        }
+
+        if (showDetails) {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                if (lastScanAt > 0L) {
+                    Text("Последний скан: " + dateTime(lastScanAt), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+                if (mode == PositionMode.RADIO_ONLY) {
+                    Text(
+                        "В режиме «Только радио» приложение не запрашивает GPS. Это не выключает GNSS для других приложений.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                if (manualAnchor != null) {
+                    Text(
+                        "Ручной ориентир: " + String.format(Locale.US, "%.5f, %.5f", manualAnchor.latitude, manualAnchor.longitude),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                if (riskReasons.isNotEmpty()) {
+                    Text(
+                        "Причины риска: " + riskReasons.joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (riskScore >= 60) colors.error else colors.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "Проверяются траектория, скорость, расхождение с сетевой позицией и данные спутников. Отсутствие тревоги не доказывает отсутствие спуфинга.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                Text(
+                    serviceStatus.ifBlank { if (monitorEnabled) "Фоновый мониторинг активен." else "Фоновый мониторинг выключен." },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onMonitoring, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                        Text(if (monitorEnabled) "Остановить мониторинг" else "Мониторинг")
+                    }
+                    FilledTonalButton(onClick = onMock, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                        Text(if (mockEnabled) "Выключить mock" else "Включить mock")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onOpenPoints, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.Storage, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("База · " + pointCount)
+                    }
+                    OutlinedButton(onClick = onOpenZones, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.Shield, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Зоны риска")
+                    }
+                }
+                Text(
+                    "Радиоидентификаторы остаются на устройстве и не отправляются в BeaconDB или API WiGLE. Онлайн-карта OpenFreeMap видит сетевые метаданные обычных запросов тайлов.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
             }
         }
-        Text("Радиоидентификаторы не отправляются в BeaconDB или WiGLE. Карта загружается из OpenFreeMap и видит обычные сетевые метаданные.",
-            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
     }
 }
 
