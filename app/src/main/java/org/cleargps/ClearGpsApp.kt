@@ -133,6 +133,12 @@ import kotlin.math.roundToInt
 
 private enum class AppTab { MAP, POINTS, ZONES, SETTINGS }
 private enum class PointsView { POINTS, HISTORY }
+private enum class RadioPointTypeFilter(val title: String, val type: String?) {
+    ALL("Все", null),
+    WIFI("Wi‑Fi", "wifi"),
+    CELL("Вышки", "cell"),
+    BLE("Bluetooth", "ble")
+}
 private enum class LookupPhase { IDLE, SCANNING, UPDATED, NO_MATCH, ERROR }
 private enum class PositionMode(val key: String, val title: String) {
     AUTO("auto", "Авто"), GPS_ONLY("gps", "GPS"), RADIO_ONLY("radio", "Только радио")
@@ -166,6 +172,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mutableStateOf(MapSourceMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") } ?: MapSourceMode.ONLINE)
     }
     var panelTargetFraction by remember { mutableStateOf(0.38f) }
+    var panelVisible by remember { mutableStateOf(true) }
     val panelFraction by animateFloatAsState(targetValue = panelTargetFraction, label = "map-panel-height")
     var backExitArmed by remember { mutableStateOf(false) }
     var pendingMonitorStart by remember { mutableStateOf(false) }
@@ -191,6 +198,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
     var searchQuery by remember { mutableStateOf("") }
+    var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
@@ -239,6 +247,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             observationCount = withContext(Dispatchers.IO) { database.observationCount() }
             zones = ZoneStore.loadAll(context)
         }
+    }
+
+    fun navigateToTab(tab: AppTab) {
+        selectedTab = tab
+        panelVisible = true
+        panelTargetFraction = 0.82f
+        if (tab == AppTab.POINTS) refreshLocalUi()
     }
 
     fun openRadioPointDetails(pointId: Long) {
@@ -623,7 +638,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mapController.setDarkMode(mapIsDark)
         mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
         mapController.setShowRadioPoints(selectedMapPoint != null || showRadioPointsOnMap)
-        mapController.updatePrimary(primaryCoordinate, primaryAccuracy)
+        mapController.updatePrimary(
+            measuredCoordinate,
+            activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()
+        )
+        mapController.updateCalculatedLocation(radioCoordinate)
         mapController.updateManualAnchor(manualAnchor)
         mapController.updateZones(zones, draftZone)
         val detailPoint = selectedMapPoint
@@ -645,6 +664,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     val anchor = ManualAnchor(latitude, longitude)
                     ManualLocationStore.save(context, anchor)
                     manualAnchor = anchor
+                    mapController.updateManualAnchor(anchor)
                     mapTapMode = MapTapMode.NONE
                     mapController.focus(MapCoordinate(latitude, longitude))
                     true
@@ -694,7 +714,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             showZoneNameDialog -> showZoneNameDialog = false
             zoneToRename != null -> zoneToRename = null
             mapTapMode != MapTapMode.NONE -> { mapTapMode = MapTapMode.NONE; draftZone = emptyList() }
-            selectedTab != AppTab.MAP -> { selectedTab = AppTab.MAP; panelTargetFraction = 0.38f; backExitArmed = false }
+            selectedTab != AppTab.MAP -> { navigateToTab(AppTab.MAP); backExitArmed = false }
             !backExitArmed -> {
                 backExitArmed = true
                 Toast.makeText(context, "Нажми «Назад» ещё раз в течение 2 секунд, чтобы выйти.", Toast.LENGTH_SHORT).show()
@@ -707,7 +727,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     ClearGpsTheme(dark = mapIsDark) {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
-            val panelMaxHeight = maxHeight * panelFraction
+            val panelMaxHeight = if (panelVisible) maxHeight * panelFraction else 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             AndroidView(factory = { viewContext ->
                 MapView(viewContext).also { view ->
@@ -723,7 +743,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         .padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    HeaderCard(tab = selectedTab, onCenter = { mapController.focusPrimary() }, onSettings = { selectedTab = AppTab.SETTINGS })
+                    HeaderCard(tab = selectedTab, onCenter = { mapController.focusPrimary() }, onSettings = { navigateToTab(AppTab.SETTINGS) })
                     if (mapTapMode != MapTapMode.NONE) {
                         ModeBanner(
                             text = if (mapTapMode == MapTapMode.PLACE_ANCHOR) "Нажми карту, чтобы поставить ориентир"
@@ -737,6 +757,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     }
                 }
 
+                if (panelVisible) {
                 Surface(
                     Modifier.fillMaxWidth().height(panelMaxHeight),
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
@@ -749,11 +770,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     detectVerticalDragGestures { change, dragAmount ->
                                         change.consume()
                                         if (panelHeightPx > 0f) {
-                                            panelTargetFraction = (panelTargetFraction - dragAmount / panelHeightPx).coerceIn(0.18f, 0.82f)
+                                            val nextFraction = panelTargetFraction - dragAmount / panelHeightPx
+                                            if (nextFraction < 0.22f) {
+                                                panelVisible = false
+                                            } else {
+                                                panelTargetFraction = nextFraction.coerceIn(0.22f, 0.82f)
+                                            }
                                         }
                                     }
                                 }
-                                .clickable { panelTargetFraction = if (panelTargetFraction < 0.25f) 0.38f else 0.18f },
+                                .clickable { panelVisible = false },
                             contentAlignment = Alignment.Center
                         ) {
                             Surface(Modifier.width(40.dp).height(5.dp), shape = CircleShape, color = colors.outlineVariant) {}
@@ -774,8 +800,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onRecording = { recording = it },
                                     onMonitoring = { if (monitorEnabled) stopMonitoring() else runMonitoring() },
                                     onMock = { if (mockEnabled) disableMock() else enableMock() },
-                                    onOpenPoints = { selectedTab = AppTab.POINTS },
-                                    onOpenZones = { selectedTab = AppTab.ZONES }
+                                    onOpenPoints = { navigateToTab(AppTab.POINTS) },
+                                    onOpenZones = { navigateToTab(AppTab.ZONES) }
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
                                     points = points, history = history, pointCount = pointCount, observationCount = observationCount,
@@ -787,6 +813,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                             }
                                         }
                                     },
+                                    typeFilter = pointTypeFilter,
+                                    onTypeFilter = { pointTypeFilter = it },
                                     selectedView = pointsView, onView = { pointsView = it }, onEdit = { openRadioPointDetails(it.id) },
                                     onDelete = {
                                         database.deletePoint(it.id); refreshLocalUi()
@@ -867,15 +895,26 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             windowInsets = WindowInsets.navigationBars,
                             containerColor = colors.surfaceContainerHigh, tonalElevation = 3.dp
                         ) {
-                            NavigationBarItem(selected = selectedTab == AppTab.MAP, onClick = { selectedTab = AppTab.MAP },
+                            NavigationBarItem(selected = selectedTab == AppTab.MAP, onClick = { navigateToTab(AppTab.MAP) },
                                 icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Главная", maxLines = 1) })
-                            NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { selectedTab = AppTab.POINTS; refreshLocalUi() },
+                            NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { navigateToTab(AppTab.POINTS) },
                                 icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
-                            NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { selectedTab = AppTab.ZONES },
+                            NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
                                 icon = { Icon(Icons.Outlined.Shield, null) }, label = { Text("Зоны", maxLines = 1) })
-                            NavigationBarItem(selected = selectedTab == AppTab.SETTINGS, onClick = { selectedTab = AppTab.SETTINGS },
+                            NavigationBarItem(selected = selectedTab == AppTab.SETTINGS, onClick = { navigateToTab(AppTab.SETTINGS) },
                                 icon = { Icon(Icons.Outlined.Settings, null) }, label = { Text("Настройки", maxLines = 1) })
                         }
+                    }
+                }
+                } else {
+                    Surface(
+                        Modifier.align(Alignment.CenterHorizontally)
+                            .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        color = colors.surfaceContainerHigh,
+                        shadowElevation = 6.dp
+                    ) {
+                        TextButton(onClick = { panelVisible = true }) { Text("Открыть меню") }
                     }
                 }
             }
@@ -1171,10 +1210,12 @@ private fun MapHomeScreen(
 private fun DatabaseScreen(
     points: List<RadioPointRecord>, history: List<RadioScanHistoryItem>, pointCount: Int, observationCount: Int,
     searchQuery: String, onSearch: (String) -> Unit,
+    typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1192,6 +1233,22 @@ private fun DatabaseScreen(
             OutlinedTextField(value = searchQuery, onValueChange = onSearch, singleLine = true,
                 modifier = Modifier.fillMaxWidth(), placeholder = { Text("Поиск по SSID, MAC/BSSID или заметкам") },
                 label = { Text("Поиск в локальной базе") })
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                RadioPointTypeFilter.values().forEach { filter ->
+                    val selected = typeFilter == filter
+                    AssistChip(
+                        onClick = { onTypeFilter(filter) },
+                        label = { Text(filter.title) },
+                        colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                            containerColor = if (selected) colors.secondaryContainer else colors.surfaceVariant,
+                            labelColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+                        )
+                    )
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(onClick = onImport, modifier = Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) {
@@ -1208,9 +1265,11 @@ private fun DatabaseScreen(
             style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
 
         if (selectedView == PointsView.POINTS) {
-            if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
-            else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                items(points, key = { it.id }) { point ->
+            if (filteredPoints.isEmpty()) {
+                if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
+                else EmptyState("Нет точек этого типа", "Выбери «Все» или другой тип: Wi‑Fi, вышки либо Bluetooth.")
+            } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                items(filteredPoints, key = { it.id }) { point ->
                     RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
                 }
             }
