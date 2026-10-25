@@ -251,6 +251,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var recordedCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_RECORDED_COUNT, 0)) }
     var monitorEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
+    var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
     var filterState by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name) }
     var riskScore by remember { mutableStateOf(prefs.getInt(LocationMonitorService.KEY_SCORE, 0)) }
     var riskReasons by remember {
@@ -780,10 +781,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         while (true) {
             monitorEnabled = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
+            mockOutputActive = prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
+
+            // The foreground service owns radio scans while monitoring is active. Mirror its
+            // latest persisted counters/message so the screen cannot stay stuck on an older scan.
+            val storedScanAt = prefs.getLong(ClearGpsPreferences.KEY_LAST_SCAN_AT, 0L)
+            if (!scanBusy && storedScanAt > 0L && storedScanAt > lastScanAt) {
+                wifiCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, 0)
+                cellCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_CELL_COUNT, 0)
+                bleCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_BLE_COUNT, 0)
+                recordedCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_RECORDED_COUNT, 0)
+                lastScanAt = storedScanAt
+                scanMessage = prefs.getString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, scanMessage) ?: scanMessage
+                lookupPhase = when {
+                    prefs.getBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, false) -> LookupPhase.UPDATED
+                    wifiCount + cellCount + bleCount == 0 -> LookupPhase.ERROR
+                    else -> LookupPhase.NO_MATCH
+                }
+            }
             if (positionMode.usesRadio) {
                 // Keep a short-lived last-known estimate through a single failed scan, but never
                 // show it indefinitely as a current position when monitoring is off or matches stop.
@@ -1107,6 +1126,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
                                     scanMessage = scanMessage, lastScanAt = lastScanAt, monitorEnabled = monitorEnabled,
                                     mockEnabled = mockEnabled, fixEnabled = monitorEnabled && mockEnabled,
+                                    mockOutputActive = mockOutputActive,
                                     scanIntervalSeconds = scanIntervalSeconds,
                                     filterState = filterState, riskScore = riskScore,
                                     riskReasons = riskReasons, serviceStatus = serviceStatus,
@@ -1504,7 +1524,7 @@ private fun MapHomeScreen(
     currentEstimate: RadioEstimate?, manualAnchor: ManualAnchor?, wifiCount: Int, cellCount: Int, bleCount: Int,
     pointCount: Int, recording: Boolean, scanBusy: Boolean, lookupPhase: LookupPhase, scanMessage: String,
     lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, fixEnabled: Boolean,
-    scanIntervalSeconds: Int, filterState: String, riskScore: Int,
+    mockOutputActive: Boolean, scanIntervalSeconds: Int, filterState: String, riskScore: Int,
     riskReasons: List<String>, serviceStatus: String,
     onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
@@ -1533,12 +1553,13 @@ private fun MapHomeScreen(
                     )
                     StatusPill(
                         when {
-                            fixEnabled -> "Фикс включён"
+                            fixEnabled && mockOutputActive -> "Mock GPS активен"
+                            fixEnabled -> "Фикс ждёт координаты"
                             coordinate != null -> "Координаты найдены"
                             else -> "Нет фикса"
                         },
-                        if (fixEnabled || coordinate != null) colors.primaryContainer else colors.surfaceVariant,
-                        if (fixEnabled || coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
+                        if ((fixEnabled && mockOutputActive) || coordinate != null) colors.primaryContainer else colors.surfaceVariant,
+                        if ((fixEnabled && mockOutputActive) || coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
                     )
                 }
                 if (coordinate != null) {
@@ -1575,7 +1596,10 @@ private fun MapHomeScreen(
                     )
                     Text(
                         when {
-                            mode.usesRadio -> "Сначала запиши радиоточки в известных местах или импортируй локальный CSV."
+                            mode.usesRadio && pointCount > 0 ->
+                                "В базе $pointCount радиоточек, но последний скан не подтвердил положение. Нужны актуальные сигналы и координатированные совпадения; Wi‑Fi может ограничивать Android."
+                            mode.usesRadio ->
+                                "Сначала запиши радиоточки в известных местах или импортируй локальный CSV с координатами."
                             mode == PositionMode.GPS_OBD2 -> "Нужен GPS-фикс. OBD-II сможет кратко продолжить его только при свежей скорости и известном курсе."
                             else -> "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
                         },
@@ -1628,17 +1652,23 @@ private fun MapHomeScreen(
             }
         }
         Text(
-            if (fixEnabled) "Фикс активен · mock location · обновление примерно каждые $scanIntervalSeconds с"
-            else "Фикс выключен · координаты не передаются другим приложениям",
+            when {
+                !fixEnabled -> "Фикс выключен · координаты не передаются другим приложениям"
+                mockOutputActive && serviceStatus.contains("holding last mock GPS fix", ignoreCase = true) ->
+                    "Mock GPS передаётся · временно удерживается последняя радиопозиция с растущей погрешностью"
+                mockOutputActive -> "Mock GPS действительно публикует позиции · целевой интервал $scanIntervalSeconds с"
+                else -> "Фикс включён, но mock GPS сейчас не публикуется"
+            },
             style = MaterialTheme.typography.labelSmall,
-            color = if (fixEnabled) colors.primary else colors.onSurfaceVariant,
-            maxLines = 2,
+            color = if (fixEnabled && !mockOutputActive) colors.error else if (fixEnabled) colors.primary else colors.onSurfaceVariant,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis
         )
-        if (fixEnabled && (serviceStatus.contains("unavailable", ignoreCase = true) ||
-                serviceStatus.contains("choose Clear GPS", ignoreCase = true))) {
+        if (fixEnabled && !mockOutputActive) {
             Text(
-                "Mock-вывод недоступен. Проверь, что Clear GPS выбрано в настройках разработчика как приложение фиктивной геолокации.",
+                "Другие приложения сейчас не получают новые mock-координаты. Статус: " +
+                    serviceStatus.ifBlank { "ожидание первого надёжного положения" } +
+                    ". Проверь выбор Clear GPS в настройках разработчика и доступность совпадений.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.error
             )
