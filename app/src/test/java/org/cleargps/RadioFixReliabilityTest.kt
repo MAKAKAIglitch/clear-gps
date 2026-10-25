@@ -41,6 +41,15 @@ class RadioFixReliabilityTest {
         assertEquals(0.0, RadioFixReliability.bleAgePenaltyMeters(null, 2, 2), 0.0)
     }
 
+    @Test fun lastEstimateIsRetainedOnlyWhenRecentAndCredible() {
+        assertTrue(RadioFixReliability.canRetainLastEstimate(100_000L, 145_000L, 2, 1_000.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 145_001L, 2, 100.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 1, 100.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 3, 1_001.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 90_000L, 3, 100.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(0L, 10_000L, 3, Double.NaN))
+    }
+
     @Test fun lastRadioFixHasABoundedHoldWindow() {
         assertTrue(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_000L, 1_000L))
         assertFalse(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_001L, 1_000L))
