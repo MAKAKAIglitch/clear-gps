@@ -249,8 +249,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 val point = database.findPoint(pointId) ?: return@withContext null
                 point to database.listObservations(point)
             }
-            val point = loaded?.first ?: return@launch
-            val observations = loaded.second
+            val data = loaded ?: return@launch
+            val point = data.first
+            val observations = data.second
             val center = estimateObservationCenter(observations)
             selectedMapPoint = point
             selectedPointObservations = observations
@@ -905,7 +906,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    if (selectedMapPoint != null) {
+    ClearGpsTheme(dark = mapIsDark) {
+        if (selectedMapPoint != null) {
         RadioPointDetailsDialog(
             point = selectedMapPoint!!,
             observations = selectedPointObservations,
@@ -1001,6 +1003,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             },
             confirmButton = { TextButton(onClick = { showRadioOnlyInfo = false }) { Text("Понятно") } }
         )
+        }
     }
 }
 
