@@ -15,7 +15,7 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 - **Risk-zone management:** draw multiple named polygons, rename/delete them and enable/disable each zone.
 - **Explicit recording control:** while the app is visible, the recorder scans approximately every 15 seconds when the recording switch is on. The foreground GNSS monitor is separate.
 - **Guarded fallback:** previously recorded radio estimates are considered only when recent, matched against enough local points and within a conservative accuracy threshold. A manual reference can be enabled as a final, coarse fallback.
-- **Storage limits:** up to 20,000 detailed observations and 500 scan-history entries are retained; the map renders at most 400 saved radio points at once.
+- **Storage and map limits:** up to 20,000 detailed observations and 500 scan-history entries are retained; the map renders up to 1,500 saved points on ordinary devices and lowers the limit on low-RAM devices.
 - **Memory-aware Windows build:** Gradle heap is sized from installed/free RAM with a safety reserve for Windows; the daemon, parallel execution and build cache are enabled.
 - **Scan cadence:** configurable interval from 10 to 120 seconds; optionally request a faster interval above 25 km/h, subject to Android throttling.
 - **Private map fallback:** a tile-free offline canvas retains local radio markers without requesting map data, but does not display streets or labels.
@@ -25,7 +25,7 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 
 WiGLE is supported as a **local import/export format**, not as a remote database dependency. Choose a CSV file you already have from WiGLE (or another compatible export) with the Android document picker. Clear GPS never asks for a WiGLE username/API key and never uploads the file.
 
-A Wi-Fi/Bluetooth identifier by itself does not reveal coordinates. For radio-only navigation, collect observations at places where Clear GPS has a known position, use the manual reference as an approximate training position, or import geolocated records from a compatible WiGLE CSV. During a later scan, Clear GPS compares observed identifiers with locally stored, geolocated points. The estimate is heuristic; it may be absent or substantially wrong if too few saved points match, points have moved, or the radio environment has changed. Cell identifiers are collected when Android exposes them, but they are not magically geolocated without known coordinates in the local database.
+A Wi-Fi/Bluetooth identifier by itself does not reveal coordinates. For radio-only navigation, collect observations at places where Clear GPS has a known position, use the manual reference as an approximate training position, or import geolocated records from a compatible WiGLE CSV. For non-manually-edited, non-WiGLE points, a new strongest RSSI sample can refine the saved approximate reception location when its reference fix is no worse than 50 m; this does not triangulate an antenna and is not a guaranteed transmitter coordinate. During a later scan, Clear GPS compares observed identifiers with locally stored, geolocated points. The estimate is heuristic; it may be absent or substantially wrong if too few saved points match, points have moved, or the radio environment has changed. Cell identifiers are collected when Android exposes them, but they are not magically geolocated without known coordinates in the local database.
 
 ## Privacy and network traffic
 
@@ -68,7 +68,7 @@ This is a research/learning project. The app has automated build and unit-test c
 - **Режим «Только радио»:** Clear GPS перестаёт запрашивать системные провайдеры геолокации и рассчитывает положение только при совпадении текущих радиосигналов с координатными точками локальной базы. Режим не выключает GNSS-модуль для всей системы Android.
 - **Обмен с WiGLE:** импорт выбранного пользователем WiGLE-совместимого CSV (обычный или gzip) и экспорт локальной таблицы в WiGLE-style CSV. Это обмен файлами — автоматической отправки нет.
 - **Зоны спуфинга:** рисование нескольких полигонов, переименование, удаление и отдельное включение каждой зоны.
-- **Явная запись:** при открытом приложении сканирование повторяется примерно раз в 15 секунд только пока переключатель записи включён. Фоновый GNSS-монитор — отдельная функция.
+- **Явная запись:** при открытом приложении сканирование повторяется с настраиваемым интервалом 10–120 секунд только пока переключатель записи включён. При скорости выше 25 км/ч интервал можно автоматически сократить вдвое. Фоновый GNSS-монитор — отдельная функция.
 - **Ограничение объёма данных:** до 20 000 подробных наблюдений и 500 записей истории; на карте одновременно показывается не более 400 сохранённых радио-точек.
 - **Сборка с учётом ОЗУ:** heap Gradle рассчитывается по доступной/установленной памяти с резервом для Windows; включены daemon, параллельная сборка и кэш.
 - **Частота сканирования:** интервал 10–120 секунд и необязательное ускорение выше 25 км/ч с учётом ограничений Android.
@@ -79,7 +79,7 @@ This is a research/learning project. The app has automated build and unit-test c
 
 WiGLE здесь поддерживается как **формат импорта/экспорта**, а не как удалённая база-сервис. Можно выбрать локальный CSV, заранее экспортированный из WiGLE или другой совместимой программы. Clear GPS не запрашивает WiGLE API key, не просит учётную запись и не отправляет файл на сервер.
 
-Один Wi-Fi/Bluetooth идентификатор сам по себе не даёт координат. Для навигации без GPS необходимо записывать радионаблюдения в местах с известной позицией, использовать ручной ориентир как приблизительную исходную точку или импортировать геолокированные записи из WiGLE CSV. При последующем сканировании Clear GPS сопоставляет наблюдаемые идентификаторы с координатами, уже сохранёнными на устройстве. Расчёт эвристический: при недостатке совпадений, перестановке точек доступа или изменении радиосреды позиция может отсутствовать или быть сильно неверной. Сотовые идентификаторы собираются только если Android их предоставляет; без известных координат в локальной базе они не превращаются в геолокацию автоматически.
+Один Wi-Fi/Bluetooth идентификатор сам по себе не даёт координат. Для навигации без GPS необходимо записывать радионаблюдения в местах с известной позицией, использовать ручной ориентир как приблизительную исходную точку или импортировать геолокированные записи из WiGLE CSV. Для точек, которые не закреплены вручную и не импортированы из WiGLE, приложение может уточнить приблизительную точку лучшего приёма по новому максимуму RSSI при точности ориентира не хуже 50 м. Это не триангуляция и не гарантированные координаты антенны. При последующем сканировании Clear GPS сопоставляет наблюдаемые идентификаторы с координатами, уже сохранёнными на устройстве. Расчёт эвристический: при недостатке совпадений, перестановке точек доступа или изменении радиосреды позиция может отсутствовать или быть сильно неверной. Сотовые идентификаторы собираются только если Android их предоставляет; без известных координат в локальной базе они не превращаются в геолокацию автоматически.
 
 ## Приватность и сетевые запросы
 
