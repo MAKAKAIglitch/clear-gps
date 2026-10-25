@@ -35,6 +35,8 @@ class MockLocationOutput(context: Context) {
         false
     } catch (_: IllegalArgumentException) {
         false
+    } catch (_: RuntimeException) {
+        false
     }
 
     fun disable() {
@@ -42,6 +44,7 @@ class MockLocationOutput(context: Context) {
             if (registered) manager.removeTestProvider(LocationManager.GPS_PROVIDER)
         } catch (_: SecurityException) {
         } catch (_: IllegalArgumentException) {
+        } catch (_: RuntimeException) {
         } finally {
             registered = false
         }
