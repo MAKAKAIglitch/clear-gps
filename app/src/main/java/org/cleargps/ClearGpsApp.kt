@@ -825,7 +825,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val primaryAccuracy = when {
         predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
-        radioCoordinate != null -> currentRadioEstimate?.accuracyMeters
+        radioCoordinate != null && (positionMode.usesRadio ||
+            (positionMode == PositionMode.AUTO && measuredCoordinate == null)) -> currentRadioEstimate?.accuracyMeters
         else -> null
     }
     val displayCoordinate = if (positionMode.usesRadio) {
