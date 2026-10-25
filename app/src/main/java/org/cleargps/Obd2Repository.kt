@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -88,6 +89,10 @@ class Obd2Repository(context: Context) {
                     exchange(newSession, command, ADAPTER_COMMAND_TIMEOUT_MS)
                 }
                 Obd2Adapter(safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" }, device.address)
+            } catch (cancelled: CancellationException) {
+                if (activeSession?.socket === socket) activeSession = null
+                try { socket.close() } catch (_: Exception) { }
+                throw cancelled
             } catch (error: Exception) {
                 if (activeSession?.socket === socket) activeSession = null
                 try { socket.close() } catch (_: Exception) { }
@@ -110,6 +115,8 @@ class Obd2Repository(context: Context) {
                     speedResponse = speedResponse,
                     coolantResponse = coolantResponse
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 if (activeSession?.socket === current.socket) activeSession = null
                 try { current.socket.close() } catch (_: Exception) { }
