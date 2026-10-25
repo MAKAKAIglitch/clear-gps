@@ -453,14 +453,22 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                         }
-                        prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
-                            .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "").putString(KEY_SOURCE, "LOCAL_RADIO")
-                            .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
-                            .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
-                        if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && mock?.publish(output) != true) {
-                            saveServiceStatus("Radio match found, but mock output is unavailable; check Developer options")
+                        val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                        val mockPublished = !mockRequested || mock?.publish(output) == true
+                        if (mockPublished) {
+                            prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
+                                .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "").putString(KEY_SOURCE, "LOCAL_RADIO")
+                                .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
+                                .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
+                            saveServiceStatus(
+                                (if (mockRequested) "Mock GPS published · " else "Radio estimate only · ") +
+                                    estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m"
+                            )
                         } else {
-                            saveServiceStatus("Radio-only · " + estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m")
+                            // Keep the map's estimate separate from the system mock-provider state.
+                            prefs.edit().putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                                .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
+                            saveServiceStatus("Radio match found, but mock GPS was not published; choose Clear GPS in Developer options")
                         }
                     } else {
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
@@ -576,7 +584,12 @@ class LocationMonitorService : Service(), LocationListener {
         }
 
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
-            if (mock?.publish(result.outputLocation) != true) saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
+            if (mock?.publish(result.outputLocation) == true) {
+                val accuracyText = if (result.outputLocation.hasAccuracy()) " · ±" + result.outputLocation.accuracy.toInt() + " m" else ""
+                saveServiceStatus("Mock GPS published · " + result.source + accuracyText)
+            } else {
+                saveServiceStatus("Mock output unavailable; choose Clear GPS in Developer options")
+            }
         }
         val sourceHint = when (result.source) {
             "LOCAL_RADIO" -> " · local radio fallback"
