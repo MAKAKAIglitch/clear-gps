@@ -598,7 +598,9 @@ class LocationMonitorService : Service(), LocationListener {
                                     .putString(KEY_SOURCE, "NONE")
                                     .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
                                     .apply()
-                                saveServiceStatus("Mock GPS unavailable; choose Clear GPS in Developer options")
+                                val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
+                            saveServiceStatus("Mock GPS не опубликован: $reason")
+                            DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", "Не удалось удержать последнюю mock-позицию: $reason", "ERROR")
                             }
                         } else {
                             // A previous position is retained for at most a bounded grace
@@ -662,10 +664,13 @@ class LocationMonitorService : Service(), LocationListener {
                             prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                                 .putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
                                 .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
-                            saveServiceStatus("Mock GPS unavailable after radio scan error; choose Clear GPS in Developer options")
+                            val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
+                            saveServiceStatus("Mock GPS не опубликован после ошибки радио-сканирования: $reason")
+                            DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", "Не удалось удержать mock-позицию после ошибки радио-сканирования: $reason", "ERROR")
                         }
                     } else {
-                        DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_FIX", "Надёжный radio fix недоступен: $rejectionReason", "WARN")
+                        val failureReason = "Радиосканирование не удалось: ${error.message ?: error.javaClass.simpleName}"
+                        DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_FIX", failureReason, "ERROR")
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
                         lastRadioMockFix = null
                         lastRadioMockFixAtElapsedMs = 0L
