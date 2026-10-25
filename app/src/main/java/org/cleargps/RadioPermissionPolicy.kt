@@ -13,7 +13,8 @@ internal object RadioPermissionPolicy {
         sdkInt: Int,
         fineLocationGranted: Boolean,
         useWifi: Boolean,
-        useCells: Boolean
+        useCells: Boolean,
+        useBle: Boolean
     ): Boolean =
-        !fineLocationGranted && (useCells || (sdkInt >= 29 && useWifi))
+        !fineLocationGranted && (useCells || useBle || (sdkInt >= 29 && useWifi))
 }
