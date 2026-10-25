@@ -71,7 +71,7 @@ try {
         # Gradle's diagnostics may use stderr. In Windows PowerShell 5 this can
         # become an ErrorRecord, so Continue is required while collecting the process output.
         $ErrorActionPreference = 'Continue'
-        & $GradleWrapper --stacktrace --parallel --build-cache "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
+        & $GradleWrapper --stacktrace --build-cache "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
             Tee-Object -FilePath $BuildLog | Out-Host
         $GradleExitCode = $LASTEXITCODE
     } finally {
@@ -85,7 +85,7 @@ try {
             Write-Host ''
             Write-Host 'A network/dependency-server error was detected. Retrying once with --refresh-dependencies...'
             Write-Host "Retry log: $RetryLog"
-            & $GradleWrapper --stacktrace --parallel --build-cache --refresh-dependencies "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
+            & $GradleWrapper --stacktrace --build-cache --refresh-dependencies "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
                 Tee-Object -FilePath $RetryLog | Out-Host
             $GradleExitCode = $LASTEXITCODE
             if ($GradleExitCode -ne 0) {
