@@ -28,6 +28,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 private data class CellObservation(
@@ -393,20 +394,35 @@ class RadioGeolocationRepository(private val context: Context) {
         lastBleScanStartedAtElapsedMs = nowElapsedMs
         val freshSignals = suspendCancellableCoroutine<List<RadioSignal>> { continuation ->
             val seen = linkedMapOf<String, RadioSignal>()
+            val resultLock = Any()
+            val completed = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             lateinit var callback: ScanCallback
+
+            fun snapshot(): List<RadioSignal> = synchronized(resultLock) { seen.values.toList() }
+
+            // Scan failure and timeout can race. Only the first completion may resume the
+            // coroutine, and callbacks cannot mutate results after the scan has completed.
+            fun finish(results: List<RadioSignal>) {
+                if (!completed.compareAndSet(false, true)) return
+                if (continuation.isActive) continuation.resume(results)
+            }
+
             val stopTask = object : Runnable {
                 override fun run() {
                     try { scanner.stopScan(callback) } catch (_: SecurityException) { } catch (_: RuntimeException) { }
-                    if (continuation.isActive) continuation.resume(seen.values.toList())
+                    finish(snapshot())
                 }
             }
             callback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    if (completed.get()) return
                     val address = try { result.device?.address?.lowercase(Locale.ROOT) } catch (_: SecurityException) { null }
                     if (address.isNullOrBlank() || !address.matches(MAC_REGEX) || result.rssi !in -115..0) return
                     // Do not read or store Bluetooth device names or advertisement payload contents.
-                    seen[address] = RadioSignal("ble", address, result.rssi)
+                    synchronized(resultLock) {
+                        if (!completed.get()) seen[address] = RadioSignal("ble", address, result.rssi)
+                    }
                 }
                 override fun onBatchScanResults(results: MutableList<ScanResult>) {
                     results.forEach { onScanResult(0, it) }
@@ -415,18 +431,21 @@ class RadioGeolocationRepository(private val context: Context) {
                     DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scan failed: Android errorCode=$errorCode")
                     handler.removeCallbacks(stopTask)
                     try { scanner.stopScan(this) } catch (_: SecurityException) { } catch (_: RuntimeException) { }
-                    if (continuation.isActive) continuation.resume(seen.values.toList())
+                    finish(snapshot())
                 }
             }
             try {
                 scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build(), callback)
                 handler.postDelayed(stopTask, BLE_SCAN_MS)
-            } catch (_: SecurityException) {
-                if (continuation.isActive) continuation.resume(emptyList())
-            } catch (_: RuntimeException) {
-                if (continuation.isActive) continuation.resume(emptyList())
+            } catch (error: SecurityException) {
+                DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scan запрещён Android: ${error.message ?: "SecurityException"}", "ERROR")
+                finish(emptyList())
+            } catch (error: RuntimeException) {
+                DiagnosticLogStore.log(context, "RADIO_BLE", "Ошибка запуска BLE scan: ${error.javaClass.simpleName}", "ERROR")
+                finish(emptyList())
             }
             continuation.invokeOnCancellation {
+                completed.set(true)
                 handler.removeCallbacks(stopTask)
                 try { scanner.stopScan(callback) } catch (_: SecurityException) { } catch (_: RuntimeException) { }
             }
