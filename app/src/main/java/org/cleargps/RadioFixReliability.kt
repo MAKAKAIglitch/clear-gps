@@ -106,8 +106,10 @@ internal object RadioFixReliability {
         accuracyMeters: Double
     ): Boolean {
         val ageMillis = nowMillis - estimateUpdatedAtMillis
+        // Keep the hold window short, but don't reject a coarse fix solely because
+        // its reported uncertainty is wider than 1 km.
         return ageMillis in 0..45_000L && matchedCount >= 2 &&
-            accuracyMeters.isFinite() && accuracyMeters in 1.0..1_000.0
+            accuracyMeters.isFinite() && accuracyMeters in 1.0..50_000.0
     }
 
     /**
