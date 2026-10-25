@@ -248,7 +248,9 @@ class RadioGeolocationRepository(private val context: Context) {
                     result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) &&
                     result.level in -110..0
             }
-            val ageMillis = validResults.minOfOrNull { (nowMicros - it.timestamp) / 1_000L }
+            // Use the oldest contributing radio result for conservative freshness checks.
+            // A single new AP must not make an otherwise stale scan look fresh.
+            val ageMillis = validResults.maxOfOrNull { (nowMicros - it.timestamp) / 1_000L }
             DiagnosticLogStore.log(
                 context, "RADIO_WIFI",
                 "Результаты Wi-Fi: валидных BSSID=${validResults.size}, самый свежий возраст=${ageMillis?.div(1_000) ?: "unknown"}s"
