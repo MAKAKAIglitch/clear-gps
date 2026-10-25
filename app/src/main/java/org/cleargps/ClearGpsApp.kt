@@ -998,7 +998,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(radioCoordinate, radioAccuracy) {
         mapController.updateCalculatedLocation(radioCoordinate, radioAccuracy)
     }
-    LaunchedEffect(positionMode.usesRadio, radioCoordinate) {
+    LaunchedEffect(positionMode.usesRadio, radioCoordinate, pendingRadioMapFocus) {
         if (positionMode.usesRadio && pendingRadioMapFocus && radioCoordinate != null) {
             mapController.focus(radioCoordinate, 15.0)
             pendingRadioMapFocus = false
