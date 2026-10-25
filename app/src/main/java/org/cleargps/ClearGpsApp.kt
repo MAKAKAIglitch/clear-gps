@@ -17,6 +17,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -177,9 +178,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapSourceMode by remember {
         mutableStateOf(MapSourceMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") } ?: MapSourceMode.ONLINE)
     }
-    var panelTargetFraction by remember { mutableStateOf(0.46f) }
+    val panelFraction = remember { Animatable(0.46f) }
     var panelVisible by remember { mutableStateOf(true) }
-    val panelFraction = panelTargetFraction
     var backExitArmed by remember { mutableStateOf(false) }
     var pendingMonitorStart by remember { mutableStateOf(false) }
     var pendingMockEnable by remember { mutableStateOf(false) }
@@ -263,7 +263,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     fun navigateToTab(tab: AppTab) {
         selectedTab = tab
         panelVisible = true
-        panelTargetFraction = 0.82f
+        scope.launch { panelFraction.animateTo(0.82f, animationSpec = tween(220)) }
         if (tab == AppTab.POINTS) refreshLocalUi()
     }
 
@@ -783,7 +783,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
             // Keep the target height available during the exit animation; the visibility
             // transition itself slides the panel off-screen rather than removing it abruptly.
-            val panelMaxHeight = maxHeight * panelFraction
+            val panelMaxHeight = maxHeight * panelFraction.value
             val panelBottomOffset = if (panelVisible) panelMaxHeight else 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             AndroidView(factory = { viewContext ->
@@ -834,11 +834,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     detectVerticalDragGestures { change, dragAmount ->
                                         change.consume()
                                         if (panelHeightPx > 0f) {
-                                            val nextFraction = panelTargetFraction - dragAmount / panelHeightPx
+                                            val nextFraction = panelFraction.value - dragAmount / panelHeightPx
                                             if (nextFraction < 0.22f) {
                                                 panelVisible = false
                                             } else {
-                                                panelTargetFraction = nextFraction.coerceIn(0.22f, 0.82f)
+                                                scope.launch { panelFraction.snapTo(nextFraction.coerceIn(0.22f, 0.82f)) }
                                             }
                                         }
                                     }
