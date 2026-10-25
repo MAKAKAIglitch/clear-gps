@@ -707,7 +707,16 @@ class LocationMonitorService : Service(), LocationListener {
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         mock?.disable()
-        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+        // This method also runs from onDestroy(), not only from ACTION_STOP. Clear every
+        // shared position flag here so the UI cannot claim GPS is active after service death.
+        prefs.edit()
+            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putBoolean(KEY_HAS_OUTPUT, false)
+            .putString(KEY_SOURCE, "NONE")
+            .remove(KEY_LAT)
+            .remove(KEY_LON)
+            .remove(KEY_ACCURACY)
+            .apply()
         lastRadioMockFix = null
         lastRadioMockFixAtElapsedMs = 0L
         activePositionMode = null
