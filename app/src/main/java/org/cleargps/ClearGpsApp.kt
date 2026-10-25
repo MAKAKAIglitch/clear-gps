@@ -151,7 +151,7 @@ private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     CELL("Вышки", "cell"),
     BLE("Bluetooth", "ble")
 }
-private enum class LookupPhase { IDLE, SCANNING, UPDATED, NO_MATCH, ERROR }
+private enum class LookupPhase { IDLE, SCANNING, UPDATED, STALE, NO_MATCH, ERROR }
 private enum class PositionMode(
     val key: String,
     val title: String,
@@ -405,6 +405,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     retainedHint
                 lookupPhase = when {
                     result.estimate != null -> LookupPhase.UPDATED
+                    lastCredibleEstimate != null -> LookupPhase.STALE
                     result.wifiCount + result.cellCount + result.beaconCount == 0 -> LookupPhase.ERROR
                     else -> LookupPhase.NO_MATCH
                 }
@@ -1791,6 +1792,7 @@ private fun MapHomeScreen(
                         when (lookupPhase) {
                             LookupPhase.SCANNING -> "Сканирование"
                             LookupPhase.UPDATED -> "Радиоданные обновлены"
+                            LookupPhase.STALE -> "Последняя оценка сохранена"
                             LookupPhase.NO_MATCH -> "Нет совпадения в радиобазе"
                             LookupPhase.ERROR -> "Не удалось завершить сканирование"
                             LookupPhase.IDLE -> "Состояние радиопоиска"
