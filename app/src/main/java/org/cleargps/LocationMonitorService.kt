@@ -252,9 +252,9 @@ class LocationMonitorService : Service(), LocationListener {
             radioOnlyJob = null
 
             when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
-                "radio" -> {
+                "radio", "radio_obd2" -> {
                     // Discard any previously published mock location before radio lookup begins.
-                    // The next output, when enabled, can only be produced by the local radio estimate.
+                    // The radio-based modes never request Android GPS for their coordinates.
                     mock?.disable()
                     prefs.edit()
                         .putBoolean(KEY_HAS_OUTPUT, false)
@@ -263,11 +263,15 @@ class LocationMonitorService : Service(), LocationListener {
                         .remove(KEY_LON)
                         .remove(KEY_ACCURACY)
                         .apply()
-                    saveServiceStatus("Radio-only mode: GPS provider is not requested")
+                    val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
+                    saveServiceStatus(
+                        if (radioObdMode) "Radio + OBD-II mode: GPS provider is not requested; radio remains the coordinate source"
+                        else "Radio-only mode: GPS provider is not requested"
+                    )
                     startRadioOnlyLoop()
                     return
                 }
-                "gps" -> {
+                "gps", "gps_obd2" -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
                         registerGnssStatus()
@@ -297,7 +301,7 @@ class LocationMonitorService : Service(), LocationListener {
         radioOnlyJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
             while (isActive && prefs.getBoolean(KEY_MONITORING, false) &&
-                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio") {
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2")) {
                 try {
                     val result = repository.scan(
                         record = false,
@@ -348,7 +352,13 @@ class LocationMonitorService : Service(), LocationListener {
                 } catch (error: Exception) {
                     saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
                 }
-                delay(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120) * 1_000L)
+                val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120)
+                val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
+                val obdSpeedKmh = if (radioObdMode) Obd2SharedState.freshSpeedKmh(prefs) else null
+                // While the car is moving, shorten radio rescans; if speed is unavailable/stale,
+                // fall back to the user's normal scan interval without inventing a location.
+                val nextInterval = if (obdSpeedKmh != null && obdSpeedKmh >= 5) minOf(baseInterval, 10) else baseInterval
+                delay(nextInterval * 1_000L)
             }
         }
     }
