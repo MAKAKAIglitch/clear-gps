@@ -23,14 +23,50 @@ class LocationFilterEngine {
     private var gpsInZone = false
     private val detector = GnssSpoofingDetector()
     private var decision = FilterDecision(FilterState.WAITING, 0, false, "NONE", null)
+    private var signalOnlyWarningActive = false
 
     fun currentDecision() = decision.copy(
         outputLocation = decision.outputLocation?.let(::Location),
         reasons = decision.reasons.toList()
     )
 
-    internal fun observeGnssSignal(snapshot: GnssSignalSnapshot) {
+    internal fun observeGnssSignal(snapshot: GnssSignalSnapshot): FilterDecision? {
         detector.observeGnssSignal(snapshot)
+        return refreshSignalOnlyDecision(snapshot.elapsedRealtimeNanos)
+    }
+
+    internal fun observeGnssMeasurements(snapshot: GnssRfSnapshot): FilterDecision? {
+        detector.observeGnssMeasurements(snapshot)
+        return refreshSignalOnlyDecision(snapshot.elapsedRealtimeNanos)
+    }
+
+    private fun refreshSignalOnlyDecision(nowNanos: Long): FilterDecision? {
+        val assessment = detector.assessSignalOnly(nowNanos)
+        val gpsFresh = gps?.let { fresh(it, nowNanos, GPS_MAX_AGE_MS) } == true
+        if (!gpsFresh && assessment.score >= SIGNAL_ONLY_WARNING_SCORE && assessment.reasons.isNotEmpty()) {
+            val previousDecision = decision
+            val base = evaluate(nowNanos, false)
+            val next = base.copy(
+                state = FilterState.SUSPECT,
+                riskScore = assessment.score,
+                source = "GNSS_SIGNAL_ONLY",
+                reasons = assessment.reasons
+            )
+            val shouldPublish = !signalOnlyWarningActive ||
+                previousDecision.state != next.state ||
+                previousDecision.riskScore != next.riskScore ||
+                previousDecision.reasons != next.reasons ||
+                previousDecision.source != next.source
+            signalOnlyWarningActive = true
+            decision = next
+            return if (shouldPublish) currentDecision() else null
+        }
+        if (signalOnlyWarningActive) {
+            signalOnlyWarningActive = false
+            decision = evaluate(nowNanos, false)
+            return currentDecision()
+        }
+        return null
     }
 
     fun observe(location: Location, inRiskZone: Boolean): FilterDecision {
@@ -52,7 +88,24 @@ class LocationFilterEngine {
             }
             network = Location(location)
         }
-        decision = evaluate(SystemClock.elapsedRealtimeNanos(), isGps)
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        decision = evaluate(nowNanos, isGps)
+        if (isGps) {
+            signalOnlyWarningActive = false
+        } else if (signalOnlyWarningActive) {
+            val assessment = detector.assessSignalOnly(nowNanos)
+            val gpsFresh = gps?.let { fresh(it, nowNanos, GPS_MAX_AGE_MS) } == true
+            if (!gpsFresh && assessment.score >= SIGNAL_ONLY_WARNING_SCORE && assessment.reasons.isNotEmpty()) {
+                decision = decision.copy(
+                    state = FilterState.SUSPECT,
+                    riskScore = assessment.score,
+                    source = "GNSS_SIGNAL_ONLY",
+                    reasons = assessment.reasons
+                )
+            } else {
+                signalOnlyWarningActive = false
+            }
+        }
         return currentDecision()
     }
 
@@ -142,6 +195,7 @@ class LocationFilterEngine {
         private const val TRUSTED_MAX_AGE_MS = 120_000L
         private const val MAX_FALLBACK_ACCURACY_METERS = 2_000f
         private const val CORRECTION_CANDIDATE_SCORE = 60
+        private const val SIGNAL_ONLY_WARNING_SCORE = 30
 
         @Suppress("DEPRECATION")
         fun isMockLocation(location: Location) =

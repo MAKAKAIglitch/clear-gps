@@ -114,4 +114,47 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.score < 60)
         assertTrue(result.reasons.any { it.contains("уровень сигналов", ignoreCase = true) })
     }
+
+    @Test fun strongSignalsWithVeryFewSatellitesUsedRaiseOnlyAWarning() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 10, 8, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 10, 1, 38.5, 5.0, 3, strongSignalCount = 8)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(3_100_000_000L, 10, 1, 38.2, 5.0, 3, strongSignalCount = 8)
+        )
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertFalse(result.confirmed)
+        assertTrue(result.score >= 30)
+        assertTrue(result.reasons.any { it.contains("не используются для фикса", ignoreCase = true) })
+    }
+
+    @Test fun repeatedOppositeCn0AndAgcShiftsAreSupportingEvidenceOnly() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10))
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertFalse(result.confirmed)
+        assertTrue(result.score >= 30)
+        assertTrue(result.reasons.any { it.contains("C/N₀ и AGC", ignoreCase = true) })
+    }
+
+    @Test fun ordinarySmallRfFluctuationsDoNotTriggerAgcMismatch() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 37.0, -62.5, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 37.5, -62.2, 10))
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertFalse(result.confirmed)
+        assertEquals(0, result.score)
+        assertTrue(result.reasons.isEmpty())
+    }
+
 }

@@ -1,8 +1,12 @@
 package org.cleargps
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.ActivityManager
 import android.content.Context
 import android.location.Location
+import android.view.animation.DecelerateInterpolator
 import org.cleargps.core.SavedRiskZone
 import org.cleargps.core.ZonePoint
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -21,6 +25,7 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import org.maplibre.geojson.Polygon
+import kotlin.math.abs
 
 data class MapCoordinate(val latitude: Double, val longitude: Double)
 enum class MapTapMode { NONE, PLACE_ANCHOR, DRAW_ZONE }
@@ -39,7 +44,11 @@ class ClearGpsMapController {
     private var blePointsSource: GeoJsonSource? = null
     private var primaryLocation: MapCoordinate? = null
     private var calculatedLocation: MapCoordinate? = null
+    /** Latest Android-reported horizontal accuracy, in metres. */
     private var primaryAccuracyMeters: Double? = null
+    /** Displayed radius is animated toward the latest measured accuracy. */
+    private var displayedAccuracyMeters: Double? = null
+    private var accuracyAnimator: ValueAnimator? = null
     private var manualAnchor: ManualAnchor? = null
     private var savedZones: List<SavedRiskZone> = emptyList()
     private var draftZone: List<ZonePoint> = emptyList()
@@ -131,24 +140,101 @@ class ClearGpsMapController {
     fun setTapMode(mode: MapTapMode) { tapMode = mode }
 
     fun updatePrimary(location: Location?) {
-        if (location == null) {
-            primaryLocation = null
-            primaryAccuracyMeters = null
-        } else {
-            primaryLocation = MapCoordinate(location.latitude, location.longitude)
-            primaryAccuracyMeters = if (location.hasAccuracy()) location.accuracy.toDouble() else null
-        }
-        renderAll()
+        val coordinate = location?.let { MapCoordinate(it.latitude, it.longitude) }
+        val accuracy = location?.takeIf {
+            it.hasAccuracy() && it.accuracy.isFinite() && it.accuracy > 0f
+        }?.accuracy?.toDouble()
+        updatePrimary(coordinate, accuracy)
     }
 
     fun updatePrimary(coordinate: MapCoordinate?, accuracyMeters: Double?) {
+        val previousCoordinate = primaryLocation
+        val previousTargetAccuracy = primaryAccuracyMeters
         primaryLocation = coordinate
-        primaryAccuracyMeters = accuracyMeters
+        val targetAccuracy = if (coordinate != null) {
+            accuracyMeters?.takeIf { it.isFinite() && it > 0.0 }
+                ?.coerceIn(1.0, MAX_ACCURACY_RADIUS_METERS)
+        } else null
+        primaryAccuracyMeters = targetAccuracy
+
         if (!cameraInitialized && mapReady && coordinate != null) {
             map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), 14.0))
             cameraInitialized = true
         }
+
+        when {
+            coordinate == null || targetAccuracy == null -> {
+                cancelAccuracyAnimation()
+                displayedAccuracyMeters = null
+                updateAccuracySource()
+            }
+            displayedAccuracyMeters == null || previousTargetAccuracy == null || previousCoordinate == null -> {
+                // First good fix: show its actual accuracy immediately, without a misleading grow-in.
+                cancelAccuracyAnimation()
+                displayedAccuracyMeters = targetAccuracy
+                updateAccuracySource()
+            }
+            abs(targetAccuracy - previousTargetAccuracy) >= ACCURACY_ANIMATION_THRESHOLD_METERS -> {
+                animateAccuracyRadius(targetAccuracy)
+            }
+            accuracyAnimator?.isRunning != true -> {
+                // Track small changes too, so the ring never gets stuck on a stale radius.
+                val changed = displayedAccuracyMeters != targetAccuracy
+                displayedAccuracyMeters = targetAccuracy
+                if (changed || previousCoordinate != coordinate) updateAccuracySource()
+            }
+            previousCoordinate != coordinate -> updateAccuracySource()
+        }
         renderAll()
+    }
+
+    private fun cancelAccuracyAnimation() {
+        val animator = accuracyAnimator
+        accuracyAnimator = null
+        animator?.cancel()
+    }
+
+    private fun animateAccuracyRadius(targetMeters: Double) {
+        cancelAccuracyAnimation()
+        val startMeters = displayedAccuracyMeters ?: targetMeters
+        if (!startMeters.isFinite() || abs(targetMeters - startMeters) < ACCURACY_ANIMATION_THRESHOLD_METERS) {
+            displayedAccuracyMeters = targetMeters
+            updateAccuracySource()
+            return
+        }
+
+        val animator = ValueAnimator.ofFloat(startMeters.toFloat(), targetMeters.toFloat()).apply {
+            duration = ACCURACY_ANIMATION_DURATION_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                if (accuracyAnimator === this) {
+                    displayedAccuracyMeters = (animation.animatedValue as Float).toDouble()
+                        .coerceIn(1.0, MAX_ACCURACY_RADIUS_METERS)
+                    updateAccuracySource()
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (accuracyAnimator === this@apply) {
+                        // Use the most recent target in case a tiny change arrived during animation.
+                        displayedAccuracyMeters = primaryAccuracyMeters ?: targetMeters
+                        accuracyAnimator = null
+                        updateAccuracySource()
+                    }
+                }
+            })
+        }
+        accuracyAnimator = animator
+        animator.start()
+    }
+
+    private fun updateAccuracySource() {
+        val position = primaryLocation
+        val radius = displayedAccuracyMeters
+        accuracySource?.setGeoJson(
+            if (position != null && radius != null) accuracyCollection(position, radius) else emptyCollection()
+        )
+        map?.triggerRepaint()
     }
 
     fun updateManualAnchor(anchor: ManualAnchor?) {
@@ -239,11 +325,13 @@ class ClearGpsMapController {
             PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#F9AB00"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2f)
         ))
+        // A translucent geodesic footprint represents horizontal accuracy in metres.
+        // The radius is animated as reported accuracy changes; it is not a fixed pixel halo.
         style.addLayer(FillLayer(ACCURACY_LAYER, ACCURACY_SOURCE).withProperties(
-            PropertyFactory.fillColor("#4285F4"), PropertyFactory.fillOpacity(0.12f)
+            PropertyFactory.fillColor("#4285F4"), PropertyFactory.fillOpacity(0.18f)
         ))
         style.addLayer(LineLayer(ACCURACY_OUTLINE_LAYER, ACCURACY_SOURCE).withProperties(
-            PropertyFactory.lineColor("#4285F4"), PropertyFactory.lineWidth(1.25f), PropertyFactory.lineOpacity(0.42f)
+            PropertyFactory.lineColor("#4285F4"), PropertyFactory.lineWidth(1.75f), PropertyFactory.lineOpacity(0.82f)
         ))
         style.addLayer(CircleLayer(LOCATION_HALO_LAYER, LOCATION_SOURCE).withProperties(
             PropertyFactory.circleRadius(12f), PropertyFactory.circleColor("#4285F4"), PropertyFactory.circleOpacity(0.36f)
@@ -264,7 +352,7 @@ class ClearGpsMapController {
         val position = primaryLocation
         locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
         calculatedLocationSource?.setGeoJson(calculatedLocation?.let { pointCollection(it) } ?: emptyCollection())
-        accuracySource?.setGeoJson(position?.let { accuracyCollection(it, primaryAccuracyMeters) } ?: emptyCollection())
+        accuracySource?.setGeoJson(position?.let { accuracyCollection(it, displayedAccuracyMeters) } ?: emptyCollection())
         anchorSource?.setGeoJson(manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection())
 
         val polygons = ArrayList<Feature>()
@@ -309,13 +397,16 @@ class ClearGpsMapController {
         FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude))))
 
     private fun accuracyCollection(center: MapCoordinate, accuracyMeters: Double?): FeatureCollection {
-        val radius = (accuracyMeters ?: return emptyCollection()).coerceIn(1.0, 100_000.0)
+        val radius = (accuracyMeters ?: return emptyCollection())
+            .takeIf { it.isFinite() && it > 0.0 }
+            ?.coerceIn(1.0, MAX_ACCURACY_RADIUS_METERS)
+            ?: return emptyCollection()
         val lat0 = Math.toRadians(center.latitude)
         val lon0 = Math.toRadians(center.longitude)
         val angular = radius / EARTH_RADIUS_METERS
-        val ring = ArrayList<Point>(49)
-        for (step in 0..48) {
-            val bearing = 2.0 * Math.PI * step / 48.0
+        val ring = ArrayList<Point>(ACCURACY_RING_SEGMENTS + 1)
+        for (step in 0..ACCURACY_RING_SEGMENTS) {
+            val bearing = 2.0 * Math.PI * step / ACCURACY_RING_SEGMENTS
             val lat = kotlin.math.asin(kotlin.math.sin(lat0) * kotlin.math.cos(angular) +
                 kotlin.math.cos(lat0) * kotlin.math.sin(angular) * kotlin.math.cos(bearing))
             val lon = lon0 + kotlin.math.atan2(
@@ -332,6 +423,10 @@ class ClearGpsMapController {
     companion object {
         private const val MAX_MAP_RADIO_POINTS = 1_500
         private const val EARTH_RADIUS_METERS = 6_371_000.0
+        private const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
+        private const val ACCURACY_RING_SEGMENTS = 64
+        private const val ACCURACY_ANIMATION_DURATION_MS = 320L
+        private const val ACCURACY_ANIMATION_THRESHOLD_METERS = 0.5
         private const val LIGHT_STYLE_URI = "https://tiles.openfreemap.org/styles/liberty"
         private const val DARK_STYLE_URI = "https://tiles.openfreemap.org/styles/dark"
         private const val LOCATION_SOURCE = "cleargps-location"

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.GnssMeasurementsEvent
 import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
@@ -14,6 +15,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +27,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.cleargps.core.FilterDecision
 import org.cleargps.core.FilterState
+import org.cleargps.core.GnssRfSnapshot
 import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
@@ -39,6 +43,12 @@ class LocationMonitorService : Service(), LocationListener {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
     private var gnssStatusRegistered = false
+    private var gnssMeasurementsRegistered = false
+
+    // Ephemeral aggregate only; never persisted or exported.
+    private var lastStatusMeanCn0DbHz: Double? = null
+    private var lastStatusConstellationCount = 0
+    private var lastStatusAtNanos = 0L
 
     private val gnssStatusCallback = object : GnssStatus.Callback() {
         override fun onSatelliteStatusChanged(status: GnssStatus) {
@@ -52,38 +62,138 @@ class LocationMonitorService : Service(), LocationListener {
             } else null
             val constellations = (0 until count).map { status.getConstellationType(it) }
                 .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
-            engine.observeGnssSignal(
+            lastStatusMeanCn0DbHz = mean
+            lastStatusConstellationCount = constellations
+            lastStatusAtNanos = SystemClock.elapsedRealtimeNanos()
+            val assessment = engine.observeGnssSignal(
                 org.cleargps.core.GnssSignalSnapshot(
                     elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
                     satellitesVisible = count,
                     satellitesUsedInFix = (0 until count).count { status.usedInFix(it) },
                     meanCn0DbHz = mean,
                     cn0SpreadDb = spread,
-                    constellationCount = constellations
+                    constellationCount = constellations,
+                    strongSignalCount = cn0Values.count { it >= 32.0 }
                 )
             )
+            assessment?.let(::publishSignalDecision)
+        }
+    }
+
+    private val gnssMeasurementsCallback = object : GnssMeasurementsEvent.Callback() {
+        @Suppress("DEPRECATION")
+        override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
+            try {
+                val measurements = event.measurements
+                val cn0Values = measurements.mapNotNull { measurement ->
+                    measurement.cn0DbHz.toDouble().takeIf { it.isFinite() && it > 0.0 }
+                }
+                // API 33+ exposes AGC separately, including when per-satellite measurements
+                // are temporarily absent. Older APIs use the AGC field on GnssMeasurement.
+                val agcValues = if (Build.VERSION.SDK_INT >= 33) {
+                    event.gnssAutomaticGainControls.mapNotNull { it.levelDb.takeIf(Double::isFinite) }
+                } else {
+                    measurements.mapNotNull { measurement ->
+                        try {
+                            if (measurement.hasAutomaticGainControlLevelDb()) {
+                                measurement.getAutomaticGainControlLevelDb().takeIf(Double::isFinite)
+                            } else {
+                                null
+                            }
+                        } catch (_: RuntimeException) {
+                            null
+                        }
+                    }
+                }
+                val nowNanos = SystemClock.elapsedRealtimeNanos()
+                val meanCn0FromMeasurements =
+                    cn0Values.average().takeIf { cn0Values.isNotEmpty() && it.isFinite() }
+                val statusFresh = lastStatusAtNanos > 0L &&
+                    nowNanos >= lastStatusAtNanos &&
+                    nowNanos - lastStatusAtNanos <= 3_000_000_000L
+                val meanCn0 = meanCn0FromMeasurements
+                    ?: lastStatusMeanCn0DbHz.takeIf { statusFresh }
+                val meanAgc = agcValues.average().takeIf { agcValues.isNotEmpty() && it.isFinite() }
+                val measurementConstellations = measurements.map { it.constellationType }
+                    .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
+                val constellationCount = if (measurementConstellations > 0) measurementConstellations
+                    else lastStatusConstellationCount.takeIf { statusFresh } ?: 0
+                val signalCount = maxOf(cn0Values.size, agcValues.size)
+                val assessment = engine.observeGnssMeasurements(
+                    GnssRfSnapshot(
+                        elapsedRealtimeNanos = nowNanos,
+                        signalCount = signalCount,
+                        constellationCount = constellationCount,
+                        meanCn0DbHz = meanCn0,
+                        meanAgcDb = meanAgc,
+                        agcSampleCount = agcValues.size
+                    )
+                )
+                assessment?.let(::publishSignalDecision)
+            } catch (_: RuntimeException) {
+                // Some receiver implementations provide incomplete measurements; keep monitoring.
+            }
         }
     }
 
     private fun registerGnssStatus() {
-        if (gnssStatusRegistered) return
+        if (!gnssStatusRegistered) {
+            try {
+                gnssStatusRegistered = if (Build.VERSION.SDK_INT >= 30) {
+                    manager.registerGnssStatusCallback(mainExecutor, gnssStatusCallback)
+                } else {
+                    manager.registerGnssStatusCallback(gnssStatusCallback, Handler(Looper.getMainLooper()))
+                }
+            } catch (_: SecurityException) {
+                gnssStatusRegistered = false
+            } catch (_: RuntimeException) {
+                gnssStatusRegistered = false
+            }
+        }
+        registerGnssMeasurements()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun registerGnssMeasurements() {
+        if (gnssMeasurementsRegistered) return
         try {
-            gnssStatusRegistered = manager.registerGnssStatusCallback(gnssStatusCallback)
+            gnssMeasurementsRegistered = when {
+                Build.VERSION.SDK_INT >= 31 ->
+                    manager.registerGnssMeasurementsCallback(mainExecutor, gnssMeasurementsCallback)
+                Build.VERSION.SDK_INT <= 29 ->
+                    manager.registerGnssMeasurementsCallback(
+                        gnssMeasurementsCallback,
+                        Handler(Looper.getMainLooper())
+                    )
+                else -> false // Android 11's legacy measurement-delivery regression; signal status still works.
+            }
         } catch (_: SecurityException) {
-            gnssStatusRegistered = false
+            gnssMeasurementsRegistered = false
         } catch (_: RuntimeException) {
-            gnssStatusRegistered = false
+            gnssMeasurementsRegistered = false
+        }
+    }
+
+    private fun unregisterGnssMeasurements() {
+        if (!gnssMeasurementsRegistered) return
+        try {
+            manager.unregisterGnssMeasurementsCallback(gnssMeasurementsCallback)
+        } catch (_: RuntimeException) {
+        } finally {
+            gnssMeasurementsRegistered = false
         }
     }
 
     private fun unregisterGnssStatus() {
-        if (!gnssStatusRegistered) return
-        try {
-            manager.unregisterGnssStatusCallback(gnssStatusCallback)
-        } catch (_: RuntimeException) {
-        } finally {
-            gnssStatusRegistered = false
+        if (gnssStatusRegistered) {
+            try {
+                manager.unregisterGnssStatusCallback(gnssStatusCallback)
+            } catch (_: RuntimeException) {
+            } finally {
+                gnssStatusRegistered = false
+            }
         }
+        unregisterGnssMeasurements()
     }
 
     override fun onCreate() {
@@ -287,7 +397,7 @@ class LocationMonitorService : Service(), LocationListener {
         val result = if (fallback != null) {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
         } else observedDecision
-        persist(result)
+        persistDecision(result)
 
         when (fallback?.source) {
             "LOCAL_RADIO" -> saveServiceStatus("Local radio fallback active · about ±" + fallback.location.accuracy.toInt() + " m")
@@ -320,6 +430,31 @@ class LocationMonitorService : Service(), LocationListener {
         stopTracking()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun publishSignalDecision(result: FilterDecision) {
+        persistDecision(result)
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            notification(result.state.name + " · risk " + result.riskScore + "%")
+        )
+    }
+
+    /**
+     * Signal-only warnings update anomaly metadata but do not write position fields.
+     */
+    private fun persistDecision(result: FilterDecision) {
+        if (result.source == "GNSS_SIGNAL_ONLY") {
+            prefs.edit()
+                .putString(KEY_STATE, result.state.name)
+                .putInt(KEY_SCORE, result.riskScore)
+                .putBoolean(KEY_IN_ZONE, result.inRiskZone)
+                .putString(KEY_SOURCE, result.source)
+                .putString(KEY_REASONS, result.reasons.joinToString("\n"))
+                .apply()
+            return
+        }
+        persist(result)
     }
 
     private fun persist(result: FilterDecision) {

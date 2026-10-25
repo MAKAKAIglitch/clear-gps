@@ -27,7 +27,18 @@ internal data class GnssSignalSnapshot(
     val satellitesUsedInFix: Int,
     val meanCn0DbHz: Double?,
     val cn0SpreadDb: Double?,
-    val constellationCount: Int
+    val constellationCount: Int,
+    val strongSignalCount: Int = 0
+)
+
+/** Aggregate RF metrics only; no location, wall-clock timestamp, or raw measurement payload. */
+internal data class GnssRfSnapshot(
+    val elapsedRealtimeNanos: Long,
+    val signalCount: Int,
+    val constellationCount: Int,
+    val meanCn0DbHz: Double?,
+    val meanAgcDb: Double?,
+    val agcSampleCount: Int
 )
 
 internal data class SpoofingAssessment(
@@ -44,7 +55,12 @@ internal class GnssSpoofingDetector {
     private var previousGps: PositionFix? = null
     private var currentSignal: GnssSignalSnapshot? = null
     private var recentSignalAlertUntilNanos = 0L
+    private var recentSignalAlertAtNanos = 0L
     private var recentSignalAlertReason: String? = null
+    private var recentSignalAlertScore = 0
+    private var previousRf: GnssRfSnapshot? = null
+    private var underusedStrongSignalStreak = 0
+    private var rfPowerMismatchStreak = 0
     private var active = false
     private var highRiskStreak = 0
     private var cleanStreak = 0
@@ -75,12 +91,92 @@ internal class GnssSpoofingDetector {
                 }
             }
         }
+
+        // Strong RF with a repeated collapse in satellites used for navigation is suspicious,
+        // but not proof: geometry and receiver issues can produce a similar pattern.
+        val underusedStrongSignals =
+            snapshot.satellitesVisible >= 8 &&
+                snapshot.strongSignalCount >= 5 &&
+                snapshot.meanCn0DbHz?.let { it.isFinite() && it >= 32.0 } == true &&
+                snapshot.satellitesUsedInFix <= max(2, snapshot.strongSignalCount / 4)
+        if (underusedStrongSignals) {
+            underusedStrongSignalStreak++
+            if (underusedStrongSignalStreak >= 2) {
+                latchSignalAlert(
+                    snapshot.elapsedRealtimeNanos,
+                    "Сильные сигналы GNSS сохраняются, но спутники почти не используются для фикса",
+                    35
+                )
+            }
+        } else {
+            underusedStrongSignalStreak = 0
+        }
         currentSignal = snapshot
     }
 
-    private fun latchSignalAlert(atNanos: Long, reason: String) {
+    /** Compare aggregate RF metrics between epochs; no satellite IDs or raw samples are retained. */
+    fun observeGnssMeasurements(snapshot: GnssRfSnapshot) {
+        if (snapshot.elapsedRealtimeNanos <= 0L) return
+        val old = previousRf
+        if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
+        if (old != null) {
+            val interval = (snapshot.elapsedRealtimeNanos - old.elapsedRealtimeNanos) / 1_000_000_000.0
+            val oldCn0 = old.meanCn0DbHz
+            val newCn0 = snapshot.meanCn0DbHz
+            val oldAgc = old.meanAgcDb
+            val newAgc = snapshot.meanAgcDb
+            if (interval in 0.2..8.0 &&
+                old.signalCount >= 6 && snapshot.signalCount >= 6 &&
+                old.constellationCount >= 2 && snapshot.constellationCount >= 2 &&
+                old.agcSampleCount >= 4 && snapshot.agcSampleCount >= 4 &&
+                oldCn0 != null && newCn0 != null && oldCn0.isFinite() && newCn0.isFinite() &&
+                oldAgc != null && newAgc != null && oldAgc.isFinite() && newAgc.isFinite()
+            ) {
+                val cn0Delta = newCn0 - oldCn0
+                val agcDelta = newAgc - oldAgc
+                if (abs(cn0Delta) >= 5.0 && abs(agcDelta) >= 2.5 && cn0Delta * agcDelta < 0.0) {
+                    rfPowerMismatchStreak++
+                    if (rfPowerMismatchStreak >= 2) {
+                        latchSignalAlert(
+                            snapshot.elapsedRealtimeNanos,
+                            "Повторяются противоположные скачки C/N₀ и AGC",
+                            30
+                        )
+                    }
+                } else {
+                    rfPowerMismatchStreak = 0
+                }
+            } else {
+                rfPowerMismatchStreak = 0
+            }
+        }
+        previousRf = snapshot
+    }
+
+    /** Signal-only evidence can warn, but is never sufficient to confirm spoofing. */
+    fun assessSignalOnly(nowElapsedRealtimeNanos: Long): SpoofingAssessment {
+        val reason = recentSignalAlertReason
+        val activeAlert = recentSignalAlertAtNanos > 0L &&
+            nowElapsedRealtimeNanos >= recentSignalAlertAtNanos &&
+            nowElapsedRealtimeNanos <= recentSignalAlertUntilNanos &&
+            reason != null && recentSignalAlertScore > 0
+        return if (activeAlert) {
+            SpoofingAssessment(recentSignalAlertScore.coerceIn(0, 50), false, listOf(reason!!))
+        } else {
+            SpoofingAssessment(0, false, emptyList())
+        }
+    }
+
+    private fun latchSignalAlert(atNanos: Long, reason: String, score: Int = 15) {
+        if (atNanos <= 0L) return
+        val alertStillActive = recentSignalAlertAtNanos > 0L &&
+            atNanos >= recentSignalAlertAtNanos && atNanos <= recentSignalAlertUntilNanos
+        if (!alertStillActive || score >= recentSignalAlertScore) {
+            recentSignalAlertAtNanos = atNanos
+            recentSignalAlertReason = reason
+            recentSignalAlertScore = score.coerceIn(0, 50)
+        }
         recentSignalAlertUntilNanos = max(recentSignalAlertUntilNanos, atNanos + 10_000_000_000L)
-        recentSignalAlertReason = reason
     }
 
     fun assess(
@@ -194,13 +290,14 @@ internal class GnssSpoofingDetector {
                 signalReason = "Необычно одинаковый уровень сигналов видимых спутников"
             }
             if (nowElapsedRealtimeNanos >= signal.elapsedRealtimeNanos &&
+                nowElapsedRealtimeNanos >= recentSignalAlertAtNanos &&
                 nowElapsedRealtimeNanos <= recentSignalAlertUntilNanos &&
                 recentSignalAlertReason != null) {
-                signalScore += 15
+                signalScore = max(signalScore, recentSignalAlertScore)
                 signalReason = recentSignalAlertReason
             }
         }
-        signalScore = signalScore.coerceAtMost(25)
+        signalScore = signalScore.coerceAtMost(35)
         if (signalScore > 0 && signalReason != null) evidence[signalReason] = signalScore
 
         var rawScore = max(motionScore, crossSourceScore)
