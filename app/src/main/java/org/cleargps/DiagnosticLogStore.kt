@@ -69,10 +69,12 @@ internal object DiagnosticLogStore {
     }
 
     fun clear(context: Context) = synchronized(lock) {
+        val wasEnabled = isEnabled(context)
         try {
             val file = logFile(context)
             if (file.exists()) file.writeText("", Charsets.UTF_8)
-            appendLine(context, "INFO", "DIAGNOSTICS", "Журнал очищен", force = true)
+            // Respect the logging-off switch: clearing logs while disabled must leave the file empty.
+            if (wasEnabled) appendLine(context, "INFO", "DIAGNOSTICS", "Журнал очищен", force = true)
         } catch (_: Exception) {
             // Diagnostics must never affect location tracking or app startup.
         }
