@@ -1212,7 +1212,12 @@ private fun RadioPointDetailsDialog(
                 Text(kind, color = colors.primary, fontWeight = FontWeight.SemiBold)
                 Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
                 if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
-                Text("Сигнал: " + point.rssi + " dBm")
+                Text("Последний сигнал: " + point.rssi + " dBm")
+                Text("Лучший за время наблюдений: " + point.peakRssi + " dBm")
+                if (point.positionSource == "strongest-signal-sample") {
+                    Text("Координаты уточнены по максимуму сигнала; оценка приблизительная.",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
                 if (point.frequency > 0) Text("Частота: " + point.frequency + " MHz")
                 Text("Наблюдений: " + point.sightings)
                 Text("Источник координат: " + point.positionSource)
