@@ -1121,6 +1121,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 val coordinateLat = if (hasNoCoordinate) null else lat
                 val coordinateLon = if (hasNoCoordinate) null else lon
                 validRows++
+                touched.add(type + "|" + identifier)
 
                 val newObservation = insertObservationIfAbsent(
                     db, type, identifier, observedAt, coordinateLat, coordinateLon,
@@ -1136,12 +1137,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         )
                     ) newRadios++
                 }
-                if (newObservation) {
-                    importedObservations++
-                    touched.add(type + "|" + identifier)
-                } else if (summaryMissing) {
-                    touched.add(type + "|" + identifier)
-                }
+                if (newObservation) importedObservations++
             }
             db.setTransactionSuccessful()
         } finally {
@@ -1502,6 +1498,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val frequency = info?.frequency ?: 0
                     val key = type + "|" + identifier
                     seenKeys.add(key)
+                    touched.add(key)
                     val newObservation = insertObservationIfAbsent(
                         target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
                         rssi, frequency, "wigle-import"
@@ -1514,7 +1511,6 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                             )
                         ) newRadios++
                     }
-                    if (newObservation || summaryMissing) touched.add(key)
                     if (newObservation) observationsImported++
                 }
             }
