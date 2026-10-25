@@ -525,6 +525,9 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
+        // Return before updating status, trusted-fix cache, or mock output: our own test-provider
+        // updates must never be treated as new physical GPS fixes.
+        if (LocationFilterEngine.isMockLocation(location)) return
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
         val point = ZonePoint(location.latitude, location.longitude)
         val inZone = if (gpsFix) {
