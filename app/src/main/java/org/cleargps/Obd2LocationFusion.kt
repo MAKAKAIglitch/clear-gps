@@ -5,7 +5,6 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
  * Shared, short-lived OBD-II speed sample for the map and foreground location service.
