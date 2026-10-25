@@ -38,6 +38,30 @@ internal object RadioFixReliability {
             nowElapsedMs < lastRequestElapsedMs ||
             nowElapsedMs - lastRequestElapsedMs >= WIFI_MIN_REQUEST_INTERVAL_MS
 
+    /**
+     * A combined radio fix is cached only when none of its contributing radio types has
+     * fresh evidence. One aged source must not mark fresh Wi-Fi/BLE/cellular evidence as stale.
+     */
+    fun isAllRadioDataCached(
+        wifiCount: Int,
+        wifiAgeMillis: Long?,
+        cellCount: Int,
+        cellAgeMillis: Long?,
+        bleCount: Int,
+        bleAgeMillis: Long?
+    ): Boolean {
+        val hasAnySignals = wifiCount > 0 || cellCount > 0 || bleCount > 0
+        if (!hasAnySignals) return true
+
+        val freshWifi = wifiCount > 0 && wifiAgeMillis != null &&
+            wifiAgeMillis in 0..WIFI_FRESH_AGE_MS
+        val freshCells = cellCount > 0 && cellAgeMillis != null &&
+            cellAgeMillis in 0..CELL_INFO_FRESH_AGE_MS
+        val freshBle = bleCount > 0 && bleAgeMillis != null &&
+            bleAgeMillis in 0..BLE_FRESH_AGE_MS
+        return !(freshWifi || freshCells || freshBle)
+    }
+
     fun shouldRequestBleScan(nowElapsedMs: Long, lastRequestElapsedMs: Long): Boolean =
         lastRequestElapsedMs <= 0L ||
             nowElapsedMs < lastRequestElapsedMs ||
