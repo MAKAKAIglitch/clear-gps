@@ -32,6 +32,12 @@ class LocationFilterEngine {
 
     fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = detector.deviceBaselineSnapshot()
 
+    /**
+     * Read-only GNSS reception diagnostics for the UI. This never changes the filter decision.
+     */
+    fun receptionDiagnostics(nowElapsedRealtimeNanos: Long): GnssReceptionDiagnostics =
+        detector.receptionDiagnostics(nowElapsedRealtimeNanos)
+
     fun restoreDeviceBaseline(snapshot: GnssDeviceBaselineSnapshot): Boolean =
         detector.restoreDeviceBaseline(snapshot)
 

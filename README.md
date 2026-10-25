@@ -20,6 +20,7 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 - **Memory-aware Windows build:** Gradle heap is sized from installed/free RAM with a safety reserve for Windows; the daemon, parallel execution and build cache are enabled.
 - **Fix cadence:** configurable interval from 1 to 30 seconds. With adaptive updates enabled, the interval can be halved during faster movement. Android may throttle actual Wi-Fi/Bluetooth scans.
 - **Private map fallback:** a tile-free offline canvas retains local radio markers without requesting map data, but does not display streets or labels.
+- **Initial GNSS reception diagnostics:** read-only reception context and deviations from the device's local baseline, with stale data clearly marked; these hints do not change spoofing risk or mock publication. Per-satellite sky plots are not implemented yet.
 - **Windows build script** and GitHub Actions workflow for unit tests and debug APK generation.
 
 ## Radio positioning and WiGLE

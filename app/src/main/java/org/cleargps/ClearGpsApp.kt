@@ -13,6 +13,7 @@ import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -324,6 +325,22 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var fusedMockStatus by remember {
         mutableStateOf(prefs.getString(LocationMonitorService.KEY_FUSED_MOCK_STATUS, "") ?: "")
     }
+    var gnssEnvironment by remember {
+        mutableStateOf(prefs.getString(LocationMonitorService.KEY_GNSS_ENVIRONMENT, "UNKNOWN") ?: "UNKNOWN")
+    }
+    var gnssEnvironmentReasons by remember {
+        mutableStateOf((prefs.getString(LocationMonitorService.KEY_GNSS_ENVIRONMENT_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() })
+    }
+    var gnssBaselineReady by remember {
+        mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_GNSS_BASELINE_READY, false))
+    }
+    var gnssBaselineDeviations by remember {
+        mutableStateOf((prefs.getString(LocationMonitorService.KEY_GNSS_BASELINE_DEVIATIONS, "") ?: "").split('\n').filter { it.isNotBlank() })
+    }
+    var gnssDiagnosticsAtNanos by remember {
+        mutableStateOf(prefs.getLong(LocationMonitorService.KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L))
+    }
+    var gnssDiagnosticsNowNanos by remember { mutableStateOf(SystemClock.elapsedRealtimeNanos()) }
     var detailedLogging by remember { mutableStateOf(prefs.getBoolean(DiagnosticLogStore.KEY_ENABLED, false)) }
     var diagnosticLogMaxKb by remember {
         mutableStateOf(prefs.getInt(DiagnosticLogStore.KEY_MAX_KB, DiagnosticLogStore.DEFAULT_MAX_KB)
@@ -1040,6 +1057,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
             fusedMockStatus = prefs.getString(LocationMonitorService.KEY_FUSED_MOCK_STATUS, "") ?: ""
+            gnssEnvironment = prefs.getString(LocationMonitorService.KEY_GNSS_ENVIRONMENT, "UNKNOWN") ?: "UNKNOWN"
+            gnssEnvironmentReasons = (prefs.getString(LocationMonitorService.KEY_GNSS_ENVIRONMENT_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
+            gnssBaselineReady = prefs.getBoolean(LocationMonitorService.KEY_GNSS_BASELINE_READY, false)
+            gnssBaselineDeviations = (prefs.getString(LocationMonitorService.KEY_GNSS_BASELINE_DEVIATIONS, "") ?: "").split('\n').filter { it.isNotBlank() }
+            gnssDiagnosticsAtNanos = prefs.getLong(LocationMonitorService.KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L)
+            gnssDiagnosticsNowNanos = SystemClock.elapsedRealtimeNanos()
 
             // The foreground service owns radio scans while monitoring is active. Mirror its
             // latest persisted counters/message so the screen cannot stay stuck on an older scan.
@@ -1422,6 +1445,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     scanIntervalSeconds = scanIntervalSeconds,
                                     filterState = filterState, riskScore = riskScore,
                                     riskReasons = riskReasons, serviceStatus = serviceStatus,
+                                    gnssEnvironment = gnssEnvironment, gnssEnvironmentReasons = gnssEnvironmentReasons,
+                                    gnssBaselineReady = gnssBaselineReady, gnssBaselineDeviations = gnssBaselineDeviations,
+                                    gnssDiagnosticsAtNanos = gnssDiagnosticsAtNanos, gnssDiagnosticsNowNanos = gnssDiagnosticsNowNanos,
                                     onMode = { applyPositionMode(it) },
                                     onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
                                     onScan = { startScan(recording) },
@@ -1923,6 +1949,9 @@ private fun MapHomeScreen(
     mockOutputActive: Boolean, fusedMockStatus: String, scanIntervalSeconds: Int,
     filterState: String, riskScore: Int,
     riskReasons: List<String>, serviceStatus: String,
+    gnssEnvironment: String, gnssEnvironmentReasons: List<String>,
+    gnssBaselineReady: Boolean, gnssBaselineDeviations: List<String>,
+    gnssDiagnosticsAtNanos: Long, gnssDiagnosticsNowNanos: Long,
     onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
@@ -2277,6 +2306,57 @@ private fun MapHomeScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
+                }
+                val gnssDiagnosticsFresh = gnssDiagnosticsAtNanos > 0L &&
+                    gnssDiagnosticsNowNanos >= gnssDiagnosticsAtNanos &&
+                    gnssDiagnosticsNowNanos - gnssDiagnosticsAtNanos <= 10_000_000_000L
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = colors.surfaceContainer
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Диагностика качества GNSS", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when {
+                                mode.usesRadio -> "В режиме «Только радио» GNSS не запрашивается."
+                                !monitorEnabled -> "Включи мониторинг в режиме GPS или Авто, чтобы получать свежие GNSS-измерения."
+                                !gnssDiagnosticsFresh -> "Свежие GNSS-измерения пока недоступны. Старые данные не показываются как текущие."
+                                else -> when (gnssEnvironment) {
+                                    "LIKELY_OPEN_SKY" -> "Контекст приёма: хорошие условия по доступным агрегированным метрикам."
+                                    "POSSIBLE_PARTIAL_OBSTRUCTION" -> "Контекст приёма: возможно частичное ухудшение сигнала."
+                                    "POSSIBLE_SEVERE_OBSTRUCTION" -> "Контекст приёма: сильное ухудшение GNSS-сигнала."
+                                    "GNSS_UNAVAILABLE" -> "GNSS недоступен: видимые спутники не обнаружены; причина неизвестна."
+                                    else -> "Контекст приёма неизвестен: недостаточно пригодных свежих данных."
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                        if (gnssDiagnosticsFresh && !mode.usesRadio && monitorEnabled) {
+                            if (gnssEnvironmentReasons.isNotEmpty()) {
+                                Text(
+                                    gnssEnvironmentReasons.joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                            Text(
+                                when {
+                                    !gnssBaselineReady -> "Индивидуальная норма устройства пока не готова: недостаточно принятых чистых измерений."
+                                    gnssBaselineDeviations.isNotEmpty() -> "Отклонения от индивидуальной нормы: " + gnssBaselineDeviations.joinToString(" · ")
+                                    else -> "Крупных отклонений от доступной индивидуальной нормы не выявлено."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (gnssBaselineReady && gnssBaselineDeviations.isNotEmpty()) colors.error else colors.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            "Это диагностические подсказки о качестве приёма, а не подтверждение спуфинга или глушения. Они не меняют индекс риска и публикацию координат.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
                 }
                 Text(
                     serviceStatus.ifBlank { if (monitorEnabled) "Фоновый мониторинг активен." else "Фоновый мониторинг выключен." },

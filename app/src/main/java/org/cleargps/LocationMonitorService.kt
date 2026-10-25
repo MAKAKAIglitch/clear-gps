@@ -88,6 +88,7 @@ class LocationMonitorService : Service(), LocationListener {
                     strongSignalCount = cn0Values.count { it >= 32.0 }
                 )
             )
+            persistGnssReceptionDiagnostics()
             assessment?.let(::publishSignalDecision)
         }
     }
@@ -141,7 +142,8 @@ class LocationMonitorService : Service(), LocationListener {
                         agcSampleCount = agcValues.size
                     )
                 )
-                assessment?.let(::publishSignalDecision)
+                persistGnssReceptionDiagnostics()
+            assessment?.let(::publishSignalDecision)
             } catch (_: RuntimeException) {
                 // Some receiver implementations provide incomplete measurements; keep monitoring.
             }
@@ -1049,6 +1051,7 @@ class LocationMonitorService : Service(), LocationListener {
         lastTrustedGpsFixForObd2 = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
+        clearGnssReceptionDiagnostics()
         mock?.disable()
         // This method also runs from onDestroy(), not only from ACTION_STOP. Clear every
         // shared position flag here so the UI cannot claim GPS is active after service death.
@@ -1238,6 +1241,41 @@ class LocationMonitorService : Service(), LocationListener {
         super.onDestroy()
     }
 
+    private fun persistGnssReceptionDiagnostics() {
+        if (!::prefs.isInitialized) return
+        try {
+            val nowNanos = SystemClock.elapsedRealtimeNanos()
+            val diagnostics = engine.receptionDiagnostics(nowNanos)
+            prefs.edit()
+                .putString(KEY_GNSS_ENVIRONMENT, diagnostics.environment.context.name)
+                .putString(KEY_GNSS_ENVIRONMENT_REASONS, diagnostics.environment.reasons.joinToString("\n"))
+                .putBoolean(KEY_GNSS_BASELINE_READY, diagnostics.baselineDeviation.ready)
+                .putString(
+                    KEY_GNSS_BASELINE_DEVIATIONS,
+                    diagnostics.baselineDeviation.deviations.joinToString("\n") { it.reason }
+                )
+                .putLong(KEY_GNSS_DIAGNOSTICS_AT_NANOS, nowNanos)
+                .apply()
+        } catch (_: RuntimeException) {
+            // Diagnostics are observational and must never interrupt GNSS callbacks.
+        }
+    }
+
+    private fun clearGnssReceptionDiagnostics() {
+        if (!::prefs.isInitialized) return
+        try {
+            prefs.edit()
+                .putString(KEY_GNSS_ENVIRONMENT, "UNKNOWN")
+                .putString(KEY_GNSS_ENVIRONMENT_REASONS, "")
+                .putBoolean(KEY_GNSS_BASELINE_READY, false)
+                .putString(KEY_GNSS_BASELINE_DEVIATIONS, "")
+                .putLong(KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L)
+                .apply()
+        } catch (_: RuntimeException) {
+            // Clearing display-only state must not interrupt service shutdown.
+        }
+    }
+
     private fun publishSignalDecision(result: FilterDecision) {
         persistDecision(result)
         // A signal-only GNSS warning has no safe replacement coordinate. Stop mock publication
@@ -1337,6 +1375,11 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LON = "lon"
         const val KEY_ACCURACY = "accuracy"
         const val KEY_SERVICE_STATUS = "service_status"
+        const val KEY_GNSS_ENVIRONMENT = "gnss_environment"
+        const val KEY_GNSS_ENVIRONMENT_REASONS = "gnss_environment_reasons"
+        const val KEY_GNSS_BASELINE_READY = "gnss_baseline_ready"
+        const val KEY_GNSS_BASELINE_DEVIATIONS = "gnss_baseline_deviations"
+        const val KEY_GNSS_DIAGNOSTICS_AT_NANOS = "gnss_diagnostics_at_nanos"
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
         private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
