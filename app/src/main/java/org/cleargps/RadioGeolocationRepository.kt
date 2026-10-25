@@ -51,7 +51,7 @@ class RadioGeolocationRepository(private val context: Context) {
         }
         // Radio-only coordinates are estimates from this very database, not independent
         // reference fixes. Never persist them as training coordinates, even if a caller passes one.
-        val safeReference = if (mode == "radio") null else reference
+        val safeReference = if (mode == "radio" || mode == "radio_obd2") null else reference
         val recorded = withContext(Dispatchers.IO) {
             database.recordScan(snapshot.signals, safeReference, estimate, mode,
                 snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount, record)
