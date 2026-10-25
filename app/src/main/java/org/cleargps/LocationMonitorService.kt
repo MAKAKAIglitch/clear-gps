@@ -819,7 +819,8 @@ class LocationMonitorService : Service(), LocationListener {
                 lastRadioMockFix = null
                 lastRadioMockFixAtElapsedMs = 0L
                 val reason = "Mock GPS приостановлен: нет свежих координат более ${if (age == Long.MAX_VALUE) "неизвестного времени" else age / 1_000L} с."
-                prefs.edit()
+                val currentState = prefs.getString(KEY_STATE, FilterState.WAITING.name)
+                val edit = prefs.edit()
                     .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                     .putBoolean(KEY_HAS_OUTPUT, false)
                     .putString(KEY_SOURCE, "NONE")
@@ -827,7 +828,10 @@ class LocationMonitorService : Service(), LocationListener {
                     .remove(KEY_LAT)
                     .remove(KEY_LON)
                     .remove(KEY_ACCURACY)
-                    .apply()
+                if (currentState == FilterState.NORMAL.name || currentState == FilterState.CORRECTING.name) {
+                    edit.putString(KEY_STATE, FilterState.NO_FALLBACK.name).putInt(KEY_SCORE, 0)
+                }
+                edit.apply()
                 saveServiceStatus(reason)
                 DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", reason, "WARN")
                 getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(reason))
