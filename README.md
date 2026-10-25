@@ -119,7 +119,7 @@ OBD-II запускается только по действию пользов�
 
 ## Сборка на Linux и macOS
 
-Требуются JDK 17 или новее и Android SDK с **Platform 36** и совместимыми Build-Tools. Укажи путь к SDK в `ANDROID_SDK_ROOT` или `ANDROID_HOME`, если он не определяется автоматически.
+Требуется совместимый JDK **17–24** (в CI используется JDK 17) и Android SDK с **Platform 36** и совместимыми Build-Tools. Укажи путь к SDK в `ANDROID_SDK_ROOT` или `ANDROID_HOME`, если он не определяется автоматически.
 
 Из корня репозитория выполни:
 
