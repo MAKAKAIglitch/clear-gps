@@ -313,7 +313,7 @@ class LocationMonitorService : Service(), LocationListener {
 
         // stopTracking cancels old output loops and removes previously registered test providers.
         stopTracking()
-        if (!prefs.getBoolean(KEY_BEACONDB_LOOKUP_ENABLED, false) ||
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) ||
             !prefs.getBoolean(KEY_MONITORING, false) ||
             !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
             saveServiceStatus("BeaconDB mock output cancelled because a required setting was turned off.")
