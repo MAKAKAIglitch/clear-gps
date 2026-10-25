@@ -22,6 +22,50 @@ class RadioFixReliabilityTest {
         assertFalse(RadioFixReliability.isCellInfoFresh(100_001L, 100_000L))
     }
 
+    @Test fun mixedFreshAndStaleRadioSourcesAreNotAllClassifiedAsCached() {
+        // Fresh BLE is still new evidence even while Wi-Fi's Android cache has aged.
+        assertFalse(
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = 4, wifiAgeMillis = 25_000L,
+                cellCount = 1, cellAgeMillis = 60_000L,
+                bleCount = 2, bleAgeMillis = 2_000L
+            )
+        )
+        // One fresh Wi-Fi scan is enough to keep the combined fix from being labelled
+        // entirely cached; stale sources still add their own uncertainty penalty.
+        assertFalse(
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = 4, wifiAgeMillis = 5_000L,
+                cellCount = 1, cellAgeMillis = 60_000L,
+                bleCount = 0, bleAgeMillis = null
+            )
+        )
+    }
+
+    @Test fun radioFixIsCachedWhenEveryContributingSourceIsStaleOrUnknown() {
+        assertTrue(
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = 4, wifiAgeMillis = 25_000L,
+                cellCount = 1, cellAgeMillis = 60_000L,
+                bleCount = 2, bleAgeMillis = 10_000L
+            )
+        )
+        assertTrue(
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = 0, wifiAgeMillis = null,
+                cellCount = 0, cellAgeMillis = null,
+                bleCount = 0, bleAgeMillis = null
+            )
+        )
+        assertTrue(
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = 2, wifiAgeMillis = null,
+                cellCount = 0, cellAgeMillis = null,
+                bleCount = 0, bleAgeMillis = null
+            )
+        )
+    }
+
     @Test fun staleCellInformationIncreasesUncertaintyAndMarksCache() {
         assertEquals(0.0, RadioFixReliability.cellAgePenaltyMeters(30_000L, 2, 4), 0.0)
         assertTrue(RadioFixReliability.cellAgePenaltyMeters(60_000L, 2, 4) > 0.0)
