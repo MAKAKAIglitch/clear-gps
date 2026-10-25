@@ -238,7 +238,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
     var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)) }
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
-    var recording by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false)) }
     var scanBusy by remember { mutableStateOf(false) }
     var scanMessage by remember {
         mutableStateOf("Сканирование локальное. Запиши радиоточки на известном месте, чтобы затем ориентироваться по ним без GPS.")
@@ -398,8 +398,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     // Selecting radio-only immediately calculates an estimate from the local radio database.
     // This effect never asks Android for a location fix; it only scans radio identifiers.
-    LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context)) {
-        if (positionMode.usesRadio && hasAnyLocationPermission(context)) {
+    LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context), monitorEnabled) {
+        // When the foreground service is active it owns periodic radio scans; avoid a second
+        // UI scan competing for the same Android Wi-Fi/BLE scan budget.
+        if (positionMode.usesRadio && !monitorEnabled && hasAnyLocationPermission(context)) {
             // A scan may still be finishing from the previous mode. Wait rather than silently
             // skipping the first radio lookup when scanBusy is already true.
             while (scanBusy && positionMode.usesRadio) delay(100L)
@@ -725,8 +727,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan) {
-        if (recording && appVisible && hasAnyLocationPermission(context)) {
+    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan, monitorEnabled) {
+        // In radio mode the service performs the scan and honours the recording preference.
+        if (recording && appVisible && hasAnyLocationPermission(context) &&
+            !(positionMode.usesRadio && monitorEnabled)) {
             while (recording && appVisible) {
                 performScan(true)
                 val obdSpeedKmh = if (positionMode.usesObd2) {
@@ -1105,7 +1109,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         manualAnchor = null
                                         mapController.updateManualAnchor(null)
                                     },
-                                    onRecording = { recording = it },
+                                    onRecording = {
+                                        recording = it
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_RECORDING, it).apply()
+                                    },
                                     onMonitoring = { if (monitorEnabled) stopMonitoring() else runMonitoring() },
                                     onMock = { if (mockEnabled) disableMock() else enableMock() },
                                     onOpenPoints = { navigateToTab(AppTab.POINTS) },
