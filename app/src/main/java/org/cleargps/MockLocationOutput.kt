@@ -26,12 +26,24 @@ class MockLocationOutput(context: Context) {
 
         return try {
             if (!registered) {
-                manager.addTestProvider(
-                    LocationManager.GPS_PROVIDER,
-                    false, false, false, false,
-                    true, true, true,
-                    Criteria.POWER_HIGH, Criteria.ACCURACY_FINE
-                )
+                try {
+                    addGpsTestProvider()
+                } catch (duplicate: IllegalArgumentException) {
+                    // A killed/recreated foreground service may lose its local flag while
+                    // LocationManager still retains the old test provider. Clean that stale
+                    // registration and retry exactly once instead of failing every later tick.
+                    DiagnosticLogStore.log(
+                        appContext, "MOCK",
+                        "GPS test provider уже существует; пробую восстановить регистрацию",
+                        "WARN"
+                    )
+                    try {
+                        manager.removeTestProvider(LocationManager.GPS_PROVIDER)
+                    } catch (_: IllegalArgumentException) {
+                        // It was not actually registered; try a clean add below.
+                    }
+                    addGpsTestProvider()
+                }
                 // Mark registered immediately so a failure enabling the provider can clean it up.
                 registered = true
                 manager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
@@ -79,6 +91,15 @@ class MockLocationOutput(context: Context) {
         } catch (error: RuntimeException) {
             fail("Ошибка Android при публикации mock GPS.", error)
         }
+    }
+
+    private fun addGpsTestProvider() {
+        manager.addTestProvider(
+            LocationManager.GPS_PROVIDER,
+            false, false, false, false,
+            true, true, true,
+            Criteria.POWER_HIGH, Criteria.ACCURACY_FINE
+        )
     }
 
     private fun fail(prefix: String, error: Exception): Boolean {
