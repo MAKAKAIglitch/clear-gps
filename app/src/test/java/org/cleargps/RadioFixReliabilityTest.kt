@@ -23,6 +23,23 @@ class RadioFixReliabilityTest {
         assertEquals(0.0, RadioFixReliability.wifiAgePenaltyMeters(null, 4, 4), 0.0)
     }
 
+    @Test fun bleScanCooldownAppliesEvenWhenNoRecentCacheExists() {
+        assertTrue(RadioFixReliability.shouldRequestBleScan(10_000L, 0L))
+        assertFalse(RadioFixReliability.shouldRequestBleScan(14_000L, 10_000L))
+        assertTrue(RadioFixReliability.shouldRequestBleScan(16_000L, 10_000L))
+        assertTrue(RadioFixReliability.shouldRequestBleScan(9_000L, 10_000L))
+    }
+
+    @Test fun staleBleAlsoIncreasesUncertainty() {
+        assertEquals(0.0, RadioFixReliability.bleAgePenaltyMeters(6_000L, 2, 2), 0.0)
+        assertTrue(RadioFixReliability.bleAgePenaltyMeters(10_000L, 2, 2) > 0.0)
+        assertTrue(
+            RadioFixReliability.bleAgePenaltyMeters(10_000L, 1, 2) <
+                RadioFixReliability.bleAgePenaltyMeters(10_000L, 2, 2)
+        )
+        assertEquals(0.0, RadioFixReliability.bleAgePenaltyMeters(null, 2, 2), 0.0)
+    }
+
     @Test fun lastRadioFixHasABoundedHoldWindow() {
         assertTrue(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_000L, 1_000L))
         assertFalse(RadioFixReliability.shouldHoldLastRadioMockFix(100_000L, 115_001L, 1_000L))
