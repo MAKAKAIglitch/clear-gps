@@ -108,7 +108,9 @@ class RadioFixReliabilityTest {
         assertTrue(RadioFixReliability.canRetainLastEstimate(100_000L, 145_000L, 2, 1_000.0))
         assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 145_001L, 2, 100.0))
         assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 1, 100.0))
-        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 3, 1_001.0))
+        assertTrue(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 3, 1_001.0))
+        assertTrue(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 3, 50_000.0))
+        assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 110_000L, 3, 50_001.0))
         assertFalse(RadioFixReliability.canRetainLastEstimate(100_000L, 90_000L, 3, 100.0))
         assertFalse(RadioFixReliability.canRetainLastEstimate(0L, 10_000L, 3, Double.NaN))
     }
