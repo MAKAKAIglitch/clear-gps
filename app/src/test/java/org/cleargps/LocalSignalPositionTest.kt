@@ -122,8 +122,15 @@ class LocalSignalPositionTest {
             )
         }
 
-        assertNull(estimateRadioFingerprintPosition(current, history, now))
-        assertTrue(lookupRadioFingerprintPosition(current, history, now).ambiguous)
+        val lookup = lookupRadioFingerprintPosition(current, history, now)
+        val estimate = requireNotNull(lookup.estimate)
+        assertTrue(lookup.ambiguous)
+        // Ambiguity must widen uncertainty, not suppress the map/mock position completely.
+        assertTrue(estimate.accuracyMeters > 1_000.0)
+        assertTrue(
+            (abs(estimate.latitude - 55.0) < 0.002 && abs(estimate.longitude - 40.0) < 0.002) ||
+                (abs(estimate.latitude - 55.1) < 0.002 && abs(estimate.longitude - 40.1) < 0.002)
+        )
     }
 
     @Test fun fingerprintSearchIgnoresUnlocatedAndSelfEstimatedSamples() {
