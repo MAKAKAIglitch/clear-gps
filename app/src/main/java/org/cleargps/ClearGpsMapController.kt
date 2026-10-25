@@ -101,8 +101,9 @@ class ClearGpsMapController {
     }
 
     fun setShowRadioPoints(show: Boolean) {
+        if (showRadioPoints == show) return
         showRadioPoints = show
-        renderAll()
+        renderRadioPoints()
     }
 
     fun setOfflineMode(offline: Boolean) {
@@ -185,7 +186,7 @@ class ClearGpsMapController {
             }
             previousCoordinate != coordinate -> updateAccuracySource()
         }
-        renderAll()
+        renderPrimaryLocation()
     }
 
     private fun cancelAccuracyAnimation() {
@@ -238,23 +239,26 @@ class ClearGpsMapController {
     }
 
     fun updateManualAnchor(anchor: ManualAnchor?) {
+        if (manualAnchor == anchor) return
         manualAnchor = anchor
-        renderAll()
+        renderAnchor()
     }
 
     fun updateCalculatedLocation(location: MapCoordinate?) {
+        if (calculatedLocation == location) return
         calculatedLocation = location
         if (!cameraInitialized && mapReady && location != null) {
             map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 14.0))
             cameraInitialized = true
         }
-        renderAll()
+        renderCalculatedLocation()
     }
 
     fun updateZones(zones: List<SavedRiskZone>, draft: List<ZonePoint>) {
+        if (savedZones == zones && draftZone == draft) return
         savedZones = zones.toList()
         draftZone = draft.toList()
-        renderAll()
+        renderZones()
     }
 
     fun updateRadioPoints(points: List<RadioPointRecord>) {
@@ -270,7 +274,7 @@ class ClearGpsMapController {
                 cameraInitialized = true
             }
         }
-        renderAll()
+        renderRadioPoints()
     }
 
     fun focusPrimary() {
@@ -349,12 +353,45 @@ class ClearGpsMapController {
 
     private fun renderAll() {
         if (!mapReady) return
+        renderPrimaryLayers()
+        renderCalculatedLocation()
+        renderAnchor()
+        renderZones()
+        renderRadioPoints()
+    }
+
+    private fun renderPrimaryLayers() {
+        if (!mapReady) return
         val position = primaryLocation
         locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
-        calculatedLocationSource?.setGeoJson(calculatedLocation?.let { pointCollection(it) } ?: emptyCollection())
-        accuracySource?.setGeoJson(position?.let { accuracyCollection(it, displayedAccuracyMeters) } ?: emptyCollection())
-        anchorSource?.setGeoJson(manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection())
+        accuracySource?.setGeoJson(
+            if (position != null) accuracyCollection(position, displayedAccuracyMeters) else emptyCollection()
+        )
+        map?.triggerRepaint()
+    }
 
+    private fun renderPrimaryLocation() {
+        if (!mapReady) return
+        locationSource?.setGeoJson(primaryLocation?.let { pointCollection(it) } ?: emptyCollection())
+        map?.triggerRepaint()
+    }
+
+    private fun renderCalculatedLocation() {
+        if (!mapReady) return
+        calculatedLocationSource?.setGeoJson(calculatedLocation?.let { pointCollection(it) } ?: emptyCollection())
+        map?.triggerRepaint()
+    }
+
+    private fun renderAnchor() {
+        if (!mapReady) return
+        anchorSource?.setGeoJson(
+            manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection()
+        )
+        map?.triggerRepaint()
+    }
+
+    private fun renderZones() {
+        if (!mapReady) return
         val polygons = ArrayList<Feature>()
         val zoneLines = ArrayList<Feature>()
         savedZones.filter { it.enabled }.forEach { zone ->
@@ -372,8 +409,14 @@ class ClearGpsMapController {
         val draftPoints = draftZone.map { Point.fromLngLat(it.longitude, it.latitude) }
         if (draftPoints.size >= 2) zoneLines.add(Feature.fromGeometry(LineString.fromLngLats(draftPoints)))
         lineSource?.setGeoJson(FeatureCollection.fromFeatures(zoneLines.toTypedArray()))
-        zonePointsSource?.setGeoJson(FeatureCollection.fromFeatures(draftPoints.map { Feature.fromGeometry(it) }.toTypedArray()))
+        zonePointsSource?.setGeoJson(
+            FeatureCollection.fromFeatures(draftPoints.map { Feature.fromGeometry(it) }.toTypedArray())
+        )
+        map?.triggerRepaint()
+    }
 
+    private fun renderRadioPoints() {
+        if (!mapReady) return
         fun pointsFor(type: String): FeatureCollection {
             if (!showRadioPoints) return emptyCollection()
             val features = radioPoints.asSequence().filter { it.type == type }
@@ -388,8 +431,7 @@ class ClearGpsMapController {
         wifiPointsSource?.setGeoJson(pointsFor("wifi"))
         cellPointsSource?.setGeoJson(pointsFor("cell"))
         blePointsSource?.setGeoJson(pointsFor("ble"))
-        // GeoJSON updates are asynchronous in MapLibre; explicitly request the next frame
-        // so new anchors and zone vertices do not wait for the user to pan the map.
+        // GeoJSON updates are asynchronous in MapLibre; request a frame after marker changes.
         map?.triggerRepaint()
     }
 
