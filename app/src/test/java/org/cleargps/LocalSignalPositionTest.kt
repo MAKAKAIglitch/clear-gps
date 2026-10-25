@@ -8,6 +8,13 @@ import kotlin.math.abs
 import org.junit.Test
 
 class LocalSignalPositionTest {
+    @Test fun macIdentifiersNormalizeAcrossCommonExportFormats() {
+        assertEquals("aa:bb:cc:dd:ee:ff", canonicalRadioIdentifier("AA:BB:CC:DD:EE:FF"))
+        assertEquals("aa:bb:cc:dd:ee:ff", canonicalRadioIdentifier("AA-BB-CC-DD-EE-FF"))
+        assertEquals("aa:bb:cc:dd:ee:ff", canonicalRadioIdentifier("aabbccddeeff"))
+        assertEquals("aa:bb:cc:dd:ee:ff", canonicalRadioIdentifier("aabb.ccdd.eeff"))
+        assertEquals("lte:250:01:12345:987654", canonicalRadioIdentifier("LTE:250:01:12345:987654"))
+    }
     @Test fun strongerSignalMustBeatStoredPeakByThreeDb() {
         assertTrue(isBetterSignalSample(-55, -59, 8.0))
         assertFalse(isBetterSignalSample(-57, -59, 8.0))
