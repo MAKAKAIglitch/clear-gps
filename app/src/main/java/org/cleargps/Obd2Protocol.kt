@@ -37,7 +37,7 @@ internal object Obd2Protocol {
         val dataEnd = dataStart + 8
         if (dataEnd > compact.length) return null
         val bitmap = compact.substring(dataStart, dataEnd).toLongOrNull(16) ?: return null
-        return (1..32).filterTo(linkedSetOf()) { pid ->
+        return (1..32).filterTo(linkedSetOf<Int>()) { pid ->
             (bitmap and (1L shl (32 - pid))) != 0L
         }
     }
