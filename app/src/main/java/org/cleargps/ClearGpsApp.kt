@@ -594,6 +594,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             obd2Adapters = available
             if (available.none { it.address.equals(selectedObd2Address, ignoreCase = true) }) {
                 selectedObd2Address = available.firstOrNull()?.address.orEmpty()
+                prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
             }
             obd2Status = if (available.isEmpty()) {
                 "Нет сопряжённых устройств. Сопряги адаптер в системных настройках Bluetooth."
@@ -636,6 +637,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 try {
                     val latest = obd2Repository.readTelemetry()
                     obd2Telemetry = latest
+                    Obd2SharedState.storeTelemetry(prefs, latest)
                     obd2Status = if (latest.parametersReceived > 0) {
                         "Адаптер подключён · только чтение Mode 01"
                     } else {
@@ -649,6 +651,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     obd2Status = error.message ?: "Связь с OBD-II адаптером потеряна."
                     obd2Connected = false
                     obd2Telemetry = Obd2Telemetry()
+                    Obd2SharedState.clearSpeed(prefs)
                     obd2Repository.disconnect()
                     break
                 }
@@ -788,30 +791,63 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    val validLive = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..15 * 60 * 1000L }
+    val maxLiveAgeMillis = if (positionMode == PositionMode.GPS_OBD2) 30_000L else 15 * 60 * 1_000L
+    val validLive = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..maxLiveAgeMillis }
     val activeLocation = when (positionMode) {
-        PositionMode.GPS_ONLY -> validLive?.takeIf { it.provider.equals(LocationManager.GPS_PROVIDER, true) }
+        PositionMode.GPS_ONLY, PositionMode.GPS_OBD2 ->
+            validLive?.takeIf { it.provider.equals(LocationManager.GPS_PROVIDER, true) }
         PositionMode.AUTO -> validLive
-        PositionMode.RADIO_ONLY -> null
+        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> null
     }
     val measuredCoordinate = activeLocation?.let { MapCoordinate(it.latitude, it.longitude) }
     val radioCoordinate = currentRadioEstimate?.let { MapCoordinate(it.latitude, it.longitude) }
+    val freshObdSpeedKmh = if (positionMode.usesObd2) {
+        Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
+    } else null
+    val obdSpeedUpdatedAt = prefs.getLong(Obd2SharedState.KEY_SPEED_AT, 0L)
+    val predictedGpsPosition = if (positionMode == PositionMode.GPS_OBD2 && activeLocation != null) {
+        Obd2LocationFusion.predictFromGps(
+            lastFix = MapCoordinate(activeLocation.latitude, activeLocation.longitude),
+            baseAccuracyMeters = activeLocation.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
+            bearingDegrees = activeLocation.takeIf { it.hasBearing() }?.bearing?.toDouble(),
+            fixTimeMillis = activeLocation.time,
+            speedKmh = freshObdSpeedKmh,
+            speedUpdatedAtMillis = obdSpeedUpdatedAt,
+            nowMillis = fusionNowMillis
+        )
+    } else null
     val primaryCoordinate = when (positionMode) {
         PositionMode.GPS_ONLY -> measuredCoordinate
+        PositionMode.GPS_OBD2 -> predictedGpsPosition?.coordinate ?: measuredCoordinate
         PositionMode.AUTO -> measuredCoordinate ?: radioCoordinate
-        PositionMode.RADIO_ONLY -> radioCoordinate
+        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> radioCoordinate
     }
     val primaryAccuracy = when {
+        predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
         radioCoordinate != null -> currentRadioEstimate?.accuracyMeters
         else -> null
     }
-    val displayCoordinate = if (positionMode == PositionMode.RADIO_ONLY) {
+    val displayCoordinate = if (positionMode.usesRadio) {
         radioCoordinate
     } else {
         primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
     }
     val primarySource = when {
+        positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null ->
+            "GPS + OBD-II · расчёт по скорости (" + predictedGpsPosition.travelledMeters.toInt() + " м)"
+        positionMode == PositionMode.GPS_OBD2 && activeLocation != null && freshObdSpeedKmh != null ->
+            "GPS + OBD-II"
+        positionMode == PositionMode.GPS_OBD2 && activeLocation != null ->
+            "GPS · резерв без скорости OBD-II"
+        positionMode == PositionMode.GPS_OBD2 ->
+            "Ожидание GPS · OBD-II не заменяет координаты"
+        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null && freshObdSpeedKmh != null ->
+            "Локальная радиобаза + OBD-II"
+        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null ->
+            "Локальная радиобаза · резерв без OBD-II"
+        positionMode == PositionMode.RADIO_OBD2 ->
+            "Ожидание совпадений · OBD-II не задаёт координаты"
         positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null -> "Локальная радиобаза"
         positionMode == PositionMode.RADIO_ONLY -> "Ожидание совпадений в радиобазе"
         activeLocation?.provider.equals(LocationManager.GPS_PROVIDER, true) -> "GPS"
@@ -820,6 +856,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         currentRadioEstimate != null -> "Локальная база"
         manualAnchor != null -> "Ориентир"
         else -> "Нет фикса"
+    }
+    val mapPrimaryCoordinate = when (positionMode) {
+        PositionMode.AUTO, PositionMode.GPS_ONLY -> measuredCoordinate
+        PositionMode.GPS_OBD2 -> predictedGpsPosition?.coordinate ?: measuredCoordinate
+        PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> null
+    }
+    val mapPrimaryAccuracy = when {
+        positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
+        activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
+        else -> null
     }
 
     // Update MapLibre only when its actual inputs change. Re-running every map layer update
@@ -833,11 +879,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(selectedMapPoint != null, showRadioPointsOnMap) {
         mapController.setShowRadioPoints(selectedMapPoint != null || showRadioPointsOnMap)
     }
-    LaunchedEffect(measuredCoordinate, activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()) {
-        mapController.updatePrimary(
-            measuredCoordinate,
-            activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()
-        )
+    LaunchedEffect(mapPrimaryCoordinate, mapPrimaryAccuracy) {
+        mapController.updatePrimary(mapPrimaryCoordinate, mapPrimaryAccuracy)
     }
     LaunchedEffect(radioCoordinate, currentRadioEstimate?.accuracyMeters) {
         mapController.updateCalculatedLocation(radioCoordinate, currentRadioEstimate?.accuracyMeters)
@@ -1019,7 +1062,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             when (selectedTab) {
                                 AppTab.MAP -> MapHomeScreen(
                                     coordinate = displayCoordinate,
-                                    accuracy = if (primaryCoordinate != null) primaryAccuracy else null,
+                                    accuracy = if (displayCoordinate != null) primaryAccuracy else null,
                                     source = primarySource, mode = positionMode, currentEstimate = currentRadioEstimate,
                                     manualAnchor = manualAnchor, wifiCount = wifiCount, cellCount = cellCount, bleCount = bleCount,
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
@@ -1095,7 +1138,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     telemetry = obd2Telemetry,
                                     status = obd2Status,
                                     onRefresh = { refreshPairedObdAdapters() },
-                                    onSelect = { selectedObd2Address = it },
+                                    onSelect = {
+                                        selectedObd2Address = it
+                                        prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, it).apply()
+                                    },
                                     onConnect = {
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                                             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -1109,6 +1155,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                 try {
                                                     val adapter = obd2Repository.connect(selectedObd2Address)
                                                     selectedObd2Address = adapter.address
+                                                    prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
+                                                    Obd2SharedState.clearSpeed(prefs)
                                                     obd2Telemetry = Obd2Telemetry()
                                                     obd2Connected = true
                                                     obd2Status = "Подключено. Начинаю опрашивать только стандартные параметры чтения."
@@ -1116,6 +1164,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     throw cancelled
                                                 } catch (error: Exception) {
                                                     obd2Connected = false
+                                                    Obd2SharedState.clearSpeed(prefs)
                                                     obd2Status = error.message ?: "Не удалось подключиться к адаптеру."
                                                 } finally {
                                                     obd2Connecting = false
@@ -1126,6 +1175,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onDisconnect = {
                                         obd2Connected = false
                                         obd2Telemetry = Obd2Telemetry()
+                                        Obd2SharedState.clearSpeed(prefs)
                                         obd2Repository.disconnect()
                                         obd2Status = "Отключено пользователем."
                                     },
