@@ -1493,6 +1493,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         .remove(ClearGpsPreferences.KEY_LAST_FINGERPRINT).remove(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT)
                         .remove(ClearGpsPreferences.KEY_LAST_WIFI_COUNT).remove(ClearGpsPreferences.KEY_LAST_CELL_COUNT)
                         .remove(ClearGpsPreferences.KEY_LAST_BLE_COUNT).remove(ClearGpsPreferences.KEY_LAST_SCAN_AT)
+                        .remove(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE)
+                        .remove(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE)
                         .remove(ClearGpsPreferences.KEY_LAST_RECORDED_COUNT).apply()
                     refreshLocalUi(); scanMessage = "Локальная база и история удалены. Данные никуда не отправлялись."
                     showDeleteAllDialog = false
