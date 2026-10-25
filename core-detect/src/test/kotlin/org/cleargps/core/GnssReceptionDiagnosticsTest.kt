@@ -37,7 +37,7 @@ class GnssReceptionDiagnosticsTest {
 
         val diagnostics = detector.receptionDiagnostics(10_500_000_000L)
 
-        assertEquals(GnssEnvironmentContext.POSSIBLE_SEVERE_OBSTRUCTION, diagnostics.environment.context)
+        assertEquals(GnssEnvironmentContext.POSSIBLE_PARTIAL_OBSTRUCTION, diagnostics.environment.context)
         assertTrue(diagnostics.baselineDeviation.ready)
         assertTrue(diagnostics.baselineDeviation.deviations.isNotEmpty())
     }
