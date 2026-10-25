@@ -603,6 +603,7 @@ class LocationMonitorService : Service(), LocationListener {
                     val nowElapsedMs = SystemClock.elapsedRealtime()
                     val confirmed = lastRadioMockFix
                     val confirmedAt = lastRadioMockFixAtElapsedMs
+                    val intervalMs = configuredUpdateIntervalMillis()
                     val ageMs = if (confirmedAt > 0L && nowElapsedMs >= confirmedAt) nowElapsedMs - confirmedAt else Long.MAX_VALUE
                     val canHold = prefs.getBoolean(KEY_MOCK_ENABLED, false) && confirmed != null &&
                         RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
@@ -759,7 +760,6 @@ class LocationMonitorService : Service(), LocationListener {
             mock?.disable()
             prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             saveServiceStatus("Mock GPS paused: no safe location candidate")
-        }
         }
         val sourceHint = when (result.source) {
             "LOCAL_RADIO" -> " · local radio fallback"
