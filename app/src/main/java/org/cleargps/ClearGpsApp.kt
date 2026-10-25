@@ -1498,7 +1498,7 @@ private fun MapHomeScreen(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (mode == PositionMode.RADIO_ONLY && currentEstimate != null) {
+                    if (mode.usesRadio && currentEstimate != null) {
                         Text(
                             "Совпадений в базе: " + currentEstimate.matchedCount + ". Радиус — эвристическая оценка.",
                             style = MaterialTheme.typography.labelSmall,
@@ -1508,17 +1508,19 @@ private fun MapHomeScreen(
                 } else {
                     Text(
                         when (mode) {
-                            PositionMode.RADIO_ONLY -> "Нет совпадений в локальной базе"
-                            PositionMode.GPS_ONLY -> "Ожидание GPS-фикса"
+                            PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> "Нет совпадений в локальной базе"
+                            PositionMode.GPS_ONLY, PositionMode.GPS_OBD2 -> "Ожидание GPS-фикса"
                             PositionMode.AUTO -> "Пока нет координат"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        if (mode == PositionMode.RADIO_ONLY)
-                            "Сначала запиши радиоточки в известных местах или импортируй локальный CSV."
-                        else "Разреши геолокацию или запусти сканирование.",
+                        when {
+                            mode.usesRadio -> "Сначала запиши радиоточки в известных местах или импортируй локальный CSV."
+                            mode == PositionMode.GPS_OBD2 -> "Нужен GPS-фикс. OBD-II сможет кратко продолжить его только при свежей скорости и известном курсе."
+                            else -> "Разреши геолокацию или запусти сканирование."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -1710,9 +1712,19 @@ private fun MapHomeScreen(
                 if (lastScanAt > 0L) {
                     Text("Последний скан: " + dateTime(lastScanAt), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
-                if (mode == PositionMode.RADIO_ONLY) {
+                if (mode.usesRadio) {
                     Text(
-                        "В режиме «Только радио» приложение не запрашивает GPS. Это не выключает GNSS для других приложений.",
+                        if (mode == PositionMode.RADIO_OBD2)
+                            "В режиме «Радио + OBD-II» координаты берутся из локальной радиобазы, а скорость OBD-II помогает учащать сканирование. GPS не запрашивается. Без курса движения скорость сама по себе не задаёт координаты."
+                        else
+                            "В режиме «Только радио» приложение не запрашивает GPS. Это не выключает GNSS для других приложений.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                if (mode == PositionMode.GPS_OBD2) {
+                    Text(
+                        "OBD-II используется как резерв скорости. Краткий прогноз позиции строится только по свежему GPS-курсу и свежей скорости; при отсутствии данных остаётся обычный GPS-фикс.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -2238,6 +2250,8 @@ private fun SettingsScreen(
                                     PositionMode.AUTO -> "Android location с резервом локальной радиобазы."
                                     PositionMode.GPS_ONLY -> "Только координаты GPS-провайдера."
                                     PositionMode.RADIO_ONLY -> "Только совпадения с локальной радиобазой; GPS не запрашивается приложением."
+                                    PositionMode.GPS_OBD2 -> "GPS — основной источник координат. Свежая скорость OBD-II помогает краткому прогнозу по последнему GPS-курсу."
+                                    PositionMode.RADIO_OBD2 -> "Радиобаза остаётся источником координат. Скорость OBD-II помогает выбирать частоту сканирования; без курса не заменяет координаты."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant,
