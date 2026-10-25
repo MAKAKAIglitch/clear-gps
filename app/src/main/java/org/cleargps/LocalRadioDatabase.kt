@@ -544,6 +544,8 @@ internal fun estimateRadioAnchorPosition(
  * This database class has no HTTP client and never sends wireless identifiers to a service.
  */
 class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
+    private val appContext = context.applicationContext
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -1147,7 +1149,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
      * Source content is only read; importing merges records and never replaces local data.
      */
     fun importSqliteDatabase(input: InputStream): RadioImportResult {
-        val tempFile = File.createTempFile("clear-gps-import-", ".sqlite", context.cacheDir)
+        val tempFile = File.createTempFile("clear-gps-import-", ".sqlite", appContext.cacheDir)
         try {
             input.use { source ->
                 FileOutputStream(tempFile).use { target -> copyBounded(source, target, MAX_SQLITE_IMPORT_BYTES) }
@@ -1187,11 +1189,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     /** Creates a standalone Clear GPS database backup using SQLite's own schema and data. */
     fun exportSqliteBackup(output: OutputStream) {
-        val tempFile = File.createTempFile("clear-gps-export-", ".sqlite", context.cacheDir)
+        val tempFile = File.createTempFile("clear-gps-export-", ".sqlite", appContext.cacheDir)
         var exportDb: SQLiteDatabase? = null
         try {
             exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile, null)
-            exportDb.execSQL("ATTACH DATABASE ? AS source", arrayOf(context.getDatabasePath(DB_NAME).absolutePath))
+            exportDb.execSQL("ATTACH DATABASE ? AS source", arrayOf(appContext.getDatabasePath(DB_NAME).absolutePath))
             val schema = exportDb.rawQuery(
                 "SELECT type, name, sql FROM source.sqlite_master " +
                     "WHERE sql IS NOT NULL AND type IN ('table','index') " +
@@ -1459,7 +1461,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (observedAt >= old.lastSeen && frequency > 0) put("frequency", frequency)
             put("first_seen", minOf(old.firstSeen, observedAt))
             put("last_seen", maxOf(old.lastSeen, observedAt))
-            put("sightings", (old.sightings + 1).coerceAtMost(Int.MAX_VALUE))
+            put("sightings", if (old.sightings == Int.MAX_VALUE) Int.MAX_VALUE else old.sightings + 1)
             if (old.ssid.isBlank() && label.isNotBlank()) put("ssid", label.take(100))
             if (old.label.isBlank() && label.isNotBlank()) put("label", label.take(100))
             val oldAccuracy = old.accuracyMeters
