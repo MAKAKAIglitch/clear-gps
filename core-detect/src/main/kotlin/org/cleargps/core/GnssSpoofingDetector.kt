@@ -208,6 +208,8 @@ class GnssSpoofingDetector {
             val dt = (gps.elapsedRealtimeNanos - previous.elapsedRealtimeNanos) / 1_000_000_000.0
             val oldAccuracy = previous.accuracyMeters
             val newAccuracy = gps.accuracyMeters
+            // A long observation gap can happen in tunnels, parking or urban canyons.
+            // Without a continuous track, displacement alone is not enough to call a jump spoofing.
             if (dt in 0.2..60.0 && oldAccuracy != null && newAccuracy != null &&
                 oldAccuracy in 0.0..150.0 && newAccuracy in 0.0..150.0) {
                 val distance = distanceMeters(previous.latitude, previous.longitude, gps.latitude, gps.longitude)

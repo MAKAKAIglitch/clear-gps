@@ -184,4 +184,62 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.isEmpty())
     }
 
+    @Test fun reacquisitionAfterLongGnssGapDoesNotTurnDisplacementAloneIntoSpoofing() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(
+            fix(55.0, 37.0, 1),
+            fix(55.0, 37.0, 1, accuracy = 35.0, provider = "network"),
+            false,
+            1_200_000_000L,
+            true
+        )
+
+        // The fix returns after a five-minute observation gap, as can happen after a tunnel.
+        // The previous network fix is stale and must not corroborate the new GPS position.
+        val reacquired = detector.assess(
+            fix(55.4, 37.0, 301),
+            fix(55.0, 37.0, 1, accuracy = 35.0, provider = "network"),
+            false,
+            301_200_000_000L,
+            true
+        )
+
+        assertFalse(reacquired.confirmed)
+        assertTrue(reacquired.score < 60)
+        assertFalse(reacquired.reasons.any { it.contains("скачок координат", ignoreCase = true) })
+    }
+
+    @Test fun satelliteLossAloneDoesNotCreateSignalOnlyWarning() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 9, 8, 34.0, 4.0, 2, strongSignalCount = 6)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 0, 0, null, null, 0, strongSignalCount = 0)
+        )
+
+        val result = detector.assessSignalOnly(2_200_000_000L)
+        assertEquals(0, result.score)
+        assertFalse(result.confirmed)
+        assertTrue(result.reasons.isEmpty())
+    }
+
+    @Test fun unavailableAgcIsNeutralEvenWhenCn0ChangesSharply() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssMeasurements(
+            GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, null, 0)
+        )
+        detector.observeGnssMeasurements(
+            GnssRfSnapshot(2_100_000_000L, 10, 3, 44.0, null, 0)
+        )
+        detector.observeGnssMeasurements(
+            GnssRfSnapshot(3_100_000_000L, 10, 3, 51.0, null, 0)
+        )
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertEquals(0, result.score)
+        assertFalse(result.confirmed)
+        assertTrue(result.reasons.isEmpty())
+    }
+
 }
