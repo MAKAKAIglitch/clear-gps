@@ -45,7 +45,11 @@ class MockLocationOutput(context: Context) {
 
     fun disable() {
         try {
-            if (registered) manager.removeTestProvider(LocationManager.GPS_PROVIDER)
+            // The process can be killed without onDestroy(), so this instance may believe
+            // no provider is registered even though system_server retained a test provider
+            // created by an earlier process. Always try removing it; Android throws
+            // IllegalArgumentException when no test provider exists, which is harmless here.
+            manager.removeTestProvider(LocationManager.GPS_PROVIDER)
         } catch (_: SecurityException) {
         } catch (_: IllegalArgumentException) {
         } catch (_: RuntimeException) {
