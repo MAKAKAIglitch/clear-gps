@@ -325,17 +325,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             lookupPhase = LookupPhase.SCANNING
             scanMessage = if (recordNow) "Сохраняю наблюдения в локальную SQLite-базу…" else "Сканирую Wi‑Fi, мобильные соты и Bluetooth LE…"
             try {
-                val reference = currentReference(
-                    if (positionMode == PositionMode.RADIO_ONLY) null else liveLocation,
-                    manualAnchor
-                )
-                val observedPosition = when {
-                    liveLocation != null && System.currentTimeMillis() - liveLocation!!.time in 0..30_000L ->
-                        ZonePoint(liveLocation!!.latitude, liveLocation!!.longitude)
-                    positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null &&
-                        System.currentTimeMillis() - currentRadioEstimate!!.updatedAt in 0..30L * 60L * 1_000L ->
-                        ZonePoint(currentRadioEstimate!!.latitude, currentRadioEstimate!!.longitude)
-                    else -> null
+                val now = System.currentTimeMillis()
+                // In radio-only mode, all live coordinates must come from a match in the local radio DB.
+                // Never use Android location providers or a manually placed anchor as a silent fallback.
+                val trustedRadioEstimate = currentRadioEstimate?.takeIf {
+                    val age = now - it.updatedAt
+                    age in 0..30L * 60L * 1_000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
+                }
+                val reference = if (positionMode == PositionMode.RADIO_ONLY) {
+                    trustedRadioEstimate?.let {
+                        RadioReference(it.latitude, it.longitude, it.accuracyMeters, "local-radio-estimate")
+                    }
+                } else {
+                    currentReference(liveLocation, manualAnchor)
+                }
+                val observedPosition = if (positionMode == PositionMode.RADIO_ONLY) {
+                    trustedRadioEstimate?.let { ZonePoint(it.latitude, it.longitude) }
+                } else {
+                    liveLocation?.takeIf { now - it.time in 0..30_000L }
+                        ?.let { ZonePoint(it.latitude, it.longitude) }
                 }
                 val insideRiskZone = observedPosition?.let { point ->
                     zones.any { zone -> zone.enabled && ZoneGeometry.contains(point, zone.points) }
@@ -369,6 +377,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             } finally {
                 scanBusy = false
             }
+        }
+    }
+
+    // Selecting radio-only immediately calculates an estimate from the local radio database.
+    // This effect never asks Android for a location fix; it only scans radio identifiers.
+    LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context)) {
+        if (positionMode == PositionMode.RADIO_ONLY && hasAnyLocationPermission(context)) {
+            performScan(false)
         }
     }
 
@@ -561,7 +577,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (recording && appVisible && hasAnyLocationPermission(context)) {
             while (recording && appVisible) {
                 performScan(true)
-                val speedKmh = liveLocation?.takeIf {
+                val speedKmh = if (positionMode == PositionMode.RADIO_ONLY) null else liveLocation?.takeIf {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
                 }?.speed?.times(3.6f)
                 delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
@@ -637,9 +653,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         radioCoordinate != null -> currentRadioEstimate?.accuracyMeters
         else -> null
     }
-    val displayCoordinate = primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+    val displayCoordinate = if (positionMode == PositionMode.RADIO_ONLY) {
+        radioCoordinate
+    } else {
+        primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+    }
     val primarySource = when {
-        positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null -> "Локальное радио"
+        positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null -> "Локальная радиобаза"
+        positionMode == PositionMode.RADIO_ONLY -> "Ожидание совпадений в радиобазе"
         activeLocation?.provider.equals(LocationManager.GPS_PROVIDER, true) -> "GPS"
         positionMode == PositionMode.GPS_ONLY && activeLocation == null -> "Ожидание GPS"
         activeLocation != null -> "Сеть Android"
@@ -1741,7 +1762,7 @@ private fun SettingsScreen(
                     Text(when (item) {
                         PositionMode.AUTO -> "Android location, затем локальная радиобаза."
                         PositionMode.GPS_ONLY -> "Использовать только GPS-провайдер для текущей позиции."
-                        PositionMode.RADIO_ONLY -> "Не запрашивать GPS. Совпадения по сохранённым радиоточкам."
+                        PositionMode.RADIO_ONLY -> "Только текущие Wi‑Fi/соты/Bluetooth и локальная база; без GPS и ручного ориентира."
                     }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
                 RadioButton(selected = mode == item, onClick = { onMode(item) })
