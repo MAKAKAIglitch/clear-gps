@@ -66,6 +66,7 @@ internal object Obd2LocationFusion {
     private const val MIN_FIX_AGE_MS = 3_000L
     private const val MAX_FIX_AGE_MS = 30_000L
     private const val MAX_PREDICTED_DISTANCE_METERS = 300.0
+    private const val MAX_BASE_FIX_ACCURACY_METERS = 100.0
     private const val BASE_UNCERTAINTY_GROWTH_METERS_PER_SECOND = 1.5
     private const val DISTANCE_UNCERTAINTY_FACTOR = 0.12
 
@@ -105,9 +106,11 @@ internal object Obd2LocationFusion {
         val coordinate = MapCoordinate(Math.toDegrees(lat2), longitude)
         if (!coordinate.latitude.isFinite() || !coordinate.longitude.isFinite()) return null
 
+        // A dead-reckoning step cannot rescue a poor or unknown starting fix. Refuse to
+        // extrapolate rather than assigning an invented default precision to that position.
         val baseAccuracy = baseAccuracyMeters
-            ?.takeIf { it.isFinite() && it > 0.0 }
-            ?.coerceAtMost(1_000.0) ?: 25.0
+            ?.takeIf { it.isFinite() && it in 1.0..MAX_BASE_FIX_ACCURACY_METERS }
+            ?: return null
         val estimatedAccuracy = (
             baseAccuracy +
                 seconds * BASE_UNCERTAINTY_GROWTH_METERS_PER_SECOND +
