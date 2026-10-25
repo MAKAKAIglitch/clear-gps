@@ -784,10 +784,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
-            if (positionMode.usesRadio && monitorEnabled) {
+            if (positionMode.usesRadio) {
+                // Keep a short-lived last-known estimate through a single failed scan, but never
+                // show it indefinitely as a current position when monitoring is off or matches stop.
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
                     val age = System.currentTimeMillis() - it.updatedAt
-                    age in 0..30L * 60L * 1000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
+                    age in 0..45_000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
                 }
                 if (stored != currentRadioEstimate) currentRadioEstimate = stored
             }
@@ -838,6 +840,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     } else {
         primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
     }
+    val radioEstimateAgeMillis = currentRadioEstimate?.let { System.currentTimeMillis() - it.updatedAt } ?: Long.MAX_VALUE
+    val radioEstimateStale = currentRadioEstimate != null &&
+        radioEstimateAgeMillis > maxOf(15_000L, scanIntervalSeconds * 2_000L)
+
     val primarySource = when {
         positionMode == PositionMode.GPS_OBD2 && predictedGpsPosition != null ->
             "GPS + OBD-II · расчёт по скорости (" + predictedGpsPosition.travelledMeters.toInt() + " м)"
@@ -847,12 +853,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             "GPS · резерв без скорости OBD-II"
         positionMode == PositionMode.GPS_OBD2 ->
             "Ожидание GPS · OBD-II не заменяет координаты"
+        positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null && radioEstimateStale ->
+            "Последняя оценка радио · свежего совпадения нет"
         positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null && freshObdSpeedKmh != null ->
             "Локальная радиобаза + OBD-II"
         positionMode == PositionMode.RADIO_OBD2 && currentRadioEstimate != null ->
             "Локальная радиобаза · резерв без OBD-II"
         positionMode == PositionMode.RADIO_OBD2 ->
             "Ожидание совпадений · OBD-II не задаёт координаты"
+        positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null && radioEstimateStale ->
+            "Последняя оценка радио · свежего совпадения нет"
         positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null -> "Локальная радиобаза"
         positionMode == PositionMode.RADIO_ONLY -> "Ожидание совпадений в радиобазе"
         activeLocation?.provider.equals(LocationManager.GPS_PROVIDER, true) -> "GPS"
