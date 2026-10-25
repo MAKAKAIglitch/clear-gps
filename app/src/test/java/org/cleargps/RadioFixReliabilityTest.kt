@@ -22,6 +22,17 @@ class RadioFixReliabilityTest {
         assertFalse(RadioFixReliability.isCellInfoFresh(100_001L, 100_000L))
     }
 
+    @Test fun staleCellInformationIncreasesUncertaintyAndMarksCache() {
+        assertEquals(0.0, RadioFixReliability.cellAgePenaltyMeters(30_000L, 2, 4), 0.0)
+        assertTrue(RadioFixReliability.cellAgePenaltyMeters(60_000L, 2, 4) > 0.0)
+        assertTrue(
+            RadioFixReliability.cellAgePenaltyMeters(60_000L, 2, 4) <
+                RadioFixReliability.cellAgePenaltyMeters(60_000L, 4, 4)
+        )
+        assertEquals(1_000.0, RadioFixReliability.cellAgePenaltyMeters(600_000L, 4, 4), 0.0)
+        assertEquals(0.0, RadioFixReliability.cellAgePenaltyMeters(null, 4, 4), 0.0)
+    }
+
     @Test fun staleWifiIncreasesUncertaintyAndFreshWifiDoesNot() {
         assertEquals(0.0, RadioFixReliability.wifiAgePenaltyMeters(15_000L, 4, 4), 0.0)
         assertTrue(RadioFixReliability.wifiAgePenaltyMeters(25_000L, 4, 4) > 0.0)
