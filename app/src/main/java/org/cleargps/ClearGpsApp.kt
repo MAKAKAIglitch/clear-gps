@@ -17,10 +17,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.animateFloatAsState
@@ -1912,84 +1910,205 @@ private fun SettingsScreen(
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-        .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    var showMapOptions by remember { mutableStateOf(false) }
+    var showRadioOptions by remember { mutableStateOf(false) }
+    var showAdvancedOptions by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
         Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Text("Режим определения положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        PositionMode.values().forEach { item ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) {
-                    Text(item.title, fontWeight = FontWeight.Medium)
-                    Text(when (item) {
-                        PositionMode.AUTO -> "Android location, затем локальная радиобаза."
-                        PositionMode.GPS_ONLY -> "Использовать только GPS-провайдер для текущей позиции."
-                        PositionMode.RADIO_ONLY -> "Только текущие Wi‑Fi/соты/Bluetooth и локальная база; без GPS и ручного ориентира."
-                    }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                PositionMode.values().forEach { item ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { if (mode != item) onMode(item) }.padding(vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(item.title, fontWeight = FontWeight.Medium)
+                            Text(
+                                when (item) {
+                                    PositionMode.AUTO -> "Android location с резервом локальной радиобазы."
+                                    PositionMode.GPS_ONLY -> "Только координаты GPS-провайдера."
+                                    PositionMode.RADIO_ONLY -> "Только совпадения с локальной радиобазой; GPS не запрашивается приложением."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        RadioButton(selected = mode == item, onClick = { onMode(item) })
+                    }
                 }
-                RadioButton(selected = mode == item, onClick = { onMode(item) })
             }
         }
-        Divider(color = colors.outlineVariant)
-        Text("Источник карты и приватность", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        MapSourceMode.values().forEach { item ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.weight(1f)) {
-                    Text(item.title, fontWeight = FontWeight.Medium)
-                    Text(if (item == MapSourceMode.ONLINE)
-                        "OpenFreeMap показывает дороги и подписи, но видит IP-адрес и область карты."
-                    else "Внешние тайлы не запрашиваются. Фон пустой, но локальные точки и зоны видны.",
-                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                }
-                RadioButton(selected = mapSource == item, onClick = { onMapSource(item) })
-            }
-        }
-        Divider(color = colors.outlineVariant)
-        Text("Картографическая тема", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        MapThemeMode.values().forEach { item ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(item.title, modifier = Modifier.weight(1f))
-                RadioButton(selected = mapTheme == item, onClick = { onMapTheme(item) })
-            }
-        }
-        Divider(color = colors.outlineVariant)
-        Text("Источники для радиопозиции", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("Переключатели влияют на расчёт положения. Новые сигналы записываются только при явно включённой записи.",
-            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        SettingSwitch("Wi‑Fi-точки", "BSSID и уровень сигнала; SSID кратко проверяется на _nomap и не сохраняется.", useWifi, onWifi)
-        SettingSwitch("Мобильные соты", "GSM / WCDMA / LTE / NR, если доступны.", useCells, onCells)
-        SettingSwitch("Bluetooth LE", "Только адрес и RSSI; имена устройств не читаются.", useBle, onBle)
-        Divider(color = colors.outlineVariant)
-        Text("Частота сканирования", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("Период: $scanIntervalSeconds секунд", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
-        Slider(value = scanIntervalSeconds.toFloat(),
-            onValueChange = { onScanInterval(it.roundToInt().coerceIn(10, 120)) },
-            valueRange = 10f..120f, steps = 10, modifier = Modifier.fillMaxWidth())
-        SettingSwitch("Ускорять в движении",
-            "При скорости выше 25 км/ч интервал уменьшается вдвое (минимум 10 секунд); Android может ограничить частоту сканов.",
-            adaptiveScan, onAdaptiveScan)
-        Divider(color = colors.outlineVariant)
-        SettingSwitch("Радиоточки на карте", "До 1 500 точек на обычном устройстве; на маломощных — меньше.", showRadioPoints, onShowPoints)
-        SettingSwitch(
-            "Ручной ориентир как крайний резерв",
-            "Только если нет другой позиции. Точность условная ±1,5 км; не включать, если ориентир может быть устаревшим.",
-            manualFallbackEnabled, onManualFallback
+
+        SettingsSectionToggle(
+            title = "Карта и оформление",
+            summary = "Источник карты, тема и приватность тайлов",
+            expanded = showMapOptions,
+            onClick = { showMapOptions = !showMapOptions }
         )
-        OutlinedButton(onClick = onManualAnchor, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-            Icon(Icons.Outlined.LocationOn, null); Spacer(Modifier.width(8.dp)); Text("Поставить ручной ориентир на карте")
+        if (showMapOptions) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("Источник карты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    MapSourceMode.values().forEach { item ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onMapSource(item) }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(item.title, fontWeight = FontWeight.Medium)
+                                Text(
+                                    if (item == MapSourceMode.ONLINE)
+                                        "Дороги и подписи доступны онлайн; сервер видит IP и область карты."
+                                    else "Без внешних тайлов: фон пустой, локальные точки остаются видны.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                            RadioButton(selected = mapSource == item, onClick = { onMapSource(item) })
+                        }
+                    }
+                    Divider(color = colors.outlineVariant)
+                    Text("Тема карты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    MapThemeMode.values().forEach { item ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onMapTheme(item) }.padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(item.title, modifier = Modifier.weight(1f))
+                            RadioButton(selected = mapTheme == item, onClick = { onMapTheme(item) })
+                        }
+                    }
+                }
+            }
         }
-        OutlinedButton(onClick = onOpenLocationSettings, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-            Icon(Icons.Outlined.GpsFixed, null); Spacer(Modifier.width(8.dp)); Text("Системные настройки геолокации")
+
+        SettingsSectionToggle(
+            title = "Радиосканирование",
+            summary = "Wi‑Fi, сотовые сети, Bluetooth и частота",
+            expanded = showRadioOptions,
+            onClick = { showRadioOptions = !showRadioOptions }
+        )
+        if (showRadioOptions) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text(
+                        "Переключатели влияют на локальный поиск. Сохранение наблюдений работает только при включённой записи.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    SettingSwitch("Wi‑Fi", "BSSID и уровень сигнала.", useWifi, onWifi)
+                    Divider(color = colors.outlineVariant)
+                    SettingSwitch("Мобильные соты", "GSM / WCDMA / LTE / NR, если доступны.", useCells, onCells)
+                    Divider(color = colors.outlineVariant)
+                    SettingSwitch("Bluetooth LE", "Адрес и уровень сигнала; имена устройств не читаются.", useBle, onBle)
+                    Divider(color = colors.outlineVariant)
+                    Text("Интервал сканирования: " + scanIntervalSeconds + " с", style = MaterialTheme.typography.titleSmall)
+                    Slider(
+                        value = scanIntervalSeconds.toFloat(),
+                        onValueChange = { onScanInterval(it.roundToInt().coerceIn(10, 120)) },
+                        valueRange = 10f..120f,
+                        steps = 10,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    SettingSwitch(
+                        "Ускорять в движении",
+                        "При скорости выше 25 км/ч интервал уменьшается вдвое. Android может ограничить сканы.",
+                        adaptiveScan,
+                        onAdaptiveScan
+                    )
+                    Divider(color = colors.outlineVariant)
+                    SettingSwitch(
+                        "Радиоточки на карте",
+                        "Показывать сохранённые точки поверх карты.",
+                        showRadioPoints,
+                        onShowPoints
+                    )
+                }
+            }
         }
-        Divider(color = colors.outlineVariant)
-        Text("Приватность и хранение", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("Радиопозиционирование выполняется локально. BeaconDB и API WiGLE не вызываются; WiGLE — только формат ручного импорта/экспорта файла. SSID, BSSID и радио-ID хранятся только локально.",
-            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        Text(databaseFacts, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-        OutlinedButton(onClick = onClearData, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-            Icon(Icons.Outlined.DeleteOutline, null); Spacer(Modifier.width(8.dp)); Text("Удалить локальную базу")
+
+        SettingsSectionToggle(
+            title = "Дополнительно и данные",
+            summary = "Резервный ориентир, разрешения и локальная база",
+            expanded = showAdvancedOptions,
+            onClick = { showAdvancedOptions = !showAdvancedOptions }
+        )
+        if (showAdvancedOptions) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    SettingSwitch(
+                        "Ручной ориентир как резерв",
+                        "Используется только как грубый запасной вариант; оценка может ошибаться на километры.",
+                        manualFallbackEnabled,
+                        onManualFallback
+                    )
+                    OutlinedButton(onClick = onManualAnchor, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.LocationOn, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Поставить ориентир на карте")
+                    }
+                    OutlinedButton(onClick = onOpenLocationSettings, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.GpsFixed, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Системные настройки геолокации")
+                    }
+                    Divider(color = colors.outlineVariant)
+                    Text("Приватность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Радиопозиционирование выполняется локально. BeaconDB и API WiGLE не вызываются; WiGLE используется только для ручного импорта/экспорта файлов. Радиоидентификаторы хранятся на устройстве.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text(databaseFacts, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                    OutlinedButton(onClick = onClearData, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.DeleteOutline, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Удалить локальную базу")
+                    }
+                    Text(
+                        "Онлайн-карта OpenFreeMap получает обычные запросы тайлов и может видеть IP-адрес и просматриваемую область. Радиоидентификаторы к запросам не добавляются.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
         }
-        Text("Карта: OpenFreeMap / OpenMapTiles / OpenStreetMap. Запросы тайлов идут к картографическому серверу, который может видеть IP-адрес и запрашиваемые участки карты. Радиоидентификаторы туда не отправляются.",
-            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun SettingsSectionToggle(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onClick: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = colors.surfaceContainerHigh
+    ) {
+        Row(
+            Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
+            Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null)
+        }
     }
 }
 
