@@ -149,8 +149,18 @@ private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     BLE("Bluetooth", "ble")
 }
 private enum class LookupPhase { IDLE, SCANNING, UPDATED, NO_MATCH, ERROR }
-private enum class PositionMode(val key: String, val title: String) {
-    AUTO("auto", "Авто"), GPS_ONLY("gps", "GPS"), RADIO_ONLY("radio", "Только радио")
+private enum class PositionMode(
+    val key: String,
+    val title: String,
+    val usesRadio: Boolean = false,
+    val usesObd2: Boolean = false,
+    val gpsOnly: Boolean = false
+) {
+    AUTO("auto", "Авто"),
+    GPS_ONLY("gps", "GPS", gpsOnly = true),
+    RADIO_ONLY("radio", "Только радио", usesRadio = true),
+    GPS_OBD2("gps_obd2", "GPS + OBD-II", usesObd2 = true, gpsOnly = true),
+    RADIO_OBD2("radio_obd2", "Радио + OBD-II", usesRadio = true, usesObd2 = true)
 }
 private enum class MapThemeMode(val key: String, val title: String) {
     SYSTEM("system", "Система"), LIGHT("light", "Светлая"), DARK("dark", "Тёмная")
@@ -201,11 +211,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
     var selectedTab by remember { mutableStateOf(AppTab.MAP) }
     var obd2Adapters by remember { mutableStateOf(emptyList<Obd2Adapter>()) }
-    var selectedObd2Address by remember { mutableStateOf("") }
+    var selectedObd2Address by remember {
+        mutableStateOf(prefs.getString(Obd2SharedState.KEY_ADAPTER_ADDRESS, "").orEmpty())
+    }
     var obd2Connected by remember { mutableStateOf(false) }
     var obd2Connecting by remember { mutableStateOf(false) }
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
     var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
+    var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
     var points by remember { mutableStateOf(database.listPoints(500)) }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
@@ -317,14 +330,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         positionMode = mode
         prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
         currentRadioEstimate = null
-        if (mode == PositionMode.RADIO_ONLY) liveLocation = null
+        if (mode.usesRadio || mode.gpsOnly) liveLocation = null
         if (monitorEnabled) {
             val intent = Intent(context, LocationMonitorService::class.java)
                 .setAction(LocationMonitorService.ACTION_START)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
             else context.startService(intent)
         }
-        if (mode == PositionMode.RADIO_ONLY) showRadioOnlyInfo = true
+        if (mode.usesRadio) showRadioOnlyInfo = true
     }
 
     val performScan: suspend (Boolean) -> Unit = { recordNow ->
@@ -340,9 +353,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     val age = now - it.updatedAt
                     age in 0..30L * 60L * 1_000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
                 }
-                val reference = if (positionMode == PositionMode.RADIO_ONLY) null
+                val reference = if (positionMode.usesRadio) null
                     else currentReference(liveLocation, manualAnchor)
-                val observedPosition = if (positionMode == PositionMode.RADIO_ONLY) {
+                val observedPosition = if (positionMode.usesRadio) {
                     trustedRadioEstimate?.let { ZonePoint(it.latitude, it.longitude) }
                 } else {
                     liveLocation?.takeIf { now - it.time in 0..30_000L }
@@ -386,11 +399,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     // Selecting radio-only immediately calculates an estimate from the local radio database.
     // This effect never asks Android for a location fix; it only scans radio identifiers.
     LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context)) {
-        if (positionMode == PositionMode.RADIO_ONLY && hasAnyLocationPermission(context)) {
+        if (positionMode.usesRadio && hasAnyLocationPermission(context)) {
             // A scan may still be finishing from the previous mode. Wait rather than silently
             // skipping the first radio lookup when scanBusy is already true.
-            while (scanBusy && positionMode == PositionMode.RADIO_ONLY) delay(100L)
-            if (positionMode == PositionMode.RADIO_ONLY && hasAnyLocationPermission(context)) {
+            while (scanBusy && positionMode.usesRadio) delay(100L)
+            if (positionMode.usesRadio && hasAnyLocationPermission(context)) {
                 performScan(false)
             }
         }
@@ -660,30 +673,41 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     LaunchedEffect(positionMode, hasAnyLocationPermission(context)) {
-        if (positionMode == PositionMode.RADIO_ONLY) liveLocation = null
+        if (positionMode.usesRadio || positionMode.gpsOnly) liveLocation = null
+    }
+
+    LaunchedEffect(positionMode) {
+        if (positionMode.usesObd2) {
+            while (true) {
+                fusionNowMillis = System.currentTimeMillis()
+                delay(1_000L)
+            }
+        } else {
+            fusionNowMillis = System.currentTimeMillis()
+        }
     }
 
     DisposableEffect(positionMode, hasAnyLocationPermission(context)) {
-        if (!hasAnyLocationPermission(context) || positionMode == PositionMode.RADIO_ONLY) {
+        if (!hasAnyLocationPermission(context) || positionMode.usesRadio) {
             onDispose { }
         } else {
             val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             val listener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
                     if (isMockLocation(location)) return
-                    if (positionMode == PositionMode.GPS_ONLY && !location.provider.equals(LocationManager.GPS_PROVIDER, true)) return
+                    if (positionMode.gpsOnly && !location.provider.equals(LocationManager.GPS_PROVIDER, true)) return
                     val old = liveLocation
                     if (old == null || isBetterLocation(location, old)) liveLocation = Location(location)
                 }
             }
             try {
-                val providers = if (positionMode == PositionMode.GPS_ONLY) listOf(LocationManager.GPS_PROVIDER)
+                val providers = if (positionMode.gpsOnly) listOf(LocationManager.GPS_PROVIDER)
                     else listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
                 providers.forEach { provider ->
                     try {
                         val cached = manager.getLastKnownLocation(provider)
                         if (cached != null && !isMockLocation(cached) &&
-                            (positionMode != PositionMode.GPS_ONLY || provider == LocationManager.GPS_PROVIDER) &&
+                            (!positionMode.gpsOnly || provider == LocationManager.GPS_PROVIDER) &&
                             (liveLocation == null || isBetterLocation(cached, liveLocation!!))) liveLocation = Location(cached)
                         if (manager.allProviders.contains(provider) && manager.isProviderEnabled(provider)) {
                             manager.requestLocationUpdates(provider, 2_500L, 2f, listener, Looper.getMainLooper())
@@ -702,9 +726,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (recording && appVisible && hasAnyLocationPermission(context)) {
             while (recording && appVisible) {
                 performScan(true)
-                val speedKmh = if (positionMode == PositionMode.RADIO_ONLY) null else liveLocation?.takeIf {
+                val obdSpeedKmh = if (positionMode.usesObd2) {
+                    Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
+                } else null
+                val locationSpeedKmh = if (positionMode.usesRadio) null else liveLocation?.takeIf {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
-                }?.speed?.times(3.6f)
+                }?.speed?.times(3.6f)?.toInt()
+                val speedKmh = obdSpeedKmh ?: locationSpeedKmh
                 delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
             }
         }
@@ -749,7 +777,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
-            if (positionMode == PositionMode.RADIO_ONLY && monitorEnabled) {
+            if (positionMode.usesRadio && monitorEnabled) {
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
                     val age = System.currentTimeMillis() - it.updatedAt
                     age in 0..30L * 60L * 1000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
