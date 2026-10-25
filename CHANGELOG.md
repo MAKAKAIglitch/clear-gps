@@ -155,7 +155,7 @@
 
 **Почему это важно:** тоннель, парковка и городской каньон могут нарушать непрерывность приёма. Модуль не должен угадывать, что было между фиксациями. Эти тесты не добавляют специальных правил для конкретного здания/туннеля и не меняют численные пороги детектора.
 
-**Проверки:** новые unit-тесты добавлены в `:core-detect`; CI для текущего коммита должен подтвердить результат. Поддержка L5/E5 не используется как обязательный признак в этом участке алгоритма; поведение реального приёмника всё ещё нужно проверить на устройствах с разными возможностями GNSS.
+**Проверки:** GitHub Actions run [40235836091](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40235836091) завершился успешно: тесты и Android-сборка прошли для этих регрессионных проверок. Поддержка L5/E5 не используется как обязательный признак в этом участке алгоритма; поведение реального приёмника всё ещё нужно проверить на устройствах с разными возможностями GNSS.
 
 
 ## 2026-10-26 — Добавлен безопасный сбор базовой линии GNSS устройства
@@ -172,9 +172,10 @@
 
 **Поведение и ограничения:** базовая линия на этом шаге собирается в памяти процесса и не изменяет score/пороги детектора. Она ещё не используется как самостоятельное доказательство спуфинга; персистентное хранение, отображение готовности и применение отклонений к score потребуют отдельной проверки на логах. Численные пороги не менялись.
 
-**Проверки:** добавлены unit-тесты в `:core-detect`; CI для этого коммита должен подтвердить сборку и все тесты.
+**Проверки:** первый запуск [40236062166](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236062166) завершился неуспешно из-за ошибочного ожидания в тесте пустой базовой линии (1 тест из 19); ошибка была в assertion, не в компиляции. Ожидание исправлено в [bd7812c](https://github.com/MAKAKAIglitch/clear-gps/commit/bd7812cbe1c558474bef64601b8de78fd3cbea17). Повторный полный CI [40236094177](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236094177) завершился успешно, включая тесты, APK-сборку и Windows smoke-test.
 
 
 ### Follow-up: baseline no-data assertion
 
 - `core-detect/src/test/kotlin/org/cleargps/core/GnssDeviceBaselineTest.kt` — corrected the no-satellite case to assert that `firstSampleElapsedRealtimeNanos` remains null when the baseline accepted no samples. This is a test assertion correction; detector behaviour is unchanged.
+- The initial baseline run failed on that incorrect assertion (run [40236062166](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236062166)); the corrected commit [bd7812c](https://github.com/MAKAKAIglitch/clear-gps/commit/bd7812cbe1c558474bef64601b8de78fd3cbea17) passed the full CI run [40236094177](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236094177).
