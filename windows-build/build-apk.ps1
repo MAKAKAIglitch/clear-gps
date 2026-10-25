@@ -121,6 +121,13 @@ try {
     Write-Host 'BUILD SUCCEEDED'
     Write-Host "APK: $ApkDestination"
     Write-Host "Size: $([math]::Round((Get-Item -LiteralPath $ApkDestination).Length / 1MB, 2)) MiB"
+    Write-Host "Opening APK folder: $Dist"
+    try {
+        # Open the output directory only after the APK has been built and copied successfully.
+        Start-Process -FilePath (Join-Path $env:WINDIR 'explorer.exe') -ArgumentList ('"{0}"' -f $Dist) -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning "The APK was built, but File Explorer could not be opened automatically: $($_.Exception.Message)"
+    }
     exit 0
 } catch {
     Write-Host ''
