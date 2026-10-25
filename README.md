@@ -18,7 +18,7 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 - **Guarded fallback:** previously recorded radio estimates are considered only when recent, matched against enough local points and within a conservative accuracy threshold. A manual reference can be enabled as a final, coarse fallback.
 - **Storage and map limits:** up to 20,000 detailed observations and 500 scan-history entries are retained; the map renders up to 1,500 saved points on ordinary devices and lowers the limit on low-RAM devices.
 - **Memory-aware Windows build:** Gradle heap is sized from installed/free RAM with a safety reserve for Windows; the daemon, parallel execution and build cache are enabled.
-- **Scan cadence:** configurable interval from 10 to 120 seconds; optionally request a faster interval above 25 km/h, subject to Android throttling.
+- **Fix cadence:** configurable interval from 1 to 30 seconds. With adaptive updates enabled, the interval can be halved during faster movement. Android may throttle actual Wi-Fi/Bluetooth scans.
 - **Private map fallback:** a tile-free offline canvas retains local radio markers without requesting map data, but does not display streets or labels.
 - **Windows build script** and GitHub Actions workflow for unit tests and debug APK generation.
 
