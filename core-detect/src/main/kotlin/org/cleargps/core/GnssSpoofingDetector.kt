@@ -64,6 +64,7 @@ class GnssSpoofingDetector {
     private var active = false
     private var highRiskStreak = 0
     private var cleanStreak = 0
+    private val deviceBaseline = GnssDeviceBaseline()
 
     fun observeGnssSignal(snapshot: GnssSignalSnapshot) {
         if (snapshot.elapsedRealtimeNanos <= 0L) return
@@ -162,6 +163,9 @@ class GnssSpoofingDetector {
         }
         previousRf = snapshot
     }
+
+    /** In-memory, coordinate-free per-device reception baseline for diagnostics and later calibration. */
+    internal fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = deviceBaseline.snapshot()
 
     /** Signal-only evidence can warn, but is never sufficient to confirm spoofing. */
     fun assessSignalOnly(nowElapsedRealtimeNanos: Long): SpoofingAssessment {
@@ -366,6 +370,21 @@ class GnssSpoofingDetector {
 
         val score = if (active && rawScore < 60) max(rawScore, 60) else rawScore
         val reasons = evidence.entries.sortedByDescending { it.value }.map { it.key }.distinct().take(4)
+
+        // Train only from a new GPS assessment that remains clearly normal and outside risk zones.
+        // Recent signal-only anomaly hints are also excluded even when they are below alert threshold.
+        val signalAlertActive = recentSignalAlertAtNanos > 0L &&
+            nowElapsedRealtimeNanos >= recentSignalAlertAtNanos &&
+            nowElapsedRealtimeNanos <= recentSignalAlertUntilNanos
+        if (advanceState) {
+            deviceBaseline.observe(
+                signal = currentSignal,
+                rf = previousRf,
+                nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+                isNormal = !active && score < 25 && !signalAlertActive,
+                inRiskZone = inRiskZone
+            )
+        }
         return SpoofingAssessment(score, active, reasons)
     }
 

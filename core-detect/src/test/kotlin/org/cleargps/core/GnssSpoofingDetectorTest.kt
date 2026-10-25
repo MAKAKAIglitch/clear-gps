@@ -242,4 +242,15 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.isEmpty())
     }
 
+    @Test fun deviceBaselineIsUpdatedOnlyAfterNormalOutOfZoneGpsAssessment() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(GnssSignalSnapshot(1_100_000_000L, 9, 8, 34.0, 4.0, 2))
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        assertEquals(1, detector.deviceBaselineSnapshot().meanCn0DbHz.sampleCount)
+
+        detector.observeGnssSignal(GnssSignalSnapshot(2_100_000_000L, 9, 8, 35.0, 4.0, 2))
+        detector.assess(fix(55.0, 37.0, 2), null, true, 2_200_000_000L, true)
+        assertEquals(1, detector.deviceBaselineSnapshot().meanCn0DbHz.sampleCount)
+    }
+
 }
