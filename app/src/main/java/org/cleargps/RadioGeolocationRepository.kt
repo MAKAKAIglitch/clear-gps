@@ -36,7 +36,15 @@ private data class CellObservation(
     fun toSignal() = RadioSignal("cell", "$type:$mcc:$mnc:$area:$cellId", rssi)
 }
 
-private data class ScanSnapshot(val signals: List<RadioSignal>, val wifiCount: Int, val cellCount: Int, val bleCount: Int)
+private data class WifiScanResult(val signals: List<RadioSignal>, val ageMillis: Long?)
+
+private data class ScanSnapshot(
+    val signals: List<RadioSignal>,
+    val wifiCount: Int,
+    val cellCount: Int,
+    val bleCount: Int,
+    val wifiAgeMillis: Long?
+)
 
 class RadioGeolocationRepository(private val context: Context) {
     private val database = LocalRadioDatabase(context.applicationContext)
@@ -55,6 +63,16 @@ class RadioGeolocationRepository(private val context: Context) {
         val snapshot = withContext(Dispatchers.Main.immediate) { collectSnapshot() }
         val estimate = withContext(Dispatchers.IO) {
             database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
+        }?.let { candidate ->
+            val staleWifiPenalty = RadioFixReliability.wifiAgePenaltyMeters(
+                ageMillis = snapshot.wifiAgeMillis,
+                wifiSignalCount = snapshot.wifiCount,
+                totalSignalCount = snapshot.signals.size
+            )
+            if (staleWifiPenalty <= 0.0) candidate
+            else candidate.copy(
+                accuracyMeters = (candidate.accuracyMeters + staleWifiPenalty).coerceAtMost(50_000.0)
+            )
         }
         // Radio-only coordinates are estimates from this very database, not independent
         // reference fixes. Never persist them as training coordinates, even if a caller passes one.
@@ -79,16 +97,24 @@ class RadioGeolocationRepository(private val context: Context) {
         }.joinToString(", ").ifBlank { "радиосигналы не обнаружены" }
         val message = when {
             snapshot.signals.isEmpty() ->
-                "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио и системные ограничения."
+                "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио, системную геолокацию и ограничения Android."
             estimate != null -> {
                 val method = if (estimate.fallbackUsed) "по координатам локальных радиоточек" else "по похожему историческому радиоснимку"
                 "Сканирование завершено: $summary. Метод расчёта: $method. Совпадений: ${estimate.matchedCount}; оценка приблизительная, радиус ±${estimate.accuracyMeters.toInt()} м."
             }
             else ->
-                "Сканирование завершено: $summary. Не удалось получить однозначную оценку по локальной базе: совпадений мало, они противоречат друг другу или нет записей с координатами. Запиши сканы в местах с известным положением или импортируй геолокированные точки."
+                "Сканирование завершено: $summary. Радиосигналы получены, но надёжная координата не подтверждена: подходящих записей с координатами мало, совпадения неоднозначны или противоречат друг другу."
         }
-        RadioLookupResult(estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
-            false, message, estimate?.matchedCount ?: 0, recorded)
+        val wifiAgeHint = snapshot.wifiAgeMillis
+            ?.takeIf { it > RadioFixReliability.WIFI_FRESH_AGE_MS }
+            ?.let {
+                " Результаты Wi‑Fi могут быть кэшированными (${it / 1_000} с); погрешность увеличена."
+            }.orEmpty()
+        RadioLookupResult(
+            estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
+            snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true,
+            message + wifiAgeHint, estimate?.matchedCount ?: 0, recorded
+        )
     }
 
     private suspend fun collectSnapshot(): ScanSnapshot = coroutineScope {
@@ -99,35 +125,55 @@ class RadioGeolocationRepository(private val context: Context) {
         val cells = collectCells()
         val wifi = wifiTask.await()
         val ble = bleTask.await()
-        ScanSnapshot(wifi + cells + ble, wifi.size, cells.size, ble.size)
+        ScanSnapshot(
+            signals = wifi.signals + cells + ble,
+            wifiCount = wifi.signals.size,
+            cellCount = cells.size,
+            bleCount = ble.size,
+            wifiAgeMillis = wifi.ageMillis
+        )
     }
 
     @Suppress("DEPRECATION")
-    private suspend fun collectWifi(): List<RadioSignal> {
+    private suspend fun collectWifi(): WifiScanResult {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return emptyList()
-        val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return emptyList()
-        if (!manager.isWifiEnabled) return emptyList()
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return WifiScanResult(emptyList(), null)
+        }
+        val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            ?: return WifiScanResult(emptyList(), null)
+        if (!manager.isWifiEnabled) return WifiScanResult(emptyList(), null)
+
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val scanRequestedAllowed = RadioFixReliability.shouldRequestWifiScan(
+            nowElapsedMs, lastWifiScanRequestAtElapsedMs
+        )
         val scanStartedAtMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
-        val scanRequested = try {
-            manager.startScan()
-        } catch (_: SecurityException) {
-            false
-        } catch (_: RuntimeException) {
-            false
+        var scanRequested = false
+        if (scanRequestedAllowed) {
+            // Record the attempt even if Android refuses it. Otherwise a 1-second fix interval
+            // would repeatedly call startScan() and rapidly hit system throttling.
+            lastWifiScanRequestAtElapsedMs = nowElapsedMs
+            scanRequested = try {
+                manager.startScan()
+            } catch (_: SecurityException) {
+                false
+            } catch (_: RuntimeException) {
+                false
+            }
         }
 
-        // startScan() is only a request: Android can throttle it or return cached results.
-        // Wait briefly for a genuinely newer scan, then use only a small-age cache if Android
-        // refused/throttled the request. Never treat arbitrarily old scanResults as current.
-        var rawResults = try { manager.scanResults } catch (_: SecurityException) { emptyList() }
-            catch (_: RuntimeException) { emptyList() }
+        var rawResults = try { manager.scanResults }
+        catch (_: SecurityException) { emptyList() }
+        catch (_: RuntimeException) { emptyList() }
+
         if (scanRequested) {
             val deadline = SystemClock.elapsedRealtime() + WIFI_SCAN_WAIT_MS
             while (SystemClock.elapsedRealtime() < deadline) {
                 delay(WIFI_SCAN_POLL_MS)
-                val latest = try { manager.scanResults } catch (_: SecurityException) { emptyList() }
-                    catch (_: RuntimeException) { emptyList() }
+                val latest = try { manager.scanResults }
+                catch (_: SecurityException) { emptyList() }
+                catch (_: RuntimeException) { emptyList() }
                 if (latest.any { it.timestamp >= scanStartedAtMicros }) {
                     rawResults = latest
                     break
@@ -135,14 +181,17 @@ class RadioGeolocationRepository(private val context: Context) {
                 rawResults = latest
             }
         }
+
         val nowMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
         return try {
-            rawResults.asSequence()
-                .filter { result ->
-                    result.timestamp > 0L && nowMicros >= result.timestamp &&
-                        nowMicros - result.timestamp <= MAX_WIFI_RESULT_AGE_MICROS &&
-                        result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) && result.level in -110..0
-                }
+            val validResults = rawResults.filter { result ->
+                result.timestamp > 0L && nowMicros >= result.timestamp &&
+                    nowMicros - result.timestamp <= RadioFixReliability.WIFI_MAX_CACHE_AGE_MS * 1_000L &&
+                    result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) &&
+                    result.level in -110..0
+            }
+            val ageMillis = validResults.minOfOrNull { (nowMicros - it.timestamp) / 1_000L }
+            val signals = validResults.asSequence()
                 .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
                 .sortedByDescending { it.level }
                 .take(MAX_WIFI)
@@ -153,10 +202,11 @@ class RadioGeolocationRepository(private val context: Context) {
                     RadioSignal("wifi", it.BSSID.lowercase(Locale.ROOT), it.level, it.frequency, ssid)
                 }
                 .toList()
+            WifiScanResult(signals, ageMillis)
         } catch (_: SecurityException) {
-            emptyList()
+            WifiScanResult(emptyList(), null)
         } catch (_: RuntimeException) {
-            emptyList()
+            WifiScanResult(emptyList(), null)
         }
     }
 
@@ -268,9 +318,9 @@ class RadioGeolocationRepository(private val context: Context) {
 
     companion object {
         private val scanMutex = Mutex()
+        private var lastWifiScanRequestAtElapsedMs = 0L
         private const val WIFI_SCAN_WAIT_MS = 3_000L
         private const val WIFI_SCAN_POLL_MS = 250L
-        private const val MAX_WIFI_RESULT_AGE_MICROS = 15_000_000L
         private const val BLE_SCAN_MS = 2_500L
         private const val MAX_WIFI = 32
         private const val MAX_CELLS = 16
