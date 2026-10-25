@@ -169,9 +169,14 @@ class RadioGeolocationRepository(private val context: Context) {
             .apply()
         RadioLookupResult(
             estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
-            snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true ||
-                snapshot.cellAgeMillis?.let { it > RadioFixReliability.CELL_INFO_FRESH_AGE_MS } == true ||
-                snapshot.bleAgeMillis?.let { it > RadioFixReliability.BLE_FRESH_AGE_MS } == true,
+            RadioFixReliability.isAllRadioDataCached(
+                wifiCount = snapshot.wifiCount,
+                wifiAgeMillis = snapshot.wifiAgeMillis,
+                cellCount = snapshot.cellCount,
+                cellAgeMillis = snapshot.cellAgeMillis,
+                bleCount = snapshot.bleCount,
+                bleAgeMillis = snapshot.bleAgeMillis
+            ),
             fullMessage, estimate?.matchedCount ?: 0, recorded
         )
     }
