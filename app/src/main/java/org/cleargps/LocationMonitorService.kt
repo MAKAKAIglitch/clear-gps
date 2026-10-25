@@ -576,9 +576,9 @@ class LocationMonitorService : Service(), LocationListener {
                         (!mockRequested || cachedEstimateAllowed)
                     val rejectionReason = when {
                         estimate == null && currentSignalCount < 2 ->
-                            "Сейчас обнаружено только $currentSignalCount радиосигналов. Для расчёта нужны минимум 2 актуальных сигнала; сохранённые точки, которые телефон не слышит, координату не дают."
+                            "Сейчас обнаружено только $currentSignalCount радиосигналов. Для расчёта нужны минимум 2 актуальных сигнала; локальная база знает ${result.knownRadioCount} из них, пригодных координатных записей: ${result.coordinateRadioCount}."
                         estimate == null ->
-                            "Текущий скан увидел $currentSignalCount радиосигналов, но не нашёл однозначную координату: совпадения могут быть неоднозначны или записи не содержат координат."
+                            "Текущий скан увидел $currentSignalCount радиосигналов; совпадений идентификаторов в базе: ${result.knownRadioCount}, пригодных координатных записей: ${result.coordinateRadioCount}. Однозначная координата не построена."
                         !estimateEvidenceRecent ->
                             "Оценка отклонена: возраст радиоданных ${(estimateAgeMillis.coerceAtLeast(0L) / 1_000L)} с превышает допустимый предел ${RadioFixReliability.WIFI_MAX_CACHE_AGE_MS / 1_000L} с."
                         mockRequested && !cachedEstimateAllowed ->
@@ -592,7 +592,8 @@ class LocationMonitorService : Service(), LocationListener {
                     DiagnosticLogStore.log(
                         this@LocationMonitorService, "RADIO_FIX",
                         "Служба: сигналы Wi-Fi=${result.wifiCount}, соты=${result.cellCount}, BLE=${result.beaconCount}; " +
-                            "estimate=${estimate != null}, matches=${estimate?.matchedCount ?: 0}, " +
+                            "estimate=${estimate != null}, estimateMatches=${estimate?.matchedCount ?: 0}, " +
+                            "dbKnown=${result.knownRadioCount}, dbLocated=${result.coordinateRadioCount}, " +
                             "accuracy=${estimate?.accuracyMeters?.toInt() ?: -1}m, cached=${result.fromCache}, " +
                             (rejectionReason.ifBlank { "оценка прошла пороги" })
                     )
