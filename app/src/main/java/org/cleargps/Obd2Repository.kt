@@ -108,25 +108,24 @@ class Obd2Repository(context: Context) {
         ioMutex.withLock {
             val current = activeSession ?: throw IllegalStateException("OBD-II адаптер не подключён.")
             try {
-                // PID 00 reports the standard per-vehicle capability bitmap. If an adapter
-                // or ECU doesn't provide it, fall back to probing each known common PID.
+                // PID 00 reports the standard per-vehicle support bitmap. If it is missing,
+                // probe only PID 0D (vehicle speed); never query unrelated engine diagnostics.
                 if (!current.supportProbeCompleted) {
                     val supportResponse = queryPid(current, 0x00)
                     current.supportedPids = Obd2Protocol.supportedPids(supportResponse)
                     current.supportProbeCompleted = true
                 }
-                val supported = current.supportedPids
-                fun canRead(pid: Int) = supported == null || pid in supported
-
-                // Speed is queried first because it is the only standard value used for
-                // short-term position fusion. RPM and coolant remain optional diagnostics.
-                val speedResponse = if (canRead(0x0D)) queryPid(current, 0x0D) else "NO DATA>"
-                val rpmResponse = if (canRead(0x0C)) queryPid(current, 0x0C) else "NO DATA>"
-                val coolantResponse = if (canRead(0x05)) queryPid(current, 0x05) else "NO DATA>"
+                val speedPidSupported = current.supportedPids?.contains(0x0D)
+                val speedResponse = if (speedPidSupported != false) {
+                    queryPid(current, 0x0D)
+                } else {
+                    // The ECU explicitly reports that speed is unsupported. Skip the PID and
+                    // let the GPS/radio source continue without vehicle-speed assistance.
+                    "NO DATA>"
+                }
                 Obd2Protocol.telemetry(
-                    rpmResponse = rpmResponse,
                     speedResponse = speedResponse,
-                    coolantResponse = coolantResponse
+                    speedPidSupported = speedPidSupported
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

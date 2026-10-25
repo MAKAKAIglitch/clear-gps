@@ -9,14 +9,13 @@ import org.junit.Test
 
 class Obd2ProtocolTest {
     @Test
-    fun requestsOnlyKnownMode01ReadPids() {
+    fun requestsOnlyCapabilityBitmapAndVehicleSpeed() {
         assertEquals("0100", Obd2Protocol.requestFor(0x00))
-        assertEquals("010C", Obd2Protocol.requestFor(0x0C))
         assertEquals("010D", Obd2Protocol.requestFor(0x0D))
-        assertEquals("0105", Obd2Protocol.requestFor(0x05))
         assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x04) }
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x04 + 0x10) }
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.decode(0x04, "4104 80") }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x05) }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x0C) }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.decode(0x0C, "410C1AF8") }
     }
 
     @Test
@@ -31,57 +30,62 @@ class Obd2ProtocolTest {
     }
 
     @Test
-    fun fallsBackToProbingWhenCapabilityBitmapIsMissing() {
+    fun fallsBackToSpeedProbeWhenCapabilityBitmapIsMissing() {
         assertNull(Obd2Protocol.supportedPids("NO DATA>"))
         assertNull(Obd2Protocol.supportedPids("4100BE1F"))
     }
 
     @Test
-    fun decodesRpmWithAdapterEchoAndWhitespace() {
-        // 0x1A F8 = 6904; divide by four => 1726 rpm.
-        assertEquals(1726, Obd2Protocol.decode(0x0C, "010C\r\r41 0C 1A F8\r>"))
-    }
-
-    @Test
-    fun decodesRpmWhenCanHeaderIsPresentAndSpacesAreRemoved() {
-        // CAN header + length byte + positive response + two data bytes.
-        assertEquals(1726, Obd2Protocol.decode(0x0C, "7E804410C1AF8>"))
-    }
-
-    @Test
-    fun decodesVehicleSpeedAndCoolantTemperature() {
+    fun decodesVehicleSpeedAndHandlesAdapterHeaders() {
         assertEquals(88, Obd2Protocol.decode(0x0D, "410D58>"))
-        assertEquals(90, Obd2Protocol.decode(0x05, "410582>"))
+        assertEquals(88, Obd2Protocol.decode(0x0D, "010D\r\r41 0D 58\r>"))
+        assertEquals(88, Obd2Protocol.decode(0x0D, "7E803410D58>"))
+        assertEquals(0, Obd2Protocol.decode(0x0D, "410D00>"))
     }
 
     @Test
-    fun ignoresNoDataAndNegativeResponses() {
-        assertNull(Obd2Protocol.decode(0x0C, "NO DATA>"))
+    fun rejectsNoDataNegativeIncompleteAndWrongPidResponses() {
+        assertNull(Obd2Protocol.decode(0x0D, "NO DATA>"))
         assertNull(Obd2Protocol.decode(0x0D, "7F 01 12>"))
-        assertNull(Obd2Protocol.decode(0x05, "?"))
+        assertNull(Obd2Protocol.decode(0x0D, "41 0D>"))
+        assertNull(Obd2Protocol.decode(0x0D, "41 0C 58>"))
     }
 
     @Test
-    fun rejectsIncompleteAndWrongPidResponses() {
-        assertNull(Obd2Protocol.decode(0x0C, "41 0C 1A>"))
-        assertNull(Obd2Protocol.decode(0x0D, "41 0C 1A F8>"))
-        assertNull(Obd2Protocol.decode(0x05, "41 05>"))
+    fun rejectsImplausibleVehicleSpeed() {
+        assertEquals(250, Obd2Protocol.decode(0x0D, "410DFA>"))
+        assertNull(Obd2Protocol.decode(0x0D, "410DFB>"))
+        assertNull(Obd2Protocol.decode(0x0D, "410DFF>"))
     }
 
     @Test
-    fun telemetryCountsOnlyParametersActuallyReceived() {
-        val telemetry = Obd2Protocol.telemetry(
-            rpmResponse = "410C1AF8",
+    fun distinguishesUnsupportedPidFromInvalidResponse() {
+        val unsupported = Obd2Protocol.telemetry(
             speedResponse = "NO DATA>",
-            coolantResponse = "410582",
+            speedPidSupported = false,
             now = 1_234L
         )
-        assertEquals(1726, telemetry.engineRpm)
-        assertNull(telemetry.vehicleSpeedKmh)
-        assertEquals(90, telemetry.coolantTemperatureC)
+        assertNull(unsupported.vehicleSpeedKmh)
+        assertEquals(Obd2SpeedIssue.PID_UNSUPPORTED, unsupported.speedIssue)
+
+        val noResponse = Obd2Protocol.telemetry(
+            speedResponse = "NO DATA>",
+            speedPidSupported = null,
+            now = 1_235L
+        )
+        assertNull(noResponse.vehicleSpeedKmh)
+        assertEquals(Obd2SpeedIssue.NO_VALID_RESPONSE, noResponse.speedIssue)
+    }
+
+    @Test
+    fun telemetryContainsOnlyPositionRelevantSpeed() {
+        val telemetry = Obd2Protocol.telemetry(
+            speedResponse = "410D58",
+            speedPidSupported = true,
+            now = 1_234L
+        )
+        assertEquals(88, telemetry.vehicleSpeedKmh)
         assertEquals(1_234L, telemetry.updatedAt)
-        assertEquals(2, telemetry.parametersReceived)
-        assertTrue(telemetry.parametersReceived in 0..3)
-        assertFalse(telemetry.parametersReceived > 3)
+        assertNull(telemetry.speedIssue)
     }
 }

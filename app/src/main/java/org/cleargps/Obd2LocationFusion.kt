@@ -16,7 +16,7 @@ internal object Obd2SharedState {
     const val KEY_SPEED_KMH = "obd2_vehicle_speed_kmh"
     const val KEY_SPEED_AT = "obd2_vehicle_speed_at"
     const val SPEED_MAX_AGE_MS = 5_000L
-    const val MAX_PLAUSIBLE_SPEED_KMH = 250
+    const val MAX_PLAUSIBLE_SPEED_KMH = Obd2Protocol.MAX_PLAUSIBLE_SPEED_KMH
 
     fun freshSpeedKmh(
         prefs: SharedPreferences,

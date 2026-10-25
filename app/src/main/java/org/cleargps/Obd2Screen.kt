@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import java.util.Locale
 
 @Composable
 internal fun Obd2Screen(
@@ -44,6 +43,7 @@ internal fun Obd2Screen(
     connecting: Boolean,
     telemetry: Obd2Telemetry,
     status: String,
+    statusIsError: Boolean,
     onRefresh: () -> Unit,
     onSelect: (String) -> Unit,
     onConnect: () -> Unit,
@@ -174,32 +174,47 @@ internal fun Obd2Screen(
                     Spacer(Modifier.width(8.dp))
                     Text("Данные автомобиля", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
-                Text(status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
-                    VehicleMetric(
-                        title = "Скорость",
-                        value = telemetry.vehicleSpeedKmh?.toString() ?: "—",
-                        unit = "км/ч",
-                        modifier = Modifier.weight(1f)
-                    )
-                    VehicleMetric(
-                        title = "Обороты",
-                        value = telemetry.engineRpm?.let { String.format(Locale.US, "%,d", it) } ?: "—",
-                        unit = "об/мин",
-                        modifier = Modifier.weight(1f)
-                    )
-                    VehicleMetric(
-                        title = "Охлаждение",
-                        value = telemetry.coolantTemperatureC?.toString() ?: "—",
-                        unit = "°C",
-                        modifier = Modifier.weight(1f)
-                    )
+                if (statusIsError) {
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.errorContainer
+                    ) {
+                        Row(
+                            Modifier.padding(11.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(Icons.Outlined.Shield, null, tint = colors.onErrorContainer)
+                            Spacer(Modifier.width(8.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "Скорость OBD-II недоступна",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.onErrorContainer
+                                )
+                                Text(
+                                    status,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
+                VehicleMetric(
+                    title = "Скорость по PID 0D",
+                    value = telemetry.vehicleSpeedKmh?.toString() ?: "—",
+                    unit = "км/ч",
+                    modifier = Modifier.fillMaxWidth()
+                )
                 if (telemetry.updatedAt > 0L) {
                     Text(
-                        "Последний опрос: " +
+                        "Последняя попытка: " +
                             java.text.DateFormat.getTimeInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(telemetry.updatedAt)) +
-                            " · получено " + telemetry.parametersReceived + "/3 параметров",
+                            if (telemetry.vehicleSpeedKmh != null) " · скорость получена" else " · скорость не получена",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
@@ -215,16 +230,16 @@ internal fun Obd2Screen(
                     Text("Гарантии режима чтения", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Сначала читается PID 00 — битовая карта стандартных PID, поддерживаемых конкретным ЭБУ. Если карта не возвращается, приложение пробует PID 0D (скорость), 0C (обороты) и 05 (температура) отдельно. Отсутствие одного показателя не скрывает остальные.",
+                    "Сначала читается PID 00 — битовая карта поддержки стандартных PID. Затем приложение запрашивает только PID 0D (скорость автомобиля). Если карта отсутствует, проверяется только этот PID; неподдерживаемые значения пропускаются. Обороты, температура и другие диагностические параметры не запрашиваются.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    "Для положения используется только скорость автомобиля. Прогноз по GPS ограничен 30 секундами и 300 м и разрешён только при известном курсе, GPS-точности не хуже 100 м и скорости не старше 5 секунд. В фоновом сервисе он передаётся другим приложениям только при включённом mock-выходе и нормальном состоянии GNSS-фильтра. Обороты и температура не дают координаты. ATAT1 / ATSP0 настраивают только адаптер; команд записи, кодирования, сброса ошибок и адаптаций нет.",
+                    "Скорость используется только как вспомогательный сигнал. Прогноз GPS ограничен 30 секундами и 300 м, требует достоверного GPS-курса, точности не хуже 100 м и скорости не старше 5 секунд. При ошибке или устаревании значение сразу исключается. В фоновом сервисе прогноз передаётся другим приложениям только при явно включённом mock-выходе, нормальном состоянии GNSS-фильтра и вне зон риска. ATAT1 / ATSP0 настраивают только адаптер; команд записи, кодирования, сброса ошибок и адаптаций нет.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
                 Text(
-                    "Поддерживаются уже сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые). BLE и USB пока не поддерживаются. Если OBD-II недоступен или PID не поддерживается, приложение возвращается к выбранному GPS/радио источнику; одна только скорость не может определить направление и координаты.",
+                    "Поддерживаются уже сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые); BLE и USB пока не поддерживаются. При неподдерживаемом PID или ошибке чтения появляется красный статус с причиной и резервным вариантом. Старые значения скорости очищаются, а выбранный GPS/радио источник продолжает работать независимо от OBD-II. Скорость сама по себе не определяет направление или координаты.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )

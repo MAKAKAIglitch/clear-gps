@@ -2,30 +2,33 @@ package org.cleargps
 
 import java.util.Locale
 
+/** Why a current vehicle-speed sample could not be obtained. */
+internal enum class Obd2SpeedIssue {
+    PID_UNSUPPORTED,
+    NO_VALID_RESPONSE
+}
+
 /**
- * Standard OBD-II Mode 01 read-only telemetry.
- *
- * Requests are restricted to standard Mode 01 read PIDs: one capability bitmap and three
- * common live values. No arbitrary AT, service-mode, or ECU commands are exposed.
+ * Position-relevant, standard OBD-II data only.
+ * RPM, coolant temperature, arbitrary PIDs and write-capable services are intentionally absent.
  */
 data class Obd2Telemetry(
-    val engineRpm: Int? = null,
     val vehicleSpeedKmh: Int? = null,
-    val coolantTemperatureC: Int? = null,
     val updatedAt: Long = 0L,
-    val parametersReceived: Int = 0
+    val speedIssue: Obd2SpeedIssue? = null
 )
 
 internal object Obd2Protocol {
+    const val MAX_PLAUSIBLE_SPEED_KMH = 250
     private const val POSITIVE_RESPONSE_MODE_01 = 0x41
     private const val HEX_DIGITS = "0123456789ABCDEF"
 
-    // PID 00 is the standard capability bitmap for PIDs 01-20, not a mutable ECU command.
-    // The remaining PIDs are optional readings; individual ECUs need not support all of them.
-    private val readOnlyPids = setOf(0x00, 0x05, 0x0C, 0x0D)
+    // PID 00 is the standard support bitmap; PID 0D is standard vehicle speed.
+    // Do not query other diagnostic values for a positioning feature.
+    private val readOnlyPids = setOf(0x00, 0x0D)
 
     fun requestFor(pid: Int): String {
-        require(pid in readOnlyPids) { "Only allowlisted Mode 01 read PIDs are permitted." }
+        require(pid in readOnlyPids) { "Only allowlisted positioning-related Mode 01 read PIDs are permitted." }
         return "01" + pid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
     }
 
@@ -43,49 +46,37 @@ internal object Obd2Protocol {
     }
 
     fun decode(pid: Int, response: String): Int? {
-        require(pid in readOnlyPids) { "Only allowlisted Mode 01 read PIDs can be decoded." }
-        val dataBytes = when (pid) {
-            0x05, 0x0D -> 1
-            0x0C -> 2
-            else -> return null
-        }
-        // ELM-compatible adapters may echo the request, include spaces or CAN headers.
-        // Removing non-hex characters handles all of those formats without parsing arbitrary
-        // commands or trusting a response that doesn't contain the expected positive PID frame.
+        require(pid in readOnlyPids) { "Only allowlisted positioning-related Mode 01 read PIDs can be decoded." }
+        if (pid != 0x0D) return null
+
+        // ELM-compatible adapters may echo requests or include spaces/CAN headers.
+        // Accept only a positive response for PID 0D with a complete data byte.
         val compact = response.uppercase(Locale.ROOT).filter { it in HEX_DIGITS }
-        val marker = POSITIVE_RESPONSE_MODE_01.toString(16).uppercase(Locale.ROOT).padStart(2, '0') +
-            pid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
+        val marker = POSITIVE_RESPONSE_MODE_01.toString(16).uppercase(Locale.ROOT).padStart(2, '0') + "0D"
         val markerAt = compact.indexOf(marker)
         if (markerAt < 0) return null
         val dataStart = markerAt + marker.length
-        val dataEnd = dataStart + dataBytes * 2
+        val dataEnd = dataStart + 2
         if (dataEnd > compact.length) return null
-        val bytes = compact.substring(dataStart, dataEnd).chunked(2).mapNotNull { it.toIntOrNull(16) }
-        if (bytes.size != dataBytes) return null
-
-        return when (pid) {
-            0x0C -> ((bytes[0] * 256 + bytes[1]) / 4.0).toInt()
-            0x0D -> bytes[0]
-            0x05 -> bytes[0] - 40
-            else -> null
-        }
+        val speed = compact.substring(dataStart, dataEnd).toIntOrNull(16) ?: return null
+        return speed.takeIf { it in 0..MAX_PLAUSIBLE_SPEED_KMH }
     }
 
     fun telemetry(
-        rpmResponse: String,
         speedResponse: String,
-        coolantResponse: String,
+        speedPidSupported: Boolean? = null,
         now: Long = System.currentTimeMillis()
     ): Obd2Telemetry {
-        val rpm = decode(0x0C, rpmResponse)
-        val speed = decode(0x0D, speedResponse)
-        val coolant = decode(0x05, coolantResponse)
+        val speed = if (speedPidSupported == false) null else decode(0x0D, speedResponse)
+        val issue = when {
+            speed != null -> null
+            speedPidSupported == false -> Obd2SpeedIssue.PID_UNSUPPORTED
+            else -> Obd2SpeedIssue.NO_VALID_RESPONSE
+        }
         return Obd2Telemetry(
-            engineRpm = rpm,
             vehicleSpeedKmh = speed,
-            coolantTemperatureC = coolant,
             updatedAt = now,
-            parametersReceived = listOf(rpm, speed, coolant).count { it != null }
+            speedIssue = issue
         )
     }
 }

@@ -255,6 +255,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var obd2Connecting by remember { mutableStateOf(false) }
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
     var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
+    var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
     var points by remember { mutableStateOf(database.listPoints(500)) }
@@ -663,14 +664,17 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 selectedObd2Address = available.firstOrNull()?.address.orEmpty()
                 prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
             }
+            obd2StatusIsError = available.isEmpty()
             obd2Status = if (available.isEmpty()) {
-                "Нет сопряжённых устройств. Сопряги адаптер в системных настройках Bluetooth."
+                "Не найден сопряжённый OBD-II адаптер. Пробуем резервный вариант: выбранный GPS/радио источник продолжает работать без автомобильной скорости. Сопряги адаптер в настройках Bluetooth."
             } else {
                 "Найдено сопряжённых Bluetooth-устройств: " + available.size + ". Поддерживаются адаптеры Classic SPP."
             }
         } catch (error: Exception) {
             obd2Adapters = emptyList()
-            obd2Status = error.message ?: "Не удалось получить список Bluetooth-устройств."
+            obd2StatusIsError = true
+            obd2Status = (error.message ?: "Не удалось получить список Bluetooth-устройств.") +
+                " Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
         }
     }
 
@@ -679,7 +683,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     ) { permissions ->
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             permissions[Manifest.permission.BLUETOOTH_CONNECT] != true) {
-            obd2Status = "Без разрешения «Устройства поблизости» нельзя подключиться к Bluetooth-адаптеру."
+            obd2StatusIsError = true
+            obd2Status = "Без разрешения «Устройства поблизости» нельзя подключиться к Bluetooth-адаптеру. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
         } else {
             scope.launch { loadPairedObdAdapters() }
         }
@@ -705,17 +710,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     val latest = obd2Repository.readTelemetry()
                     obd2Telemetry = latest
                     Obd2SharedState.storeTelemetry(prefs, latest)
-                    obd2Status = if (latest.parametersReceived > 0) {
-                        "Адаптер подключён · только чтение Mode 01"
-                    } else {
-                        "Адаптер подключён, но ЭБУ не вернул эти параметры. Проверь зажигание, совместимость и доступность PID."
+                    when {
+                        latest.vehicleSpeedKmh != null -> {
+                            obd2StatusIsError = false
+                            obd2Status = "Скорость получена по стандартному PID 0D. OBD-II используется только как вспомогательный источник; GPS/радио сохраняет приоритет выбранного режима."
+                        }
+                        latest.speedIssue == Obd2SpeedIssue.PID_UNSUPPORTED -> {
+                            obd2StatusIsError = true
+                            obd2Status = "ЭБУ сообщил, что PID 0D не поддерживается. Пробуем резервный вариант: продолжаем позиционирование по GPS/радиобазе без автомобильной скорости; неподдерживаемый PID не опрашиваем."
+                        }
+                        else -> {
+                            obd2StatusIsError = true
+                            obd2Status = "Не удалось получить корректную скорость через PID 0D. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику без старой скорости. Повторяем безопасное чтение; недостоверное значение отброшено."
+                        }
                     }
-                    delay(1_500L)
+                    delay(if (latest.speedIssue == Obd2SpeedIssue.PID_UNSUPPORTED) 5_000L else 1_500L)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
                     if (!obd2Connected) break
-                    obd2Status = error.message ?: "Связь с OBD-II адаптером потеряна."
+                    obd2StatusIsError = true
+                    obd2Status = (error.message ?: "Связь с OBD-II адаптером потеряна.") +
+                        " Пробуем резервный вариант: GPS/радиопозиционирование продолжается без автомобильной скорости. Старое значение очищено; переподключи адаптер, чтобы возобновить чтение."
                     obd2Connected = false
                     obd2Telemetry = Obd2Telemetry()
                     Obd2SharedState.clearSpeed(prefs)
@@ -1289,6 +1305,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     connecting = obd2Connecting,
                                     telemetry = obd2Telemetry,
                                     status = obd2Status,
+                                    statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },
                                     onSelect = {
                                         selectedObd2Address = it
@@ -1299,10 +1316,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
                                             obd2PermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
                                         } else if (selectedObd2Address.isBlank()) {
-                                            obd2Status = "Сначала выбери сопряжённый адаптер."
+                                            obd2StatusIsError = true
+                                            obd2Status = "Сначала выбери сопряжённый адаптер. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
                                         } else {
                                             scope.launch {
                                                 obd2Connecting = true
+                                                obd2StatusIsError = false
                                                 obd2Status = "Подключение к Bluetooth-адаптеру…"
                                                 try {
                                                     val adapter = obd2Repository.connect(selectedObd2Address)
@@ -1311,13 +1330,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     Obd2SharedState.clearSpeed(prefs)
                                                     obd2Telemetry = Obd2Telemetry()
                                                     obd2Connected = true
-                                                    obd2Status = "Подключено. Начинаю опрашивать только стандартные параметры чтения."
+                                                    obd2StatusIsError = false
+                                                    obd2Status = "Подключено. Проверяю поддержку стандартного PID скорости; остальные автомобильные параметры не запрашиваются."
                                                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                                     throw cancelled
                                                 } catch (error: Exception) {
                                                     obd2Connected = false
                                                     Obd2SharedState.clearSpeed(prefs)
-                                                    obd2Status = error.message ?: "Не удалось подключиться к адаптеру."
+                                                    obd2StatusIsError = true
+                                                    obd2Status = (error.message ?: "Не удалось подключиться к адаптеру.") +
+                                                        " Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
                                                 } finally {
                                                     obd2Connecting = false
                                                 }
@@ -1329,13 +1351,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         obd2Telemetry = Obd2Telemetry()
                                         Obd2SharedState.clearSpeed(prefs)
                                         obd2Repository.disconnect()
-                                        obd2Status = "Отключено пользователем."
+                                        obd2StatusIsError = false
+                                        obd2Status = "Отключено пользователем. GPS/радиопозиционирование продолжает работать без скорости OBD-II."
                                     },
                                     onOpenBluetoothSettings = {
                                         try {
                                             context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
                                         } catch (_: Exception) {
-                                            obd2Status = "Не удалось открыть системные настройки Bluetooth."
+                                            obd2StatusIsError = true
+                                            obd2Status = "Не удалось открыть системные настройки Bluetooth. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
                                         }
                                     }
                                 )
