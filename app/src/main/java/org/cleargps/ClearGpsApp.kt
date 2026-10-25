@@ -2384,7 +2384,9 @@ private fun HeaderCard(tab: AppTab, onCenter: () -> Unit, onSettings: () -> Unit
                     AppTab.SETTINGS -> "Источники и приватность"
                 }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
             }
-            IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
+            if (tab != AppTab.OBD2) {
+                IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
+            }
             IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
         }
     }
