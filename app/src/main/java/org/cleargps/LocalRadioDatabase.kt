@@ -13,7 +13,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.zip.GZIPInputStream
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sin
@@ -183,6 +186,339 @@ object ManualLocationStore {
 }
 
 /**
+ * One geolocated radio observation, grouped with other observations captured by the same scan.
+ * A recorded scan is a fingerprint of the radio environment at one known place.
+ */
+internal data class RadioFingerprintSample(
+    val radioType: String,
+    val identifier: String,
+    val latitude: Double?,
+    val longitude: Double?,
+    val accuracyMeters: Double?,
+    val rssi: Int,
+    val observedAt: Long,
+    val positionSource: String
+)
+
+private data class WeightedRadioLocation(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val weight: Double
+)
+
+private fun radioDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
+    val a = (sin(dLat / 2).pow(2) +
+        cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2))
+        .coerceIn(0.0, 1.0)
+    return 6_371_000.0 * 2.0 * kotlin.math.asin(sqrt(a))
+}
+
+private fun weightedRadioCenter(points: List<WeightedRadioLocation>): Pair<Double, Double>? {
+    var x = 0.0
+    var y = 0.0
+    var z = 0.0
+    var total = 0.0
+    points.forEach { point ->
+        if (!point.latitude.isFinite() || point.latitude !in -90.0..90.0 ||
+            !point.longitude.isFinite() || point.longitude !in -180.0..180.0 ||
+            !point.weight.isFinite() || point.weight <= 0.0) return@forEach
+        val lat = Math.toRadians(point.latitude)
+        val lon = Math.toRadians(point.longitude)
+        x += cos(lat) * cos(lon) * point.weight
+        y += cos(lat) * sin(lon) * point.weight
+        z += sin(lat) * point.weight
+        total += point.weight
+    }
+    if (total <= 0.0) return null
+    val horizontal = sqrt(x * x + y * y)
+    if (!horizontal.isFinite() || (horizontal < 1e-12 && kotlin.math.abs(z) < 1e-12)) return null
+    return Math.toDegrees(atan2(z, horizontal)).coerceIn(-90.0, 90.0) to
+        Math.toDegrees(atan2(y, x)).coerceIn(-180.0, 180.0)
+}
+
+private fun radioSignalHash(signals: List<RadioSignal>): String {
+    val input = signals.distinctBy { it.type + "|" + it.identifier }
+        .sortedWith(compareBy<RadioSignal> { it.type }.thenBy { it.identifier })
+        .joinToString("|") { it.type + ":" + it.identifier }
+    return java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
+}
+
+private fun radioTypeWeight(type: String): Double = when (type) {
+    "wifi" -> 1.0
+    "cell" -> 0.62
+    "ble" -> 0.72
+    else -> 0.0
+}
+
+private fun fingerprintAccuracy(sample: RadioFingerprintSample): Double =
+    sample.accuracyMeters?.takeIf { it.isFinite() && it > 0.0 }?.coerceIn(10.0, 50_000.0) ?: 250.0
+
+/**
+ * Find a previously recorded scan with a similar local radio fingerprint.
+ * This tends to be stronger evidence than averaging the coordinates of transmitters,
+ * because every sample records where the phone was when those signals were observed.
+ */
+internal fun estimateRadioFingerprintPosition(
+    signals: List<RadioSignal>,
+    history: List<RadioFingerprintSample>,
+    now: Long = System.currentTimeMillis()
+): RadioEstimate? {
+    val currentSignals = signals.asSequence()
+        .filter { it.radioTypeIsUsable() && it.identifier.isNotBlank() && it.rssi in -115..0 }
+        .distinctBy { it.type + "|" + it.identifier }
+        .groupBy { it.type }
+        .flatMap { (type, values) ->
+            val limit = when (type) {
+                "wifi" -> 32
+                "cell" -> 16
+                else -> 32
+            }
+            values.sortedByDescending { it.rssi }.take(limit)
+        }
+    val currentByType = currentSignals.groupBy { it.type }
+    if (currentSignals.size < 2) return null
+    val currentByKey = currentSignals.associateBy { it.type + "|" + it.identifier }
+    val activeTypeWeight = currentByType.keys.sumOf(::radioTypeWeight).coerceAtLeast(1e-9)
+    val historyMaxAge = 90L * 24 * 60 * 60 * 1_000L
+
+    data class Candidate(
+        val observedAt: Long,
+        val latitude: Double,
+        val longitude: Double,
+        val accuracyMeters: Double,
+        val score: Double,
+        val matchedSignals: List<RadioSignal>
+    )
+
+    val candidates = history.asSequence()
+        .filter { sample ->
+            val age = now - sample.observedAt
+            age in 0..historyMaxAge &&
+                sample.radioType in setOf("wifi", "cell", "ble") &&
+                sample.identifier.isNotBlank() &&
+                sample.latitude != null && sample.longitude != null &&
+                sample.latitude.isFinite() && sample.latitude in -90.0..90.0 &&
+                sample.longitude.isFinite() && sample.longitude in -180.0..180.0 &&
+                !sample.positionSource.equals("unlocated", ignoreCase = true) &&
+                !sample.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
+                !sample.positionSource.equals("radio-estimate", ignoreCase = true)
+        }
+        .groupBy { it.observedAt }
+        .mapNotNull { (observedAt, rows) ->
+            val historical = rows.distinctBy { it.radioType + "|" + it.identifier }
+            val historicalByType = historical.groupBy { it.radioType }
+            val overlaps = historical.mapNotNull { sample ->
+                currentByKey[sample.radioType + "|" + sample.identifier]?.let { it to sample }
+            }
+            if (overlaps.size < 2) return@mapNotNull null
+
+            var weightedSimilarity = 0.0
+            currentByType.forEach { (type, currentOfType) ->
+                val oldOfType = historicalByType[type].orEmpty()
+                val overlapOfType = overlaps.filter { it.first.type == type }
+                val coverage = if (oldOfType.isEmpty() || currentOfType.isEmpty()) 0.0 else {
+                    (overlapOfType.size / sqrt(currentOfType.size.toDouble() * oldOfType.size.toDouble()))
+                        .coerceIn(0.0, 1.0)
+                }
+                val rssiSimilarity = overlapOfType.map { (current, old) ->
+                    exp(-kotlin.math.abs(current.rssi - old.rssi).toDouble() / 18.0)
+                }.average().takeIf { overlapOfType.isNotEmpty() } ?: 0.0
+                weightedSimilarity += radioTypeWeight(type) * coverage * (0.55 + 0.45 * rssiSimilarity)
+            }
+            val score = weightedSimilarity / activeTypeWeight
+            if (!score.isFinite() || score < 0.12) return@mapNotNull null
+
+            // A scan's rows normally share one fix. Use its best reported accuracy if a
+            // timestamp collision or a partial historical record gives slightly different fixes.
+            val locationSample = historical.asSequence()
+                .filter { it.latitude != null && it.longitude != null }
+                .minByOrNull(::fingerprintAccuracy) ?: return@mapNotNull null
+            Candidate(
+                observedAt = observedAt,
+                latitude = locationSample.latitude!!,
+                longitude = locationSample.longitude!!,
+                accuracyMeters = fingerprintAccuracy(locationSample),
+                score = score,
+                matchedSignals = overlaps.map { it.first }.distinctBy { it.type + "|" + it.identifier }
+            )
+        }
+        .sortedWith(
+            compareByDescending<Candidate> { it.score }
+                .thenByDescending { it.matchedSignals.size }
+                .thenByDescending { it.observedAt }
+        )
+    if (candidates.isEmpty()) return null
+    val best = candidates.first()
+
+    fun clusterRadius(a: Candidate, b: Candidate): Double =
+        (2.0 * (a.accuracyMeters + b.accuracyMeters) + 50.0).coerceIn(100.0, 1_500.0)
+
+    // If practically identical fingerprints exist at distant places, don't guess which
+    // place is correct; this may happen in apartment blocks or with cloned SSIDs.
+    val ambiguous = candidates.drop(1).any { candidate ->
+        candidate.score >= best.score * 0.88 &&
+            radioDistanceMeters(best.latitude, best.longitude, candidate.latitude, candidate.longitude) >
+                clusterRadius(best, candidate)
+    }
+    if (ambiguous) return null
+
+    val selected = candidates.asSequence()
+        .filter { it.score >= maxOf(0.12, best.score * 0.60) }
+        .filter {
+            radioDistanceMeters(best.latitude, best.longitude, it.latitude, it.longitude) <= clusterRadius(best, it)
+        }
+        .take(12)
+        .toList()
+    val weightedLocations = selected.map { candidate ->
+        val ageMs = now - candidate.observedAt
+        val recency = exp(-ageMs.toDouble() / (45.0 * 24 * 60 * 60 * 1_000L)).coerceAtLeast(0.12)
+        val accuracyFactor = (100.0 / candidate.accuracyMeters).pow(1.1).coerceIn(0.05, 8.0)
+        val weight = candidate.score.pow(4.0) * recency * accuracyFactor
+        WeightedRadioLocation(candidate.latitude, candidate.longitude, candidate.accuracyMeters, weight)
+    }.filter { it.weight.isFinite() && it.weight > 0.0 }
+    val center = weightedRadioCenter(weightedLocations) ?: return null
+    val totalWeight = weightedLocations.sumOf { it.weight }.coerceAtLeast(1e-12)
+    val spreadSquared = weightedLocations.sumOf {
+        it.weight * radioDistanceMeters(center.first, center.second, it.latitude, it.longitude).pow(2.0)
+    } / totalWeight
+    val fixErrorSquared = weightedLocations.sumOf { it.weight * it.accuracyMeters.pow(2.0) } / totalWeight
+    val sparsePenalty = max(0, 3 - best.matchedSignals.size) * 180.0
+    val matchPenalty = (1.0 - best.score).coerceIn(0.0, 1.0) * 650.0
+    val accuracy = (sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + matchPenalty).coerceIn(30.0, 20_000.0)
+
+    return RadioEstimate(
+        latitude = center.first,
+        longitude = center.second,
+        accuracyMeters = accuracy,
+        updatedAt = now,
+        fingerprint = radioSignalHash(best.matchedSignals),
+        fallbackUsed = false,
+        matchedCount = best.matchedSignals.size
+    )
+}
+
+private fun RadioSignal.radioTypeIsUsable(): Boolean = radioTypeWeight(type) > 0.0
+
+private data class WeightedRadioAnchor(
+    val signal: RadioSignal,
+    val point: RadioPointRecord,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val weight: Double
+)
+
+/**
+ * Conservative fallback used for imported/manual radio-point coordinates when no matching
+ * recorded scan fingerprint exists. RSSI only nudges the weight; it is not treated as distance.
+ */
+internal fun estimateRadioAnchorPosition(
+    matches: List<Pair<RadioSignal, RadioPointRecord>>,
+    now: Long = System.currentTimeMillis()
+): RadioEstimate? {
+    val candidates = matches.asSequence()
+        .distinctBy { it.first.type + "|" + it.first.identifier }
+        .mapNotNull { (signal, point) ->
+            val lat = point.latitude ?: return@mapNotNull null
+            val lon = point.longitude ?: return@mapNotNull null
+            val age = now - point.lastSeen
+            if (signal.type !in setOf("wifi", "cell", "ble") ||
+                !lat.isFinite() || lat !in -90.0..90.0 ||
+                !lon.isFinite() || lon !in -180.0..180.0 ||
+                age !in 0..(365L * 24 * 60 * 60 * 1_000L) ||
+                point.positionSource.equals("local-radio-estimate", ignoreCase = true) ||
+                point.positionSource.equals("radio-estimate", ignoreCase = true)) return@mapNotNull null
+            val accuracy = (point.accuracyMeters ?: 250.0).takeIf { it.isFinite() && it > 0.0 }
+                ?.coerceIn(20.0, 50_000.0) ?: 250.0
+            val accuracyFactor = (100.0 / accuracy).pow(0.8).coerceIn(0.12, 3.5)
+            val rssiFactor = exp((signal.rssi.coerceIn(-110, -25) + 70.0) / 35.0).coerceIn(0.55, 1.8)
+            val typeFactor = radioTypeWeight(signal.type)
+            val sourceFactor = when (point.positionSource.lowercase(Locale.ROOT)) {
+                "manual-edit" -> 1.2
+                "wigle-import" -> 0.85
+                "strongest-signal-sample" -> 0.95
+                else -> 1.0
+            }
+            val weight = accuracyFactor * rssiFactor * typeFactor * sourceFactor
+            WeightedRadioAnchor(signal, point, lat, lon, accuracy, weight)
+        }.toList()
+    if (candidates.isEmpty()) return null
+
+    val typeCaps = mapOf("wifi" to 6.0, "cell" to 2.5, "ble" to 3.0)
+    val rawTypeWeights = candidates.groupBy { it.signal.type }.mapValues { (_, group) ->
+        group.sumOf { it.weight }
+    }
+    val normalized = candidates.map { candidate ->
+        val totalForType = rawTypeWeights[candidate.signal.type] ?: candidate.weight
+        val cap = typeCaps[candidate.signal.type] ?: 1.0
+        candidate.copy(weight = candidate.weight * (cap / totalForType).coerceAtMost(1.0))
+    }
+
+    fun neighborhoodRadius(a: WeightedRadioAnchor, b: WeightedRadioAnchor): Double {
+        val combinedAccuracy = a.accuracyMeters + b.accuracyMeters
+        return when {
+            a.signal.type == "cell" || b.signal.type == "cell" ->
+                (combinedAccuracy * 2.0 + 400.0).coerceIn(1_500.0, 5_000.0)
+            a.signal.type == "ble" && b.signal.type == "ble" ->
+                (combinedAccuracy * 1.2 + 100.0).coerceIn(150.0, 450.0)
+            a.signal.type == "ble" || b.signal.type == "ble" ->
+                (combinedAccuracy * 1.5 + 100.0).coerceIn(250.0, 1_000.0)
+            else -> (combinedAccuracy * 1.5 + 100.0).coerceIn(250.0, 1_500.0)
+        }
+    }
+
+    val bestSeed = normalized.maxByOrNull { seed ->
+        val neighbors = normalized.filter { candidate ->
+            radioDistanceMeters(seed.latitude, seed.longitude, candidate.latitude, candidate.longitude) <=
+                neighborhoodRadius(seed, candidate)
+        }
+        val support = neighbors.sumOf { candidate ->
+            val distance = radioDistanceMeters(seed.latitude, seed.longitude, candidate.latitude, candidate.longitude)
+            candidate.weight * (1.0 - 0.30 * distance / neighborhoodRadius(seed, candidate))
+        }
+        support + neighbors.size * 0.8
+    } ?: return null
+    val inliers = normalized.filter { candidate ->
+        radioDistanceMeters(bestSeed.latitude, bestSeed.longitude, candidate.latitude, candidate.longitude) <=
+            neighborhoodRadius(bestSeed, candidate)
+    }
+    if (normalized.size > 1 && inliers.size < 2) return null
+    val allWeight = normalized.sumOf { it.weight }.coerceAtLeast(1e-12)
+    val inlierWeight = inliers.sumOf { it.weight }
+    if (normalized.size > 1 && inlierWeight / allWeight < 0.30) return null
+
+    val weightedLocations = inliers.map {
+        WeightedRadioLocation(it.latitude, it.longitude, it.accuracyMeters, it.weight)
+    }
+    val center = weightedRadioCenter(weightedLocations) ?: return null
+    val totalWeight = weightedLocations.sumOf { it.weight }.coerceAtLeast(1e-12)
+    val spreadSquared = weightedLocations.sumOf {
+        it.weight * radioDistanceMeters(center.first, center.second, it.latitude, it.longitude).pow(2.0)
+    } / totalWeight
+    val fixErrorSquared = weightedLocations.sumOf { it.weight * it.accuracyMeters.pow(2.0) } / totalWeight
+    val averageRssi = inliers.map { it.signal.rssi.toDouble() }.average()
+    val sparsePenalty = max(0, 3 - inliers.size) * 180.0
+    val weakPenalty = ((-75.0 - averageRssi).coerceAtLeast(0.0) * 7.0)
+    val discardedPenalty = (normalized.size - inliers.size) * 100.0
+    val accuracy = (sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + weakPenalty + discardedPenalty)
+        .coerceIn(80.0, 50_000.0)
+
+    return RadioEstimate(
+        latitude = center.first,
+        longitude = center.second,
+        accuracyMeters = accuracy,
+        updatedAt = now,
+        fingerprint = radioSignalHash(inliers.map { it.signal }),
+        fallbackUsed = true,
+        matchedCount = inliers.size
+    )
+}
+
+/**
  * Radio scans, matched coordinates, point aliases and history stay in app-private SQLite.
  * This database class has no HTTP client and never sends wireless identifiers to a service.
  */
@@ -330,42 +666,125 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (useCells) add("cell")
             if (useBle) add("ble")
         }
-        if (enabledTypes.isEmpty()) return null
+        val current = signals.asSequence()
+            .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
+            .distinctBy { it.type + "|" + it.identifier }
+            .groupBy { it.type }
+            .flatMap { (type, values) ->
+                val limit = when (type) {
+                    "wifi" -> 32
+                    "cell" -> 16
+                    else -> 32
+                }
+                values.sortedByDescending { it.rssi }.take(limit)
+            }
+        if (current.size < 2) return null
+
+        val now = System.currentTimeMillis()
+        // Prefer a past scan fingerprint: its coordinates are where the phone was,
+        // not an average of the physical positions of nearby transmitters.
+        val fingerprintEstimate = estimateRadioFingerprintPosition(
+            current,
+            loadFingerprintSamples(current, now),
+            now
+        )
+        if (fingerprintEstimate != null) return fingerprintEstimate
+
+        // Fallback for locally imported WiGLE points or manually geolocated radios.
         val matches = ArrayList<Pair<RadioSignal, RadioPointRecord>>()
         val db = readableDatabase
-        signals.asSequence().filter { it.type in enabledTypes }
-            .distinctBy { it.type + "|" + it.identifier }
-            .forEach { signal ->
-                val point = findPoint(db, signal.type, signal.identifier)
-                if (point != null && point.latitude != null && point.longitude != null &&
-                    point.latitude.isFinite() && point.longitude.isFinite() &&
-                    (System.currentTimeMillis() - point.lastSeen) in 0..MAX_POINT_AGE_MS) {
-                    matches.add(signal to point)
-                }
+        current.forEach { signal ->
+            val point = findPoint(db, signal.type, signal.identifier)
+            if (point != null && point.latitude != null && point.longitude != null &&
+                point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
+                point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
+                (now - point.lastSeen) in 0..MAX_POINT_AGE_MS) {
+                matches.add(signal to point)
             }
-        if (matches.isEmpty()) return null
-
-        val weighted = matches.map { (signal, point) ->
-            val acc = (point.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS).coerceIn(20.0, 50_000.0)
-            val signalWeight = 10.0.pow(((signal.rssi.coerceIn(-110, -25) + 80) / 20.0)).coerceIn(0.02, 100.0)
-            Triple(point, signalWeight / (acc * acc), acc)
         }
-        val totalWeight = weighted.sumOf { it.second }.coerceAtLeast(1e-18)
-        val lat = weighted.sumOf { it.first.latitude!! * it.second } / totalWeight
-        val lon = weighted.sumOf { it.first.longitude!! * it.second } / totalWeight
-        val rms = sqrt(weighted.sumOf {
-            val distance = haversineMeters(lat, lon, it.first.latitude!!, it.first.longitude!!)
-            it.second * distance * distance
-        } / totalWeight)
-        val observationError = sqrt(weighted.sumOf { it.second * it.third * it.third } / totalWeight)
-        val meanRssi = matches.map { it.first.rssi }.average()
-        val sparsePenalty = max(0, 3 - matches.size) * 120.0
-        val weakPenalty = ((-65.0 - meanRssi).coerceAtLeast(0.0) * 4.0)
-        return RadioEstimate(
-            lat.coerceIn(-90.0, 90.0), lon.coerceIn(-180.0, 180.0),
-            (rms + observationError + sparsePenalty + weakPenalty).coerceIn(80.0, 50_000.0),
-            System.currentTimeMillis(), hashSignals(matches.map { it.first }), true, matches.size
-        )
+        return estimateRadioAnchorPosition(matches, now)
+    }
+
+    /**
+     * Only inspect historical scans containing at least one currently visible radio key.
+     * The second query expands those scan timestamps to complete fingerprints, so the match
+     * score accounts for both shared and missing radios without loading the full history per scan.
+     */
+    private fun loadFingerprintSamples(signals: List<RadioSignal>, now: Long): List<RadioFingerprintSample> {
+        val keys = signals.asSequence()
+            .filter { it.type in VALID_TYPES && it.identifier.isNotBlank() }
+            .distinctBy { it.type + "|" + it.identifier }
+            .toList()
+            .take(MAX_FINGERPRINT_KEYS)
+        if (keys.size < 2) return emptyList()
+
+        val startTime = now - FINGERPRINT_HISTORY_AGE_MS
+        val keyPredicate = keys.joinToString(" OR ") { "(radio_type = ? AND identifier = ?)" }
+        val timestampArguments = buildList {
+            add(startTime.toString())
+            add(now.toString())
+            add("unlocated")
+            add("local-radio-estimate")
+            add("radio-estimate")
+            keys.forEach { add(it.type); add(it.identifier) }
+            add(MAX_FINGERPRINT_SCANS.toString())
+        }.toTypedArray()
+        val timestamps = readableDatabase.rawQuery(
+            """
+            SELECT observed_at
+            FROM radio_observations
+            WHERE observed_at >= ? AND observed_at <= ?
+              AND latitude IS NOT NULL AND longitude IS NOT NULL
+              AND position_source NOT IN (?, ?, ?)
+              AND ($keyPredicate)
+            GROUP BY observed_at
+            ORDER BY COUNT(DISTINCT radio_type || ':' || identifier) DESC, observed_at DESC
+            LIMIT ?
+            """.trimIndent(),
+            timestampArguments
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getLong(0))
+            }
+        }
+        if (timestamps.isEmpty()) return emptyList()
+
+        val placeholders = timestamps.joinToString(",") { "?" }
+        val arguments = (timestamps.map(Long::toString) + listOf(
+            "unlocated", "local-radio-estimate", "radio-estimate"
+        )).toTypedArray()
+        return readableDatabase.rawQuery(
+            """
+            SELECT radio_type, identifier, latitude, longitude, accuracy, rssi, observed_at, position_source
+            FROM radio_observations
+            WHERE observed_at IN ($placeholders)
+              AND latitude IS NOT NULL AND longitude IS NOT NULL
+              AND position_source NOT IN (?, ?, ?)
+            ORDER BY observed_at DESC
+            LIMIT 20000
+            """.trimIndent(),
+            arguments
+        ).use { cursor ->
+            val result = ArrayList<RadioFingerprintSample>()
+            while (cursor.moveToNext()) {
+                val latIndex = cursor.getColumnIndexOrThrow("latitude")
+                val lonIndex = cursor.getColumnIndexOrThrow("longitude")
+                result.add(
+                    RadioFingerprintSample(
+                        radioType = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty(),
+                        identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
+                        latitude = if (cursor.isNull(latIndex)) null else cursor.getDouble(latIndex),
+                        longitude = if (cursor.isNull(lonIndex)) null else cursor.getDouble(lonIndex),
+                        accuracyMeters = cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy"))
+                            .takeUnless { cursor.isNull(cursor.getColumnIndexOrThrow("accuracy")) },
+                        rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                        observedAt = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                        positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    )
+                )
+            }
+            result
+        }
     }
 
     fun listPoints(limit: Int = 2_000): List<RadioPointRecord> {
@@ -636,6 +1055,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
         private const val MAX_POINT_AGE_MS = 365L * 24 * 60 * 60 * 1_000L
+        private const val FINGERPRINT_HISTORY_AGE_MS = 90L * 24 * 60 * 60 * 1_000L
+        private const val MAX_FINGERPRINT_KEYS = 80
+        private const val MAX_FINGERPRINT_SCANS = 250
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024
         private val VALID_TYPES = setOf("wifi", "ble", "cell")
         private val UTC_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
