@@ -914,7 +914,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         color = colors.surfaceContainerHigh,
                         shadowElevation = 6.dp
                     ) {
-                        TextButton(onClick = { panelVisible = true }) { Text("Открыть меню") }
+                        TextButton(onClick = { panelVisible = true; panelTargetFraction = 0.38f }) { Text("Открыть меню") }
                     }
                 }
             }
