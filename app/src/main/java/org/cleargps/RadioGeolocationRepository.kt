@@ -392,11 +392,21 @@ class RadioGeolocationRepository(private val context: Context) {
             DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scanner недоступен: ${error.javaClass.simpleName}", "ERROR")
             null
         } ?: return TimedRadioSignals(emptyList(), null)
-        val bluetoothEnabled = try { adapter.isEnabled }
-            catch (_: SecurityException) { false }
-            catch (_: RuntimeException) { false }
+        val bluetoothEnabled = try {
+            adapter.isEnabled
+        } catch (error: SecurityException) {
+            DiagnosticLogStore.log(
+                context, "RADIO_BLE",
+                "Android запретил проверку состояния Bluetooth; проверь BLUETOOTH_CONNECT: ${error.message ?: "SecurityException"}",
+                "ERROR"
+            )
+            false
+        } catch (error: RuntimeException) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Не удалось проверить Bluetooth: ${error.javaClass.simpleName}", "ERROR")
+            false
+        }
         if (!bluetoothEnabled) {
-            DiagnosticLogStore.log(context, "RADIO_BLE", "Bluetooth выключен системой")
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Bluetooth выключен или состояние адаптера недоступно")
             return TimedRadioSignals(emptyList(), null)
         }
 
