@@ -172,6 +172,23 @@ private enum class MapSourceMode(val key: String, val title: String) {
     ONLINE("online", "OpenFreeMap"), OFFLINE("offline", "Без внешних тайлов")
 }
 
+private fun readPublishedMockCoordinate(prefs: android.content.SharedPreferences): MapCoordinate? {
+    if (!prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false) ||
+        !prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) return null
+    val latitude = prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull() ?: return null
+    val longitude = prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull() ?: return null
+    if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+        !longitude.isFinite() || longitude !in -180.0..180.0) return null
+    return MapCoordinate(latitude, longitude)
+}
+
+private fun readPublishedMockAccuracy(prefs: android.content.SharedPreferences): Double? {
+    if (!prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false) ||
+        !prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) return null
+    return prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
+        ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+}
+
 @Composable
 fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val context = LocalContext.current
@@ -209,8 +226,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var currentRadioEstimate by remember { mutableStateOf<RadioEstimate?>(null) }
     // Mirror the exact coordinate/accuracy last accepted by the foreground service so the
     // in-app map follows the same fix sent to Android's mock provider.
-    var publishedMockCoordinate by remember { mutableStateOf<MapCoordinate?>(null) }
-    var publishedMockAccuracy by remember { mutableStateOf<Double?>(null) }
+    var publishedMockCoordinate by remember { mutableStateOf(readPublishedMockCoordinate(prefs)) }
+    var publishedMockAccuracy by remember { mutableStateOf(readPublishedMockAccuracy(prefs)) }
     // Focus the map once when a radio mode gets its first estimate; don't fight manual panning.
     var pendingRadioMapFocus by remember { mutableStateOf(positionMode.usesRadio) }
     var manualAnchor by remember { mutableStateOf(ManualLocationStore.load(context)) }
@@ -818,24 +835,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             monitorEnabled = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
             mockOutputActive = prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
-            val hasPublishedMockOutput = prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false) &&
-                prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
-            val publishedLat = if (hasPublishedMockOutput) {
-                prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull()
-            } else null
-            val publishedLon = if (hasPublishedMockOutput) {
-                prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull()
-            } else null
-            val outputCoordinate = if (publishedLat != null && publishedLon != null &&
-                publishedLat.isFinite() && publishedLat in -90.0..90.0 &&
-                publishedLon.isFinite() && publishedLon in -180.0..180.0) {
-                MapCoordinate(publishedLat, publishedLon)
-            } else null
+            val outputCoordinate = readPublishedMockCoordinate(prefs)
             if (publishedMockCoordinate != outputCoordinate) publishedMockCoordinate = outputCoordinate
-            val outputAccuracy = if (hasPublishedMockOutput) {
-                prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
-                    ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-            } else null
+            val outputAccuracy = readPublishedMockAccuracy(prefs)
             if (publishedMockAccuracy != outputAccuracy) publishedMockAccuracy = outputAccuracy
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
