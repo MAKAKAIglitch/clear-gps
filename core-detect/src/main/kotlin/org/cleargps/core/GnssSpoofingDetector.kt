@@ -41,10 +41,49 @@ data class GnssRfSnapshot(
     val agcSampleCount: Int
 )
 
+/**
+ * Explains the heuristic score used by this detector.
+ * Component scores are internal weights, NOT probabilities or additive percentages.
+ * Max-score selection, corroboration bonuses and score floors must be shown separately.
+ */
+data class RiskBreakdown(
+    val available: Boolean = false,
+    val motionEvaluated: Boolean = false,
+    val motionScore: Int = 0,
+    val motionReason: String? = null,
+    val crossSourceEvaluated: Boolean = false,
+    val crossSourceScore: Int = 0,
+    val crossSourceReason: String? = null,
+    val gnssSignalEvaluated: Boolean = false,
+    val gnssSignalScore: Int = 0,
+    val gnssSignalReason: String? = null,
+    val motionCrossSourceBonus: Int = 0,
+    val gnssCorroborationBonus: Int = 0,
+    val combinedBeforeZone: Int = 0,
+    val zoneFloorActive: Boolean = false,
+    val zoneRaisedScore: Boolean = false,
+    val rawCombinedScore: Int = 0,
+    val clampedAtHundred: Boolean = false,
+    val temporalHoldFloorApplied: Boolean = false,
+    val finalScore: Int = 0
+) {
+    init {
+        require(motionScore in 0..100)
+        require(crossSourceScore in 0..100)
+        require(gnssSignalScore in 0..100)
+        require(motionCrossSourceBonus in 0..20)
+        require(gnssCorroborationBonus in 0..15)
+        require(combinedBeforeZone >= 0)
+        require(rawCombinedScore in 0..100)
+        require(finalScore in 0..100)
+    }
+}
+
 data class SpoofingAssessment(
     val score: Int,
     val confirmed: Boolean,
-    val reasons: List<String>
+    val reasons: List<String>,
+    val breakdown: RiskBreakdown = RiskBreakdown()
 )
 
 /**
@@ -193,7 +232,21 @@ class GnssSpoofingDetector {
             nowElapsedRealtimeNanos <= recentSignalAlertUntilNanos &&
             reason != null && recentSignalAlertScore > 0
         return if (activeAlert) {
-            SpoofingAssessment(recentSignalAlertScore.coerceIn(0, 50), false, listOf(reason!!))
+            val score = recentSignalAlertScore.coerceIn(0, 50)
+            SpoofingAssessment(
+                score = score,
+                confirmed = false,
+                reasons = listOf(reason!!),
+                breakdown = RiskBreakdown(
+                    available = true,
+                    gnssSignalEvaluated = true,
+                    gnssSignalScore = score,
+                    gnssSignalReason = reason,
+                    combinedBeforeZone = score,
+                    rawCombinedScore = score,
+                    finalScore = score
+                )
+            )
         } else {
             SpoofingAssessment(0, false, emptyList())
         }
@@ -221,9 +274,13 @@ class GnssSpoofingDetector {
         val evidence = LinkedHashMap<String, Int>()
         var motionScore = 0
         var motionReason: String? = null
+        var motionEvaluated = false
         var crossSourceScore = 0
+        var crossSourceReason: String? = null
+        var crossSourceEvaluated = false
         var signalScore = 0
         var signalReason: String? = null
+        var signalEvaluated = false
 
         val previous = previousGps
         if (previous != null && gps.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
@@ -234,6 +291,7 @@ class GnssSpoofingDetector {
             // Without a continuous track, displacement alone is not enough to call a jump spoofing.
             if (dt in 0.2..60.0 && oldAccuracy != null && newAccuracy != null &&
                 oldAccuracy in 0.0..150.0 && newAccuracy in 0.0..150.0) {
+                motionEvaluated = true
                 val distance = distanceMeters(previous.latitude, previous.longitude, gps.latitude, gps.longitude)
                 // Discount a conservative uncertainty allowance before evaluating physical motion.
                 val uncertaintyAllowance = max(60.0, 2.0 * (oldAccuracy + newAccuracy))
@@ -293,6 +351,9 @@ class GnssSpoofingDetector {
         }
 
         val receiverSpeed = gps.speedMetersPerSecond
+        if (receiverSpeed != null && receiverSpeed.isFinite() && receiverSpeed >= 0.0) {
+            motionEvaluated = true
+        }
         if (receiverSpeed != null && receiverSpeed > 400.0 && motionScore < 78) {
             motionScore = 78
             motionReason = "GNSS сообщает экстремальную скорость движения"
@@ -306,18 +367,22 @@ class GnssSpoofingDetector {
         if (network != null && !network.provider.equals("gps", ignoreCase = true) &&
             isFresh(network, nowElapsedRealtimeNanos, 45_000_000_000L) &&
             goodAccuracy(gps, 250.0) && goodAccuracy(network, 500.0)) {
+            crossSourceEvaluated = true
             val separation = distanceMeters(gps.latitude, gps.longitude, network.latitude, network.longitude)
             val ga = gps.accuracyMeters ?: Double.MAX_VALUE
             val na = network.accuracyMeters ?: Double.MAX_VALUE
             val limit = max(250.0, 3.0 * sqrt(ga * ga + na * na))
             if (separation > limit) {
                 crossSourceScore = if (separation > limit * 2.5) 76 else 65
-                evidence["GPS заметно расходится с независимой сетевой позицией"] = crossSourceScore
+                val reason = "GPS заметно расходится с независимой сетевой позицией"
+                crossSourceReason = reason
+                evidence[reason] = crossSourceScore
             }
         }
 
         val signal = currentSignal
         if (signal != null && isSignalFresh(signal, nowElapsedRealtimeNanos)) {
+            signalEvaluated = true
             if (signal.satellitesVisible >= 8 && signal.cn0SpreadDb != null &&
                 signal.cn0SpreadDb in 0.0..1.2) {
                 signalScore += 10
@@ -335,13 +400,18 @@ class GnssSpoofingDetector {
         if (signalScore > 0 && signalReason != null) evidence[signalReason] = signalScore
 
         var rawScore = max(motionScore, crossSourceScore)
-        if (motionScore > 0 && crossSourceScore > 0) rawScore += 20
-        if (signalScore > 0 && (motionScore > 0 || crossSourceScore > 0)) rawScore += min(15, signalScore)
+        val motionCrossSourceBonus = if (motionScore > 0 && crossSourceScore > 0) 20 else 0
+        rawScore += motionCrossSourceBonus
+        val gnssCorroborationBonus =
+            if (signalScore > 0 && (motionScore > 0 || crossSourceScore > 0)) min(15, signalScore) else 0
+        if (gnssCorroborationBonus > 0) rawScore += gnssCorroborationBonus
         else if (signalScore > 0) rawScore = max(rawScore, signalScore)
+        val combinedBeforeZone = rawScore
         if (inRiskZone) {
             rawScore = max(rawScore, 75)
             evidence["Текущая GPS-позиция находится в вручную отмеченной зоне риска"] = 75
         }
+        val clampedAtHundred = rawScore > 100
         rawScore = rawScore.coerceIn(0, 100)
 
         // Weak direction/speed-consistency hints must not turn network divergence into a
@@ -386,7 +456,8 @@ class GnssSpoofingDetector {
             previousGps = gps
         }
 
-        val score = if (active && rawScore < 60) max(rawScore, 60) else rawScore
+        val temporalHoldFloorApplied = active && rawScore < 60
+        val score = if (temporalHoldFloorApplied) max(rawScore, 60) else rawScore
         val reasons = evidence.entries.sortedByDescending { it.value }.map { it.key }.distinct().take(4)
 
         // Train only from a new GPS assessment that remains clearly normal and outside risk zones.
@@ -403,7 +474,28 @@ class GnssSpoofingDetector {
                 inRiskZone = inRiskZone
             )
         }
-        return SpoofingAssessment(score, active, reasons)
+        val breakdown = RiskBreakdown(
+            available = true,
+            motionEvaluated = motionEvaluated,
+            motionScore = motionScore,
+            motionReason = motionReason,
+            crossSourceEvaluated = crossSourceEvaluated,
+            crossSourceScore = crossSourceScore,
+            crossSourceReason = crossSourceReason,
+            gnssSignalEvaluated = signalEvaluated,
+            gnssSignalScore = signalScore,
+            gnssSignalReason = signalReason,
+            motionCrossSourceBonus = motionCrossSourceBonus,
+            gnssCorroborationBonus = gnssCorroborationBonus,
+            combinedBeforeZone = combinedBeforeZone,
+            zoneFloorActive = inRiskZone,
+            zoneRaisedScore = inRiskZone && combinedBeforeZone < 75,
+            rawCombinedScore = rawScore,
+            clampedAtHundred = clampedAtHundred,
+            temporalHoldFloorApplied = temporalHoldFloorApplied,
+            finalScore = score
+        )
+        return SpoofingAssessment(score, active, reasons, breakdown)
     }
 
     private fun goodAccuracy(fix: PositionFix, maxAccuracy: Double): Boolean {

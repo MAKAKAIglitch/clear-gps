@@ -13,7 +13,8 @@ data class FilterDecision(
     val inRiskZone: Boolean,
     val source: String,
     val outputLocation: Location?,
-    val reasons: List<String> = emptyList()
+    val reasons: List<String> = emptyList(),
+    val riskBreakdown: RiskBreakdown? = null
 )
 
 class LocationFilterEngine {
@@ -61,7 +62,8 @@ class LocationFilterEngine {
                 state = FilterState.SUSPECT,
                 riskScore = assessment.score,
                 source = "GNSS_SIGNAL_ONLY",
-                reasons = assessment.reasons
+                reasons = assessment.reasons,
+                riskBreakdown = assessment.breakdown
             )
             val shouldPublish = !signalOnlyWarningActive ||
                 previousDecision.state != next.state ||
@@ -111,7 +113,8 @@ class LocationFilterEngine {
                     state = FilterState.SUSPECT,
                     riskScore = assessment.score,
                     source = "GNSS_SIGNAL_ONLY",
-                    reasons = assessment.reasons
+                    reasons = assessment.reasons,
+                    riskBreakdown = assessment.breakdown
                 )
             } else {
                 signalOnlyWarningActive = false
@@ -145,7 +148,7 @@ class LocationFilterEngine {
             if (assessment.score < CORRECTION_CANDIDATE_SCORE) trusted = Location(currentGps)
             return FilterDecision(
                 if (assessment.score >= CORRECTION_CANDIDATE_SCORE) FilterState.SUSPECT else FilterState.NORMAL,
-                assessment.score, false, "GPS", Location(currentGps), assessment.reasons
+                assessment.score, false, "GPS", Location(currentGps), assessment.reasons, assessment.breakdown
             )
         }
 
@@ -164,7 +167,8 @@ class LocationFilterEngine {
             gpsInZone,
             if (fallback == null) "NONE" else sourceOf(fallback),
             fallback?.let(::Location),
-            assessment.reasons
+            assessment.reasons,
+            assessment.breakdown
         )
     }
 

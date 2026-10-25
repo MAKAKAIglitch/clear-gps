@@ -36,6 +36,59 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.score < 60)
     }
 
+    @Test fun riskBreakdownShowsSourceScoresAndNonAdditiveCombinationBonuses() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(
+                elapsedRealtimeNanos = 1_500_000_000L,
+                satellitesVisible = 8,
+                satellitesUsedInFix = 8,
+                meanCn0DbHz = 35.0,
+                cn0SpreadDb = 0.7,
+                constellationCount = 3,
+                strongSignalCount = 8
+            )
+        )
+        detector.assess(fix(55.0, 37.0, 1, accuracy = 5.0), null, false, 1_200_000_000L, true)
+        val assessment = detector.assess(
+            fix(56.0, 37.0, 2, accuracy = 5.0),
+            fix(55.0, 37.0, 2, accuracy = 5.0, provider = "network"),
+            false, 2_200_000_000L, true
+        )
+        val breakdown = assessment.breakdown
+        assertTrue(breakdown.available)
+        assertTrue(breakdown.motionEvaluated)
+        assertTrue(breakdown.crossSourceEvaluated)
+        assertTrue(breakdown.gnssSignalEvaluated)
+        assertEquals(90, breakdown.motionScore)
+        assertEquals(76, breakdown.crossSourceScore)
+        assertEquals(10, breakdown.gnssSignalScore)
+        assertEquals(20, breakdown.motionCrossSourceBonus)
+        assertEquals(10, breakdown.gnssCorroborationBonus)
+        assertEquals(120, breakdown.combinedBeforeZone)
+        assertTrue(breakdown.clampedAtHundred)
+        assertEquals(100, breakdown.finalScore)
+        assertEquals(assessment.score, breakdown.finalScore)
+    }
+
+    @Test fun zoneFloorAndTemporalHoldAreReportedSeparatelyFromSourceScores() {
+        val zoneDetector = GnssSpoofingDetector()
+        val zoneAssessment = zoneDetector.assess(fix(55.0, 37.0, 1), null, true, 1_200_000_000L, true)
+        assertEquals(0, zoneAssessment.breakdown.combinedBeforeZone)
+        assertTrue(zoneAssessment.breakdown.zoneFloorActive)
+        assertTrue(zoneAssessment.breakdown.zoneRaisedScore)
+        assertEquals(75, zoneAssessment.breakdown.rawCombinedScore)
+        assertEquals(75, zoneAssessment.breakdown.finalScore)
+
+        val holdDetector = GnssSpoofingDetector()
+        holdDetector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        holdDetector.assess(fix(56.0, 37.0, 2), null, false, 2_200_000_000L, true)
+        val held = holdDetector.assess(fix(56.0, 37.0, 3), null, false, 3_200_000_000L, true)
+        assertTrue(held.breakdown.temporalHoldFloorApplied)
+        assertEquals(0, held.breakdown.rawCombinedScore)
+        assertEquals(60, held.breakdown.finalScore)
+    }
+
     @Test fun impossibleJumpAndNetworkDisagreementConfirmRiskImmediately() {
         val detector = GnssSpoofingDetector()
         detector.assess(fix(55.0, 37.0, 1),

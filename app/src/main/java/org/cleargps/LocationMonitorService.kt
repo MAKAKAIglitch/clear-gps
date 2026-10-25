@@ -1123,6 +1123,7 @@ class LocationMonitorService : Service(), LocationListener {
         unregisterGnssStatus()
         clearGnssReceptionDiagnostics()
         GnssDiagnosticsLiveStore.clear()
+        RiskBreakdownStore.clear(prefs)
         mock?.disable()
         // This method also runs from onDestroy(), not only from ACTION_STOP. Clear every
         // shared position flag here so the UI cannot claim GPS is active after service death.
@@ -1388,6 +1389,7 @@ class LocationMonitorService : Service(), LocationListener {
                 .remove(KEY_LON)
                 .remove(KEY_ACCURACY)
                 .apply()
+            RiskBreakdownStore.write(prefs, result.riskBreakdown, SystemClock.elapsedRealtimeNanos())
             return
         }
         persist(result)
@@ -1408,6 +1410,7 @@ class LocationMonitorService : Service(), LocationListener {
             edit.remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
         }
         edit.apply()
+        RiskBreakdownStore.write(prefs, result.riskBreakdown, SystemClock.elapsedRealtimeNanos())
     }
 
     private fun saveServiceStatus(text: String) {
