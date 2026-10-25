@@ -45,6 +45,11 @@ class LocationMonitorService : Service(), LocationListener {
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
 
+    // Ephemeral aggregate only; never persisted or exported.
+    private var lastStatusMeanCn0DbHz: Double? = null
+    private var lastStatusConstellationCount = 0
+    private var lastStatusAtNanos = 0L
+
     private val gnssStatusCallback = object : GnssStatus.Callback() {
         override fun onSatelliteStatusChanged(status: GnssStatus) {
             val count = status.satelliteCount
@@ -57,6 +62,9 @@ class LocationMonitorService : Service(), LocationListener {
             } else null
             val constellations = (0 until count).map { status.getConstellationType(it) }
                 .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
+            lastStatusMeanCn0DbHz = mean
+            lastStatusConstellationCount = constellations
+            lastStatusAtNanos = SystemClock.elapsedRealtimeNanos()
             val assessment = engine.observeGnssSignal(
                 org.cleargps.core.GnssSignalSnapshot(
                     elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
@@ -80,26 +88,42 @@ class LocationMonitorService : Service(), LocationListener {
                 val cn0Values = measurements.mapNotNull { measurement ->
                     measurement.cn0DbHz.toDouble().takeIf { it.isFinite() && it > 0.0 }
                 }
-                val agcValues = measurements.mapNotNull { measurement ->
-                    try {
-                        if (measurement.hasAutomaticGainControlLevelDb()) {
-                            measurement.getAutomaticGainControlLevelDb().takeIf { it.isFinite() }
-                        } else {
+                // API 33+ exposes AGC separately, including when per-satellite measurements
+                // are temporarily absent. Older APIs use the AGC field on GnssMeasurement.
+                val agcValues = if (Build.VERSION.SDK_INT >= 33) {
+                    event.gnssAutomaticGainControls.mapNotNull { it.levelDb.takeIf(Double::isFinite) }
+                } else {
+                    measurements.mapNotNull { measurement ->
+                        try {
+                            if (measurement.hasAutomaticGainControlLevelDb()) {
+                                measurement.getAutomaticGainControlLevelDb().takeIf(Double::isFinite)
+                            } else {
+                                null
+                            }
+                        } catch (_: RuntimeException) {
                             null
                         }
-                    } catch (_: RuntimeException) {
-                        null
                     }
                 }
-                val meanCn0 = cn0Values.average().takeIf { cn0Values.isNotEmpty() && it.isFinite() }
+                val nowNanos = SystemClock.elapsedRealtimeNanos()
+                val meanCn0FromMeasurements =
+                    cn0Values.average().takeIf { cn0Values.isNotEmpty() && it.isFinite() }
+                val statusFresh = lastStatusAtNanos > 0L &&
+                    nowNanos >= lastStatusAtNanos &&
+                    nowNanos - lastStatusAtNanos <= 3_000_000_000L
+                val meanCn0 = meanCn0FromMeasurements
+                    ?: lastStatusMeanCn0DbHz.takeIf { statusFresh }
                 val meanAgc = agcValues.average().takeIf { agcValues.isNotEmpty() && it.isFinite() }
-                val constellations = measurements.map { it.constellationType }
+                val measurementConstellations = measurements.map { it.constellationType }
                     .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
+                val constellationCount = if (measurementConstellations > 0) measurementConstellations
+                    else lastStatusConstellationCount.takeIf { statusFresh } ?: 0
+                val signalCount = maxOf(cn0Values.size, agcValues.size)
                 val assessment = engine.observeGnssMeasurements(
                     GnssRfSnapshot(
-                        elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
-                        signalCount = cn0Values.size,
-                        constellationCount = constellations,
+                        elapsedRealtimeNanos = nowNanos,
+                        signalCount = signalCount,
+                        constellationCount = constellationCount,
                         meanCn0DbHz = meanCn0,
                         meanAgcDb = meanAgc,
                         agcSampleCount = agcValues.size
