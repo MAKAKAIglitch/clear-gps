@@ -11,6 +11,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.telephony.CellInfo
 import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte
@@ -21,6 +22,8 @@ import android.telephony.TelephonyManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.coroutines.resume
@@ -44,7 +47,9 @@ class RadioGeolocationRepository(private val context: Context) {
         useWifi: Boolean,
         useCells: Boolean,
         useBle: Boolean
-    ): RadioLookupResult {
+    ): RadioLookupResult = scanMutex.withLock {
+        // The UI, recording loop and foreground service can all request a scan. Serialize
+        // them process-wide so concurrent Wi-Fi/BLE scans do not cancel or throttle each other.
         val snapshot = withContext(Dispatchers.Main.immediate) { collectSnapshot() }
         val estimate = withContext(Dispatchers.IO) {
             database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
@@ -80,7 +85,7 @@ class RadioGeolocationRepository(private val context: Context) {
             else ->
                 "Сканирование завершено: $summary. Не удалось получить однозначную оценку по локальной базе: совпадений мало, они противоречат друг другу или нет записей с координатами. Запиши сканы в местах с известным положением или импортируй геолокированные точки."
         }
-        return RadioLookupResult(estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
+        RadioLookupResult(estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
             false, message, estimate?.matchedCount ?: 0, recorded)
     }
 
@@ -97,16 +102,40 @@ class RadioGeolocationRepository(private val context: Context) {
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return emptyList()
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return emptyList()
         if (!manager.isWifiEnabled) return emptyList()
-        try {
+        val scanStartedAtMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
+        val scanRequested = try {
             manager.startScan()
-            delay(WIFI_SCAN_WAIT_MS)
         } catch (_: SecurityException) {
+            false
         } catch (_: RuntimeException) {
+            false
         }
+
+        // startScan() is only a request: Android can throttle it or return cached results.
+        // Wait briefly for a genuinely newer scan, then use only a small-age cache if Android
+        // refused/throttled the request. Never treat arbitrarily old scanResults as current.
+        var rawResults = try { manager.scanResults } catch (_: SecurityException) { emptyList() }
+            catch (_: RuntimeException) { emptyList() }
+        if (scanRequested) {
+            val deadline = SystemClock.elapsedRealtime() + WIFI_SCAN_WAIT_MS
+            while (SystemClock.elapsedRealtime() < deadline) {
+                delay(WIFI_SCAN_POLL_MS)
+                val latest = try { manager.scanResults } catch (_: SecurityException) { emptyList() }
+                    catch (_: RuntimeException) { emptyList() }
+                if (latest.any { it.timestamp >= scanStartedAtMicros }) {
+                    rawResults = latest
+                    break
+                }
+                rawResults = latest
+            }
+        }
+        val nowMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
         return try {
-            manager.scanResults.asSequence()
+            rawResults.asSequence()
                 .filter { result ->
-                    result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) && result.level in -110..0
+                    result.timestamp > 0L && nowMicros >= result.timestamp &&
+                        nowMicros - result.timestamp <= MAX_WIFI_RESULT_AGE_MICROS &&
+                        result.BSSID.isNotBlank() && result.BSSID.matches(MAC_REGEX) && result.level in -110..0
                 }
                 .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
                 .sortedByDescending { it.level }
@@ -232,7 +261,10 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     companion object {
-        private const val WIFI_SCAN_WAIT_MS = 1_500L
+        private val scanMutex = Mutex()
+        private const val WIFI_SCAN_WAIT_MS = 3_000L
+        private const val WIFI_SCAN_POLL_MS = 250L
+        private const val MAX_WIFI_RESULT_AGE_MICROS = 15_000_000L
         private const val BLE_SCAN_MS = 2_500L
         private const val MAX_WIFI = 32
         private const val MAX_CELLS = 16
