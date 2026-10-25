@@ -329,6 +329,7 @@ internal fun lookupRadioFingerprintPosition(
     now: Long = System.currentTimeMillis()
 ): RadioFingerprintLookup {
     val currentSignals = signals.asSequence()
+        .map { it.copy(identifier = canonicalRadioIdentifier(it.identifier)) }
         .filter { it.radioTypeIsUsable() && it.identifier.isNotBlank() && it.rssi in -115..0 }
         .distinctBy { it.type + "|" + it.identifier }
         .groupBy { it.type }
@@ -356,6 +357,7 @@ internal fun lookupRadioFingerprintPosition(
     )
 
     val candidates = history.asSequence()
+        .map { sample -> sample.copy(identifier = canonicalRadioIdentifier(sample.identifier)) }
         .filter { sample ->
             val age = now - sample.observedAt
             age in 0..historyMaxAge &&
