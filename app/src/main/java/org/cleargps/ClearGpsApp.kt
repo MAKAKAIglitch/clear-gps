@@ -811,8 +811,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             activeLocation?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()
         )
     }
-    LaunchedEffect(radioCoordinate) {
-        mapController.updateCalculatedLocation(radioCoordinate)
+    LaunchedEffect(radioCoordinate, currentRadioEstimate?.accuracyMeters) {
+        mapController.updateCalculatedLocation(radioCoordinate, currentRadioEstimate?.accuracyMeters)
     }
     LaunchedEffect(manualAnchor) {
         mapController.updateManualAnchor(manualAnchor)
