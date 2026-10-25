@@ -66,17 +66,34 @@ try {
     $BuildLog = Join-Path $BuildLogRoot ("build-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
     Write-Host "Build log: $BuildLog"
 
-    $PreviousErrorActionPreference = $ErrorActionPreference
-    try {
-        # Gradle's diagnostics may use stderr. In Windows PowerShell 5 this can
-        # become an ErrorRecord, so Continue is required while collecting the process output.
-        $ErrorActionPreference = 'Continue'
-        & $GradleWrapper --stacktrace --build-cache "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
-            Tee-Object -FilePath $BuildLog | Out-Host
-        $GradleExitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
+    function Invoke-LoggedGradle {
+        param(
+            [string[]]$GradleArguments,
+            [string]$LogPath
+        )
+
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $PreviousJvmArgsOverride = $env:CLEARGPS_GRADLE_JVM_ARGS
+        try {
+            # Keep arguments space-free across the .bat -> PowerShell -> .bat boundary.
+            # The runner applies the JVM arguments through GRADLE_OPTS instead of
+            # forwarding a quoted -D property through several command-line parsers.
+            $ErrorActionPreference = 'Continue'
+            $env:CLEARGPS_GRADLE_JVM_ARGS = $GradleJvmArgs
+            & $GradleWrapper @GradleArguments 2>&1 |
+                Tee-Object -FilePath $LogPath | Out-Host
+            return [int]$LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+            if ($null -eq $PreviousJvmArgsOverride) {
+                Remove-Item Env:CLEARGPS_GRADLE_JVM_ARGS -ErrorAction SilentlyContinue
+            } else {
+                $env:CLEARGPS_GRADLE_JVM_ARGS = $PreviousJvmArgsOverride
+            }
+        }
     }
+
+    $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', 'testDebugUnitTest', 'assembleDebug') -LogPath $BuildLog
     if ($GradleExitCode -ne 0) {
         $LogText = Get-Content -LiteralPath $BuildLog -Raw -ErrorAction SilentlyContinue
         $RetryPattern = '(?i)(UnknownHostException|Unknown host|Could not resolve host|Could not GET|Could not HEAD|Connection timed out|Read timed out|Connection reset|Connection refused|TLS handshake|PKIX path building failed|503 Service Unavailable|502 Bad Gateway|429 Too Many Requests|Temporary failure in name resolution|Network is unreachable|No route to host)'
@@ -85,9 +102,7 @@ try {
             Write-Host ''
             Write-Host 'A network/dependency-server error was detected. Retrying once with --refresh-dependencies...'
             Write-Host "Retry log: $RetryLog"
-            & $GradleWrapper --stacktrace --build-cache --refresh-dependencies "-Dorg.gradle.jvmargs=$GradleJvmArgs" testDebugUnitTest assembleDebug 2>&1 |
-                Tee-Object -FilePath $RetryLog | Out-Host
-            $GradleExitCode = $LASTEXITCODE
+            $GradleExitCode = Invoke-LoggedGradle -GradleArguments @('--stacktrace', '--build-cache', '--refresh-dependencies', 'testDebugUnitTest', 'assembleDebug') -LogPath $RetryLog
             if ($GradleExitCode -ne 0) {
                 throw "Gradle retry also failed (exit code $GradleExitCode). Logs: $BuildLog and $RetryLog"
             }
