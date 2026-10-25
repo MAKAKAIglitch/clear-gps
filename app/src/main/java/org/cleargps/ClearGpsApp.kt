@@ -2274,6 +2274,7 @@ private fun SettingsScreen(
     var showMapOptions by remember { mutableStateOf(false) }
     var showRadioOptions by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
+    var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -2375,11 +2376,17 @@ private fun SettingsScreen(
                     Divider(color = colors.outlineVariant)
                     SettingSwitch("Bluetooth LE", "Адрес и уровень сигнала; имена устройств не читаются.", useBle, onBle)
                     Divider(color = colors.outlineVariant)
-                    Text("Интервал обновления фикса: " + scanIntervalSeconds + " с", style = MaterialTheme.typography.titleSmall)
+                    Text("Интервал обновления фикса: " + pendingScanInterval.roundToInt() + " с", style = MaterialTheme.typography.titleSmall)
                     Slider(
-                        value = scanIntervalSeconds.toFloat(),
-                        onValueChange = { onScanInterval(it.roundToInt().coerceIn(1, 30)) },
-                        onValueChangeFinished = onScanIntervalFinished,
+                        value = pendingScanInterval,
+                        onValueChange = { pendingScanInterval = it },
+                        onValueChangeFinished = {
+                            val selectedInterval = pendingScanInterval.roundToInt().coerceIn(1, 30)
+                            if (selectedInterval != scanIntervalSeconds) {
+                                onScanInterval(selectedInterval)
+                                onScanIntervalFinished()
+                            }
+                        },
                         valueRange = 1f..30f,
                         steps = 28,
                         modifier = Modifier.fillMaxWidth()
