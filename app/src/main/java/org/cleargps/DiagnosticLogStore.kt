@@ -99,12 +99,17 @@ internal object DiagnosticLogStore {
             val safeMessage = message.replace('\r', ' ').replace('\n', ' ').take(700)
             val timestamp = synchronized(timestampFormat) { timestampFormat.format(Date()) }
             val line = "$timestamp [$level] [$safeCategory] $safeMessage\n".toByteArray(Charsets.UTF_8)
-            val existing = if (file.isFile) file.readBytes() else byteArrayOf()
-            val combined = ByteArray(existing.size + line.size)
-            existing.copyInto(combined)
-            line.copyInto(combined, existing.size)
-            val bounded = trimToMaxBytes(combined, maxBytes(context))
-            file.writeBytes(bounded)
+            // Append cheaply while there is headroom. Trimming on every line after the cap was
+            // reached would rewrite hundreds of kilobytes every second on a live GNSS feed.
+            file.outputStream().use { output ->
+                output.channel.position(file.length())
+                output.write(line)
+            }
+            val limitBytes = maxBytes(context)
+            if (file.length() > limitBytes) {
+                // Trim to 75% so subsequent log lines append cheaply until the next rotation.
+                trimFile(context, (limitBytes * 3) / 4)
+            }
         } catch (_: Exception) {
             // A full disk or inaccessible file must not crash the foreground service.
         }
