@@ -306,10 +306,14 @@ class RadioGeolocationRepository(private val context: Context) {
         }
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             ?: return TimedRadioSignals(emptyList(), null)
-        val adapter = try { manager.adapter } catch (_: SecurityException) { null } ?: return TimedRadioSignals(emptyList(), null)
+        val adapter = try { manager.adapter } catch (_: SecurityException) { null }
+            catch (_: RuntimeException) { null } ?: return TimedRadioSignals(emptyList(), null)
         val scanner = try { adapter.bluetoothLeScanner } catch (_: SecurityException) { null }
-            ?: return TimedRadioSignals(emptyList(), null)
-        if (!adapter.isEnabled) return TimedRadioSignals(emptyList(), null)
+            catch (_: RuntimeException) { null } ?: return TimedRadioSignals(emptyList(), null)
+        val bluetoothEnabled = try { adapter.isEnabled }
+            catch (_: SecurityException) { false }
+            catch (_: RuntimeException) { false }
+        if (!bluetoothEnabled) return TimedRadioSignals(emptyList(), null)
 
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val cachedAgeMs = if (lastBleScanFinishedAtElapsedMs > 0L &&
@@ -318,12 +322,13 @@ class RadioGeolocationRepository(private val context: Context) {
         } else Long.MAX_VALUE
 
         // Avoid starting/stopping the Bluetooth scanner on every 1-second location tick.
-        // Reuse a short-lived snapshot when Android's BLE scan start rate would be excessive.
-        if (lastBleScanStartedAtElapsedMs > 0L &&
-            nowElapsedMs >= lastBleScanStartedAtElapsedMs &&
-            nowElapsedMs - lastBleScanStartedAtElapsedMs < RadioFixReliability.BLE_MIN_REQUEST_INTERVAL_MS &&
-            cachedAgeMs <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
-            return TimedRadioSignals(cachedBleSignals, cachedAgeMs)
+        // If no recent cache exists during the cooldown, return no BLE data instead of bypassing it.
+        if (!RadioFixReliability.shouldRequestBleScan(nowElapsedMs, lastBleScanStartedAtElapsedMs)) {
+            return if (cachedBleSignals.isNotEmpty() && cachedAgeMs <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
+                TimedRadioSignals(cachedBleSignals, cachedAgeMs)
+            } else {
+                TimedRadioSignals(emptyList(), null)
+            }
         }
 
         lastBleScanStartedAtElapsedMs = nowElapsedMs
