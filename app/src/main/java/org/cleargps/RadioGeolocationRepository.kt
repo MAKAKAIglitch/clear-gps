@@ -36,14 +36,15 @@ private data class CellObservation(
     fun toSignal() = RadioSignal("cell", "$type:$mcc:$mnc:$area:$cellId", rssi)
 }
 
-private data class WifiScanResult(val signals: List<RadioSignal>, val ageMillis: Long?)
+private data class TimedRadioSignals(val signals: List<RadioSignal>, val ageMillis: Long?)
 
 private data class ScanSnapshot(
     val signals: List<RadioSignal>,
     val wifiCount: Int,
     val cellCount: Int,
     val bleCount: Int,
-    val wifiAgeMillis: Long?
+    val wifiAgeMillis: Long?,
+    val bleAgeMillis: Long?
 )
 
 class RadioGeolocationRepository(private val context: Context) {
@@ -60,7 +61,9 @@ class RadioGeolocationRepository(private val context: Context) {
     ): RadioLookupResult = scanMutex.withLock {
         // The UI, recording loop and foreground service can all request a scan. Serialize
         // them process-wide so concurrent Wi-Fi/BLE scans do not cancel or throttle each other.
-        val snapshot = withContext(Dispatchers.Main.immediate) { collectSnapshot() }
+        val snapshot = withContext(Dispatchers.Main.immediate) {
+            collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
+        }
         val estimate = withContext(Dispatchers.IO) {
             database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
         }?.let { candidate ->
@@ -69,9 +72,15 @@ class RadioGeolocationRepository(private val context: Context) {
                 wifiSignalCount = snapshot.wifiCount,
                 totalSignalCount = snapshot.signals.size
             )
-            if (staleWifiPenalty <= 0.0) candidate
+            val staleBlePenalty = RadioFixReliability.bleAgePenaltyMeters(
+                ageMillis = snapshot.bleAgeMillis,
+                bleSignalCount = snapshot.bleCount,
+                totalSignalCount = snapshot.signals.size
+            )
+            val totalStalePenalty = staleWifiPenalty + staleBlePenalty
+            if (totalStalePenalty <= 0.0) candidate
             else candidate.copy(
-                accuracyMeters = (candidate.accuracyMeters + staleWifiPenalty).coerceAtMost(50_000.0)
+                accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0)
             )
         }
         // Radio-only coordinates are estimates from this very database, not independent
@@ -105,37 +114,52 @@ class RadioGeolocationRepository(private val context: Context) {
             else ->
                 "Сканирование завершено: $summary. Радиосигналы получены, но надёжная координата не подтверждена: подходящих записей с координатами мало, совпадения неоднозначны или противоречат друг другу."
         }
-        val wifiAgeHint = snapshot.wifiAgeMillis
-            ?.takeIf { it > RadioFixReliability.WIFI_FRESH_AGE_MS }
-            ?.let {
-                " Результаты Wi‑Fi могут быть кэшированными (${it / 1_000} с); погрешность увеличена."
-            }.orEmpty()
-        val fullMessage = message + wifiAgeHint
+        val cacheAgeHints = buildList {
+            snapshot.wifiAgeMillis
+                ?.takeIf { it > RadioFixReliability.WIFI_FRESH_AGE_MS }
+                ?.let { add("Wi‑Fi: кэш ${it / 1_000} с") }
+            snapshot.bleAgeMillis
+                ?.takeIf { it > RadioFixReliability.BLE_FRESH_AGE_MS }
+                ?.let { add("Bluetooth: кэш ${it / 1_000} с") }
+        }.takeIf { it.isNotEmpty() }
+            ?.joinToString(prefix = " Используется кэш радиосигналов (", postfix = "); погрешность увеличена.")
+            .orEmpty()
+        val fullMessage = message + cacheAgeHints
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, fullMessage)
             .putBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, estimate != null)
             .apply()
         RadioLookupResult(
             estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
-            snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true,
+            snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true ||
+                snapshot.bleAgeMillis?.let { it > RadioFixReliability.BLE_FRESH_AGE_MS } == true,
             fullMessage, estimate?.matchedCount ?: 0, recorded
         )
     }
 
-    private suspend fun collectSnapshot(): ScanSnapshot = coroutineScope {
-        // Wi-Fi can take up to 3 s and BLE up to 2.5 s. Collect them concurrently so
-        // the requested refresh interval is not inflated by the sum of both waits.
-        val wifiTask = async { collectWifi() }
-        val bleTask = async { collectBluetooth() }
-        val cells = collectCells()
+    private suspend fun collectSnapshot(
+        useWifi: Boolean,
+        useCells: Boolean,
+        useBle: Boolean
+    ): ScanSnapshot = coroutineScope {
+        // Only collect sources the user enabled. Wi-Fi and BLE run concurrently, while cellular
+        // information is read synchronously from Android's current telephony snapshot.
+        val wifiTask = async {
+            if (useWifi) collectWifi() else TimedRadioSignals(emptyList(), null)
+        }
+        val bleTask = async {
+            if (useBle) collectBluetooth() else TimedRadioSignals(emptyList(), null)
+        }
+        val cells = if (useCells) collectCells() else emptyList()
         val wifi = wifiTask.await()
         val ble = bleTask.await()
         ScanSnapshot(
-            signals = wifi.signals + cells + ble,
+            signals = wifi.signals + cells + ble.signals,
             wifiCount = wifi.signals.size,
             cellCount = cells.size,
-            bleCount = ble.size,
-            wifiAgeMillis = wifi.ageMillis
+            bleCount = ble.signals.size,
+            wifiAgeMillis = wifi.ageMillis,
+            bleAgeMillis = ble.ageMillis
         )
     }
 
@@ -275,12 +299,35 @@ class RadioGeolocationRepository(private val context: Context) {
         return CellObservation(type, mcc, mnc, area, id, rssi)
     }
 
-    private suspend fun collectBluetooth(): List<RadioSignal> {
+    private suspend fun collectBluetooth(): TimedRadioSignals {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) return emptyList()
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return emptyList()
-        val scanner = try { manager.adapter?.bluetoothLeScanner } catch (_: SecurityException) { null } ?: return emptyList()
-        return suspendCancellableCoroutine { continuation ->
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            return TimedRadioSignals(emptyList(), null)
+        }
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            ?: return TimedRadioSignals(emptyList(), null)
+        val adapter = try { manager.adapter } catch (_: SecurityException) { null } ?: return TimedRadioSignals(emptyList(), null)
+        val scanner = try { adapter.bluetoothLeScanner } catch (_: SecurityException) { null }
+            ?: return TimedRadioSignals(emptyList(), null)
+        if (!adapter.isEnabled) return TimedRadioSignals(emptyList(), null)
+
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val cachedAgeMs = if (lastBleScanFinishedAtElapsedMs > 0L &&
+            nowElapsedMs >= lastBleScanFinishedAtElapsedMs) {
+            nowElapsedMs - lastBleScanFinishedAtElapsedMs
+        } else Long.MAX_VALUE
+
+        // Avoid starting/stopping the Bluetooth scanner on every 1-second location tick.
+        // Reuse a short-lived snapshot when Android's BLE scan start rate would be excessive.
+        if (lastBleScanStartedAtElapsedMs > 0L &&
+            nowElapsedMs >= lastBleScanStartedAtElapsedMs &&
+            nowElapsedMs - lastBleScanStartedAtElapsedMs < RadioFixReliability.BLE_MIN_REQUEST_INTERVAL_MS &&
+            cachedAgeMs <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
+            return TimedRadioSignals(cachedBleSignals, cachedAgeMs)
+        }
+
+        lastBleScanStartedAtElapsedMs = nowElapsedMs
+        val freshSignals = suspendCancellableCoroutine<List<RadioSignal>> { continuation ->
             val seen = linkedMapOf<String, RadioSignal>()
             val handler = Handler(Looper.getMainLooper())
             lateinit var callback: ScanCallback
@@ -319,11 +366,33 @@ class RadioGeolocationRepository(private val context: Context) {
                 try { scanner.stopScan(callback) } catch (_: SecurityException) { } catch (_: RuntimeException) { }
             }
         }
+
+        val finishedAt = SystemClock.elapsedRealtime()
+        if (freshSignals.isNotEmpty()) {
+            cachedBleSignals = freshSignals
+            lastBleScanFinishedAtElapsedMs = finishedAt
+            return TimedRadioSignals(freshSignals, 0L)
+        }
+        // If a BLE scan failed or returned nothing, a recent snapshot can bridge this one miss.
+        // The age penalty and hard cache limit stop that old data from looking continuously fresh.
+        val ageAfterAttempt = if (lastBleScanFinishedAtElapsedMs > 0L &&
+            finishedAt >= lastBleScanFinishedAtElapsedMs) {
+            finishedAt - lastBleScanFinishedAtElapsedMs
+        } else Long.MAX_VALUE
+        if (cachedBleSignals.isNotEmpty() && ageAfterAttempt <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
+            return TimedRadioSignals(cachedBleSignals, ageAfterAttempt)
+        }
+        cachedBleSignals = emptyList()
+        lastBleScanFinishedAtElapsedMs = 0L
+        return TimedRadioSignals(emptyList(), null)
     }
 
     companion object {
         private val scanMutex = Mutex()
         private var lastWifiScanRequestAtElapsedMs = 0L
+        private var lastBleScanStartedAtElapsedMs = 0L
+        private var lastBleScanFinishedAtElapsedMs = 0L
+        private var cachedBleSignals: List<RadioSignal> = emptyList()
         private const val WIFI_SCAN_WAIT_MS = 3_000L
         private const val WIFI_SCAN_POLL_MS = 250L
         private const val BLE_SCAN_MS = 2_500L
