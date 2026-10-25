@@ -53,7 +53,9 @@ try {
     if ($TotalRamMb -lt 2048) { throw "At least 2 GiB RAM is recommended for Android builds; detected $TotalRamMb MiB." }
     $ReserveMb = [math]::Max(2048, [math]::Floor($TotalRamMb * 0.25))
     $HeapMb = [math]::Min([math]::Floor($TotalRamMb * 0.60), $TotalRamMb - $ReserveMb)
-    if ($FreeRamMb -lt 3072) { $HeapMb = [math]::Min($HeapMb, [math]::Max(1024, $FreeRamMb - 768)) }
+    # Also cap the heap by currently free RAM; leave at least 1.5 GiB or 25% of free RAM unused.
+    $FreeReserveMb = [math]::Max(1536, [math]::Floor($FreeRamMb * 0.25))
+    $HeapMb = [math]::Min($HeapMb, [math]::Max(1024, $FreeRamMb - $FreeReserveMb))
     $HeapMb = [math]::Min(8192, [math]::Max(1024, [math]::Floor($HeapMb / 256) * 256))
     $MetaMb = [math]::Min(1024, [math]::Max(512, [math]::Floor($HeapMb * 0.20)))
     $GradleJvmArgs = '-Xms256m -Xmx' + $HeapMb + 'm -XX:MaxMetaspaceSize=' + $MetaMb + 'm -Dfile.encoding=UTF-8'
