@@ -269,6 +269,30 @@ private fun radioTypeWeight(type: String): Double = when (type) {
     else -> 0.0
 }
 
+private const val RADIO_POINT_DAY_MS = 24L * 60L * 60L * 1_000L
+private const val MAX_WIFI_OR_CELL_POINT_AGE_MS = 5L * 365L * RADIO_POINT_DAY_MS
+private const val MAX_BLE_POINT_AGE_MS = 180L * RADIO_POINT_DAY_MS
+
+internal fun radioAnchorMaxAgeMillis(type: String): Long = when (type) {
+    "wifi", "cell" -> MAX_WIFI_OR_CELL_POINT_AGE_MS
+    "ble" -> MAX_BLE_POINT_AGE_MS
+    else -> 0L
+}
+
+/**
+ * Old imported/known coordinates remain usable for a bounded time, but their age reduces
+ * their weight and inflates uncertainty. BLE identifiers are less stable, so they expire sooner.
+ */
+internal fun radioAnchorAgePenaltyMeters(type: String, ageMillis: Long): Double {
+    val ageDays = ageMillis.coerceAtLeast(0L) / RADIO_POINT_DAY_MS.toDouble()
+    return when (type) {
+        "wifi" -> (ageDays * 0.35).coerceAtMost(750.0)
+        "cell" -> (ageDays * 0.18).coerceAtMost(500.0)
+        "ble" -> (ageDays * 1.5).coerceAtMost(300.0)
+        else -> 50_000.0
+    }
+}
+
 private fun fingerprintAccuracy(sample: RadioFingerprintSample): Double =
     sample.accuracyMeters?.takeIf { it.isFinite() && it > 0.0 }?.coerceIn(10.0, 50_000.0) ?: 250.0
 
@@ -452,11 +476,13 @@ internal fun estimateRadioAnchorPosition(
             if (signal.type !in setOf("wifi", "cell", "ble") ||
                 !lat.isFinite() || lat !in -90.0..90.0 ||
                 !lon.isFinite() || lon !in -180.0..180.0 ||
-                age !in 0..(365L * 24 * 60 * 60 * 1_000L) ||
+                age !in 0..radioAnchorMaxAgeMillis(signal.type) ||
                 point.positionSource.equals("local-radio-estimate", ignoreCase = true) ||
                 point.positionSource.equals("radio-estimate", ignoreCase = true)) return@mapNotNull null
-            val accuracy = (point.accuracyMeters ?: 250.0).takeIf { it.isFinite() && it > 0.0 }
+            val baseAccuracy = (point.accuracyMeters ?: 250.0).takeIf { it.isFinite() && it > 0.0 }
                 ?.coerceIn(20.0, 50_000.0) ?: 250.0
+            val accuracy = (baseAccuracy + radioAnchorAgePenaltyMeters(signal.type, age))
+                .coerceIn(20.0, 50_000.0)
             val accuracyFactor = (100.0 / accuracy).pow(0.8).coerceIn(0.12, 3.5)
             val rssiFactor = exp((signal.rssi.coerceIn(-110, -25) + 70.0) / 35.0).coerceIn(0.55, 1.8)
             val typeFactor = radioTypeWeight(signal.type)
@@ -770,7 +796,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 }
                 values.sortedByDescending { it.rssi }.take(limit)
             }
-        if (current.size < 2) return null
+        if (current.size < 2) {
+            DiagnosticLogStore.log(
+                appContext, "RADIO_DB",
+                "Расчёт пропущен: обнаружено только ${current.size} разных активных сигналов; требуется минимум 2"
+            )
+            return null
+        }
 
         val now = System.currentTimeMillis()
         // Prefer a past scan fingerprint: its coordinates are where the phone was,
@@ -780,9 +812,23 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             loadFingerprintSamples(current, now),
             now
         )
-        if (fingerprintLookup.estimate != null) return fingerprintLookup.estimate
+        if (fingerprintLookup.estimate != null) {
+            DiagnosticLogStore.log(
+                appContext, "RADIO_DB",
+                "Найден исторический радиоснимок: совпадений=${fingerprintLookup.estimate.matchedCount}, " +
+                    "погрешность≈${fingerprintLookup.estimate.accuracyMeters.toInt()} м"
+            )
+            return fingerprintLookup.estimate
+        }
         // Do not bypass an explicit ambiguity decision by falling back to a weaker centroid.
-        if (fingerprintLookup.ambiguous) return null
+        if (fingerprintLookup.ambiguous) {
+            DiagnosticLogStore.log(
+                appContext, "RADIO_DB",
+                "Исторические радиоснимки неоднозначны: похожие сигнатуры найдены в удалённых местах; координата отклонена",
+                "WARN"
+            )
+            return null
+        }
 
         // Fallback for locally imported WiGLE points or manually geolocated radios.
         val matches = ArrayList<Pair<RadioSignal, RadioPointRecord>>()
@@ -792,11 +838,19 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (point != null && point.latitude != null && point.longitude != null &&
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
-                (now - point.lastSeen) in 0..MAX_POINT_AGE_MS) {
+                (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
                 matches.add(signal to point)
             }
         }
-        return estimateRadioAnchorPosition(matches, now)
+        val anchorEstimate = estimateRadioAnchorPosition(matches, now)
+        DiagnosticLogStore.log(
+            appContext, "RADIO_DB",
+            "Сопоставление с координатами базы: услышано сигналов=${current.size}, координатных записей совпало=${matches.size}, " +
+                (anchorEstimate?.let {
+                    "оценка есть, совпадений в оценке=${it.matchedCount}, погрешность≈${it.accuracyMeters.toInt()} м"
+                } ?: "достоверная оценка не построена")
+        )
+        return anchorEstimate
     }
 
     /**
@@ -1784,7 +1838,6 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
-        private const val MAX_POINT_AGE_MS = 365L * 24 * 60 * 60 * 1_000L
         private const val FINGERPRINT_HISTORY_AGE_MS = 90L * 24 * 60 * 60 * 1_000L
         private const val MAX_FINGERPRINT_KEYS = 80
         private const val MAX_FINGERPRINT_SCANS = 250
