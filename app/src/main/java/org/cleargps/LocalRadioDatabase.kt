@@ -157,6 +157,8 @@ object ClearGpsPreferences {
     const val KEY_LAST_CELL_COUNT = "radio_last_cell_count"
     const val KEY_LAST_BLE_COUNT = "radio_last_ble_count"
     const val KEY_LAST_SCAN_AT = "radio_last_scan_at"
+    const val KEY_LAST_SCAN_MESSAGE = "radio_last_scan_message"
+    const val KEY_LAST_SCAN_HAS_ESTIMATE = "radio_last_scan_has_estimate"
     const val KEY_LAST_RECORDED_COUNT = "radio_last_recorded_count"
     const val KEY_MANUAL_LAT = "manual_anchor_lat"
     const val KEY_MANUAL_LON = "manual_anchor_lon"
