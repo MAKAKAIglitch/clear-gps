@@ -9,7 +9,11 @@ internal object RadioFixReliability {
     const val WIFI_MIN_REQUEST_INTERVAL_MS = 30_000L
     const val WIFI_MAX_CACHE_AGE_MS = 45_000L
     const val WIFI_FRESH_AGE_MS = 15_000L
+    const val BLE_MIN_REQUEST_INTERVAL_MS = 6_000L
+    const val BLE_MAX_CACHE_AGE_MS = 15_000L
+    const val BLE_FRESH_AGE_MS = 6_000L
     private const val WIFI_STALE_DRIFT_METERS_PER_SECOND = 35.0
+    private const val BLE_STALE_DRIFT_METERS_PER_SECOND = 25.0
     private const val MAX_MOCK_ACCURACY_METERS = 5_000f
 
     fun shouldRequestWifiScan(nowElapsedMs: Long, lastRequestElapsedMs: Long): Boolean =
@@ -17,13 +21,36 @@ internal object RadioFixReliability {
             (nowElapsedMs >= lastRequestElapsedMs &&
                 nowElapsedMs - lastRequestElapsedMs >= WIFI_MIN_REQUEST_INTERVAL_MS)
 
-    fun wifiAgePenaltyMeters(ageMillis: Long?, wifiSignalCount: Int, totalSignalCount: Int): Double {
-        if (ageMillis == null || ageMillis <= WIFI_FRESH_AGE_MS || wifiSignalCount <= 0) return 0.0
-        val total = totalSignalCount.coerceAtLeast(wifiSignalCount).coerceAtLeast(1)
-        val wifiShare = (wifiSignalCount.toDouble() / total).coerceIn(0.0, 1.0)
-        val staleSeconds = (ageMillis - WIFI_FRESH_AGE_MS).coerceAtLeast(0L) / 1_000.0
-        return (staleSeconds * WIFI_STALE_DRIFT_METERS_PER_SECOND * wifiShare)
-            .coerceAtMost(50_000.0)
+    fun wifiAgePenaltyMeters(ageMillis: Long?, wifiSignalCount: Int, totalSignalCount: Int): Double =
+        cachedRadioAgePenaltyMeters(
+            ageMillis = ageMillis,
+            cachedSignalCount = wifiSignalCount,
+            totalSignalCount = totalSignalCount,
+            freshAgeMillis = WIFI_FRESH_AGE_MS,
+            driftMetersPerSecond = WIFI_STALE_DRIFT_METERS_PER_SECOND
+        )
+
+    fun bleAgePenaltyMeters(ageMillis: Long?, bleSignalCount: Int, totalSignalCount: Int): Double =
+        cachedRadioAgePenaltyMeters(
+            ageMillis = ageMillis,
+            cachedSignalCount = bleSignalCount,
+            totalSignalCount = totalSignalCount,
+            freshAgeMillis = BLE_FRESH_AGE_MS,
+            driftMetersPerSecond = BLE_STALE_DRIFT_METERS_PER_SECOND
+        )
+
+    private fun cachedRadioAgePenaltyMeters(
+        ageMillis: Long?,
+        cachedSignalCount: Int,
+        totalSignalCount: Int,
+        freshAgeMillis: Long,
+        driftMetersPerSecond: Double
+    ): Double {
+        if (ageMillis == null || ageMillis <= freshAgeMillis || cachedSignalCount <= 0) return 0.0
+        val total = totalSignalCount.coerceAtLeast(cachedSignalCount).coerceAtLeast(1)
+        val cachedShare = (cachedSignalCount.toDouble() / total).coerceIn(0.0, 1.0)
+        val staleSeconds = (ageMillis - freshAgeMillis).coerceAtLeast(0L) / 1_000.0
+        return (staleSeconds * driftMetersPerSecond * cachedShare).coerceAtMost(50_000.0)
     }
 
     fun mockHoldWindowMillis(updateIntervalMillis: Long): Long {
