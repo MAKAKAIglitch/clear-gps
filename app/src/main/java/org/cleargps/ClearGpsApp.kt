@@ -794,6 +794,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     BackHandler(enabled = true) {
         when {
+            showExportOptions -> showExportOptions = false
             selectedMapPoint != null -> selectedMapPoint = null
             pointToEdit != null -> pointToEdit = null
             showDeleteAllDialog -> showDeleteAllDialog = false
