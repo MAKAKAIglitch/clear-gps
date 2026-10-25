@@ -266,13 +266,14 @@ class LocationMonitorService : Service(), LocationListener {
             obd2FallbackJob?.cancel()
             obd2FallbackJob = null
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
+            // Restore the physical GPS provider before subscribing again. This matters when
+            // switching from radio mock output to a GPS-backed source or applying new settings.
+            mock?.disable()
             lastTrustedGpsFixForObd2 = null
 
             when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
                 "radio", "radio_obd2" -> {
-                    // Discard any previously published mock location before radio lookup begins.
-                    // The radio-based modes never request Android GPS for their coordinates.
-                    mock?.disable()
+                    // Radio-based modes never request Android GPS for their coordinates.
                     prefs.edit()
                         .putBoolean(KEY_HAS_OUTPUT, false)
                         .putString(KEY_SOURCE, "NONE")
