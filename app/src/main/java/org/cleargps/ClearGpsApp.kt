@@ -16,8 +16,16 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -53,6 +61,8 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.EditLocationAlt
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.GpsFixed
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.ImportExport
@@ -731,7 +741,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     ClearGpsTheme(dark = mapIsDark) {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
-            val panelMaxHeight = if (panelVisible) maxHeight * panelFraction else 0.dp
+            // Keep the target height available during the exit animation; the visibility
+            // transition itself slides the panel off-screen rather than removing it abruptly.
+            val panelMaxHeight = maxHeight * panelFraction
+            val panelBottomOffset = if (panelVisible) panelMaxHeight else 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             AndroidView(factory = { viewContext ->
                 MapView(viewContext).also { view ->
@@ -761,7 +774,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     }
                 }
 
-                if (panelVisible) {
+                AnimatedVisibility(
+                    visible = panelVisible,
+                    modifier = Modifier.fillMaxWidth(),
+                    enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(280)) +
+                        expandVertically(expandFrom = Alignment.Bottom, animationSpec = tween(280)) +
+                        fadeIn(animationSpec = tween(180)),
+                    exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(240)) +
+                        shrinkVertically(shrinkTowards = Alignment.Bottom, animationSpec = tween(240)) +
+                        fadeOut(animationSpec = tween(160))
+                ) {
                 Surface(
                     Modifier.fillMaxWidth().height(panelMaxHeight),
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
@@ -786,7 +808,18 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 .clickable { panelVisible = false },
                             contentAlignment = Alignment.Center
                         ) {
-                            Surface(Modifier.width(40.dp).height(5.dp), shape = CircleShape, color = colors.outlineVariant) {}
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(Modifier.width(40.dp).height(5.dp), shape = CircleShape, color = colors.outlineVariant) {}
+                                Icon(
+                                    Icons.Outlined.ExpandMore,
+                                    contentDescription = "Скрыть меню",
+                                    tint = colors.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
                         Box(Modifier.fillMaxWidth().weight(1f)) {
                             when (selectedTab) {
@@ -916,22 +949,38 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         }
                     }
                 }
-                } else {
-                    Surface(
-                        Modifier.align(Alignment.CenterHorizontally)
-                            .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
-                        shape = RoundedCornerShape(24.dp),
-                        color = colors.surfaceContainerHigh,
-                        shadowElevation = 6.dp
+                }
+            }
+
+            AnimatedVisibility(
+                visible = !panelVisible,
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
+                enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(220)) +
+                    fadeIn(animationSpec = tween(160)),
+                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(180)) +
+                    fadeOut(animationSpec = tween(120))
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = colors.surfaceContainerHigh,
+                    shadowElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.clickable { panelVisible = true }
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        TextButton(onClick = { panelVisible = true; panelTargetFraction = 0.38f }) { Text("Открыть меню") }
+                        Icon(Icons.Outlined.ExpandLess, contentDescription = "Открыть меню")
+                        Text("Открыть меню", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
 
             Surface(
                 Modifier.align(Alignment.BottomEnd).padding(end = 16.dp,
-                    bottom = panelMaxHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
+                    bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
                 shape = CircleShape, color = colors.primaryContainer, shadowElevation = 6.dp
             ) {
                 IconButton(onClick = { mapController.focusPrimary() }, modifier = Modifier.size(50.dp)) {
@@ -939,14 +988,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
             }
             if (mapSourceMode == MapSourceMode.OFFLINE) {
-                Surface(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelMaxHeight + 14.dp),
+                Surface(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + 14.dp),
                     shape = RoundedCornerShape(10.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.94f)) {
                     Text("Офлайн-холст · тайлы не запрашиваются", Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                         style = MaterialTheme.typography.labelSmall, color = colors.onSurface)
                 }
             } else {
                 MapAttribution(
-                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelMaxHeight + 14.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + 14.dp),
                     dark = mapIsDark,
                     onClick = {
                         try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright"))) } catch (_: Exception) { }
