@@ -173,3 +173,8 @@
 **Поведение и ограничения:** базовая линия на этом шаге собирается в памяти процесса и не изменяет score/пороги детектора. Она ещё не используется как самостоятельное доказательство спуфинга; персистентное хранение, отображение готовности и применение отклонений к score потребуют отдельной проверки на логах. Численные пороги не менялись.
 
 **Проверки:** добавлены unit-тесты в `:core-detect`; CI для этого коммита должен подтвердить сборку и все тесты.
+
+
+### Follow-up: baseline no-data assertion
+
+- `core-detect/src/test/kotlin/org/cleargps/core/GnssDeviceBaselineTest.kt` — corrected the no-satellite case to assert that `firstSampleElapsedRealtimeNanos` remains null when the baseline accepted no samples. This is a test assertion correction; detector behaviour is unchanged.

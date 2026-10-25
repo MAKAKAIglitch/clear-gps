@@ -2,7 +2,6 @@ package org.cleargps.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,6 +93,6 @@ class GnssDeviceBaselineTest {
         assertEquals(0, snapshot.acceptedSignalSnapshots)
         assertNull(snapshot.meanCn0DbHz.mean)
         assertNull(snapshot.visibleSatellites.mean)
-        assertNotNull(snapshot.firstSampleElapsedRealtimeNanos.takeIf { it != null }?.let { it })
+        assertNull(snapshot.firstSampleElapsedRealtimeNanos)
     }
 }
