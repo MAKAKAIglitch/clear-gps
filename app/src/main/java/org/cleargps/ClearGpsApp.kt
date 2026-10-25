@@ -797,6 +797,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onMode = { applyPositionMode(it) },
                                     onScan = { startScan(recording) },
                                     onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
+                                    onRemoveManualAnchor = {
+                                        ManualLocationStore.save(context, null)
+                                        manualAnchor = null
+                                        mapController.updateManualAnchor(null)
+                                    },
                                     onRecording = { recording = it },
                                     onMonitoring = { if (monitorEnabled) stopMonitoring() else runMonitoring() },
                                     onMock = { if (mockEnabled) disableMock() else enableMock() },
@@ -1054,6 +1059,7 @@ private fun MapHomeScreen(
     pointCount: Int, recording: Boolean, scanBusy: Boolean, lookupPhase: LookupPhase, scanMessage: String,
     lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, filterState: String, riskScore: Int, serviceStatus: String,
     onMode: (PositionMode) -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
+    onRemoveManualAnchor: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -1113,6 +1119,18 @@ private fun MapHomeScreen(
             OutlinedButton(onClick = onManualAnchor, modifier = Modifier.weight(1f).heightIn(min = 50.dp),
                 shape = RoundedCornerShape(18.dp)) {
                 Icon(Icons.Outlined.EditLocationAlt, null); Spacer(Modifier.width(5.dp)); Text("Ориентир")
+            }
+            if (manualAnchor != null) {
+                Surface(
+                    modifier = Modifier.size(50.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = colors.errorContainer
+                ) {
+                    IconButton(onClick = onRemoveManualAnchor) {
+                        Icon(Icons.Outlined.DeleteOutline, contentDescription = "Убрать ручной ориентир",
+                            tint = colors.onErrorContainer)
+                    }
+                }
             }
         }
         if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
