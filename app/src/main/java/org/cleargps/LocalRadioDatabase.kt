@@ -40,6 +40,13 @@ data class RadioScanHistoryItem(
     val accuracyMeters: Double?, val mode: String, val recorded: Boolean
 )
 
+data class RadioImportResult(
+    val observationsImported: Int,
+    val uniqueRadios: Int,
+    val newRadios: Int,
+    val format: String
+)
+
 data class RadioEstimate(
     val latitude: Double, val longitude: Double, val accuracyMeters: Double, val updatedAt: Long,
     val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0
@@ -583,6 +590,73 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.execSQL("ALTER TABLE radio_points ADD COLUMN peak_rssi INTEGER NOT NULL DEFAULT -120")
             db.execSQL("UPDATE radio_points SET peak_rssi = last_rssi WHERE peak_rssi = -120")
         }
+        if (oldVersion < 4) {
+            normalizeIdentifiersAndMergeDuplicates(db)
+        }
+    }
+
+    /**
+     * Identifiers are case-insensitive MAC/network IDs in our collector. WiGLE exports can
+     * use uppercase MACs while Android's scanner emits lowercase ones; merge these rows
+     * before canonicalizing because radio_points has a UNIQUE(type, identifier) constraint.
+     */
+    private fun normalizeIdentifiersAndMergeDuplicates(db: SQLiteDatabase) {
+        val groups = ArrayList<Pair<String, String>>()
+        db.rawQuery(
+            "SELECT LOWER(radio_type), LOWER(identifier) FROM radio_points " +
+                "GROUP BY LOWER(radio_type), LOWER(identifier) HAVING COUNT(*) > 1",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) groups.add(cursor.getString(0) to cursor.getString(1))
+        }
+
+        groups.forEach { (type, identifier) ->
+            val records = ArrayList<RadioPointRecord>()
+            db.rawQuery(
+                "SELECT * FROM radio_points WHERE LOWER(radio_type) = ? AND LOWER(identifier) = ? " +
+                    "ORDER BY CASE WHEN position_source = 'manual-edit' THEN 0 " +
+                    "WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 2 END, last_seen DESC",
+                arrayOf(type, identifier)
+            ).use { cursor -> while (cursor.moveToNext()) records.add(cursor.toRadioPoint()) }
+            if (records.isEmpty()) return@forEach
+            val keeper = records.minByOrNull { it.id } ?: return@forEach
+            val newest = records.maxByOrNull { it.lastSeen } ?: keeper
+            val position = records.filter {
+                it.latitude != null && it.longitude != null &&
+                    it.latitude.isFinite() && it.longitude.isFinite() &&
+                    it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0
+            }.minWithOrNull(
+                compareBy<RadioPointRecord>(
+                    { if (it.positionSource == "manual-edit") 0 else if (it.positionSource.startsWith("wigle")) 1 else 2 },
+                    { it.accuracyMeters ?: Double.MAX_VALUE },
+                    { -it.peakRssi }
+                )
+            )
+            val notes = records.map { it.notes.trim() }.filter { it.isNotBlank() }.distinct().joinToString("\n")
+            val merged = ContentValues().apply {
+                put("radio_type", type)
+                put("identifier", identifier)
+                put("label", records.firstOrNull { it.label.isNotBlank() }?.label.orEmpty())
+                put("ssid", records.firstOrNull { it.ssid.isNotBlank() }?.ssid.orEmpty())
+                put("notes", notes.take(4_000))
+                put("latitude", position?.latitude)
+                put("longitude", position?.longitude)
+                put("accuracy", position?.accuracyMeters)
+                put("last_rssi", newest.rssi)
+                put("peak_rssi", records.maxOfOrNull { it.peakRssi } ?: newest.peakRssi)
+                put("frequency", records.firstOrNull { it.id == newest.id }?.frequency ?: newest.frequency)
+                put("first_seen", records.minOfOrNull { it.firstSeen } ?: keeper.firstSeen)
+                put("last_seen", records.maxOfOrNull { it.lastSeen } ?: newest.lastSeen)
+                put("sightings", records.sumOf { it.sightings }.coerceAtLeast(1))
+                put("position_source", position?.positionSource ?: newest.positionSource)
+            }
+            records.filter { it.id != keeper.id }.forEach { duplicate ->
+                db.delete("radio_points", "id = ?", arrayOf(duplicate.id.toString()))
+            }
+            db.update("radio_points", merged, "id = ?", arrayOf(keeper.id.toString()))
+        }
+        db.execSQL("UPDATE radio_points SET radio_type = LOWER(radio_type), identifier = LOWER(identifier)")
+        db.execSQL("UPDATE radio_observations SET radio_type = LOWER(radio_type), identifier = LOWER(identifier)")
     }
 
     fun recordScan(
@@ -1062,7 +1136,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
