@@ -94,7 +94,7 @@ fun estimateObservationCenter(observations: List<RadioPointObservation>): RadioP
     }
     if (totalWeight <= 0.0) return null
     val horizontal = kotlin.math.sqrt(x * x + y * y)
-    if (!horizontal.isFinite() || (horizontal < 1e-12 && kotlin.math.abs(z) < 1e-12)) return null
+    if (!horizontal.isFinite() || (horizontal < 1e-12 && abs(z) < 1e-12)) return null
     val latitude = Math.toDegrees(kotlin.math.atan2(z, horizontal)).coerceIn(-90.0, 90.0)
     val longitude = Math.toDegrees(kotlin.math.atan2(y, x))
     val lat0 = Math.toRadians(latitude)
@@ -327,7 +327,7 @@ internal fun lookupRadioFingerprintPosition(
                         .coerceIn(0.0, 1.0)
                 }
                 val rssiSimilarity = overlapOfType.map { (current, old) ->
-                    exp(-kotlin.math.abs(current.rssi - old.rssi).toDouble() / 18.0)
+                    exp(-abs(current.rssi - old.rssi).toDouble() / 18.0)
                 }.average().takeIf { overlapOfType.isNotEmpty() } ?: 0.0
                 weightedSimilarity += radioTypeWeight(type) * coverage * (0.55 + 0.45 * rssiSimilarity)
             }
@@ -1122,13 +1122,6 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             return rows
         }
 
-        private fun hashSignals(signals: List<RadioSignal>): String {
-            val input = signals.sortedWith(compareBy<RadioSignal> { it.type }.thenBy { it.identifier })
-                .joinToString("|") { "${it.type}:${it.identifier}" }
-            return java.security.MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-                .joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 0xff) }
-        }
-
         private fun frequencyToChannel(frequency: Int): Int = when {
             frequency in 2412..2472 -> (frequency - 2407) / 5
             frequency == 2484 -> 14
@@ -1137,12 +1130,5 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             else -> 0
         }
 
-        private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-            val dLat = Math.toRadians(lat2 - lat1)
-            val dLon = Math.toRadians(lon2 - lon1)
-            val a = sin(dLat / 2).pow(2) +
-                cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
-            return 6_371_000.0 * 2 * kotlin.math.asin(sqrt(a.coerceIn(0.0, 1.0)))
-        }
     }
 }
