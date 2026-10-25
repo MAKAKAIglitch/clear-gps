@@ -15,6 +15,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
+ * Reject invalid coordinates before creating or publishing an Android mock location.
+ * Kept platform-independent so boundary and non-finite values can be unit-tested.
+ */
+internal fun isValidMockCoordinate(latitude: Double, longitude: Double): Boolean =
+    latitude.isFinite() && latitude in -90.0..90.0 &&
+        longitude.isFinite() && longitude in -180.0..180.0
+
+/**
  * Determines which Android providers may be replaced without disrupting Clear GPS's physical
  * inputs. The direct GPS provider is intentionally omitted in GPS/Auto modes.
  */
@@ -80,9 +88,7 @@ class MockLocationOutput(context: Context) {
         alsoPublishNetworkProvider: Boolean = false,
         publishGpsProvider: Boolean = true
     ): Boolean {
-        if (!source.latitude.isFinite() || source.latitude !in -90.0..90.0 ||
-            !source.longitude.isFinite() || source.longitude !in -180.0..180.0
-        ) {
+        if (!isValidMockCoordinate(source.latitude, source.longitude)) {
             return fail(
                 "Отвергнуты некорректные координаты источника",
                 IllegalArgumentException("Latitude/longitude out of range or not finite")
