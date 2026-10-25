@@ -471,9 +471,12 @@ class LocationMonitorService : Service(), LocationListener {
                         useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
                     )
                     val estimate = result.estimate
+                    val currentSignalCount = result.wifiCount + result.cellCount + result.beaconCount
                     val rejectionReason = when {
+                        estimate == null && currentSignalCount < 2 ->
+                            "Сейчас обнаружено только $currentSignalCount радиосигналов. Для расчёта нужны минимум 2 актуальных сигнала; сохранённые точки, которые телефон не слышит, координату не дают."
                         estimate == null ->
-                            "Текущий радиоскан не дал координату: сигналы могли быть ограничены Android, совпадения неоднозначны или у них нет пригодных координат."
+                            "Текущий скан увидел $currentSignalCount радиосигналов, но не нашёл однозначную координату: совпадения могут быть неоднозначны или записи не содержат координат."
                         estimate.matchedCount < RADIO_MIN_MATCHES ->
                             "Оценка отклонена для mock GPS: совпадений ${estimate.matchedCount}, нужно не меньше $RADIO_MIN_MATCHES."
                         estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ->
