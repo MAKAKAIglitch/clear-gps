@@ -1365,12 +1365,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val notes = cursor.getColumnIndex("notes").takeIf { it >= 0 }?.let { cursor.getString(it).orEmpty() }.orEmpty()
                     val lat = cursor.doubleOrNull("latitude")
                     val lon = cursor.doubleOrNull("longitude")
-                    val accuracy = cursor.doubleOrNull("accuracy")
-                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("last_rssi"))
-                    val peak = cursor.getColumnIndex("peak_rssi").takeIf { it >= 0 }?.let { cursor.getInt(it) } ?: rssi
-                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency"))
-                    val firstSeen = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen"))
-                    val lastSeen = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen"))
+                    val accuracy = cursor.doubleOrNull("accuracy")?.takeIf { it in 1.0..100_000.0 }
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("last_rssi")).coerceIn(-120, 0)
+                    val peak = (cursor.getColumnIndex("peak_rssi").takeIf { it >= 0 }
+                        ?.let { cursor.getInt(it) } ?: rssi).coerceIn(-120, 0)
+                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0)
+                    val firstSeen = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen")).coerceAtLeast(0L)
+                    val lastSeen = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen")).coerceAtLeast(firstSeen)
                     val sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")).coerceAtLeast(1)
                     val positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
                     if (upsertNativePoint(
@@ -1391,10 +1392,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val lon = cursor.doubleOrNull("longitude")
                     if ((lat == null) != (lon == null) || (lat != null && !validCoordinates(lat, lon))) continue
                     val observedAt = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at"))
-                    val accuracy = cursor.doubleOrNull("accuracy")
-                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi"))
-                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency"))
-                    val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    if (observedAt <= 0L) continue
+                    val accuracy = cursor.doubleOrNull("accuracy")?.takeIf { it in 1.0..100_000.0 }
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).coerceIn(-120, 0)
+                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0)
+                    val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty().take(100)
                     if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source)) {
                         observationsImported++
                     }
@@ -1466,7 +1468,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 val info = WigleNetworkSummary(
                     type, identifier, cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
                     cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0),
-                    cursor.getColumnIndex("lasttime").takeIf { it >= 0 }?.let { cursor.getLong(it) } ?: 0L,
+                    cursor.getColumnIndex("lasttime").takeIf { it >= 0 }?.let { cursor.getLong(it) }?.takeIf { it > 0L }
+                        ?: System.currentTimeMillis(),
                     cursor.getColumnIndex("bestlevel").takeIf { it >= 0 }?.let { cursor.getInt(it) }
                         ?.takeIf { it in -120..-1 } ?: -100,
                     pair?.first, pair?.second
@@ -1492,10 +1495,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val lon = cursor.doubleOrNull("lon")
                     if ((lat == null) != (lon == null) || (lat != null && !validCoordinates(lat, lon))) continue
                     val time = cursor.getLong(cursor.getColumnIndexOrThrow("time"))
+                    if (time <= 0L) continue
                     val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("level")).coerceIn(-120, 0)
                     val accuracy = cursor.doubleOrNull("accuracy")?.takeIf { it > 0.0 }
                         ?.coerceAtMost(100_000.0) ?: DEFAULT_IMPORTED_ACCURACY_METERS
-                    val frequency = info?.frequency ?: 0
+                    val frequency = (info?.frequency ?: 0).coerceIn(0, 100_000)
                     val key = type + "|" + identifier
                     seenKeys.add(key)
                     touched.add(key)
