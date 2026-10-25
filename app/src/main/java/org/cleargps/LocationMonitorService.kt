@@ -493,10 +493,14 @@ class LocationMonitorService : Service(), LocationListener {
                         val mockPublished = !mockRequested || mock?.publish(output) == true
                         if (mockPublished) {
                             if (mockRequested) {
-                                // Track only a genuinely confirmed radio estimate; held/stale
-                                // updates must never extend this grace period.
-                                lastRadioMockFix = Location(output)
-                                lastRadioMockFixAtElapsedMs = SystemClock.elapsedRealtime()
+                                // Cached Wi-Fi data can still support a useful short-term estimate,
+                                // but must not refresh the timer for our bounded last-confirmed fix.
+                                // Otherwise repeated reads of the same cache could keep a stale
+                                // coordinate alive indefinitely while the radio scan is throttled.
+                                if (!result.fromCache) {
+                                    lastRadioMockFix = Location(output)
+                                    lastRadioMockFixAtElapsedMs = SystemClock.elapsedRealtime()
+                                }
                             } else {
                                 lastRadioMockFix = null
                                 lastRadioMockFixAtElapsedMs = 0L
@@ -508,8 +512,9 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putString(KEY_LAT, output.latitude.toString())
                                 .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
                             saveServiceStatus(
-                                (if (mockRequested) "Mock GPS published · " else "Radio estimate only · ") +
-                                    estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m"
+                                (if (mockRequested) "Mock GPS published" else "Radio estimate only") +
+                                    (if (result.fromCache) " · cached radio data" else "") +
+                                    " · " + estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m"
                             )
                         } else {
                             lastRadioMockFix = null
@@ -595,7 +600,6 @@ class LocationMonitorService : Service(), LocationListener {
                     val nowElapsedMs = SystemClock.elapsedRealtime()
                     val confirmed = lastRadioMockFix
                     val confirmedAt = lastRadioMockFixAtElapsedMs
-                    val intervalMs = configuredUpdateIntervalMillis()
                     val ageMs = if (confirmedAt > 0L && nowElapsedMs >= confirmedAt) nowElapsedMs - confirmedAt else Long.MAX_VALUE
                     val canHold = prefs.getBoolean(KEY_MOCK_ENABLED, false) && confirmed != null &&
                         RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
@@ -632,8 +636,12 @@ class LocationMonitorService : Service(), LocationListener {
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
                         lastRadioMockFix = null
                         lastRadioMockFixAtElapsedMs = 0L
+                        val failureReason = "Ошибка радиосканирования: " + (error.message ?: error.javaClass.simpleName)
                         prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                             .putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                            .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
+                            .putString(KEY_REASONS, failureReason)
+                            .putInt(KEY_SCORE, 0)
                             .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
                         saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
                     }
