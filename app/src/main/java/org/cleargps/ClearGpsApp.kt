@@ -1233,6 +1233,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onScanInterval = {
                                         scanIntervalSeconds = it.coerceIn(1, 30)
                                         prefs.edit().putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, scanIntervalSeconds).apply()
+                                    },
+                                    onScanIntervalFinished = {
                                         if (monitorEnabled) {
                                             val intent = Intent(context, LocationMonitorService::class.java)
                                                 .setAction(LocationMonitorService.ACTION_START)
@@ -2262,7 +2264,8 @@ private fun SettingsScreen(
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
-    onScanInterval: (Int) -> Unit, onAdaptiveScan: (Boolean) -> Unit,
+    onScanInterval: (Int) -> Unit, onScanIntervalFinished: () -> Unit,
+    onAdaptiveScan: (Boolean) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit
@@ -2376,6 +2379,7 @@ private fun SettingsScreen(
                     Slider(
                         value = scanIntervalSeconds.toFloat(),
                         onValueChange = { onScanInterval(it.roundToInt().coerceIn(1, 30)) },
+                        onValueChangeFinished = onScanIntervalFinished,
                         valueRange = 1f..30f,
                         steps = 28,
                         modifier = Modifier.fillMaxWidth()
