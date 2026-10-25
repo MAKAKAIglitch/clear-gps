@@ -58,6 +58,17 @@ internal object RadioFixReliability {
         return (staleSeconds * driftMetersPerSecond * cachedShare).coerceAtMost(50_000.0)
     }
 
+    fun canRetainLastEstimate(
+        estimateUpdatedAtMillis: Long,
+        nowMillis: Long,
+        matchedCount: Int,
+        accuracyMeters: Double
+    ): Boolean {
+        val ageMillis = nowMillis - estimateUpdatedAtMillis
+        return ageMillis in 0..45_000L && matchedCount >= 2 &&
+            accuracyMeters.isFinite() && accuracyMeters in 1.0..1_000.0
+    }
+
     fun mockHoldWindowMillis(updateIntervalMillis: Long): Long {
         val interval = updateIntervalMillis.coerceIn(1_000L, 30_000L)
         return maxOf(15_000L, interval * 2L).coerceAtMost(60_000L)
