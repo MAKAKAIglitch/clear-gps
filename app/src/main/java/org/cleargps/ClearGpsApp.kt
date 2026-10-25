@@ -521,6 +521,20 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             }
         }
     }
+    val exportWigleSqliteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.sqlite3")) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                    output.use { database.exportWigleSqlite(it) }
+                }
+                Toast.makeText(context, "WiGLE SQLite сохранён: сети и геолокированные наблюдения.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка WiGLE SQLite-экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) scope.launch {
             try {
@@ -1145,25 +1159,38 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             title = { Text("Экспорт данных") },
             text = {
                 Text(
-                    "WiGLE CSV сохраняет отдельные наблюдения для совместимости с WiGLE. " +
-                        "SQLite — полная резервная копия Clear GPS с радиоточками, наблюдениями и историей. " +
-                        "Импорт SQLite объединяет данные и не заменяет текущую базу."
+                    "CSV — наблюдения для совместимости с WiGLE. " +
+                        "WiGLE SQLite — таблицы network/location для совместимых инструментов. " +
+                        "Clear GPS backup — полная копия со всеми точками, наблюдениями и историей сканирований."
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showExportOptions = false
-                    exportCsvLauncher.launch("ClearGPS-WiGLE.csv")
-                }) { Text("WiGLE CSV") }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(
+                        onClick = {
+                            showExportOptions = false
+                            exportCsvLauncher.launch("ClearGPS-WiGLE.csv")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("WiGLE CSV") }
+                    TextButton(
+                        onClick = {
+                            showExportOptions = false
+                            exportWigleSqliteLauncher.launch("ClearGPS-WiGLE.sqlite")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("WiGLE SQLite") }
+                    TextButton(
+                        onClick = {
+                            showExportOptions = false
+                            exportSqliteLauncher.launch("ClearGPS-backup.sqlite")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Резервная копия Clear GPS") }
+                }
             },
             dismissButton = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = {
-                        showExportOptions = false
-                        exportSqliteLauncher.launch("ClearGPS-backup.sqlite")
-                    }) { Text("SQLite backup") }
-                    TextButton(onClick = { showExportOptions = false }) { Text("Отмена") }
-                }
+                TextButton(onClick = { showExportOptions = false }) { Text("Отмена") }
             }
         )
     }
