@@ -321,6 +321,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mutableStateOf((prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() })
     }
     var serviceStatus by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: "") }
+    var fusedMockStatus by remember {
+        mutableStateOf(prefs.getString(LocationMonitorService.KEY_FUSED_MOCK_STATUS, "") ?: "")
+    }
     var detailedLogging by remember { mutableStateOf(prefs.getBoolean(DiagnosticLogStore.KEY_ENABLED, false)) }
     var diagnosticLogMaxKb by remember {
         mutableStateOf(prefs.getInt(DiagnosticLogStore.KEY_MAX_KB, DiagnosticLogStore.DEFAULT_MAX_KB)
@@ -1036,6 +1039,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
+            fusedMockStatus = prefs.getString(LocationMonitorService.KEY_FUSED_MOCK_STATUS, "") ?: ""
 
             // The foreground service owns radio scans while monitoring is active. Mirror its
             // latest persisted counters/message so the screen cannot stay stuck on an older scan.
@@ -1414,6 +1418,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     scanMessage = scanMessage, lastScanAt = lastScanAt, monitorEnabled = monitorEnabled,
                                     mockEnabled = mockEnabled, fixEnabled = monitorEnabled && mockEnabled,
                                     mockOutputActive = mockOutputActive,
+                                    fusedMockStatus = fusedMockStatus,
                                     scanIntervalSeconds = scanIntervalSeconds,
                                     filterState = filterState, riskScore = riskScore,
                                     riskReasons = riskReasons, serviceStatus = serviceStatus,
@@ -1915,7 +1920,8 @@ private fun MapHomeScreen(
     currentEstimate: RadioEstimate?, manualAnchor: ManualAnchor?, wifiCount: Int, cellCount: Int, bleCount: Int,
     pointCount: Int, recording: Boolean, scanBusy: Boolean, lookupPhase: LookupPhase, scanMessage: String,
     lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, fixEnabled: Boolean,
-    mockOutputActive: Boolean, scanIntervalSeconds: Int, filterState: String, riskScore: Int,
+    mockOutputActive: Boolean, fusedMockStatus: String, scanIntervalSeconds: Int,
+    filterState: String, riskScore: Int,
     riskReasons: List<String>, serviceStatus: String,
     onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
@@ -2062,6 +2068,15 @@ private fun MapHomeScreen(
             maxLines = 3,
             overflow = TextOverflow.Ellipsis
         )
+        if (fixEnabled && fusedMockStatus.isNotBlank()) {
+            val fusedStatusIsWarning = listOf("не принял", "недоступен", "не удалось", "ошибка", "проверь")
+                .any { fusedMockStatus.contains(it, ignoreCase = true) }
+            Text(
+                "Fused Location: " + fusedMockStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (fusedStatusIsWarning) colors.error else colors.onSurfaceVariant
+            )
+        }
         if (fixEnabled && !mockOutputActive) {
             Text(
                 "Другие приложения сейчас не получают новые mock-координаты. Статус: " +

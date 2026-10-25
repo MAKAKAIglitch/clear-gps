@@ -350,7 +350,9 @@ class LocationMonitorService : Service(), LocationListener {
                         elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     }
 
-                    if (mock?.publish(location, alsoPublishNetworkProvider = true) != true) {
+                    if (mock?.publish(
+                            location, alsoPublishNetworkProvider = true, publishGpsProvider = true
+                        ) != true) {
                         publicationFailure = mock?.lastError ?: "Android rejected the BeaconDB mock location."
                         saveServiceStatus("BeaconDB result was calculated, but mock output failed: $publicationFailure")
                         break
@@ -589,7 +591,9 @@ class LocationMonitorService : Service(), LocationListener {
                         bearing = lastFix.bearing
                     }
                     val mockEnabled = prefs.getBoolean(KEY_MOCK_ENABLED, false)
-                    val canPublish = !mockEnabled || mock?.publish(projected) == true
+                    val canPublish = !mockEnabled || mock?.publish(
+                        projected, publishGpsProvider = false
+                    ) == true
                     if (canPublish) {
                         val wasAlreadyPublished = obd2FallbackPublished
                         prefs.edit()
@@ -685,7 +689,9 @@ class LocationMonitorService : Service(), LocationListener {
             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         }
 
-        if (mock?.publish(held, alsoPublishNetworkProvider = true) != true) {
+        if (mock?.publish(
+                held, alsoPublishNetworkProvider = true, publishGpsProvider = true
+            ) != true) {
             prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
             saveServiceStatus("Mock GPS не опубликован: $reason")
@@ -792,7 +798,9 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                         }
-                        val mockPublished = !mockRequested || mock?.publish(output, alsoPublishNetworkProvider = true) == true
+                        val mockPublished = !mockRequested || mock?.publish(
+                            output, alsoPublishNetworkProvider = true, publishGpsProvider = true
+                        ) == true
                         if (mockPublished) {
                             if (mockRequested) {
                                 // Anchor the hold timer to the oldest contributing evidence, not
@@ -852,7 +860,9 @@ class LocationMonitorService : Service(), LocationListener {
                                 time = System.currentTimeMillis()
                                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                             }
-                            if (mock?.publish(held, alsoPublishNetworkProvider = true) == true) {
+                            if (mock?.publish(
+                                    held, alsoPublishNetworkProvider = true, publishGpsProvider = true
+                                ) == true) {
                                 prefs.edit()
                                     .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
                                     .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
@@ -924,7 +934,9 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                         }
-                        if (mock?.publish(held, alsoPublishNetworkProvider = true) == true) {
+                        if (mock?.publish(
+                                held, alsoPublishNetworkProvider = true, publishGpsProvider = true
+                            ) == true) {
                             prefs.edit()
                                 .putBoolean(KEY_HAS_OUTPUT, true)
                                 .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
@@ -1130,7 +1142,9 @@ class LocationMonitorService : Service(), LocationListener {
         }
 
         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && result.outputLocation != null) {
-            if (mock?.publish(result.outputLocation) == true) {
+            if (mock?.publish(
+                    result.outputLocation, publishGpsProvider = false
+                ) == true) {
                 prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true).apply()
                 val accuracyText = if (result.outputLocation.hasAccuracy()) " · ±" + result.outputLocation.accuracy.toInt() + " m" else ""
                 saveServiceStatus("Mock GPS published · " + result.source + accuracyText)
@@ -1165,6 +1179,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     override fun onDestroy() {
         stopTracking()
+        mock?.close()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -1256,6 +1271,8 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_MOCK_ENABLED = "mock_enabled"
         const val KEY_MOCK_OUTPUT_ACTIVE = "mock_output_active"
         const val KEY_MOCK_LAST_PUBLISHED_ELAPSED_MS = "mock_last_published_elapsed_ms"
+        const val KEY_FUSED_MOCK_ACTIVE = "fused_mock_active"
+        const val KEY_FUSED_MOCK_STATUS = "fused_mock_status"
         const val KEY_STATE = "state"
         const val KEY_SCORE = "risk_score"
         const val KEY_REASONS = "risk_reasons"
