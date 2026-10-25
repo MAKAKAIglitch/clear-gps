@@ -326,19 +326,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             scanMessage = if (recordNow) "Сохраняю наблюдения в локальную SQLite-базу…" else "Сканирую Wi‑Fi, мобильные соты и Bluetooth LE…"
             try {
                 val now = System.currentTimeMillis()
-                // In radio-only mode, all live coordinates must come from a match in the local radio DB.
-                // Never use Android location providers or a manually placed anchor as a silent fallback.
+                // An estimate derived from the local database is not a ground-truth reference.
+                // Never feed it back into the database as a newly "known" coordinate.
                 val trustedRadioEstimate = currentRadioEstimate?.takeIf {
                     val age = now - it.updatedAt
                     age in 0..30L * 60L * 1_000L && it.matchedCount >= 3 && it.accuracyMeters <= 1_000.0
                 }
-                val reference = if (positionMode == PositionMode.RADIO_ONLY) {
-                    trustedRadioEstimate?.let {
-                        RadioReference(it.latitude, it.longitude, it.accuracyMeters, "local-radio-estimate")
-                    }
-                } else {
-                    currentReference(liveLocation, manualAnchor)
-                }
+                val reference = if (positionMode == PositionMode.RADIO_ONLY) null
+                    else currentReference(liveLocation, manualAnchor)
                 val observedPosition = if (positionMode == PositionMode.RADIO_ONLY) {
                     trustedRadioEstimate?.let { ZonePoint(it.latitude, it.longitude) }
                 } else {
