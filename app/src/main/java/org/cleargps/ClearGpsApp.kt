@@ -104,6 +104,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -598,6 +599,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
             val panelMaxHeight = maxHeight * panelFraction
+            val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             AndroidView(factory = { viewContext ->
                 MapView(viewContext).also { view ->
                     onMapViewCreated(view)
@@ -634,11 +636,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     Column(Modifier.fillMaxSize()) {
                         Box(
                             Modifier.fillMaxWidth().height(28.dp)
-                                .pointerInput(Unit) {
+                                .pointerInput(panelHeightPx) {
                                     detectVerticalDragGestures { change, dragAmount ->
                                         change.consume()
-                                        if (size.height > 0) {
-                                            panelTargetFraction = (panelTargetFraction - dragAmount / size.height.toFloat()).coerceIn(0.18f, 0.82f)
+                                        if (panelHeightPx > 0f) {
+                                            panelTargetFraction = (panelTargetFraction - dragAmount / panelHeightPx).coerceIn(0.18f, 0.82f)
                                         }
                                     }
                                 }
