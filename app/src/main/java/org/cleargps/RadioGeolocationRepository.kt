@@ -20,6 +20,8 @@ import android.telephony.CellInfoWcdma
 import android.telephony.CellIdentityNr
 import android.telephony.TelephonyManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -89,11 +91,15 @@ class RadioGeolocationRepository(private val context: Context) {
             false, message, estimate?.matchedCount ?: 0, recorded)
     }
 
-    private suspend fun collectSnapshot(): ScanSnapshot {
-        val wifi = collectWifi()
+    private suspend fun collectSnapshot(): ScanSnapshot = coroutineScope {
+        // Wi-Fi can take up to 3 s and BLE up to 2.5 s. Collect them concurrently so
+        // the requested refresh interval is not inflated by the sum of both waits.
+        val wifiTask = async { collectWifi() }
+        val bleTask = async { collectBluetooth() }
         val cells = collectCells()
-        val ble = collectBluetooth()
-        return ScanSnapshot(wifi + cells + ble, wifi.size, cells.size, ble.size)
+        val wifi = wifiTask.await()
+        val ble = bleTask.await()
+        ScanSnapshot(wifi + cells + ble, wifi.size, cells.size, ble.size)
     }
 
     @Suppress("DEPRECATION")
