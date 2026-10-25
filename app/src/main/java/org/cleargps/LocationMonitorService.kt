@@ -513,7 +513,7 @@ class LocationMonitorService : Service(), LocationListener {
             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         }
 
-        if (mock?.publish(held) != true) {
+        if (mock?.publish(held, alsoPublishNetworkProvider = true) != true) {
             prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             val reason = mock?.lastError ?: "Проверь выбор Clear GPS в настройках разработчика."
             saveServiceStatus("Mock GPS не опубликован: $reason")
@@ -534,10 +534,22 @@ class LocationMonitorService : Service(), LocationListener {
             .putString(KEY_LON, held.longitude.toString())
             .putFloat(KEY_ACCURACY, held.accuracy)
             .apply()
-        val status = "Mock GPS published · refreshing recent radio fix · cached age " +
+        val status = radioMockProviderStatus() + " · refreshing recent radio fix · cached age " +
             (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m"
         saveServiceStatus(status)
         DiagnosticLogStore.log(this, "MOCK", "Недавняя радиопозиция опубликована до завершения нового сканирования; age=" + (ageMs / 1_000L) + "s")
+    }
+
+    private fun radioMockProviderStatus(): String {
+        val networkProviderPublished =
+            mock?.lastPublishedProviders?.contains(LocationManager.NETWORK_PROVIDER) == true
+        val base = if (networkProviderPublished) {
+            "Mock GPS + network published"
+        } else {
+            "Mock GPS published · network provider unavailable"
+        }
+        val warning = mock?.lastWarning
+        return if (warning.isNullOrBlank()) base else "$base · $warning"
     }
 
     private fun startRadioOnlyLoop() {
@@ -608,7 +620,7 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                         }
-                        val mockPublished = !mockRequested || mock?.publish(output) == true
+                        val mockPublished = !mockRequested || mock?.publish(output, alsoPublishNetworkProvider = true) == true
                         if (mockPublished) {
                             if (mockRequested) {
                                 // Anchor the hold timer to the oldest contributing evidence, not
@@ -629,7 +641,7 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putString(KEY_LAT, output.latitude.toString())
                                 .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
                             saveServiceStatus(
-                                (if (mockRequested) "Mock GPS published" else "Radio estimate only") +
+                                (if (mockRequested) radioMockProviderStatus() else "Radio estimate only") +
                                     (if (result.fromCache) " · cached radio data" else "") +
                                     " · " + estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m"
                             )
@@ -668,7 +680,7 @@ class LocationMonitorService : Service(), LocationListener {
                                 time = System.currentTimeMillis()
                                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                             }
-                            if (mock?.publish(held) == true) {
+                            if (mock?.publish(held, alsoPublishNetworkProvider = true) == true) {
                                 prefs.edit()
                                     .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
                                     .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
@@ -681,7 +693,7 @@ class LocationMonitorService : Service(), LocationListener {
                                     .putFloat(KEY_ACCURACY, held.accuracy)
                                     .apply()
                                 saveServiceStatus(
-                                    "Radio scan missed · holding last mock GPS fix for " +
+                                    radioMockProviderStatus() + " · scan missed · holding last fix for " +
                                         (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m. " +
                                         rejectionReason
                                 )
@@ -740,7 +752,7 @@ class LocationMonitorService : Service(), LocationListener {
                             time = System.currentTimeMillis()
                             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                         }
-                        if (mock?.publish(held) == true) {
+                        if (mock?.publish(held, alsoPublishNetworkProvider = true) == true) {
                             prefs.edit()
                                 .putBoolean(KEY_HAS_OUTPUT, true)
                                 .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
@@ -751,7 +763,7 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putString(KEY_REASONS, "Ошибка радиосканирования; используется краткий резерв.")
                                 .apply()
                             saveServiceStatus(
-                                "Radio scan error · holding last mock GPS fix for " + (ageMs / 1_000L) +
+                                radioMockProviderStatus() + " · scan error · holding last fix for " + (ageMs / 1_000L) +
                                     " s · uncertainty ±" + held.accuracy.toInt() + " m"
                             )
                         } else {

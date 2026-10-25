@@ -1893,6 +1893,8 @@ private fun MapHomeScreen(
                     )
                     StatusPill(
                         when {
+                            fixEnabled && mockOutputActive &&
+                                serviceStatus.contains("Mock GPS + network published", ignoreCase = true) -> "Mock GPS + Network"
                             fixEnabled && mockOutputActive -> "Mock GPS активен"
                             fixEnabled -> "Фикс ждёт координаты"
                             coordinate != null -> "Координаты найдены"
@@ -1997,9 +1999,11 @@ private fun MapHomeScreen(
         Text(
             when {
                 !fixEnabled -> "Фикс выключен · координаты не передаются другим приложениям"
-                mockOutputActive && serviceStatus.contains("holding last mock GPS fix", ignoreCase = true) ->
-                    "Mock GPS передаётся · временно удерживается последняя радиопозиция с растущей погрешностью"
-                mockOutputActive -> "Mock GPS действительно публикует позиции · целевой интервал $scanIntervalSeconds с"
+                mockOutputActive && serviceStatus.contains("holding last", ignoreCase = true) ->
+                    "Android принял mock-координаты · временно удерживается последняя радиопозиция с растущей погрешностью"
+                mockOutputActive -> "Android принял mock-обновление через " +
+                    (if (serviceStatus.contains("Mock GPS + network published", ignoreCase = true)) "GPS + Network" else "GPS") +
+                    " · целевой интервал $scanIntervalSeconds с"
                 else -> "Фикс включён, но mock GPS сейчас не публикуется"
             },
             style = MaterialTheme.typography.labelSmall,
@@ -2014,6 +2018,12 @@ private fun MapHomeScreen(
                     ". Проверь выбор Clear GPS в настройках разработчика и доступность совпадений.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.error
+            )
+        } else if (fixEnabled && mockOutputActive) {
+            Text(
+                "Android принимает тестовую позицию. Координаты помечены как mock; приложения, блокирующие фиктивную геолокацию, могут их игнорировать.",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
             )
         }
         if (!mode.gpsOnly) {
