@@ -79,6 +79,9 @@ class MockLocationOutput(context: Context) {
                 }
             }
             manager.setTestProviderLocation(LocationManager.GPS_PROVIDER, out)
+            appContext.getSharedPreferences(LocationMonitorService.PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(LocationMonitorService.KEY_MOCK_LAST_PUBLISHED_ELAPSED_MS, SystemClock.elapsedRealtime())
+                .apply()
             lastError = null
             DiagnosticLogStore.log(
                 appContext, "MOCK",
