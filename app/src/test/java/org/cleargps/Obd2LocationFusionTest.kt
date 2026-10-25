@@ -45,7 +45,7 @@ class Obd2LocationFusionTest {
     fun predictionHasStrictAgeAndDistanceLimits() {
         assertNull(
             Obd2LocationFusion.predictFromGps(
-                MapCoordinate(52.0, 39.0), 10.0, 90.0, 1_000L, 36, 10_000L, 12_000L
+                MapCoordinate(52.0, 39.0), 10.0, 90.0, 1_000L, 1, 29_000L, 31_001L
             )
         )
         assertNull(
