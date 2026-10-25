@@ -1,5 +1,6 @@
 package org.cleargps
 
+import android.app.ActivityManager
 import android.content.Context
 import android.location.Location
 import org.cleargps.core.SavedRiskZone
@@ -45,18 +46,39 @@ class ClearGpsMapController {
     private var mapReady = false
     private var cameraInitialized = false
     private var darkMode = false
+    private var offlineMode = false
     private var showRadioPoints = true
+    private var maxRadioPoints = MAX_MAP_RADIO_POINTS
     var onMapTap: ((Double, Double) -> Boolean)? = null
+    var onRadioPointTap: ((Long) -> Unit)? = null
 
-    fun attach(mapView: MapView, context: Context, initialDarkMode: Boolean = false) {
+    fun attach(
+        mapView: MapView, context: Context,
+        initialDarkMode: Boolean = false, initialOfflineMode: Boolean = false
+    ) {
         darkMode = initialDarkMode
+        offlineMode = initialOfflineMode
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        maxRadioPoints = if (activityManager?.isLowRamDevice == true ||
+            Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 400 else MAX_MAP_RADIO_POINTS
         mapView.getMapAsync { mapObject ->
             map = mapObject
             applyStyle()
             mapObject.addOnMapClickListener { point ->
-                val handler = onMapTap
-                if (tapMode == MapTapMode.NONE || handler == null) false
-                else handler(point.latitude, point.longitude)
+                if (tapMode != MapTapMode.NONE) {
+                    onMapTap?.invoke(point.latitude, point.longitude) ?: false
+                } else {
+                    val hit = try {
+                        mapObject.queryRenderedFeatures(
+                            mapObject.projection.toScreenLocation(point),
+                            WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER
+                        ).firstNotNullOfOrNull { feature -> feature.getStringProperty("pointId")?.toLongOrNull() }
+                    } catch (_: Exception) { null }
+                    if (hit != null) {
+                        onRadioPointTap?.invoke(hit)
+                        true
+                    } else false
+                }
             }
         }
     }
@@ -72,22 +94,33 @@ class ClearGpsMapController {
         renderAll()
     }
 
+    fun setOfflineMode(offline: Boolean) {
+        if (offlineMode == offline) return
+        offlineMode = offline
+        if (map != null) applyStyle()
+    }
+
     private fun applyStyle() {
         val mapObject = map ?: return
         mapReady = false
-        val styleUri = if (darkMode) DARK_STYLE_URI else LIGHT_STYLE_URI
-        mapObject.setStyle(Style.Builder().fromUri(styleUri)) { style ->
+        val background = if (darkMode) "#101318" else "#F5F3EE"
+        val offlineStyle = """{"version":8,"name":"Clear GPS private offline canvas","sources":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"$background"}}]}"""
+        val builder = if (offlineMode) Style.Builder().fromJson(offlineStyle) else
+            Style.Builder().fromUri(if (darkMode) DARK_STYLE_URI else LIGHT_STYLE_URI)
+        mapObject.setStyle(builder) { style ->
             installLayers(style)
             mapReady = true
             renderAll()
             if (!cameraInitialized) {
-                val start = primaryLocation ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
-                mapObject.cameraPosition = if (start != null) {
-                    CameraPosition.Builder().target(LatLng(start.latitude, start.longitude)).zoom(14.0).build()
+                val start = primaryLocation
+                    ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
+                    ?: radioPoints.firstOrNull()?.let { MapCoordinate(it.latitude!!, it.longitude!!) }
+                if (start != null) {
+                    mapObject.cameraPosition = CameraPosition.Builder().target(LatLng(start.latitude, start.longitude)).zoom(14.0).build()
+                    cameraInitialized = true
                 } else {
-                    CameraPosition.Builder().target(LatLng(20.0, 0.0)).zoom(2.2).build()
+                    mapObject.cameraPosition = CameraPosition.Builder().target(LatLng(20.0, 0.0)).zoom(2.2).build()
                 }
-                cameraInitialized = true
             }
         }
     }
@@ -108,6 +141,10 @@ class ClearGpsMapController {
     fun updatePrimary(coordinate: MapCoordinate?, accuracyMeters: Double?) {
         primaryLocation = coordinate
         primaryAccuracyMeters = accuracyMeters
+        if (!cameraInitialized && mapReady && coordinate != null) {
+            map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), 14.0))
+            cameraInitialized = true
+        }
         renderAll()
     }
 
@@ -123,8 +160,18 @@ class ClearGpsMapController {
     }
 
     fun updateRadioPoints(points: List<RadioPointRecord>) {
-        radioPoints = points.asSequence().filter { it.latitude != null && it.longitude != null }
-            .take(MAX_MAP_RADIO_POINTS).toList()
+        radioPoints = points.asSequence().filter {
+            it.latitude != null && it.longitude != null &&
+                it.latitude!!.isFinite() && it.longitude!!.isFinite() &&
+                it.latitude!! in -90.0..90.0 && it.longitude!! in -180.0..180.0
+        }.take(maxRadioPoints).toList()
+        if (!cameraInitialized && mapReady) {
+            val first = radioPoints.firstOrNull()
+            if (first != null) {
+                map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(first.latitude!!, first.longitude!!), 14.0))
+                cameraInitialized = true
+            }
+        }
         renderAll()
     }
 
@@ -161,16 +208,16 @@ class ClearGpsMapController {
             PropertyFactory.circleStrokeColor("#D63B56"), PropertyFactory.circleStrokeWidth(2f)
         ))
         style.addLayer(CircleLayer(WIFI_POINTS_LAYER, WIFI_POINTS_SOURCE).withProperties(
-            PropertyFactory.circleRadius(4f), PropertyFactory.circleColor("#16A34A"),
-            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1f), PropertyFactory.circleOpacity(0.9f)
+            PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#16A34A"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
         ))
         style.addLayer(CircleLayer(CELL_POINTS_LAYER, CELL_POINTS_SOURCE).withProperties(
-            PropertyFactory.circleRadius(4.5f), PropertyFactory.circleColor("#A855F7"),
-            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1f), PropertyFactory.circleOpacity(0.9f)
+            PropertyFactory.circleRadius(7f), PropertyFactory.circleColor("#A855F7"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
         ))
         style.addLayer(CircleLayer(BLE_POINTS_LAYER, BLE_POINTS_SOURCE).withProperties(
-            PropertyFactory.circleRadius(4f), PropertyFactory.circleColor("#F59E0B"),
-            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1f), PropertyFactory.circleOpacity(0.9f)
+            PropertyFactory.circleRadius(6f), PropertyFactory.circleColor("#F59E0B"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
         ))
         style.addLayer(CircleLayer(ANCHOR_HALO_LAYER, ANCHOR_SOURCE).withProperties(
             PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#F9AB00"), PropertyFactory.circleOpacity(0.22f)
@@ -223,7 +270,11 @@ class ClearGpsMapController {
         fun pointsFor(type: String): FeatureCollection {
             if (!showRadioPoints) return emptyCollection()
             val features = radioPoints.asSequence().filter { it.type == type }
-                .map { Feature.fromGeometry(Point.fromLngLat(it.longitude!!, it.latitude!!)) }
+                .map { point ->
+                    Feature.fromGeometry(Point.fromLngLat(point.longitude!!, point.latitude!!)).apply {
+                        addStringProperty("pointId", point.id.toString())
+                    }
+                }
                 .toList()
             return FeatureCollection.fromFeatures(features.toTypedArray())
         }
@@ -257,7 +308,7 @@ class ClearGpsMapController {
     private fun emptyCollection() = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     companion object {
-        private const val MAX_MAP_RADIO_POINTS = 400
+        private const val MAX_MAP_RADIO_POINTS = 1_500
         private const val EARTH_RADIUS_METERS = 6_371_000.0
         private const val LIGHT_STYLE_URI = "https://tiles.openfreemap.org/styles/liberty"
         private const val DARK_STYLE_URI = "https://tiles.openfreemap.org/styles/dark"
