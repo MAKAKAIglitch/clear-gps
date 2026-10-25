@@ -133,6 +133,7 @@ import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZoneStore
 import org.maplibre.android.maps.MapView
+import java.io.BufferedInputStream
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -238,6 +239,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     var pointToEdit by remember { mutableStateOf<RadioPointRecord?>(null) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
+    var showExportOptions by remember { mutableStateOf(false) }
     var showZoneNameDialog by remember { mutableStateOf(false) }
     var zoneName by remember { mutableStateOf("") }
     var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
@@ -491,7 +493,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+    val exportCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) scope.launch {
             try {
                 val csv = withContext(Dispatchers.IO) { database.exportWigleCsv() }
@@ -499,21 +501,52 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(csv) }
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                 }
-                Toast.makeText(context, "WiGLE CSV сохранён. Автоматической отправки нет.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "WiGLE CSV сохранён. История наблюдений включена; отправки нет.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val exportSqliteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.sqlite3")) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                    output.use { database.exportSqliteBackup(it) }
+                }
+                Toast.makeText(context, "SQLite-резервная копия Clear GPS сохранена.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка SQLite-экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
         }
     }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) scope.launch {
             try {
-                val imported = withContext(Dispatchers.IO) {
+                val result = withContext(Dispatchers.IO) {
                     val input = context.contentResolver.openInputStream(uri) ?: throw IllegalStateException("Не удалось открыть файл.")
-                    database.importWigleCsv(input)
+                    val buffered = BufferedInputStream(input)
+                    buffered.mark(16)
+                    val signature = ByteArray(16)
+                    var signatureBytes = 0
+                    while (signatureBytes < signature.size) {
+                        val read = buffered.read(signature, signatureBytes, signature.size - signatureBytes)
+                        if (read < 0) break
+                        signatureBytes += read
+                    }
+                    buffered.reset()
+                    val isSqlite = signatureBytes == 16 &&
+                        String(signature, Charsets.US_ASCII).startsWith("SQLite format 3\u0000")
+                    if (isSqlite) database.importSqliteDatabase(buffered) else database.importWigleCsv(buffered)
                 }
                 refreshLocalUi()
-                Toast.makeText(context, "Импортировано WiGLE-точек: " + imported, Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    context,
+                    "Формат: " + result.format + ". Новых наблюдений: " + result.observationsImported +
+                        "; устройств: " + result.uniqueRadios + "; новых устройств: " + result.newRadios,
+                    Toast.LENGTH_LONG
+                ).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка импорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
@@ -901,8 +934,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         database.deletePoint(it.id); refreshLocalUi()
                                         Toast.makeText(context, "Точка удалена локально", Toast.LENGTH_SHORT).show()
                                     },
-                                    onImport = { importLauncher.launch(arrayOf("text/*", "application/gzip", "application/octet-stream")) },
-                                    onExport = { exportLauncher.launch("ClearGPS-WiGLE.csv") },
+                                    onImport = { importLauncher.launch(arrayOf("*/*")) },
+                                    onExport = { showExportOptions = true },
                                     onClear = { showDeleteAllDialog = true },
                                     onRefresh = { refreshLocalUi() }
                                 )
@@ -1101,6 +1134,36 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }) { Text("Сохранить") }
             },
             dismissButton = { TextButton(onClick = { zoneToRename = null }) { Text("Отмена") } }
+        )
+    }
+
+    if (showExportOptions) {
+        AlertDialog(
+            onDismissRequest = { showExportOptions = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = { Text("Экспорт данных") },
+            text = {
+                Text(
+                    "WiGLE CSV сохраняет отдельные наблюдения для совместимости с WiGLE. " +
+                        "SQLite — полная резервная копия Clear GPS с радиоточками, наблюдениями и историей. " +
+                        "Импорт SQLite объединяет данные и не заменяет текущую базу."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportOptions = false
+                    exportCsvLauncher.launch("ClearGPS-WiGLE.csv")
+                }) { Text("WiGLE CSV") }
+            },
+            dismissButton = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        showExportOptions = false
+                        exportSqliteLauncher.launch("ClearGPS-backup.sqlite")
+                    }) { Text("SQLite backup") }
+                    TextButton(onClick = { showExportOptions = false }) { Text("Отмена") }
+                }
+            }
         )
     }
 
@@ -1517,10 +1580,10 @@ private fun DatabaseScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(onClick = onImport, modifier = Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) {
-                Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Импорт WiGLE")
+                Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Импорт CSV / SQLite")
             }
             OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) {
-                Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Экспорт CSV")
+                Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Экспорт…")
             }
             IconButton(onClick = onClear) { Icon(Icons.Outlined.DeleteOutline, "Удалить базу") }
         }
