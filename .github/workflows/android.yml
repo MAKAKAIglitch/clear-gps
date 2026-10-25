@@ -43,6 +43,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Smoke-test standalone Java and Gradle bootstrap
-        shell: cmd
-        run: gradlew.bat --version
+      - name: Smoke-test Gradle argument forwarding with spaced JVM settings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CLEARGPS_GRADLE_JVM_ARGS = '-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8'
+          & .\gradlew.bat --version
+          if ($LASTEXITCODE -ne 0) { throw "Gradle argument-forwarding smoke test failed with exit code $LASTEXITCODE." }
