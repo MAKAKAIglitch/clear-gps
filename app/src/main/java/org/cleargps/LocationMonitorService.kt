@@ -475,9 +475,9 @@ class LocationMonitorService : Service(), LocationListener {
                         estimate == null ->
                             "Текущий радиоскан не дал координату: сигналы могли быть ограничены Android, совпадения неоднозначны или у них нет пригодных координат."
                         estimate.matchedCount < RADIO_MIN_MATCHES ->
-                            "Оценка отклонена для mock GPS: совпадений \${estimate.matchedCount}, нужно не меньше \$RADIO_MIN_MATCHES."
+                            "Оценка отклонена для mock GPS: совпадений ${estimate.matchedCount}, нужно не меньше $RADIO_MIN_MATCHES."
                         estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ->
-                            "Оценка отклонена для mock GPS: погрешность ±\${estimate.accuracyMeters.toInt()} м превышает лимит ±\${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м."
+                            "Оценка отклонена для mock GPS: погрешность ±${estimate.accuracyMeters.toInt()} м превышает лимит ±${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м."
                         else -> ""
                     }
                     if (estimate != null && estimate.matchedCount >= RADIO_MIN_MATCHES &&
