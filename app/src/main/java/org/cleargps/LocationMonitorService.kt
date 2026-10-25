@@ -471,6 +471,15 @@ class LocationMonitorService : Service(), LocationListener {
                         useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
                     )
                     val estimate = result.estimate
+                    val rejectionReason = when {
+                        estimate == null ->
+                            "Текущий радиоскан не дал координату: сигналы могли быть ограничены Android, совпадения неоднозначны или у них нет пригодных координат."
+                        estimate.matchedCount < RADIO_MIN_MATCHES ->
+                            "Оценка отклонена для mock GPS: совпадений \${estimate.matchedCount}, нужно не меньше \$RADIO_MIN_MATCHES."
+                        estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ->
+                            "Оценка отклонена для mock GPS: погрешность ±\${estimate.accuracyMeters.toInt()} м превышает лимит ±\${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м."
+                        else -> ""
+                    }
                     if (estimate != null && estimate.matchedCount >= RADIO_MIN_MATCHES &&
                         estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
                         val output = Location(LocationManager.NETWORK_PROVIDER).apply {
@@ -545,7 +554,8 @@ class LocationMonitorService : Service(), LocationListener {
                                     .apply()
                                 saveServiceStatus(
                                     "Radio scan missed · holding last mock GPS fix for " +
-                                        (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m"
+                                        (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m. " +
+                                        rejectionReason
                                 )
                             } else {
                                 lastRadioMockFix = null
@@ -571,16 +581,62 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                                 .putString(KEY_SOURCE, "NONE")
                                 .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
-                                .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
+                                .putInt(KEY_SCORE, 0).putString(KEY_REASONS, rejectionReason)
                                 .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
                                 .apply()
-                            saveServiceStatus("Radio-only · no reliable local match yet")
+                            saveServiceStatus("Radio-only · no reliable local match. " + rejectionReason)
                         }
                     }
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
                         notification(prefs.getString(KEY_SERVICE_STATUS, "Radio-only") ?: "Radio-only"))
                 } catch (error: Exception) {
-                    saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
+                    // Exceptions can happen while querying radio hardware or the SQLite database.
+                    // Do not leave an old mock fix active indefinitely if all future scans fail.
+                    val nowElapsedMs = SystemClock.elapsedRealtime()
+                    val confirmed = lastRadioMockFix
+                    val confirmedAt = lastRadioMockFixAtElapsedMs
+                    val intervalMs = configuredUpdateIntervalMillis()
+                    val ageMs = if (confirmedAt > 0L && nowElapsedMs >= confirmedAt) nowElapsedMs - confirmedAt else Long.MAX_VALUE
+                    val canHold = prefs.getBoolean(KEY_MOCK_ENABLED, false) && confirmed != null &&
+                        RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
+                    if (canHold && confirmed != null) {
+                        val held = Location(confirmed).apply {
+                            accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
+                            time = System.currentTimeMillis()
+                            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                        }
+                        if (mock?.publish(held) == true) {
+                            prefs.edit()
+                                .putBoolean(KEY_HAS_OUTPUT, true)
+                                .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
+                                .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
+                                .putFloat(KEY_ACCURACY, held.accuracy)
+                                .putString(KEY_LAT, held.latitude.toString())
+                                .putString(KEY_LON, held.longitude.toString())
+                                .putString(KEY_REASONS, "Ошибка радиосканирования; используется краткий резерв.")
+                                .apply()
+                            saveServiceStatus(
+                                "Radio scan error · holding last mock GPS fix for " + (ageMs / 1_000L) +
+                                    " s · uncertainty ±" + held.accuracy.toInt() + " m"
+                            )
+                        } else {
+                            mock?.disable()
+                            lastRadioMockFix = null
+                            lastRadioMockFixAtElapsedMs = 0L
+                            prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                                .putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                                .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
+                            saveServiceStatus("Mock GPS unavailable after radio scan error; choose Clear GPS in Developer options")
+                        }
+                    } else {
+                        if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
+                        lastRadioMockFix = null
+                        lastRadioMockFixAtElapsedMs = 0L
+                        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                            .putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
+                            .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
+                        saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
+                    }
                 }
                 val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
                 val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
