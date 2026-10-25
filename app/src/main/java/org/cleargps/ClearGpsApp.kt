@@ -277,7 +277,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
     var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)) }
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
-    var recording by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false)) }
+    var recording by remember {
+        mutableStateOf(!positionMode.gpsOnly && prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false))
+    }
     var scanBusy by remember { mutableStateOf(false) }
     var explicitRadioScanJob by remember { mutableStateOf<Job?>(null) }
     var scanMessage by remember {
@@ -823,6 +825,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     LaunchedEffect(positionMode, hasAnyLocationPermission(context)) {
         if (positionMode.usesRadio || positionMode.gpsOnly) liveLocation = null
+        if (positionMode.gpsOnly) {
+            // Migrate older persisted settings: GPS-only mode must not keep a hidden
+            // radio-recording switch armed for when the user later changes modes.
+            prefs.edit().putBoolean(ClearGpsPreferences.KEY_RECORDING, false).apply()
+            if (recording) recording = false
+        }
     }
 
     LaunchedEffect(obd2Connected) {
@@ -1842,7 +1850,11 @@ private fun MapHomeScreen(
                                 "В базе $pointCount радиоточек, но последний скан не подтвердил положение. Нужны актуальные сигналы и координатированные совпадения; Wi‑Fi может ограничивать Android."
                             mode.usesRadio ->
                                 "Сначала запиши радиоточки в известных местах или импортируй локальный CSV с координатами."
-                            else -> "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
+                            else -> if (mode.gpsOnly) {
+                                "Разреши геолокацию и включи фикс. Радиосканирование в режиме GPS отключено."
+                            } else {
+                                "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
+                            }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
