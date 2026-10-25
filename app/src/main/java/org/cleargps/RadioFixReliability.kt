@@ -13,14 +13,25 @@ internal object RadioFixReliability {
     const val BLE_MAX_CACHE_AGE_MS = 15_000L
     const val BLE_FRESH_AGE_MS = 6_000L
     const val CELL_INFO_MAX_AGE_MS = 5L * 60L * 1_000L
+    const val CELL_INFO_FRESH_AGE_MS = 30_000L
     private const val WIFI_STALE_DRIFT_METERS_PER_SECOND = 35.0
     private const val BLE_STALE_DRIFT_METERS_PER_SECOND = 25.0
+    private const val CELL_STALE_DRIFT_METERS_PER_SECOND = 5.0
     private const val MAX_MOCK_ACCURACY_METERS = 5_000f
 
     fun isCellInfoFresh(timestampElapsedMillis: Long, nowElapsedMillis: Long): Boolean {
         if (timestampElapsedMillis <= 0L || nowElapsedMillis < timestampElapsedMillis) return false
         return nowElapsedMillis - timestampElapsedMillis <= CELL_INFO_MAX_AGE_MS
     }
+
+    fun cellAgePenaltyMeters(ageMillis: Long?, cellSignalCount: Int, totalSignalCount: Int): Double =
+        cachedRadioAgePenaltyMeters(
+            ageMillis = ageMillis,
+            cachedSignalCount = cellSignalCount,
+            totalSignalCount = totalSignalCount,
+            freshAgeMillis = CELL_INFO_FRESH_AGE_MS,
+            driftMetersPerSecond = CELL_STALE_DRIFT_METERS_PER_SECOND
+        ).coerceAtMost(1_000.0)
 
     fun shouldRequestWifiScan(nowElapsedMs: Long, lastRequestElapsedMs: Long): Boolean =
         lastRequestElapsedMs <= 0L ||
