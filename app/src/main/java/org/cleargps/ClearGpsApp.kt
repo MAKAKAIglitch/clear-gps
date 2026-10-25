@@ -13,10 +13,14 @@ import android.os.Build
 import android.os.Looper
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,6 +80,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -97,6 +102,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,11 +118,14 @@ import kotlinx.coroutines.withContext
 import org.cleargps.core.FilterState
 import org.cleargps.core.SavedRiskZone
 import org.cleargps.core.ZonePoint
+import org.cleargps.core.ZoneGeometry
+import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.ZoneStore
 import org.maplibre.android.maps.MapView
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private enum class AppTab { MAP, POINTS, ZONES, SETTINGS }
 private enum class PointsView { POINTS, HISTORY }
@@ -126,6 +135,9 @@ private enum class PositionMode(val key: String, val title: String) {
 }
 private enum class MapThemeMode(val key: String, val title: String) {
     SYSTEM("system", "Система"), LIGHT("light", "Светлая"), DARK("dark", "Тёмная")
+}
+private enum class MapSourceMode(val key: String, val title: String) {
+    ONLINE("online", "OpenFreeMap"), OFFLINE("offline", "Без внешних тайлов")
 }
 
 @Composable
@@ -146,6 +158,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapThemeMode by remember {
         mutableStateOf(MapThemeMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_STYLE, "system") } ?: MapThemeMode.SYSTEM)
     }
+    var mapSourceMode by remember {
+        mutableStateOf(MapSourceMode.values().firstOrNull { it.key == prefs.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") } ?: MapSourceMode.ONLINE)
+    }
+    var panelTargetFraction by remember { mutableStateOf(0.38f) }
+    val panelFraction by animateFloatAsState(targetValue = panelTargetFraction, label = "map-panel-height")
+    var backExitArmed by remember { mutableStateOf(false) }
+    var pendingMonitorStart by remember { mutableStateOf(false) }
+    var pendingMockEnable by remember { mutableStateOf(false) }
     val mapIsDark = when (mapThemeMode) {
         MapThemeMode.SYSTEM -> systemDark
         MapThemeMode.LIGHT -> false
@@ -162,14 +182,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var selectedTab by remember { mutableStateOf(AppTab.MAP) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
     var points by remember { mutableStateOf(database.listPoints(500)) }
+    var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
 
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
     var useCells by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true)) }
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
+    var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(10, 120)) }
+    var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
     var recording by remember { mutableStateOf(false) }
     var scanBusy by remember { mutableStateOf(false) }
     var scanMessage by remember {
@@ -197,11 +222,17 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var pendingRecordScan by remember { mutableStateOf(false) }
 
     fun refreshLocalUi() {
-        points = database.listPoints(500)
-        history = database.listHistory(150)
-        pointCount = database.pointCount()
-        observationCount = database.observationCount()
-        zones = ZoneStore.loadAll(context)
+        val query = searchQuery
+        scope.launch {
+            points = withContext(Dispatchers.IO) {
+                if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
+            }
+            mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
+            history = withContext(Dispatchers.IO) { database.listHistory(150) }
+            pointCount = withContext(Dispatchers.IO) { database.pointCount() }
+            observationCount = withContext(Dispatchers.IO) { database.observationCount() }
+            zones = ZoneStore.loadAll(context)
+        }
     }
 
     fun saveUseFlags() {
@@ -234,7 +265,23 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     if (positionMode == PositionMode.RADIO_ONLY) null else liveLocation,
                     manualAnchor
                 )
-                val result = repository.scan(recordNow, reference, positionMode.key, useWifi, useCells, useBle)
+                val observedPosition = when {
+                    liveLocation != null && System.currentTimeMillis() - liveLocation!!.time in 0..30_000L &&
+                        !LocationFilterEngine.isMockLocation(liveLocation!!) ->
+                        ZonePoint(liveLocation!!.latitude, liveLocation!!.longitude)
+                    positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null &&
+                        System.currentTimeMillis() - currentRadioEstimate!!.updatedAt in 0..30L * 60L * 1_000L ->
+                        ZonePoint(currentRadioEstimate!!.latitude, currentRadioEstimate!!.longitude)
+                    else -> null
+                }
+                val insideRiskZone = observedPosition?.let { point ->
+                    zones.any { zone -> zone.enabled && ZoneGeometry.contains(point, zone.points) }
+                } == true
+                val result = repository.scan(
+                    record = recordNow && !insideRiskZone,
+                    reference = if (insideRiskZone) null else reference,
+                    mode = positionMode.key, useWifi = useWifi, useCells = useCells, useBle = useBle
+                )
                 wifiCount = result.wifiCount
                 cellCount = result.cellCount
                 bleCount = result.beaconCount
@@ -242,7 +289,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 lastScanAt = System.currentTimeMillis()
                 currentRadioEstimate = result.estimate
                 scanMessage = result.message +
-                    if (recordNow && result.recordedCount > 0) " Сохранено/обновлено записей: " + result.recordedCount + "." else ""
+                    (if (recordNow && result.recordedCount > 0) " Сохранено/обновлено записей: " + result.recordedCount + "." else "") +
+                    (if (recordNow && insideRiskZone) " Запись точек отключена: позиция попала в зону риска." else "")
                 lookupPhase = when {
                     result.estimate != null -> LookupPhase.UPDATED
                     result.wifiCount + result.cellCount + result.beaconCount == 0 -> LookupPhase.ERROR
@@ -264,18 +312,49 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result[Manifest.permission.BLUETOOTH_SCAN] == true || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            scope.launch { performScan(pendingRecordScan) }
-        } else {
-            scanMessage = "Bluetooth-разрешение не выдано. Wi‑Fi и сотовые источники можно продолжить использовать."
-            lookupPhase = LookupPhase.ERROR
+        scope.launch {
+            performScan(pendingRecordScan)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && result[Manifest.permission.BLUETOOTH_SCAN] != true) {
+                scanMessage += " Bluetooth недоступен без разрешения, но Wi‑Fi и сотовое сканирование продолжены."
+            }
+        }
+    }
+
+    fun startMonitoringWithPermission(enableMock: Boolean) {
+        try {
+            prefs.edit().putBoolean(LocationMonitorService.KEY_MONITORING, true)
+                .putBoolean(LocationMonitorService.KEY_MOCK_ENABLED,
+                    enableMock || prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)).apply()
+            val intent = Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            monitorEnabled = true
+            serviceStatus = "Мониторинг запущен"
+            if (enableMock) {
+                mockEnabled = true
+                Toast.makeText(context, "Выбери Clear GPS как приложение фиктивного местоположения в настройках разработчика.", Toast.LENGTH_LONG).show()
+            }
+        } catch (error: Exception) {
+            prefs.edit().putBoolean(LocationMonitorService.KEY_MONITORING, false)
+                .putBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false).apply()
+            monitorEnabled = false; mockEnabled = false
+            serviceStatus = "Не удалось запустить мониторинг: " + (error.message ?: error.javaClass.simpleName)
+            Toast.makeText(context, serviceStatus, Toast.LENGTH_LONG).show()
         }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (result.values.any { it }) {
+        if (pendingMonitorStart) {
+            pendingMonitorStart = false
+            if (hasAnyLocationPermission(context)) {
+                startMonitoringWithPermission(pendingMockEnable)
+                pendingMockEnable = false
+            } else {
+                pendingMockEnable = false
+                Toast.makeText(context, "Мониторинг не запущен: разрешение геолокации отклонено.", Toast.LENGTH_LONG).show()
+            }
+        } else if (result.values.any { it }) {
             if (useBle && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                 context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN))
@@ -380,11 +459,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode) {
+    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan) {
         if (recording && appVisible && hasAnyLocationPermission(context)) {
             while (recording && appVisible) {
                 performScan(true)
-                delay(RECORD_INTERVAL_MS)
+                val speedKmh = liveLocation?.takeIf {
+                    System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
+                }?.speed?.times(3.6f)
+                delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
             }
         }
     }
@@ -438,12 +520,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     SideEffect {
         mapController.setDarkMode(mapIsDark)
+        mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
         mapController.setShowRadioPoints(showRadioPointsOnMap)
         mapController.updatePrimary(primaryCoordinate, primaryAccuracy)
         mapController.updateManualAnchor(manualAnchor)
         mapController.updateZones(zones, draftZone)
-        mapController.updateRadioPoints(points)
+        mapController.updateRadioPoints(mapPoints)
         mapController.setTapMode(mapTapMode)
+        mapController.onRadioPointTap = { pointId ->
+            scope.launch { selectedMapPoint = withContext(Dispatchers.IO) { database.findPoint(pointId) } }
+        }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
                 MapTapMode.PLACE_ANCHOR -> {
@@ -465,11 +551,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     val runMonitoring: () -> Unit = {
-        val intent = Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_START)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
-        prefs.edit().putBoolean(LocationMonitorService.KEY_MONITORING, true).apply()
-        monitorEnabled = true
-        serviceStatus = "Мониторинг запущен"
+        pendingMockEnable = false
+        if (!hasAnyLocationPermission(context)) {
+            pendingMonitorStart = true
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        } else startMonitoringWithPermission(enableMock = false)
     }
     val stopMonitoring: () -> Unit = {
         context.startService(Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_STOP))
@@ -478,11 +564,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         serviceStatus = "Мониторинг остановлен"
     }
     val enableMock: () -> Unit = {
-        val intent = Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_START)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
-        prefs.edit().putBoolean(LocationMonitorService.KEY_MOCK_ENABLED, true).apply()
-        mockEnabled = true
-        Toast.makeText(context, "Выбери Clear GPS как приложение фиктивного местоположения в настройках разработчика.", Toast.LENGTH_LONG).show()
+        pendingMockEnable = true
+        if (!hasAnyLocationPermission(context)) {
+            pendingMonitorStart = true
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        } else startMonitoringWithPermission(enableMock = true)
     }
     val disableMock: () -> Unit = {
         context.startService(Intent(context, LocationMonitorService::class.java).setAction(LocationMonitorService.ACTION_DISABLE_MOCK))
@@ -490,14 +576,33 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mockEnabled = false
     }
 
+    BackHandler(enabled = true) {
+        when {
+            selectedMapPoint != null -> selectedMapPoint = null
+            pointToEdit != null -> pointToEdit = null
+            showDeleteAllDialog -> showDeleteAllDialog = false
+            showRadioOnlyInfo -> showRadioOnlyInfo = false
+            showZoneNameDialog -> showZoneNameDialog = false
+            zoneToRename != null -> zoneToRename = null
+            mapTapMode != MapTapMode.NONE -> { mapTapMode = MapTapMode.NONE; draftZone = emptyList() }
+            selectedTab != AppTab.MAP -> { selectedTab = AppTab.MAP; panelTargetFraction = 0.38f; backExitArmed = false }
+            !backExitArmed -> {
+                backExitArmed = true
+                Toast.makeText(context, "Нажми «Назад» ещё раз в течение 2 секунд, чтобы выйти.", Toast.LENGTH_SHORT).show()
+                scope.launch { delay(2_000L); backExitArmed = false }
+            }
+            else -> (context as? android.app.Activity)?.finish()
+        }
+    }
+
     ClearGpsTheme {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
-            val panelMaxHeight = maxHeight * 0.70f
+            val panelMaxHeight = maxHeight * panelFraction
             AndroidView(factory = { viewContext ->
                 MapView(viewContext).also { view ->
                     onMapViewCreated(view)
-                    mapController.attach(view, viewContext, mapIsDark)
+                    mapController.attach(view, viewContext, mapIsDark, mapSourceMode == MapSourceMode.OFFLINE)
                 }
             }, modifier = Modifier.fillMaxSize())
 
@@ -523,12 +628,27 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
 
                 Surface(
-                    Modifier.fillMaxWidth().heightIn(max = panelMaxHeight),
+                    Modifier.fillMaxWidth().height(panelMaxHeight),
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                     color = colors.surfaceContainer, tonalElevation = 4.dp, shadowElevation = 12.dp
                 ) {
-                    Column(Modifier.fillMaxWidth()) {
-                        Box(Modifier.fillMaxWidth().heightIn(max = panelMaxHeight - 74.dp)) {
+                    Column(Modifier.fillMaxSize()) {
+                        Box(
+                            Modifier.fillMaxWidth().height(28.dp)
+                                .pointerInput(Unit) {
+                                    detectVerticalDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        if (size.height > 0) {
+                                            panelTargetFraction = (panelTargetFraction - dragAmount / size.height.toFloat()).coerceIn(0.18f, 0.82f)
+                                        }
+                                    }
+                                }
+                                .clickable { panelTargetFraction = if (panelTargetFraction < 0.25f) 0.38f else 0.18f },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Surface(Modifier.width(40.dp).height(5.dp), shape = CircleShape, color = colors.outlineVariant) {}
+                        }
+                        Box(Modifier.fillMaxWidth().weight(1f)) {
                             when (selectedTab) {
                                 AppTab.MAP -> MapHomeScreen(
                                     coordinate = displayCoordinate,
@@ -549,6 +669,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
                                     points = points, history = history, pointCount = pointCount, observationCount = observationCount,
+                                    searchQuery = searchQuery, onSearch = { query ->
+                                        searchQuery = query
+                                        scope.launch {
+                                            points = withContext(Dispatchers.IO) {
+                                                if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
+                                            }
+                                        }
+                                    },
                                     selectedView = pointsView, onView = { pointsView = it }, onEdit = { pointToEdit = it },
                                     onDelete = {
                                         database.deletePoint(it.id); refreshLocalUi()
@@ -588,11 +716,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     mode = positionMode, mapTheme = mapThemeMode, useWifi = useWifi, useCells = useCells,
                                     useBle = useBle, showRadioPoints = showRadioPointsOnMap,
                                     manualFallbackEnabled = manualFallbackEnabled,
+                                    mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
                                     onMode = { applyPositionMode(it) },
                                     onMapTheme = {
                                         mapThemeMode = it
                                         prefs.edit().putString(ClearGpsPreferences.KEY_MAP_STYLE, it.key).apply()
+                                    },
+                                    onMapSource = {
+                                        mapSourceMode = it
+                                        prefs.edit().putString(ClearGpsPreferences.KEY_MAP_SOURCE, it.key).apply()
+                                    },
+                                    onScanInterval = {
+                                        scanIntervalSeconds = it.coerceIn(10, 120)
+                                        prefs.edit().putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, scanIntervalSeconds).apply()
+                                    },
+                                    onAdaptiveScan = {
+                                        adaptiveScan = it
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, it).apply()
                                     },
                                     onWifi = { useWifi = it; saveUseFlags() },
                                     onCells = { useCells = it; saveUseFlags() },
@@ -611,9 +752,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             }
                         }
 
-                        NavigationBar(windowInsets = WindowInsets.navigationBars, tonalElevation = 2.dp) {
+                        NavigationBar(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp).clip(RoundedCornerShape(28.dp)),
+                            windowInsets = WindowInsets.navigationBars,
+                            containerColor = colors.surfaceContainerHigh, tonalElevation = 3.dp
+                        ) {
                             NavigationBarItem(selected = selectedTab == AppTab.MAP, onClick = { selectedTab = AppTab.MAP },
-                                icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Карта", maxLines = 1) })
+                                icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Главная", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { selectedTab = AppTab.POINTS; refreshLocalUi() },
                                 icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { selectedTab = AppTab.ZONES },
@@ -634,19 +779,33 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     Icon(Icons.Outlined.MyLocation, "Центрировать карту", tint = colors.onPrimaryContainer)
                 }
             }
-            MapAttribution(
-                modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelMaxHeight + 14.dp),
-                dark = mapIsDark,
-                onClick = {
-                    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright"))) } catch (_: Exception) { }
+            if (mapSourceMode == MapSourceMode.OFFLINE) {
+                Surface(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelMaxHeight + 14.dp),
+                    shape = RoundedCornerShape(10.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.94f)) {
+                    Text("Офлайн-холст · тайлы не запрашиваются", Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelSmall, color = colors.onSurface)
                 }
-            )
+            } else {
+                MapAttribution(
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelMaxHeight + 14.dp),
+                    dark = mapIsDark,
+                    onClick = {
+                        try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright"))) } catch (_: Exception) { }
+                    }
+                )
+            }
         }
     }
 
+    if (selectedMapPoint != null) {
+        RadioPointDetailsDialog(point = selectedMapPoint!!,
+            onDismiss = { selectedMapPoint = null },
+            onEdit = { pointToEdit = selectedMapPoint; selectedMapPoint = null })
+    }
+
     if (pointToEdit != null) {
-        PointEditDialog(pointToEdit!!, onDismiss = { pointToEdit = null }, onSave = { label, notes, lat, lon, accuracy ->
-            val saved = database.updatePoint(pointToEdit!!.id, label, notes, lat, lon, accuracy)
+        PointEditDialog(pointToEdit!!, onDismiss = { pointToEdit = null }, onSave = { label, ssid, notes, lat, lon, accuracy ->
+            val saved = database.updatePoint(pointToEdit!!.id, label, ssid, notes, lat, lon, accuracy)
             pointToEdit = null; refreshLocalUi()
             Toast.makeText(context, if (saved) "Точка сохранена локально" else "Проверь координаты", Toast.LENGTH_SHORT).show()
         })
@@ -728,7 +887,7 @@ private fun MapHomeScreen(
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -880,11 +1039,12 @@ private fun MapHomeScreen(
 @Composable
 private fun DatabaseScreen(
     points: List<RadioPointRecord>, history: List<RadioScanHistoryItem>, pointCount: Int, observationCount: Int,
+    searchQuery: String, onSearch: (String) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Локальная база", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -897,6 +1057,11 @@ private fun DatabaseScreen(
             AssistChip(onClick = { onView(PointsView.POINTS) }, label = { Text("Точки") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
             AssistChip(onClick = { onView(PointsView.HISTORY) }, label = { Text("История") }, leadingIcon = { Icon(Icons.Outlined.History, null) })
         }
+        if (selectedView == PointsView.POINTS) {
+            OutlinedTextField(value = searchQuery, onValueChange = onSearch, singleLine = true,
+                modifier = Modifier.fillMaxWidth(), placeholder = { Text("Поиск по SSID, MAC/BSSID или заметкам") },
+                label = { Text("Поиск в локальной базе") })
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(onClick = onImport, modifier = Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) {
                 Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Импорт WiGLE")
@@ -907,20 +1072,20 @@ private fun DatabaseScreen(
             IconButton(onClick = onClear) { Icon(Icons.Outlined.DeleteOutline, "Удалить базу") }
         }
         Text(if (selectedView == PointsView.POINTS)
-            "SSID не сохраняется. Он кратко проверяется только для соблюдения суффикса _nomap и сразу отбрасывается. Подпись — вручную заданное имя или имя из импортированного CSV."
+            "SSID и BSSID хранятся только локально. Нажми на точку на карте для просмотра подробностей или редактирования."
         else "Хранятся последние 500 сканирований. История остаётся на устройстве.",
             style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
 
         if (selectedView == PointsView.POINTS) {
             if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
-            else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 items(points, key = { it.id }) { point ->
                     RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
                 }
             }
         } else {
             if (history.isEmpty()) EmptyState("История пуста", "Первый запуск сканирования добавит сюда запись.")
-            else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 items(history, key = { it.id }) { entry ->
                     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
                         Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -962,9 +1127,13 @@ private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete:
             }
             Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(point.label.ifBlank { typeLabel + " · " + point.identifier.takeLast(11) },
+                Text(point.label.ifBlank { point.ssid.ifBlank { typeLabel + " · " + point.identifier.takeLast(11) } },
                     fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(typeLabel + " · RSSI " + point.rssi + " dBm · " + point.sightings + " наблюдений",
+                if (point.type == "wifi" && point.ssid.isNotBlank()) {
+                    Text("SSID: " + point.ssid, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(typeLabel + " · " + point.identifier + " · RSSI " + point.rssi + " dBm · " + point.sightings + " наблюдений",
                     style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                 Text(if (point.latitude != null && point.longitude != null)
                     String.format(Locale.US, "%.5f, %.5f", point.latitude, point.longitude)
@@ -983,9 +1152,10 @@ private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete:
 @Composable
 private fun PointEditDialog(
     point: RadioPointRecord, onDismiss: () -> Unit,
-    onSave: (String, String, Double?, Double?, Double?) -> Unit
+    onSave: (String, String, String, Double?, Double?, Double?) -> Unit
 ) {
     var label by remember(point.id) { mutableStateOf(point.label) }
+    var ssid by remember(point.id) { mutableStateOf(point.ssid) }
     var notes by remember(point.id) { mutableStateOf(point.notes) }
     var lat by remember(point.id) { mutableStateOf(point.latitude?.toString().orEmpty()) }
     var lon by remember(point.id) { mutableStateOf(point.longitude?.toString().orEmpty()) }
@@ -993,9 +1163,15 @@ private fun PointEditDialog(
     var error by remember(point.id) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss, title = { Text("Редактировать радиоточку") },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        textContentColor = MaterialTheme.colorScheme.onSurface,
         text = {
             Column(Modifier.heightIn(max = 470.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(point.identifier, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (point.type == "wifi") {
+                    OutlinedTextField(value = ssid, onValueChange = { ssid = it.take(100) },
+                        label = { Text("SSID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
                 OutlinedTextField(value = label, onValueChange = { label = it.take(100) }, label = { Text("Имя / заметка") }, singleLine = true)
                 OutlinedTextField(value = notes, onValueChange = { notes = it.take(1_000) }, label = { Text("Заметки") }, minLines = 2)
                 OutlinedTextField(value = lat, onValueChange = { lat = it }, label = { Text("Широта") }, singleLine = true)
@@ -1013,10 +1189,41 @@ private fun PointEditDialog(
                 else if (latitude != null && (!latitude.isFinite() || latitude !in -90.0..90.0 ||
                         longitude == null || !longitude.isFinite() || longitude !in -180.0..180.0)) error = "Координаты вне допустимого диапазона."
                 else if (acc != null && (!acc.isFinite() || acc <= 0.0)) error = "Точность должна быть положительным числом."
-                else onSave(label, notes, latitude, longitude, acc)
+                else onSave(label, ssid, notes, latitude, longitude, acc)
             }) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun RadioPointDetailsDialog(
+    point: RadioPointRecord, onDismiss: () -> Unit, onEdit: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val kind = when (point.type) { "wifi" -> "Wi‑Fi"; "cell" -> "Сотовая вышка"; else -> "Bluetooth LE" }
+    AlertDialog(
+        onDismissRequest = onDismiss, containerColor = colors.surfaceContainerHigh,
+        title = { Text(point.ssid.ifBlank { point.label.ifBlank { kind } }) },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Text(kind, color = colors.primary, fontWeight = FontWeight.SemiBold)
+                Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
+                if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
+                Text("Сигнал: " + point.rssi + " dBm")
+                if (point.frequency > 0) Text("Частота: " + point.frequency + " MHz")
+                Text("Наблюдений: " + point.sightings)
+                Text("Источник координат: " + point.positionSource)
+                if (point.latitude != null && point.longitude != null) {
+                    Text(String.format(Locale.US, "Координаты: %.6f, %.6f", point.latitude, point.longitude))
+                    Text("Оценка точности: ±" + (point.accuracyMeters?.toInt()?.toString() ?: "—") + " м")
+                } else Text("Координаты ещё не заданы.")
+                if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
+            }
+        },
+        confirmButton = { TextButton(onClick = onEdit) { Text("Редактировать") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }
 
@@ -1028,7 +1235,7 @@ private fun ZonesScreen(
     onDelete: (SavedRiskZone) -> Unit, onCancelDraw: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).verticalScroll(rememberScrollState())
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Зоны спуфинга", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Text("Отмечай участки, где телефон показывает ложное или скачкообразное местоположение. Каждая зона хранится локально и может отдельно включаться в фильтре.",
@@ -1078,13 +1285,15 @@ private fun ZonesScreen(
 private fun SettingsScreen(
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
-    onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit,
+    mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean,
+    onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
+    onScanInterval: (Int) -> Unit, onAdaptiveScan: (Boolean) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth().heightIn(max = 500.dp).verticalScroll(rememberScrollState())
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Text("Режим определения положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1099,6 +1308,20 @@ private fun SettingsScreen(
                     }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
                 RadioButton(selected = mode == item, onClick = { onMode(item) })
+            }
+        }
+        Divider(color = colors.outlineVariant)
+        Text("Источник карты и приватность", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        MapSourceMode.values().forEach { item ->
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text(item.title, fontWeight = FontWeight.Medium)
+                    Text(if (item == MapSourceMode.ONLINE)
+                        "OpenFreeMap показывает дороги и подписи, но видит IP-адрес и область карты."
+                    else "Внешние тайлы не запрашиваются. Фон пустой, но локальные точки и зоны видны.",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+                RadioButton(selected = mapSource == item, onClick = { onMapSource(item) })
             }
         }
         Divider(color = colors.outlineVariant)
@@ -1117,7 +1340,16 @@ private fun SettingsScreen(
         SettingSwitch("Мобильные соты", "GSM / WCDMA / LTE / NR, если доступны.", useCells, onCells)
         SettingSwitch("Bluetooth LE", "Только адрес и RSSI; имена устройств не читаются.", useBle, onBle)
         Divider(color = colors.outlineVariant)
-        SettingSwitch("Радиоточки на карте", "До 400 последних координатных точек.", showRadioPoints, onShowPoints)
+        Text("Частота сканирования", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text("Период: $scanIntervalSeconds секунд", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+        Slider(value = scanIntervalSeconds.toFloat(),
+            onValueChange = { onScanInterval(it.roundToInt().coerceIn(10, 120)) },
+            valueRange = 10f..120f, steps = 10, modifier = Modifier.fillMaxWidth())
+        SettingSwitch("Ускорять в движении",
+            "При скорости выше 25 км/ч интервал уменьшается вдвое (минимум 10 секунд); Android может ограничить частоту сканов.",
+            adaptiveScan, onAdaptiveScan)
+        Divider(color = colors.outlineVariant)
+        SettingSwitch("Радиоточки на карте", "До 1 500 точек на обычном устройстве; на маломощных — меньше.", showRadioPoints, onShowPoints)
         SettingSwitch(
             "Ручной ориентир как крайний резерв",
             "Только если нет другой позиции. Точность условная ±1,5 км; не включать, если ориентир может быть устаревшим.",
@@ -1131,7 +1363,7 @@ private fun SettingsScreen(
         }
         Divider(color = colors.outlineVariant)
         Text("Приватность и хранение", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Text("Радиопозиционирование выполняется локально. BeaconDB и API WiGLE не вызываются; WiGLE — только формат ручного импорта/экспорта файла. SQLite не хранит SSID и имена Bluetooth-устройств.",
+        Text("Радиопозиционирование выполняется локально. BeaconDB и API WiGLE не вызываются; WiGLE — только формат ручного импорта/экспорта файла. SSID, BSSID и радио-ID хранятся только локально.",
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
         Text(databaseFacts, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
         OutlinedButton(onClick = onClearData, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
@@ -1247,6 +1479,17 @@ private fun MapAttribution(modifier: Modifier = Modifier, dark: Boolean, onClick
         Text("OpenFreeMap · OpenMapTiles · © OpenStreetMap", modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
             color = if (dark) Color.White else Color(0xFF253044), style = MaterialTheme.typography.labelSmall)
     }
+}
+
+private fun effectiveScanIntervalSeconds(configuredSeconds: Int, speedKmh: Float?, adaptive: Boolean): Int {
+    val configured = configuredSeconds.coerceIn(10, 120)
+    val movingFast = speedKmh != null && speedKmh.isFinite() && speedKmh > 25f
+    return if (adaptive && movingFast) (configured / 2).coerceAtLeast(10) else configured
+}
+
+private fun recommendedMapPointLimit(context: Context): Int {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+    return if (activityManager?.isLowRamDevice == true || Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 400 else 2_500
 }
 
 private fun currentReference(location: Location?, anchor: ManualAnchor?): RadioReference? {
