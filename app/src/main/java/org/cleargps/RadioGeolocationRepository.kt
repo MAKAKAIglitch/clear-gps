@@ -110,10 +110,15 @@ class RadioGeolocationRepository(private val context: Context) {
             ?.let {
                 " Результаты Wi‑Fi могут быть кэшированными (${it / 1_000} с); погрешность увеличена."
             }.orEmpty()
+        val fullMessage = message + wifiAgeHint
+        prefs.edit()
+            .putString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, fullMessage)
+            .putBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, estimate != null)
+            .apply()
         RadioLookupResult(
             estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
             snapshot.wifiAgeMillis?.let { it > RadioFixReliability.WIFI_FRESH_AGE_MS } == true,
-            message + wifiAgeHint, estimate?.matchedCount ?: 0, recorded
+            fullMessage, estimate?.matchedCount ?: 0, recorded
         )
     }
 
