@@ -111,6 +111,24 @@ internal object RadioFixReliability {
     }
 
     /**
+     * UI map policy is deliberately more permissive than mock-provider recovery.
+     * Keep showing a stale approximate fix while radio matching recovers; the foreground
+     * service still uses canRetainLastEstimate for short mock-output holds.
+     */
+    fun canDisplayLastRadioEstimateOnMap(
+        estimateUpdatedAtMillis: Long,
+        nowMillis: Long,
+        matchedCount: Int,
+        accuracyMeters: Double
+    ): Boolean {
+        val ageMillis = nowMillis - estimateUpdatedAtMillis
+        return ageMillis in 0..MAP_ESTIMATE_MAX_AGE_MS && matchedCount >= 1 &&
+            accuracyMeters.isFinite() && accuracyMeters in 1.0..50_000.0
+    }
+
+    private const val MAP_ESTIMATE_MAX_AGE_MS = 10L * 60L * 1_000L
+
+    /**
      * A cached radio scan may repeat an old coordinate. It can be published to mock GPS only
      * while a previously confirmed fix is still inside its bounded hold window. The estimate's
      * evidence timestamp, not the time we read Android's cache, determines its age.
