@@ -1095,11 +1095,55 @@ class LocationMonitorService : Service(), LocationListener {
         return LastResortFallback("MANUAL_ANCHOR", location)
     }
 
+
+    /**
+     * Never feed mock coordinates into the GNSS filter. If Clear GPS's own mock output is off,
+     * a mock GPS/network callback is instead recorded as a strong external-mock warning.
+     */
+    private fun handleExternalMockLocation(location: Location) {
+        val provider = location.provider?.takeIf { it.isNotBlank() } ?: "unknown"
+        val reason = "Обнаружена фиктивная геопозиция стороннего приложения через провайдер $provider; координата не использована."
+        val previous = engine.currentDecision()
+        val result = FilterDecision(
+            state = FilterState.SUSPECT,
+            riskScore = 90,
+            inRiskZone = previous.inRiskZone,
+            source = "EXTERNAL_MOCK",
+            outputLocation = null,
+            reasons = listOf(reason)
+        )
+
+        // The setting is off in this path. Clear any lingering output owned by Clear GPS,
+        // but never trust or forward the external mock coordinate.
+        mock?.disable()
+        persistDecision(result)
+        prefs.edit()
+            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putBoolean(KEY_HAS_OUTPUT, false)
+            .apply()
+        saveServiceStatus(reason)
+        DiagnosticLogStore.log(this, "GNSS_EXTERNAL_MOCK", reason, "WARN")
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            notification("Внешняя mock-геопозиция обнаружена; координата отклонена")
+        )
+    }
+
     override fun onLocationChanged(location: Location) {
         // Return before updating status, trusted-fix cache, or mock output: our own test-provider
         // updates must never be treated as new physical GPS fixes.
         if (LocationFilterEngine.isMockLocation(location)) {
-            DiagnosticLogStore.log(this, "GNSS", "Mock-кallback от собственного провайдера проигнорирован")
+            val ownMockEnabled = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+            if (shouldFlagExternalMockLocation(location.provider, true, ownMockEnabled)) {
+                handleExternalMockLocation(location)
+            } else {
+                val message = if (ownMockEnabled) {
+                    "Mock-location callback ignored while Clear GPS mock output is enabled"
+                } else {
+                    "Mock-location callback from an unmonitored provider ignored"
+                }
+                DiagnosticLogStore.log(this, "GNSS", message)
+            }
             return
         }
         if (!location.latitude.isFinite() || location.latitude !in -90.0..90.0 ||
