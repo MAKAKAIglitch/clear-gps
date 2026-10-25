@@ -179,3 +179,21 @@
 
 - `core-detect/src/test/kotlin/org/cleargps/core/GnssDeviceBaselineTest.kt` — corrected the no-satellite case to assert that `firstSampleElapsedRealtimeNanos` remains null when the baseline accepted no samples. This is a test assertion correction; detector behaviour is unchanged.
 - The initial baseline run failed on that incorrect assertion (run [40236062166](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236062166)); the corrected commit [bd7812c](https://github.com/MAKAKAIglitch/clear-gps/commit/bd7812cbe1c558474bef64601b8de78fd3cbea17) passed the full CI run [40236094177](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40236094177).
+
+
+## 2026-10-26 — Базовая линия GNSS сохраняется между перезапусками сервиса
+
+**Изменённые файлы:**
+
+- `core-detect/src/main/kotlin/org/cleargps/core/GnssDeviceBaseline.kt` — добавлено восстановление агрегированных статистик с валидацией диапазонов и согласованности счётчиков. Монотонные метки времени не восстанавливаются, поскольку они относятся к текущей загрузке устройства.
+- `core-detect/src/main/kotlin/org/cleargps/core/GnssSpoofingDetector.kt` и `app/src/main/java/org/cleargps/core/LocationFilterEngine.kt` — наружу модуля выведены только агрегированный снимок базовой линии и проверенный метод восстановления; сырые данные и координаты через этот интерфейс не передаются.
+- `app/src/main/java/org/cleargps/GnssDeviceBaselineStore.kt` — добавлено отдельное приватное хранилище SharedPreferences с номером схемы. Оно содержит только счётчики и агрегаты C/N₀, разброса, числа спутников и AGC; не сохраняет координаты, идентификаторы спутников, радиосети или сырые измерения. Некорректное/неподдерживаемое состояние очищается.
+- `app/src/main/java/org/cleargps/LocationMonitorService.kt` — хранилище загружается при старте сервиса; новые образцы сохраняются после GPS-оценки только при фактическом изменении счётчиков.
+- `core-detect/src/test/java/org/cleargps/core/GnssDeviceBaselineTest.kt` — добавлены проверки восстановления статистики через новый сеанс и отклонения повреждённого состояния без частичного изменения baseline.
+- `CHANGELOG.md` — этот журнал.
+
+**Зачем:** сохранить индивидуальную базовую линию, если foreground-сервис перезапускается, и не заставлять его начинать сбор заново при каждом перезапуске процесса.
+
+**Поведение и ограничения:** baseline остаётся локальным агрегированным состоянием, не изменяет score или пороги и не восстанавливает старые значения elapsedRealtime. Он сбрасывается при повреждённой/неподдерживаемой схеме или очистке данных приложения. Проверки Android-хранилища на реальном устройстве ещё нужны.
+
+**Проверки:** добавлены unit-тесты восстановления; CI для этого коммита должен подтвердить компиляцию, тесты и APK-сборку.

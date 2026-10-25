@@ -32,6 +32,7 @@ import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
+import org.cleargps.core.GnssDeviceBaselineSnapshot
 
 private data class LastResortFallback(val source: String, val location: Location)
 
@@ -211,6 +212,9 @@ class LocationMonitorService : Service(), LocationListener {
         super.onCreate()
         manager = getSystemService(LOCATION_SERVICE) as LocationManager
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        GnssDeviceBaselineStore.load(this)?.let { savedBaseline ->
+            if (!engine.restoreDeviceBaseline(savedBaseline)) GnssDeviceBaselineStore.clear(this)
+        }
         mock = MockLocationOutput(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
@@ -1163,6 +1167,9 @@ class LocationMonitorService : Service(), LocationListener {
         } else engine.currentDecision().inRiskZone
 
         val observedDecision = engine.observe(location, inZone)
+        if (gpsFix) {
+            GnssDeviceBaselineStore.saveIfChanged(this, engine.deviceBaselineSnapshot())
+        }
         val fallback = createLastResortFallback(observedDecision)
         val result = if (fallback != null) {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)

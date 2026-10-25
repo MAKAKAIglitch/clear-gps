@@ -164,8 +164,11 @@ class GnssSpoofingDetector {
         previousRf = snapshot
     }
 
-    /** In-memory, coordinate-free per-device reception baseline for diagnostics and later calibration. */
-    internal fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = deviceBaseline.snapshot()
+    /** Returns aggregate, coordinate-free baseline statistics for local persistence/diagnostics. */
+    fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = deviceBaseline.snapshot()
+
+    /** Restores a validated aggregate baseline; never restores position or raw radio data. */
+    fun restoreDeviceBaseline(snapshot: GnssDeviceBaselineSnapshot): Boolean = deviceBaseline.restore(snapshot)
 
     /** Signal-only evidence can warn, but is never sufficient to confirm spoofing. */
     fun assessSignalOnly(nowElapsedRealtimeNanos: Long): SpoofingAssessment {

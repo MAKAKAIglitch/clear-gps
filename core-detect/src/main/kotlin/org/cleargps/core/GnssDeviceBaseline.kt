@@ -3,7 +3,7 @@ package org.cleargps.core
 import kotlin.math.sqrt
 
 /** A summary of one numeric baseline feature; spread is null until there are at least two samples. */
-internal data class GnssMetricBaseline(
+data class GnssMetricBaseline(
     val sampleCount: Int,
     val mean: Double?,
     val standardDeviation: Double?
@@ -15,7 +15,7 @@ internal data class GnssMetricBaseline(
  * It does not classify spoofing and does not set detector thresholds. The caller may contribute
  * data only when the position assessment is normal and outside a configured risk zone.
  */
-internal data class GnssDeviceBaselineSnapshot(
+data class GnssDeviceBaselineSnapshot(
     val acceptedSignalSnapshots: Int,
     val acceptedAgcSnapshots: Int,
     val firstSampleElapsedRealtimeNanos: Long?,
@@ -90,6 +90,59 @@ internal class GnssDeviceBaseline {
         return changed
     }
 
+    /**
+     * Restores aggregate statistics from private app storage.
+     * Monotonic timestamps are intentionally reset because elapsedRealtime resets after reboot.
+     * Invalid or inconsistent state is rejected without partially mutating this baseline.
+     */
+    fun restore(snapshot: GnssDeviceBaselineSnapshot): Boolean {
+        if (snapshot.acceptedSignalSnapshots < 0 || snapshot.acceptedAgcSnapshots < 0) return false
+        if (snapshot.visibleSatellites.sampleCount != snapshot.acceptedSignalSnapshots ||
+            snapshot.usedSatellites.sampleCount != snapshot.acceptedSignalSnapshots ||
+            snapshot.meanAgcDb.sampleCount != snapshot.acceptedAgcSnapshots ||
+            snapshot.meanCn0DbHz.sampleCount > snapshot.acceptedSignalSnapshots ||
+            snapshot.cn0SpreadDb.sampleCount > snapshot.acceptedSignalSnapshots
+        ) return false
+        if (!validMetric(snapshot.meanCn0DbHz, 60.0, 60.0) ||
+            !validMetric(snapshot.cn0SpreadDb, 60.0, 60.0) ||
+            !validMetric(snapshot.visibleSatellites, MAX_SATELLITES.toDouble(), MAX_SATELLITES.toDouble()) ||
+            !validMetric(snapshot.usedSatellites, MAX_SATELLITES.toDouble(), MAX_SATELLITES.toDouble()) ||
+            !validMetric(snapshot.meanAgcDb, null, null)
+        ) return false
+
+        cn0.restore(snapshot.meanCn0DbHz)
+        cn0Spread.restore(snapshot.cn0SpreadDb)
+        visibleSatellites.restore(snapshot.visibleSatellites)
+        usedSatellites.restore(snapshot.usedSatellites)
+        agc.restore(snapshot.meanAgcDb)
+
+        acceptedSignalSnapshots = snapshot.acceptedSignalSnapshots
+        acceptedAgcSnapshots = snapshot.acceptedAgcSnapshots
+        // Stored elapsedRealtime values are not portable across process/device restarts.
+        lastSignalAtNanos = 0L
+        lastAgcAtNanos = 0L
+        firstSampleAtNanos = 0L
+        lastSampleAtNanos = 0L
+        return true
+    }
+
+    private fun validMetric(
+        metric: GnssMetricBaseline,
+        maxMean: Double?,
+        maxStandardDeviation: Double?
+    ): Boolean {
+        if (metric.sampleCount < 0) return false
+        if (metric.sampleCount == 0) return metric.mean == null && metric.standardDeviation == null
+        val mean = metric.mean ?: return false
+        if (!mean.isFinite() || (maxMean != null && mean !in 0.0..maxMean)) return false
+        if (metric.sampleCount == 1) return metric.standardDeviation == null
+        val standardDeviation = metric.standardDeviation ?: return false
+        if (!standardDeviation.isFinite() || standardDeviation < 0.0) return false
+        if (maxStandardDeviation != null && standardDeviation > maxStandardDeviation) return false
+        val reconstructedM2 = standardDeviation * standardDeviation * (metric.sampleCount - 1L)
+        return reconstructedM2.isFinite()
+    }
+
     fun snapshot(): GnssDeviceBaselineSnapshot = GnssDeviceBaselineSnapshot(
         acceptedSignalSnapshots = acceptedSignalSnapshots,
         acceptedAgcSnapshots = acceptedAgcSnapshots,
@@ -122,6 +175,15 @@ internal class GnssDeviceBaseline {
             val delta = value - mean
             mean += delta / count
             sumSquaredDeviation += delta * (value - mean)
+        }
+
+        fun restore(snapshot: GnssMetricBaseline) {
+            count = snapshot.sampleCount.toLong()
+            mean = snapshot.mean ?: 0.0
+            sumSquaredDeviation = if (count >= 2L) {
+                val standardDeviation = snapshot.standardDeviation ?: 0.0
+                standardDeviation * standardDeviation * (count - 1L)
+            } else 0.0
         }
 
         fun snapshot(): GnssMetricBaseline = GnssMetricBaseline(

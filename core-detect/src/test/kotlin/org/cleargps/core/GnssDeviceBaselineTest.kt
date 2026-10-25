@@ -95,4 +95,44 @@ class GnssDeviceBaselineTest {
         assertNull(snapshot.visibleSatellites.mean)
         assertNull(snapshot.firstSampleElapsedRealtimeNanos)
     }
+    @Test
+    fun restoredBaselineContinuesLearningWithFreshSessionTimestamps() {
+        val initial = GnssDeviceBaseline()
+        assertTrue(initial.observe(signal(1, cn0 = 38.0), rf(1), 1_200_000_000L, isNormal = true, inRiskZone = false))
+        val storedState = initial.snapshot().copy(
+            firstSampleElapsedRealtimeNanos = null,
+            lastSampleElapsedRealtimeNanos = null
+        )
+
+        val restored = GnssDeviceBaseline()
+        assertTrue(restored.restore(storedState))
+        assertTrue(restored.observe(signal(2, cn0 = 40.0), rf(2, agc = -64.0), 2_200_000_000L, isNormal = true, inRiskZone = false))
+
+        val snapshot = restored.snapshot()
+        assertEquals(2, snapshot.acceptedSignalSnapshots)
+        assertEquals(2, snapshot.acceptedAgcSnapshots)
+        assertEquals(39.0, snapshot.meanCn0DbHz.mean!!, 0.001)
+        assertEquals(-63.0, snapshot.meanAgcDb.mean!!, 0.001)
+        assertEquals(2_000_000_000L, snapshot.firstSampleElapsedRealtimeNanos)
+    }
+
+    @Test
+    fun corruptRestoredBaselineIsRejectedWithoutPartialMutation() {
+        val baseline = GnssDeviceBaseline()
+        val corrupt = GnssDeviceBaselineSnapshot(
+            acceptedSignalSnapshots = 2,
+            acceptedAgcSnapshots = 0,
+            firstSampleElapsedRealtimeNanos = null,
+            lastSampleElapsedRealtimeNanos = null,
+            meanCn0DbHz = GnssMetricBaseline(sampleCount = 2, mean = 500.0, standardDeviation = -1.0),
+            cn0SpreadDb = GnssMetricBaseline(sampleCount = 0, mean = null, standardDeviation = null),
+            visibleSatellites = GnssMetricBaseline(sampleCount = 2, mean = 8.0, standardDeviation = 1.0),
+            usedSatellites = GnssMetricBaseline(sampleCount = 2, mean = 6.0, standardDeviation = 1.0),
+            meanAgcDb = GnssMetricBaseline(sampleCount = 0, mean = null, standardDeviation = null)
+        )
+        assertFalse(baseline.restore(corrupt))
+        assertEquals(0, baseline.snapshot().acceptedSignalSnapshots)
+        assertEquals(0, baseline.snapshot().meanCn0DbHz.sampleCount)
+    }
+
 }

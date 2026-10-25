@@ -30,6 +30,11 @@ class LocationFilterEngine {
         reasons = decision.reasons.toList()
     )
 
+    fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = detector.deviceBaselineSnapshot()
+
+    fun restoreDeviceBaseline(snapshot: GnssDeviceBaselineSnapshot): Boolean =
+        detector.restoreDeviceBaseline(snapshot)
+
     internal fun observeGnssSignal(snapshot: GnssSignalSnapshot): FilterDecision? {
         detector.observeGnssSignal(snapshot)
         return refreshSignalOnlyDecision(snapshot.elapsedRealtimeNanos)
