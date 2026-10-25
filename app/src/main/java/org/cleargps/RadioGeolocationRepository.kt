@@ -253,7 +253,7 @@ class RadioGeolocationRepository(private val context: Context) {
             val ageMillis = validResults.maxOfOrNull { (nowMicros - it.timestamp) / 1_000L }
             DiagnosticLogStore.log(
                 context, "RADIO_WIFI",
-                "Результаты Wi-Fi: валидных BSSID=${validResults.size}, самый свежий возраст=${ageMillis?.div(1_000) ?: "unknown"}s"
+                "Результаты Wi-Fi: валидных BSSID=${validResults.size}, возраст самого старого сигнала=${ageMillis?.div(1_000) ?: "unknown"}s"
             )
             val signals = validResults.asSequence()
                 .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
@@ -281,14 +281,31 @@ class RadioGeolocationRepository(private val context: Context) {
         if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) return emptyList()
         val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return emptyList()
         return try {
-            telephony.allCellInfo.orEmpty().mapNotNull(::parseCell)
+            val allCellInfo = telephony.allCellInfo.orEmpty()
+            val nowElapsedMs = SystemClock.elapsedRealtime()
+            val freshCellInfo = allCellInfo.filter { info ->
+                val timestampMillis = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    info.timestampMillis
+                } else {
+                    info.timeStamp / 1_000_000L
+                }
+                RadioFixReliability.isCellInfoFresh(timestampMillis, nowElapsedMs)
+            }
+            DiagnosticLogStore.log(
+                context, "RADIO_CELL",
+                "CellInfo от Android: всего=${allCellInfo.size}, актуальных=${freshCellInfo.size}, " +
+                    "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}"
+            )
+            freshCellInfo.mapNotNull(::parseCell)
                 .distinctBy { "${it.type}:${it.mcc}:${it.mnc}:${it.area}:${it.cellId}" }
                 .sortedByDescending { it.rssi }
                 .take(MAX_CELLS)
                 .map { it.toSignal() }
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            DiagnosticLogStore.log(context, "RADIO_CELL", "Чтение CellInfo запрещено: ${error.message ?: "SecurityException"}", "ERROR")
             emptyList()
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            DiagnosticLogStore.log(context, "RADIO_CELL", "Ошибка чтения CellInfo: ${error.javaClass.simpleName}", "ERROR")
             emptyList()
         }
     }
