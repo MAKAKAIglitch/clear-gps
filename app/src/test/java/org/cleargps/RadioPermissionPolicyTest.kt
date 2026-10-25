@@ -5,16 +5,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadioPermissionPolicyTest {
-    @Test fun approximatePermissionIsInsufficientForWifiOnAndroid10AndNewer() {
-        assertFalse(RadioPermissionPolicy.canReadWifiScan(29, false, true))
-        assertFalse(RadioPermissionPolicy.canReadWifiScan(35, false, true))
-        assertTrue(RadioPermissionPolicy.canReadWifiScan(35, true, true))
-    }
-
-    @Test fun olderAndroidCanUseCoarseLocationForWifiScanResults() {
-        assertTrue(RadioPermissionPolicy.canReadWifiScan(28, false, true))
-        assertFalse(RadioPermissionPolicy.canReadWifiScan(28, false, false))
-        assertTrue(RadioPermissionPolicy.canReadWifiScan(28, true, false))
+    @Test fun wifiScanRequiresPreciseLocationForThisTargetSdk() {
+        assertFalse(RadioPermissionPolicy.canReadWifiScan(false))
+        assertTrue(RadioPermissionPolicy.canReadWifiScan(true))
     }
 
     @Test fun cellIdentifiersRequireFineLocation() {
@@ -22,11 +15,11 @@ class RadioPermissionPolicyTest {
         assertTrue(RadioPermissionPolicy.canReadCellInfo(true))
     }
 
-    @Test fun missingPrecisePermissionIsExplainedOnlyWhenEnabledSourceNeedsIt() {
-        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(35, false, true, false, false))
-        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(28, false, false, true, false))
-        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(28, false, false, false, true))
-        assertFalse(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(28, false, true, false, false))
-        assertFalse(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(35, true, true, true, true))
+    @Test fun missingPrecisePermissionIsExplainedOnlyWhenAnEnabledSourceNeedsIt() {
+        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(false, true, false, false))
+        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(false, false, true, false))
+        assertTrue(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(false, false, false, true))
+        assertFalse(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(false, false, false, false))
+        assertFalse(RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(true, true, true, true))
     }
 }
