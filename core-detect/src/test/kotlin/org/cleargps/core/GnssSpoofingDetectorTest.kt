@@ -242,6 +242,45 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.isEmpty())
     }
 
+
+    @Test fun satelliteLossAndRecoveryAreNotMistakenForAnAttack() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 10, 8, 34.0, 4.0, 3, strongSignalCount = 7)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 0, 0, null, null, 0, strongSignalCount = 0)
+        )
+        assertEquals(0, detector.assessSignalOnly(2_200_000_000L).score)
+
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(3_100_000_000L, 10, 8, 33.0, 4.5, 3, strongSignalCount = 7)
+        )
+        val recovered = detector.receptionDiagnostics(3_200_000_000L)
+        assertEquals(GnssEnvironmentContext.LIKELY_OPEN_SKY, recovered.environment.context)
+        assertEquals(0, detector.assessSignalOnly(3_200_000_000L).score)
+    }
+
+    @Test fun signalOnlyWarningExpiresWithoutNewEvidence() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 10, 8, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 10, 1, 38.1, 5.0, 3, strongSignalCount = 8)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(3_100_000_000L, 10, 1, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        assertTrue(detector.assessSignalOnly(3_200_000_000L).score >= 30)
+
+        // The warning is a short-lived hint, not a latched attack state.
+        val expired = detector.assessSignalOnly(14_000_000_000L)
+        assertEquals(0, expired.score)
+        assertFalse(expired.confirmed)
+        assertTrue(expired.reasons.isEmpty())
+    }
+
     @Test fun deviceBaselineIsUpdatedOnlyAfterNormalOutOfZoneGpsAssessment() {
         val detector = GnssSpoofingDetector()
         detector.observeGnssSignal(GnssSignalSnapshot(1_100_000_000L, 9, 8, 34.0, 4.0, 2))
