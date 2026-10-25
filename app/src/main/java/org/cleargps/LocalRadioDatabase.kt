@@ -830,7 +830,15 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val current = signals.asSequence()
             .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
             .distinctBy { it.type + "|" + canonicalIdentifier(it.identifier) }
-            .toList()
+            .groupBy { it.type }
+            .flatMap { (type, values) ->
+                val limit = when (type) {
+                    "wifi" -> 32
+                    "cell" -> 16
+                    else -> 32
+                }
+                values.sortedByDescending { it.rssi }.take(limit)
+            }
         val db = readableDatabase
         var known = 0
         var located = 0
