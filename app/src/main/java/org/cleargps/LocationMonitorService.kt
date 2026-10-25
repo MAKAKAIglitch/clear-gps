@@ -1085,7 +1085,9 @@ class LocationMonitorService : Service(), LocationListener {
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 2
         private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L
-        private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 1_000.0
+        // Radio-only mode is an approximate estimate; publish multi-signal fixes with
+        // honest uncertainty instead of dropping everything above a strict 1 km cutoff.
+        private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 50_000.0
         private const val MANUAL_FALLBACK_ACCURACY_METERS = 1_500f
         private const val MANUAL_FALLBACK_MAX_AGE_MS = 24L * 60L * 60L * 1000L
     }

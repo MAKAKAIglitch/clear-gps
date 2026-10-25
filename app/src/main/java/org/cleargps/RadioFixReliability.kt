@@ -106,9 +106,29 @@ internal object RadioFixReliability {
         accuracyMeters: Double
     ): Boolean {
         val ageMillis = nowMillis - estimateUpdatedAtMillis
+        // Keep the hold window short, but don't reject a coarse fix solely because
+        // its reported uncertainty is wider than 1 km.
         return ageMillis in 0..45_000L && matchedCount >= 2 &&
-            accuracyMeters.isFinite() && accuracyMeters in 1.0..1_000.0
+            accuracyMeters.isFinite() && accuracyMeters in 1.0..50_000.0
     }
+
+    /**
+     * UI map policy is deliberately more permissive than mock-provider recovery.
+     * Keep showing a stale approximate fix while radio matching recovers; the foreground
+     * service still uses canRetainLastEstimate for short mock-output holds.
+     */
+    fun canDisplayLastRadioEstimateOnMap(
+        estimateUpdatedAtMillis: Long,
+        nowMillis: Long,
+        matchedCount: Int,
+        accuracyMeters: Double
+    ): Boolean {
+        val ageMillis = nowMillis - estimateUpdatedAtMillis
+        return ageMillis in 0..MAP_ESTIMATE_MAX_AGE_MS && matchedCount >= 1 &&
+            accuracyMeters.isFinite() && accuracyMeters in 1.0..50_000.0
+    }
+
+    private const val MAP_ESTIMATE_MAX_AGE_MS = 10L * 60L * 1_000L
 
     /**
      * A cached radio scan may repeat an old coordinate. It can be published to mock GPS only
