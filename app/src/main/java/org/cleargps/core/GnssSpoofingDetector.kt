@@ -213,7 +213,9 @@ internal class GnssSpoofingDetector {
         }
         rawScore = rawScore.coerceIn(0, 100)
 
-        val corroborated = (motionScore > 0 && crossSourceScore > 0) ||
+        // Weak direction/speed-consistency hints must not turn network divergence into a
+        // confirmed alert. Require a physically extreme trajectory or independent signal evidence.
+        val corroborated = (motionScore >= 76 && crossSourceScore > 0) ||
             (crossSourceScore > 0 && signalScore >= 10) ||
             (motionScore >= 55 && signalScore >= 10)
 

@@ -1197,6 +1197,7 @@ private fun MapHomeScreen(
                 Text(when (filterState) {
                     FilterState.WAITING.name -> "Ожидание данных"
                     FilterState.NORMAL.name -> "Аномалий не обнаружено"
+                    FilterState.SUSPECT.name -> "Подозрительные признаки — проверка продолжается"
                     FilterState.ZONE_RISK.name -> "В зоне риска"
                     FilterState.CORRECTING.name -> "Используется резервная позиция"
                     FilterState.NO_FALLBACK.name -> "Нет пригодного резерва"

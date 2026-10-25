@@ -50,6 +50,24 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.any { it.contains("сетевой позицией", ignoreCase = true) })
     }
 
+    @Test fun singleNetworkDisagreementIsSuspiciousButRequiresAnotherFixToConfirm() {
+        val detector = GnssSpoofingDetector()
+        val first = detector.assess(
+            fix(55.0, 37.0, 1),
+            fix(55.0, 37.01, 1, accuracy = 20.0, provider = "network"),
+            false, 1_200_000_000L, true
+        )
+        assertFalse(first.confirmed)
+        assertTrue(first.score >= 60)
+
+        val second = detector.assess(
+            fix(55.0, 37.00001, 6),
+            fix(55.0, 37.01, 6, accuracy = 20.0, provider = "network"),
+            false, 6_200_000_000L, true
+        )
+        assertTrue(second.confirmed)
+    }
+
     @Test fun poorAccuracyAloneDoesNotTurnLargeDisplacementIntoCertainSpoofing() {
         val detector = GnssSpoofingDetector()
         detector.assess(fix(55.0, 37.0, 1, accuracy = 500.0),

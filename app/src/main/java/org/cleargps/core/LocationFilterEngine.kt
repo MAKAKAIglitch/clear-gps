@@ -5,7 +5,7 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.SystemClock
 
-enum class FilterState { WAITING, NORMAL, ZONE_RISK, CORRECTING, NO_FALLBACK }
+enum class FilterState { WAITING, NORMAL, SUSPECT, ZONE_RISK, CORRECTING, NO_FALLBACK }
 
 data class FilterDecision(
     val state: FilterState,
@@ -76,11 +76,12 @@ class LocationFilterEngine {
         )
         // Use an alternate source immediately for a high-risk candidate; temporal confirmation
         // and recovery are managed separately so brief anomalies cannot rapidly flip the alert.
-        val suspicious = assessment.confirmed || gpsInZone || assessment.score >= CORRECTION_CANDIDATE_SCORE
+        val suspicious = assessment.confirmed || gpsInZone
         if (!suspicious) {
             if (assessment.score < CORRECTION_CANDIDATE_SCORE) trusted = Location(currentGps)
             return FilterDecision(
-                FilterState.NORMAL, assessment.score, false, "GPS", Location(currentGps), assessment.reasons
+                if (assessment.score >= CORRECTION_CANDIDATE_SCORE) FilterState.SUSPECT else FilterState.NORMAL,
+                assessment.score, false, "GPS", Location(currentGps), assessment.reasons
             )
         }
 
