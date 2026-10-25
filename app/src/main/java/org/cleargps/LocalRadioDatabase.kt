@@ -1203,7 +1203,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val tempFile = File.createTempFile("clear-gps-wigle-", ".sqlite", appContext.cacheDir)
         var exportDb: SQLiteDatabase? = null
         try {
-            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile, null)
+            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile.absolutePath, null)
             exportDb.execSQL(
                 "CREATE TABLE network (" +
                     "bssid TEXT NOT NULL, ssid TEXT NOT NULL DEFAULT '', " +
@@ -1294,7 +1294,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val tempFile = File.createTempFile("clear-gps-export-", ".sqlite", appContext.cacheDir)
         var exportDb: SQLiteDatabase? = null
         try {
-            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile, null)
+            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile.absolutePath, null)
             exportDb.execSQL("ATTACH DATABASE ? AS source", arrayOf(appContext.getDatabasePath(DB_NAME).absolutePath))
             val schema = exportDb.rawQuery(
                 "SELECT type, name, sql FROM source.sqlite_master " +
