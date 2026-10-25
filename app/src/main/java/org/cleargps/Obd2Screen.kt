@@ -78,10 +78,10 @@ internal fun Obd2Screen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Bluetooth, null, tint = colors.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text("Сопряжённые адаптеры", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Сопряжённые Bluetooth-устройства", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Сканирования эфира нет: список берётся только из Bluetooth-устройств, которые уже сопряжены в Android.",
+                    "Сканирования эфира нет. Выбери свой OBD-II/ELM327 из списка ранее сопряжённых Bluetooth-устройств; прочие устройства могут не поддерживать SPP.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
