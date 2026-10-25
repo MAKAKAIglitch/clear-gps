@@ -10,7 +10,8 @@ class RadioFixReliabilityTest {
         assertTrue(RadioFixReliability.shouldRequestWifiScan(10_000L, 0L))
         assertFalse(RadioFixReliability.shouldRequestWifiScan(20_000L, 10_000L))
         assertTrue(RadioFixReliability.shouldRequestWifiScan(40_000L, 10_000L))
-        assertFalse(RadioFixReliability.shouldRequestWifiScan(9_000L, 10_000L))
+        // A smaller elapsed-realtime value means the device clock was reset by reboot.
+        assertTrue(RadioFixReliability.shouldRequestWifiScan(9_000L, 10_000L))
     }
 
     @Test fun staleWifiIncreasesUncertaintyAndFreshWifiDoesNot() {
