@@ -96,6 +96,7 @@ class LocalSignalPositionTest {
         }
 
         assertNull(estimateRadioFingerprintPosition(current, history, now))
+        assertTrue(lookupRadioFingerprintPosition(current, history, now).ambiguous)
     }
 
     @Test fun fingerprintSearchIgnoresUnlocatedAndSelfEstimatedSamples() {
