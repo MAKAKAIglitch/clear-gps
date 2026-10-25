@@ -59,6 +59,7 @@ class RadioGeolocationRepository(private val context: Context) {
         useCells: Boolean,
         useBle: Boolean
     ): RadioLookupResult = scanMutex.withLock {
+        DiagnosticLogStore.log(context, "RADIO", "Сканирование начато; mode=$mode, Wi-Fi=$useWifi, соты=$useCells, BLE=$useBle, запись=$record")
         // The UI, recording loop and foreground service can all request a scan. Serialize
         // them process-wide so concurrent Wi-Fi/BLE scans do not cancel or throttle each other.
         val fineLocationGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -135,6 +136,13 @@ class RadioGeolocationRepository(private val context: Context) {
             ?.joinToString(prefix = " Используется кэш радиосигналов (", postfix = "); погрешность увеличена.")
             .orEmpty()
         val fullMessage = message + cacheAgeHints + precisePermissionHint
+        DiagnosticLogStore.log(
+            context, "RADIO",
+            "Сканирование завершено: Wi-Fi=${snapshot.wifiCount}, соты=${snapshot.cellCount}, BLE=${snapshot.bleCount}, " +
+                "Wi-Fi age=${snapshot.wifiAgeMillis?.div(1_000) ?: "unknown"}s, BLE age=${snapshot.bleAgeMillis?.div(1_000) ?: "unknown"}s, " +
+                (estimate?.let { "оценка есть, совпадений=${it.matchedCount}, точность≈${it.accuracyMeters.toInt()} м, fallback=${it.fallbackUsed}" }
+                    ?: "координата не рассчитана")
+        )
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, fullMessage)
             .putBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, estimate != null)
@@ -178,11 +186,15 @@ class RadioGeolocationRepository(private val context: Context) {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (!RadioPermissionPolicy.canReadWifiScan(fineGranted)) {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Wi-Fi пропущен: нет разрешения точной геолокации")
             return TimedRadioSignals(emptyList(), null)
         }
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             ?: return TimedRadioSignals(emptyList(), null)
-        if (!manager.isWifiEnabled) return TimedRadioSignals(emptyList(), null)
+        if (!manager.isWifiEnabled) {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Wi-Fi выключен системой")
+            return TimedRadioSignals(emptyList(), null)
+        }
 
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val scanRequestedAllowed = RadioFixReliability.shouldRequestWifiScan(
@@ -201,6 +213,12 @@ class RadioGeolocationRepository(private val context: Context) {
             } catch (_: RuntimeException) {
                 false
             }
+        }
+
+        if (scanRequestedAllowed) {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Запрос Wi-Fi scan: ${if (scanRequested) "принят Android" else "отклонён/ограничен Android"}")
+        } else {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Новый Wi-Fi scan пропущен по cooldown; используется ограниченный системный кэш")
         }
 
         var rawResults = try { manager.scanResults }
@@ -231,6 +249,10 @@ class RadioGeolocationRepository(private val context: Context) {
                     result.level in -110..0
             }
             val ageMillis = validResults.minOfOrNull { (nowMicros - it.timestamp) / 1_000L }
+            DiagnosticLogStore.log(
+                context, "RADIO_WIFI",
+                "Результаты Wi-Fi: валидных BSSID=${validResults.size}, самый свежий возраст=${ageMillis?.div(1_000) ?: "unknown"}s"
+            )
             val signals = validResults.asSequence()
                 .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
                 .sortedByDescending { it.level }
@@ -328,7 +350,10 @@ class RadioGeolocationRepository(private val context: Context) {
         val bluetoothEnabled = try { adapter.isEnabled }
             catch (_: SecurityException) { false }
             catch (_: RuntimeException) { false }
-        if (!bluetoothEnabled) return TimedRadioSignals(emptyList(), null)
+        if (!bluetoothEnabled) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Bluetooth выключен системой")
+            return TimedRadioSignals(emptyList(), null)
+        }
 
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val cachedAgeMs = if (lastBleScanFinishedAtElapsedMs > 0L &&
@@ -368,6 +393,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     results.forEach { onScanResult(0, it) }
                 }
                 override fun onScanFailed(errorCode: Int) {
+                    DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scan failed: Android errorCode=$errorCode")
                     handler.removeCallbacks(stopTask)
                     try { scanner.stopScan(this) } catch (_: SecurityException) { } catch (_: RuntimeException) { }
                     if (continuation.isActive) continuation.resume(seen.values.toList())
