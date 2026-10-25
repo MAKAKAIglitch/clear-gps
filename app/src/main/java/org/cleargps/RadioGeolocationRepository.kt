@@ -164,14 +164,14 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private suspend fun collectWifi(): WifiScanResult {
+    private suspend fun collectWifi(): TimedRadioSignals {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            return WifiScanResult(emptyList(), null)
+            return TimedRadioSignals(emptyList(), null)
         }
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return WifiScanResult(emptyList(), null)
-        if (!manager.isWifiEnabled) return WifiScanResult(emptyList(), null)
+            ?: return TimedRadioSignals(emptyList(), null)
+        if (!manager.isWifiEnabled) return TimedRadioSignals(emptyList(), null)
 
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val scanRequestedAllowed = RadioFixReliability.shouldRequestWifiScan(
@@ -231,11 +231,11 @@ class RadioGeolocationRepository(private val context: Context) {
                     RadioSignal("wifi", it.BSSID.lowercase(Locale.ROOT), it.level, it.frequency, ssid)
                 }
                 .toList()
-            WifiScanResult(signals, ageMillis)
+            TimedRadioSignals(signals, ageMillis)
         } catch (_: SecurityException) {
-            WifiScanResult(emptyList(), null)
+            TimedRadioSignals(emptyList(), null)
         } catch (_: RuntimeException) {
-            WifiScanResult(emptyList(), null)
+            TimedRadioSignals(emptyList(), null)
         }
     }
 
