@@ -7,6 +7,10 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.OutputStream
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -994,24 +998,76 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     fun exportWigleCsv(): String {
-        val rows = listPoints(5_000)
+        val db = readableDatabase
         val out = StringBuilder()
-        out.append("WigleWifi-1.6,appRelease=Clear GPS 0.3,model=Android,device=Clear GPS,brand=Android\n")
+        out.append("WigleWifi-1.6,appRelease=Clear GPS 0.4,model=Android,device=Clear GPS,brand=Android\n")
         out.append("MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type\n")
-        rows.forEach { p ->
-            val type = when (p.type) { "ble" -> "BTLE"; "cell" -> "BTS"; else -> "WIFI" }
+
+        fun appendRow(
+            type: String, identifier: String, ssid: String, time: Long, frequency: Int,
+            rssi: Int, latitude: Double?, longitude: Double?, accuracy: Double?
+        ) {
+            val wigleType = when (type) {
+                "ble" -> "BTLE"
+                "cell" -> "BTS"
+                else -> "WIFI"
+            }
             val values = listOf(
-                p.identifier, p.ssid.ifBlank { p.label }, "", UTC_FORMAT.format(Date(p.firstSeen)),
-                frequencyToChannel(p.frequency).toString(), p.frequency.toString(), p.rssi.toString(),
-                p.latitude?.toString().orEmpty(), p.longitude?.toString().orEmpty(), "",
-                p.accuracyMeters?.toString().orEmpty(), "", "", type
+                identifier, ssid, "", UTC_FORMAT.format(Date(time)),
+                frequencyToChannel(frequency).toString(), frequency.toString(), rssi.toString(),
+                latitude?.toString().orEmpty(), longitude?.toString().orEmpty(), "",
+                accuracy?.toString().orEmpty(), "", "", wigleType
             )
             out.append(values.joinToString(",") { csvEscape(it) }).append('\n')
+        }
+
+        // WiGLE CSV is an observation interchange format: preserve every sighting.
+        db.rawQuery(
+            "SELECT o.radio_type, o.identifier, COALESCE(NULLIF(p.ssid, ''), p.label, '') AS ssid, " +
+                "o.observed_at, o.frequency, o.rssi, o.latitude, o.longitude, o.accuracy " +
+                "FROM radio_observations o LEFT JOIN radio_points p " +
+                "ON LOWER(p.radio_type) = LOWER(o.radio_type) AND LOWER(p.identifier) = LOWER(o.identifier) " +
+                "ORDER BY o.observed_at ASC, o.id ASC",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                appendRow(
+                    cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty(),
+                    cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
+                    cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                    cursor.doubleOrNull("latitude"), cursor.doubleOrNull("longitude"), cursor.doubleOrNull("accuracy")
+                )
+            }
+        }
+
+        // Legacy/manual records without detailed history still get one representative row.
+        db.rawQuery(
+            "SELECT p.radio_type, p.identifier, COALESCE(NULLIF(p.ssid, ''), p.label, '') AS ssid, " +
+                "p.first_seen AS observed_at, p.frequency, p.last_rssi AS rssi, p.latitude, p.longitude, p.accuracy " +
+                "FROM radio_points p WHERE NOT EXISTS (" +
+                "SELECT 1 FROM radio_observations o WHERE LOWER(o.radio_type) = LOWER(p.radio_type) " +
+                "AND LOWER(o.identifier) = LOWER(p.identifier)) ORDER BY p.first_seen ASC, p.id ASC",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                appendRow(
+                    cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty(),
+                    cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
+                    cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                    cursor.doubleOrNull("latitude"), cursor.doubleOrNull("longitude"), cursor.doubleOrNull("accuracy")
+                )
+            }
         }
         return out.toString()
     }
 
-    fun importWigleCsv(input: InputStream): Int {
+    fun importWigleCsv(input: InputStream): RadioImportResult {
         val raw = input.use { readBounded(it, MAX_IMPORT_BYTES) }
         val decoded = if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
             GZIPInputStream(ByteArrayInputStream(raw)).use { readBounded(it, MAX_IMPORT_BYTES) }
@@ -1021,65 +1077,546 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             val header = row.map { it.trim().removePrefix("\uFEFF").uppercase(Locale.ROOT) }
             "MAC" in header && "CURRENTLATITUDE" in header && "CURRENTLONGITUDE" in header
         }
-        if (headerIndex < 0) throw IllegalArgumentException("Не найден формат WiGLE CSV: нужны столбцы MAC, CurrentLatitude и CurrentLongitude.")
+        if (headerIndex < 0) throw IllegalArgumentException(
+            "Не найден формат WiGLE CSV: нужны столбцы MAC, CurrentLatitude и CurrentLongitude."
+        )
         val headers = rows[headerIndex].mapIndexed { i, value ->
             value.trim().removePrefix("\uFEFF").uppercase(Locale.ROOT) to i
         }.toMap()
-        fun field(row: List<String>, key: String) = headers[key]?.let { row.getOrNull(it).orEmpty().trim() }.orEmpty()
+        fun field(row: List<String>, key: String) =
+            headers[key]?.let { row.getOrNull(it).orEmpty().trim() }.orEmpty()
 
-        var imported = 0
+        var importedObservations = 0
+        var newRadios = 0
+        var validRows = 0
+        val touched = LinkedHashSet<String>()
         val db = writableDatabase
         db.beginTransaction()
         try {
             rows.drop(headerIndex + 1).forEach { row ->
-                val identifier = field(row, "MAC")
-                if (identifier.isBlank()) return@forEach
-                val lat = field(row, "CURRENTLATITUDE").toDoubleOrNull()
-                val lon = field(row, "CURRENTLONGITUDE").toDoubleOrNull()
-                if (lat == null || lon == null || !lat.isFinite() || !lon.isFinite() ||
-                    lat !in -90.0..90.0 || lon !in -180.0..180.0) return@forEach
+                val rawIdentifier = field(row, "MAC")
+                if (rawIdentifier.isBlank()) return@forEach
                 val typeHint = (field(row, "TYPE") + " " + field(row, "AUTHMODE")).uppercase(Locale.ROOT)
-                val type = when {
-                    typeHint.contains("BTLE") || typeHint.contains("BLUETOOTH") -> "ble"
-                    typeHint.contains("BTS") || typeHint.contains("CELL") || typeHint.contains("GSM") -> "cell"
-                    else -> "wifi"
-                }
+                val type = wigleTypeToRadioType(typeHint)
+                val identifier = canonicalIdentifier(rawIdentifier)
+                if (identifier.isBlank() || identifier.length > 256) return@forEach
+
+                val latText = field(row, "CURRENTLATITUDE")
+                val lonText = field(row, "CURRENTLONGITUDE")
+                val lat = latText.toDoubleOrNull()
+                val lon = lonText.toDoubleOrNull()
+                val hasNoCoordinate = latText.isBlank() && lonText.isBlank()
+                if (!hasNoCoordinate && !validCoordinates(lat, lon)) return@forEach
+
                 val rssi = field(row, "RSSI").toIntOrNull()?.coerceIn(-120, 0) ?: -100
                 val frequency = field(row, "FREQUENCY").toIntOrNull()?.coerceAtLeast(0) ?: 0
                 val accuracy = field(row, "ACCURACYMETERS").toDoubleOrNull()
-                    ?.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(100_000.0) ?: DEFAULT_IMPORTED_ACCURACY_METERS
-                val label = field(row, "SSID").take(100)
+                    ?.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(100_000.0)
+                    ?: DEFAULT_IMPORTED_ACCURACY_METERS
+                val ssid = field(row, "SSID").take(100)
                 val now = System.currentTimeMillis()
-                val values = ContentValues().apply {
-                    put("radio_type", type); put("identifier", identifier); put("label", label); put("ssid", label)
-                    put("latitude", lat); put("longitude", lon); put("accuracy", accuracy)
-                    put("last_rssi", rssi); put("peak_rssi", rssi); put("frequency", frequency)
-                    put("first_seen", now); put("last_seen", now); put("sightings", 1)
-                    put("position_source", "wigle-import")
-                }
-                val inserted = db.insertWithOnConflict("radio_points", null, values, SQLiteDatabase.CONFLICT_IGNORE)
-                if (inserted == -1L) {
-                    val old = findPoint(db, type, identifier)
-                    val update = ContentValues().apply {
-                        put("last_rssi", rssi); put("peak_rssi", maxOf(old?.peakRssi ?: -120, rssi))
-                        put("frequency", frequency); put("last_seen", now)
-                        put("sightings", (old?.sightings ?: 0) + 1)
-                        if (old?.latitude == null || old.longitude == null) {
-                            put("latitude", lat); put("longitude", lon); put("accuracy", accuracy)
-                            put("position_source", "wigle-import")
-                        }
-                        if (old != null && old.ssid.isBlank() && label.isNotBlank()) put("ssid", label)
-                        if (old != null && old.label.isBlank() && label.isNotBlank()) put("label", label)
-                    }
-                    db.update("radio_points", update, "radio_type = ? AND identifier = ?", arrayOf(type, identifier))
-                }
-                imported++
+                val observedAt = parseWigleTimestamp(field(row, "FIRSTSEEN")) ?: now
+                val coordinateLat = if (hasNoCoordinate) null else lat
+                val coordinateLon = if (hasNoCoordinate) null else lon
+                validRows++
+
+                val newObservation = insertObservationIfAbsent(
+                    db, type, identifier, observedAt, coordinateLat, coordinateLon,
+                    if (coordinateLat != null) accuracy else null, rssi, frequency, "wigle-import"
+                )
+                if (!newObservation) return@forEach
+
+                if (upsertImportedPoint(
+                        db, type, identifier, ssid, coordinateLat, coordinateLon,
+                        if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import"
+                    )
+                ) newRadios++
+                importedObservations++
+                touched.add(type + "|" + identifier)
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        return imported
+        if (validRows == 0) throw IllegalArgumentException("В CSV нет корректных строк с MAC/BSSID.")
+        return RadioImportResult(importedObservations, touched.size, newRadios, "WiGLE CSV")
+    }
+
+    /**
+     * Accepts a Clear GPS backup or a native WiGLE SQLite database (network/location).
+     * Source content is only read; importing merges records and never replaces local data.
+     */
+    fun importSqliteDatabase(input: InputStream): RadioImportResult {
+        val tempFile = File.createTempFile("clear-gps-import-", ".sqlite", context.cacheDir)
+        try {
+            input.use { source ->
+                FileOutputStream(tempFile).use { target -> copyBounded(source, target, MAX_SQLITE_IMPORT_BYTES) }
+            }
+            val sourceDb = try {
+                SQLiteDatabase.openDatabase(
+                    tempFile.absolutePath, null,
+                    SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS
+                )
+            } catch (error: Exception) {
+                throw IllegalArgumentException("Файл не является корректной SQLite-базой.", error)
+            }
+            try {
+                val integrity = sourceDb.rawQuery("PRAGMA quick_check", null).use {
+                    if (it.moveToFirst()) it.getString(0) else "no result"
+                }
+                if (!integrity.equals("ok", ignoreCase = true)) {
+                    throw IllegalArgumentException("SQLite-база повреждена: " + integrity)
+                }
+                val tables = tableNames(sourceDb)
+                return when {
+                    setOf("radio_points", "radio_observations", "scan_history").all { it in tables } ->
+                        importClearGpsSqlite(sourceDb)
+                    "network" in tables && "location" in tables ->
+                        importWigleSqlite(sourceDb)
+                    else -> throw IllegalArgumentException(
+                        "Неизвестная SQLite-схема. Поддерживаются Clear GPS и WiGLE (таблицы network/location)."
+                    )
+                }
+            } finally {
+                sourceDb.close()
+            }
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    /** Creates a standalone Clear GPS database backup using SQLite's own schema and data. */
+    fun exportSqliteBackup(output: OutputStream) {
+        val tempFile = File.createTempFile("clear-gps-export-", ".sqlite", context.cacheDir)
+        var exportDb: SQLiteDatabase? = null
+        try {
+            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile, null)
+            exportDb.execSQL("ATTACH DATABASE ? AS source", arrayOf(context.getDatabasePath(DB_NAME).absolutePath))
+            val schema = exportDb.rawQuery(
+                "SELECT type, name, sql FROM source.sqlite_master " +
+                    "WHERE sql IS NOT NULL AND type IN ('table','index') " +
+                    "AND name NOT LIKE 'sqlite_%' AND name <> 'android_metadata' " +
+                    "ORDER BY CASE WHEN type = 'table' THEN 0 ELSE 1 END, name",
+                null
+            ).use { cursor ->
+                val result = ArrayList<Triple<String, String, String>>()
+                while (cursor.moveToNext()) result.add(Triple(cursor.getString(0), cursor.getString(1), cursor.getString(2)))
+                result
+            }
+            exportDb.beginTransaction()
+            try {
+                schema.filter { it.first == "table" }.forEach { (_, _, sql) -> exportDb.execSQL(sql) }
+                schema.filter { it.first == "table" }.forEach { (_, name, _) ->
+                    require(name.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) { "Недопустимое имя таблицы SQLite." }
+                    exportDb.execSQL("INSERT INTO \"" + name + "\" SELECT * FROM source.\"" + name + "\"")
+                }
+                schema.filter { it.first == "index" }.forEach { (_, _, sql) -> exportDb.execSQL(sql) }
+                exportDb.version = readableDatabase.version
+                exportDb.setTransactionSuccessful()
+            } finally {
+                exportDb.endTransaction()
+            }
+            exportDb.execSQL("DETACH DATABASE source")
+            exportDb.close()
+            exportDb = null
+            FileInputStream(tempFile).use { source -> source.copyTo(output) }
+            output.flush()
+        } finally {
+            try { exportDb?.close() } catch (_: Exception) { }
+            tempFile.delete()
+        }
+    }
+
+    private data class WigleNetworkSummary(
+        val type: String, val identifier: String, val ssid: String, val frequency: Int,
+        val time: Long, val rssi: Int, val latitude: Double?, val longitude: Double?
+    )
+
+    private fun importClearGpsSqlite(sourceDb: SQLiteDatabase): RadioImportResult {
+        val pointColumns = tableColumns(sourceDb, "radio_points")
+        val observationColumns = tableColumns(sourceDb, "radio_observations")
+        val historyColumns = tableColumns(sourceDb, "scan_history")
+        val pointRequired = setOf(
+            "radio_type", "identifier", "label", "latitude", "longitude", "accuracy",
+            "last_rssi", "frequency", "first_seen", "last_seen", "sightings", "position_source"
+        )
+        val observationRequired = setOf(
+            "radio_type", "identifier", "latitude", "longitude", "accuracy",
+            "rssi", "frequency", "observed_at", "position_source"
+        )
+        if (!pointColumns.containsAll(pointRequired) || !observationColumns.containsAll(observationRequired) ||
+            !historyColumns.containsAll(setOf("scanned_at", "wifi_count", "cell_count", "ble_count", "matched_count", "mode", "recorded"))) {
+            throw IllegalArgumentException("SQLite-файл похож на Clear GPS, но структура таблиц неполная.")
+        }
+
+        val target = writableDatabase
+        var observationsImported = 0
+        var newRadios = 0
+        val touched = LinkedHashSet<String>()
+        target.beginTransaction()
+        try {
+            sourceDb.rawQuery("SELECT * FROM radio_points", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val type = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty().lowercase(Locale.ROOT)
+                    val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty())
+                    if (type !in VALID_TYPES || identifier.isBlank() || identifier.length > 256) continue
+                    val label = cursor.getString(cursor.getColumnIndexOrThrow("label")).orEmpty()
+                    val ssid = cursor.getColumnIndex("ssid").takeIf { it >= 0 }?.let { cursor.getString(it).orEmpty() }.orEmpty()
+                    val notes = cursor.getColumnIndex("notes").takeIf { it >= 0 }?.let { cursor.getString(it).orEmpty() }.orEmpty()
+                    val lat = cursor.doubleOrNull("latitude")
+                    val lon = cursor.doubleOrNull("longitude")
+                    val accuracy = cursor.doubleOrNull("accuracy")
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("last_rssi"))
+                    val peak = cursor.getColumnIndex("peak_rssi").takeIf { it >= 0 }?.let { cursor.getInt(it) } ?: rssi
+                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency"))
+                    val firstSeen = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen"))
+                    val lastSeen = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen"))
+                    val sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")).coerceAtLeast(1)
+                    val positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    if (upsertNativePoint(
+                            target, type, identifier, label, ssid, notes, lat, lon, accuracy,
+                            rssi, peak, frequency, firstSeen, lastSeen, sightings, positionSource
+                        )
+                    ) newRadios++
+                    touched.add(type + "|" + identifier)
+                }
+            }
+
+            sourceDb.rawQuery("SELECT * FROM radio_observations ORDER BY observed_at, id", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val type = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty().lowercase(Locale.ROOT)
+                    val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty())
+                    if (type !in VALID_TYPES || identifier.isBlank() || identifier.length > 256) continue
+                    val lat = cursor.doubleOrNull("latitude")
+                    val lon = cursor.doubleOrNull("longitude")
+                    if ((lat == null) != (lon == null) || (lat != null && !validCoordinates(lat, lon))) continue
+                    val observedAt = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at"))
+                    val accuracy = cursor.doubleOrNull("accuracy")
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi"))
+                    val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency"))
+                    val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source)) {
+                        observationsImported++
+                    }
+                }
+            }
+
+            sourceDb.rawQuery("SELECT * FROM scan_history ORDER BY scanned_at, id", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val scannedAt = cursor.getLong(cursor.getColumnIndexOrThrow("scanned_at"))
+                    val wifiCount = cursor.getInt(cursor.getColumnIndexOrThrow("wifi_count"))
+                    val cellCount = cursor.getInt(cursor.getColumnIndexOrThrow("cell_count"))
+                    val bleCount = cursor.getInt(cursor.getColumnIndexOrThrow("ble_count"))
+                    val matchedCount = cursor.getInt(cursor.getColumnIndexOrThrow("matched_count"))
+                    val lat = cursor.doubleOrNull("latitude")
+                    val lon = cursor.doubleOrNull("longitude")
+                    val accuracy = cursor.doubleOrNull("accuracy")
+                    val mode = cursor.getString(cursor.getColumnIndexOrThrow("mode")).orEmpty()
+                    val recorded = cursor.getInt(cursor.getColumnIndexOrThrow("recorded"))
+                    val exists = target.rawQuery(
+                        "SELECT 1 FROM scan_history WHERE scanned_at = ? AND wifi_count = ? AND cell_count = ? " +
+                            "AND ble_count = ? AND matched_count = ? AND mode = ? AND recorded = ? LIMIT 1",
+                        arrayOf(scannedAt.toString(), wifiCount.toString(), cellCount.toString(), bleCount.toString(),
+                            matchedCount.toString(), mode, recorded.toString())
+                    ).use { it.moveToFirst() }
+                    if (!exists) {
+                        val values = ContentValues().apply {
+                            put("scanned_at", scannedAt); put("wifi_count", wifiCount); put("cell_count", cellCount)
+                            put("ble_count", bleCount); put("matched_count", matchedCount)
+                            put("latitude", lat); put("longitude", lon); put("accuracy", accuracy)
+                            put("mode", mode); put("recorded", recorded)
+                        }
+                        target.insert("scan_history", null, values)
+                    }
+                }
+            }
+            target.execSQL("DELETE FROM scan_history WHERE id NOT IN (SELECT id FROM scan_history ORDER BY scanned_at DESC LIMIT 500)")
+            target.setTransactionSuccessful()
+        } finally {
+            target.endTransaction()
+        }
+        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite Clear GPS")
+    }
+
+    private fun importWigleSqlite(sourceDb: SQLiteDatabase): RadioImportResult {
+        val networkColumns = tableColumns(sourceDb, "network")
+        val locationColumns = tableColumns(sourceDb, "location")
+        if (!networkColumns.containsAll(setOf("bssid", "ssid", "frequency")) ||
+            !locationColumns.containsAll(setOf("bssid", "level", "lat", "lon", "accuracy", "time"))) {
+            throw IllegalArgumentException("SQLite-файл WiGLE не содержит ожидаемые поля network/location.")
+        }
+
+        val summaries = LinkedHashMap<String, WigleNetworkSummary>()
+        sourceDb.rawQuery("SELECT * FROM network", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
+                if (identifier.isBlank() || identifier.length > 256) continue
+                val rawType = cursor.getColumnIndex("type").takeIf { it >= 0 }?.let { cursor.getString(it).orEmpty() }.orEmpty()
+                val type = wigleDatabaseTypeToRadioType(rawType)
+                fun value(name: String): Double? = cursor.doubleOrNull(name)
+                val bestLat = value("bestlat")
+                val bestLon = value("bestlon")
+                val lastLat = value("lastlat")
+                val lastLon = value("lastlon")
+                val pair = if (validCoordinates(bestLat, bestLon) && !(bestLat == 0.0 && bestLon == 0.0)) {
+                    bestLat to bestLon
+                } else if (validCoordinates(lastLat, lastLon) && !(lastLat == 0.0 && lastLon == 0.0)) {
+                    lastLat to lastLon
+                } else null
+                val info = WigleNetworkSummary(
+                    type, identifier, cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
+                    cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0),
+                    cursor.getColumnIndex("lasttime").takeIf { it >= 0 }?.let { cursor.getLong(it) } ?: 0L,
+                    cursor.getColumnIndex("bestlevel").takeIf { it >= 0 }?.let { cursor.getInt(it) }
+                        ?.takeIf { it in -120..-1 } ?: -100,
+                    pair?.first, pair?.second
+                )
+                summaries[type + "|" + identifier] = info
+            }
+        }
+
+        val target = writableDatabase
+        var observationsImported = 0
+        var newRadios = 0
+        val touched = LinkedHashSet<String>()
+        val seenKeys = HashSet<String>()
+        target.beginTransaction()
+        try {
+            sourceDb.rawQuery("SELECT * FROM location ORDER BY time, _id", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
+                    if (identifier.isBlank() || identifier.length > 256) continue
+                    val info = summaries.values.firstOrNull { it.identifier == identifier }
+                    val type = info?.type ?: "wifi"
+                    val lat = cursor.doubleOrNull("lat")
+                    val lon = cursor.doubleOrNull("lon")
+                    if ((lat == null) != (lon == null) || (lat != null && !validCoordinates(lat, lon))) continue
+                    val time = cursor.getLong(cursor.getColumnIndexOrThrow("time"))
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("level")).coerceIn(-120, 0)
+                    val accuracy = cursor.doubleOrNull("accuracy")?.takeIf { it > 0.0 }
+                        ?.coerceAtMost(100_000.0) ?: DEFAULT_IMPORTED_ACCURACY_METERS
+                    val frequency = info?.frequency ?: 0
+                    val key = type + "|" + identifier
+                    seenKeys.add(key)
+                    if (insertObservationIfAbsent(
+                            target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
+                            rssi, frequency, "wigle-import"
+                        )
+                    ) {
+                        if (upsertImportedPoint(
+                                target, type, identifier, info?.ssid.orEmpty(), lat, lon,
+                                if (lat != null) accuracy else null, rssi, frequency, time, "wigle-import"
+                            )
+                        ) newRadios++
+                        observationsImported++
+                        touched.add(key)
+                    }
+                }
+            }
+
+            summaries.forEach { (key, info) ->
+                if (key in seenKeys) return@forEach
+                if (upsertImportedPoint(
+                        target, info.type, info.identifier, info.ssid, info.latitude, info.longitude,
+                        DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import"
+                    )
+                ) newRadios++
+                touched.add(key)
+            }
+            target.setTransactionSuccessful()
+        } finally {
+            target.endTransaction()
+        }
+        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite WiGLE")
+    }
+
+    private fun upsertImportedPoint(
+        db: SQLiteDatabase, type: String, identifier: String, label: String,
+        latitude: Double?, longitude: Double?, accuracy: Double?,
+        rssi: Int, frequency: Int, observedAt: Long, source: String
+    ): Boolean {
+        val validPosition = validCoordinates(latitude, longitude)
+        val old = findPoint(db, type, identifier)
+        if (old == null) {
+            val values = ContentValues().apply {
+                put("radio_type", type); put("identifier", identifier)
+                put("label", label.take(100)); put("ssid", label.take(100))
+                put("latitude", if (validPosition) latitude else null)
+                put("longitude", if (validPosition) longitude else null)
+                put("accuracy", if (validPosition) accuracy else null)
+                put("last_rssi", rssi); put("peak_rssi", rssi); put("frequency", frequency)
+                put("first_seen", observedAt); put("last_seen", observedAt)
+                put("sightings", 1); put("position_source", if (validPosition) source else "unlocated")
+            }
+            val inserted = db.insertWithOnConflict("radio_points", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+            if (inserted != -1L) return true
+            return upsertImportedPoint(db, type, identifier, label, latitude, longitude, accuracy, rssi, frequency, observedAt, source)
+        }
+
+        val update = ContentValues().apply {
+            put("last_rssi", if (observedAt >= old.lastSeen) rssi else old.rssi)
+            put("peak_rssi", maxOf(old.peakRssi, rssi))
+            if (observedAt >= old.lastSeen && frequency > 0) put("frequency", frequency)
+            put("first_seen", minOf(old.firstSeen, observedAt))
+            put("last_seen", maxOf(old.lastSeen, observedAt))
+            put("sightings", (old.sightings + 1).coerceAtMost(Int.MAX_VALUE))
+            if (old.ssid.isBlank() && label.isNotBlank()) put("ssid", label.take(100))
+            if (old.label.isBlank() && label.isNotBlank()) put("label", label.take(100))
+            val oldAccuracy = old.accuracyMeters
+            val improvesPosition = validPosition && old.positionSource != "manual-edit" &&
+                (old.latitude == null || old.longitude == null ||
+                    (source.startsWith("wigle") &&
+                        (rssi > old.peakRssi || (accuracy != null && (oldAccuracy == null || accuracy < oldAccuracy)))))
+            if (improvesPosition) {
+                put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
+                put("position_source", source)
+            }
+        }
+        db.update("radio_points", update, "id = ?", arrayOf(old.id.toString()))
+        return false
+    }
+
+    private fun upsertNativePoint(
+        db: SQLiteDatabase, type: String, identifier: String,
+        label: String, ssid: String, notes: String,
+        latitude: Double?, longitude: Double?, accuracy: Double?,
+        rssi: Int, peakRssi: Int, frequency: Int, firstSeen: Long, lastSeen: Long,
+        sightings: Int, positionSource: String
+    ): Boolean {
+        val old = findPoint(db, type, identifier)
+        val validPosition = validCoordinates(latitude, longitude)
+        if (old == null) {
+            val values = ContentValues().apply {
+                put("radio_type", type); put("identifier", identifier)
+                put("label", label.take(100)); put("ssid", ssid.take(100)); put("notes", notes.take(4_000))
+                put("latitude", if (validPosition) latitude else null)
+                put("longitude", if (validPosition) longitude else null)
+                put("accuracy", if (validPosition) accuracy else null)
+                put("last_rssi", rssi); put("peak_rssi", peakRssi); put("frequency", frequency)
+                put("first_seen", firstSeen); put("last_seen", lastSeen)
+                put("sightings", sightings.coerceAtLeast(1)); put("position_source", positionSource)
+            }
+            val inserted = db.insertWithOnConflict("radio_points", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+            if (inserted != -1L) return true
+            return upsertNativePoint(db, type, identifier, label, ssid, notes, latitude, longitude, accuracy,
+                rssi, peakRssi, frequency, firstSeen, lastSeen, sightings, positionSource)
+        }
+
+        val sourceHasManualFix = positionSource == "manual-edit"
+        val shouldReplaceCoordinate = validPosition && old.positionSource != "manual-edit" &&
+            (old.latitude == null || old.longitude == null || sourceHasManualFix ||
+                (accuracy != null && (old.accuracyMeters == null || accuracy < old.accuracyMeters!!)))
+        val values = ContentValues().apply {
+            if (old.label.isBlank() && label.isNotBlank()) put("label", label.take(100))
+            if (old.ssid.isBlank() && ssid.isNotBlank()) put("ssid", ssid.take(100))
+            if (old.notes.isBlank() && notes.isNotBlank()) put("notes", notes.take(4_000))
+            if (shouldReplaceCoordinate) {
+                put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
+                put("position_source", positionSource)
+            }
+            if (lastSeen >= old.lastSeen) {
+                put("last_rssi", rssi); if (frequency > 0) put("frequency", frequency)
+            }
+            put("peak_rssi", maxOf(old.peakRssi, peakRssi))
+            put("first_seen", minOf(old.firstSeen, firstSeen))
+            put("last_seen", maxOf(old.lastSeen, lastSeen))
+            put("sightings", maxOf(old.sightings, sightings))
+        }
+        db.update("radio_points", values, "id = ?", arrayOf(old.id.toString()))
+        return false
+    }
+
+    private fun insertObservationIfAbsent(
+        db: SQLiteDatabase, type: String, identifier: String, observedAt: Long,
+        latitude: Double?, longitude: Double?, accuracy: Double?, rssi: Int, frequency: Int, positionSource: String
+    ): Boolean {
+        val exists = db.rawQuery(
+            "SELECT 1 FROM radio_observations WHERE radio_type = ? AND identifier = ? AND observed_at = ? " +
+                "AND rssi = ? AND frequency = ? AND COALESCE(latitude, 999.0) = COALESCE(?, 999.0) " +
+                "AND COALESCE(longitude, 999.0) = COALESCE(?, 999.0) LIMIT 1",
+            arrayOf(type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
+                latitude?.toString(), longitude?.toString())
+        ).use { it.moveToFirst() }
+        if (exists) return false
+        val values = ContentValues().apply {
+            put("radio_type", type); put("identifier", identifier)
+            put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
+            put("rssi", rssi); put("frequency", frequency); put("observed_at", observedAt)
+            put("position_source", positionSource)
+        }
+        return db.insert("radio_observations", null, values) != -1L
+    }
+
+    private fun canonicalIdentifier(value: String) = value.trim().lowercase(Locale.ROOT)
+
+    private fun validCoordinates(latitude: Double?, longitude: Double?): Boolean =
+        latitude != null && longitude != null && latitude.isFinite() && longitude.isFinite() &&
+            latitude in -90.0..90.0 && longitude in -180.0..180.0
+
+    private fun wigleTypeToRadioType(value: String): String {
+        val normalized = value.uppercase(Locale.ROOT)
+        return when {
+            normalized.contains("BTS") || normalized.contains("GSM") || normalized.contains("CELL") ||
+                normalized.contains("CDMA") || normalized.contains("LTE") || normalized.contains("WCDMA") ||
+                normalized.contains("UMTS") || normalized.contains("NR") -> "cell"
+            normalized.contains("BTLE") || normalized.contains("BLUETOOTH") ||
+                normalized.trim() == "BT" || normalized.trim() == "BLE" -> "ble"
+            else -> "wifi"
+        }
+    }
+
+    private fun wigleDatabaseTypeToRadioType(value: String): String {
+        val normalized = value.trim().uppercase(Locale.ROOT)
+        return when (normalized) {
+            "B", "BT", "BLE", "BTLE", "BLUETOOTH" -> "ble"
+            "C", "G", "CELL", "BTS", "GSM", "CDMA", "LTE", "NR", "UMTS", "WCDMA" -> "cell"
+            else -> if (normalized.contains("BT") || normalized.contains("BLE")) "ble" else "wifi"
+        }
+    }
+
+    private fun parseWigleTimestamp(value: String): Long? {
+        if (value.isBlank()) return null
+        return try { UTC_FORMAT.parse(value)?.time } catch (_: Exception) { null }
+    }
+
+    private fun tableNames(db: SQLiteDatabase): Set<String> {
+        val names = LinkedHashSet<String>()
+        db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table'", null).use { cursor ->
+            while (cursor.moveToNext()) names.add(cursor.getString(0))
+        }
+        return names
+    }
+
+    private fun tableColumns(db: SQLiteDatabase, table: String): Set<String> {
+        require(table.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) { "Недопустимое имя таблицы SQLite." }
+        val columns = LinkedHashSet<String>()
+        db.rawQuery("PRAGMA table_info(\"" + table + "\")", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                columns.add(cursor.getString(cursor.getColumnIndexOrThrow("name")).lowercase(Locale.ROOT))
+            }
+        }
+        return columns
+    }
+
+    private fun Cursor.doubleOrNull(column: String): Double? {
+        val index = getColumnIndex(column)
+        if (index < 0 || isNull(index)) return null
+        return getDouble(index).takeIf { it.isFinite() }
+    }
+
+    private fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Int) {
+        val buffer = ByteArray(16 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > maxBytes) throw IllegalArgumentException(
+                "SQLite-файл больше 128 МБ. Разбей базу на меньшие файлы и импортируй отдельно."
+            )
+            output.write(buffer, 0, read)
+        }
+        output.flush()
     }
 
     private fun findPoint(db: SQLiteDatabase, type: String, identifier: String): RadioPointRecord? =
@@ -1145,6 +1682,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         private const val MAX_FINGERPRINT_KEYS = 80
         private const val MAX_FINGERPRINT_SCANS = 250
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024
+        private const val MAX_SQLITE_IMPORT_BYTES = 128 * 1024 * 1024
         private val VALID_TYPES = setOf("wifi", "ble", "cell")
         private val UTC_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("UTC")
