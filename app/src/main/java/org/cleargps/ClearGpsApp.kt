@@ -617,8 +617,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (selectedTab == AppTab.OBD2) refreshPairedObdAdapters()
     }
 
-    LaunchedEffect(obd2Connected, selectedTab) {
-        if (obd2Connected && selectedTab == AppTab.OBD2) {
+    LaunchedEffect(obd2Connected) {
+        if (obd2Connected) {
             while (true) {
                 try {
                     val latest = obd2Repository.readTelemetry()
@@ -1058,6 +1058,56 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         mapController.updateZones(zones, draftZone)
                                     }
                                 )
+                                AppTab.OBD2 -> Obd2Screen(
+                                    adapters = obd2Adapters,
+                                    selectedAddress = selectedObd2Address,
+                                    connected = obd2Connected,
+                                    connecting = obd2Connecting,
+                                    telemetry = obd2Telemetry,
+                                    status = obd2Status,
+                                    onRefresh = { refreshPairedObdAdapters() },
+                                    onSelect = { selectedObd2Address = it },
+                                    onConnect = {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                                            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                                            obd2PermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
+                                        } else if (selectedObd2Address.isBlank()) {
+                                            obd2Status = "Сначала выбери сопряжённый адаптер."
+                                        } else {
+                                            scope.launch {
+                                                obd2Connecting = true
+                                                obd2Status = "Подключение к Bluetooth-адаптеру…"
+                                                try {
+                                                    val adapter = obd2Repository.connect(selectedObd2Address)
+                                                    selectedObd2Address = adapter.address
+                                                    obd2Telemetry = Obd2Telemetry()
+                                                    obd2Connected = true
+                                                    obd2Status = "Подключено. Начинаю опрашивать только стандартные параметры чтения."
+                                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                                    throw cancelled
+                                                } catch (error: Exception) {
+                                                    obd2Connected = false
+                                                    obd2Status = error.message ?: "Не удалось подключиться к адаптеру."
+                                                } finally {
+                                                    obd2Connecting = false
+                                                }
+                                            }
+                                        }
+                                    },
+                                    onDisconnect = {
+                                        obd2Connected = false
+                                        obd2Telemetry = Obd2Telemetry()
+                                        obd2Repository.disconnect()
+                                        obd2Status = "Отключено пользователем."
+                                    },
+                                    onOpenBluetoothSettings = {
+                                        try {
+                                            context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                        } catch (_: Exception) {
+                                            obd2Status = "Не удалось открыть системные настройки Bluetooth."
+                                        }
+                                    }
+                                )
                                 AppTab.SETTINGS -> SettingsScreen(
                                     mode = positionMode, mapTheme = mapThemeMode, useWifi = useWifi, useCells = useCells,
                                     useBle = useBle, showRadioPoints = showRadioPointsOnMap,
@@ -1109,6 +1159,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
                                 icon = { Icon(Icons.Outlined.Shield, null) }, label = { Text("Зоны", maxLines = 1) })
+                            NavigationBarItem(selected = selectedTab == AppTab.OBD2, onClick = { navigateToTab(AppTab.OBD2) },
+                                icon = { Icon(Icons.Outlined.DirectionsCar, null) }, label = { Text("OBD-II", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.SETTINGS, onClick = { navigateToTab(AppTab.SETTINGS) },
                                 icon = { Icon(Icons.Outlined.Settings, null) }, label = { Text("Настройки", maxLines = 1) })
                         }
@@ -2327,6 +2379,7 @@ private fun HeaderCard(tab: AppTab, onCenter: () -> Unit, onSettings: () -> Unit
                     AppTab.MAP -> "Локальная навигация · GNSS"
                     AppTab.POINTS -> "Радиоточки и история"
                     AppTab.ZONES -> "Зоны аномалий"
+                    AppTab.OBD2 -> "Автопараметры · только чтение"
                     AppTab.SETTINGS -> "Источники и приватность"
                 }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
             }
