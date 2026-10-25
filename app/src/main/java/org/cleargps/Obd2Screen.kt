@@ -1,0 +1,246 @@
+package org.cleargps
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import java.util.Locale
+
+@Composable
+internal fun Obd2Screen(
+    adapters: List<Obd2Adapter>,
+    selectedAddress: String,
+    connected: Boolean,
+    connecting: Boolean,
+    telemetry: Obd2Telemetry,
+    status: String,
+    onRefresh: () -> Unit,
+    onSelect: (String) -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onOpenBluetoothSettings: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("OBD-II · только чтение", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Bluetooth Classic SPP · без записи в ЭБУ",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+            }
+            AssistChip(
+                onClick = { },
+                enabled = false,
+                label = { Text(if (connected) "Подключено" else "Отключено") },
+                leadingIcon = { Icon(Icons.Outlined.DirectionsCar, null, modifier = Modifier.size(17.dp)) }
+            )
+        }
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
+            Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Bluetooth, null, tint = colors.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Сопряжённые адаптеры", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "Сканирования эфира нет: список берётся только из Bluetooth-устройств, которые уже сопряжены в Android.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+                if (adapters.isEmpty()) {
+                    Text(
+                        "Адаптер не найден. Сначала включи Bluetooth и выполни сопряжение с OBD-II адаптером в системных настройках.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    adapters.forEach { adapter ->
+                        val selected = selectedAddress.equals(adapter.address, ignoreCase = true)
+                        Surface(
+                            Modifier.fillMaxWidth().clickable(enabled = !connected && !connecting) {
+                                onSelect(adapter.address)
+                            },
+                            shape = RoundedCornerShape(13.dp),
+                            color = if (selected) colors.secondaryContainer else colors.surfaceContainer
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        adapter.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(adapter.address, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                }
+                                RadioButton(
+                                    selected = selected,
+                                    enabled = !connected && !connecting,
+                                    onClick = { onSelect(adapter.address) }
+                                )
+                            }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = onRefresh,
+                        enabled = !connecting,
+                        modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Outlined.Refresh, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Обновить")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenBluetoothSettings,
+                        modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Outlined.Bluetooth, null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Bluetooth")
+                    }
+                }
+                if (connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (connected) {
+                    OutlinedButton(
+                        onClick = onDisconnect,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) { Text("Отключить адаптер") }
+                } else {
+                    FilledTonalButton(
+                        onClick = onConnect,
+                        enabled = selectedAddress.isNotBlank() && !connecting && adapters.any {
+                            it.address.equals(selectedAddress, ignoreCase = true)
+                        },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Outlined.Bluetooth, null)
+                        Spacer(Modifier.width(7.dp))
+                        Text(if (connecting) "Подключение…" else "Подключить и читать параметры")
+                    }
+                }
+            }
+        }
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
+            Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.DirectionsCar, null, tint = colors.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Данные автомобиля", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                }
+                Text(status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
+                    VehicleMetric(
+                        title = "Скорость",
+                        value = telemetry.vehicleSpeedKmh?.toString() ?: "—",
+                        unit = "км/ч",
+                        modifier = Modifier.weight(1f)
+                    )
+                    VehicleMetric(
+                        title = "Обороты",
+                        value = telemetry.engineRpm?.let { String.format(Locale.US, "%,d", it) } ?: "—",
+                        unit = "об/мин",
+                        modifier = Modifier.weight(1f)
+                    )
+                    VehicleMetric(
+                        title = "Охлаждение",
+                        value = telemetry.coolantTemperatureC?.toString() ?: "—",
+                        unit = "°C",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (telemetry.updatedAt > 0L) {
+                    Text(
+                        "Последний опрос: " +
+                            java.text.DateFormat.getTimeInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(telemetry.updatedAt)) +
+                            " · получено " + telemetry.parametersReceived + "/3 параметров",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Shield, null, tint = colors.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Гарантии режима чтения", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "В автомобиль отправляются только стандартные запросы Mode 01 для оборотов (PID 0C), скорости (PID 0D) и температуры охлаждающей жидкости (PID 05).",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "Нет команд записи, кодирования, сброса ошибок или адаптаций. Команды ATE0 / ATL0 / ATS0 / ATH0 меняют только формат текста на самом адаптере ELM-совместимого типа.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+                Text(
+                    "Первая версия поддерживает сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые). BLE-адаптеры и USB пока не поддерживаются; совместимость зависит от адаптера, автомобиля и доступности PID.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VehicleMetric(title: String, value: String, unit: String, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    Surface(modifier, shape = RoundedCornerShape(13.dp), color = colors.surfaceContainer) {
+        Column(Modifier.padding(horizontal = 7.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant, maxLines = 1)
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(unit, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        }
+    }
+}
