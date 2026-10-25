@@ -64,7 +64,6 @@ class RadioGeolocationRepository(private val context: Context) {
         val fineLocationGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         val precisePermissionHint = if (RadioPermissionPolicy.shouldExplainPreciseLocationRequirement(
-                sdkInt = Build.VERSION.SDK_INT,
                 fineLocationGranted = fineLocationGranted,
                 useWifi = useWifi,
                 useCells = useCells,
@@ -178,9 +177,7 @@ class RadioGeolocationRepository(private val context: Context) {
     private suspend fun collectWifi(): TimedRadioSignals {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        val coarseGranted = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        if (!RadioPermissionPolicy.canReadWifiScan(Build.VERSION.SDK_INT, fineGranted, coarseGranted)) {
+        if (!RadioPermissionPolicy.canReadWifiScan(fineGranted)) {
             return TimedRadioSignals(emptyList(), null)
         }
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
