@@ -207,6 +207,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     var liveLocation by remember { mutableStateOf<Location?>(null) }
     var currentRadioEstimate by remember { mutableStateOf<RadioEstimate?>(null) }
+    // Mirror the exact coordinate/accuracy last accepted by the foreground service so the
+    // in-app map follows the same fix sent to Android's mock provider.
+    var publishedMockCoordinate by remember { mutableStateOf<MapCoordinate?>(null) }
+    var publishedMockAccuracy by remember { mutableStateOf<Double?>(null) }
+    // Focus the map once when a radio mode gets its first estimate; don't fight manual panning.
+    var pendingRadioMapFocus by remember { mutableStateOf(positionMode.usesRadio) }
     var manualAnchor by remember { mutableStateOf(ManualLocationStore.load(context)) }
     var manualFallbackEnabled by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, false)) }
     var zones by remember { mutableStateOf(ZoneStore.loadAll(context)) }
@@ -341,6 +347,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         positionMode = mode
         prefs.edit().putString(ClearGpsPreferences.KEY_POSITION_MODE, mode.key).apply()
         currentRadioEstimate = null
+        pendingRadioMapFocus = mode.usesRadio
         if (mode.usesRadio || mode.gpsOnly) liveLocation = null
         if (monitorEnabled) {
             val intent = Intent(context, LocationMonitorService::class.java)
@@ -387,7 +394,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 lastScanAt = System.currentTimeMillis()
                 val nowAfterScan = System.currentTimeMillis()
                 val lastCredibleEstimate = currentRadioEstimate?.takeIf {
-                    RadioFixReliability.canRetainLastEstimate(
+                    RadioFixReliability.canDisplayLastRadioEstimateOnMap(
                         it.updatedAt, nowAfterScan, it.matchedCount, it.accuracyMeters
                     )
                 }
@@ -809,6 +816,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             monitorEnabled = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
             mockOutputActive = prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
+            val hasPublishedMockOutput = prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false) &&
+                prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
+            val publishedLat = if (hasPublishedMockOutput) {
+                prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull()
+            } else null
+            val publishedLon = if (hasPublishedMockOutput) {
+                prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull()
+            } else null
+            val outputCoordinate = if (publishedLat != null && publishedLon != null &&
+                publishedLat.isFinite() && publishedLat in -90.0..90.0 &&
+                publishedLon.isFinite() && publishedLon in -180.0..180.0) {
+                MapCoordinate(publishedLat, publishedLon)
+            } else null
+            if (publishedMockCoordinate != outputCoordinate) publishedMockCoordinate = outputCoordinate
+            val outputAccuracy = if (hasPublishedMockOutput) {
+                prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+            } else null
+            if (publishedMockAccuracy != outputAccuracy) publishedMockAccuracy = outputAccuracy
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
@@ -840,7 +866,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 // Keep a short-lived last-known estimate through a single failed scan, but never
                 // show it indefinitely as a current position when monitoring is off or matches stop.
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
-                    RadioFixReliability.canRetainLastEstimate(
+                    RadioFixReliability.canDisplayLastRadioEstimateOnMap(
                         it.updatedAt, System.currentTimeMillis(), it.matchedCount, it.accuracyMeters
                     )
                 }
@@ -862,7 +888,19 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         PositionMode.RADIO_ONLY, PositionMode.RADIO_OBD2 -> null
     }
     val measuredCoordinate = activeLocation?.let { MapCoordinate(it.latitude, it.longitude) }
-    val radioCoordinate = currentRadioEstimate?.let { MapCoordinate(it.latitude, it.longitude) }
+    val estimatedRadioCoordinate = currentRadioEstimate?.let { MapCoordinate(it.latitude, it.longitude) }
+    // Prefer the service's exact published fix when available; otherwise show the latest
+    // local estimate (including its bounded stale fallback) on the map.
+    val radioCoordinate = if (positionMode.usesRadio && mockOutputActive) {
+        publishedMockCoordinate ?: estimatedRadioCoordinate
+    } else {
+        estimatedRadioCoordinate
+    }
+    val radioAccuracy = if (positionMode.usesRadio && mockOutputActive && publishedMockCoordinate != null) {
+        publishedMockAccuracy ?: currentRadioEstimate?.accuracyMeters
+    } else {
+        currentRadioEstimate?.accuracyMeters
+    }
     val freshObdSpeedKmh = if (positionMode.usesObd2) {
         Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
     } else null
@@ -888,7 +926,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
         radioCoordinate != null && (positionMode.usesRadio ||
-            (positionMode == PositionMode.AUTO && measuredCoordinate == null)) -> currentRadioEstimate?.accuracyMeters
+            (positionMode == PositionMode.AUTO && measuredCoordinate == null)) -> radioAccuracy
         else -> null
     }
     val displayCoordinate = if (positionMode.usesRadio) {
@@ -897,7 +935,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
     }
     val radioEstimateAgeMillis = currentRadioEstimate?.let { System.currentTimeMillis() - it.updatedAt } ?: Long.MAX_VALUE
-    val radioEstimateStale = currentRadioEstimate != null &&
+    val radioEstimateStale = publishedMockCoordinate == null && currentRadioEstimate != null &&
         radioEstimateAgeMillis > maxOf(15_000L, scanIntervalSeconds * 2_000L)
 
     val primarySource = when {
@@ -953,8 +991,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(mapPrimaryCoordinate, mapPrimaryAccuracy) {
         mapController.updatePrimary(mapPrimaryCoordinate, mapPrimaryAccuracy)
     }
-    LaunchedEffect(radioCoordinate, currentRadioEstimate?.accuracyMeters) {
-        mapController.updateCalculatedLocation(radioCoordinate, currentRadioEstimate?.accuracyMeters)
+    LaunchedEffect(radioCoordinate, radioAccuracy) {
+        mapController.updateCalculatedLocation(radioCoordinate, radioAccuracy)
+    }
+    LaunchedEffect(positionMode.usesRadio, radioCoordinate) {
+        if (positionMode.usesRadio && pendingRadioMapFocus && radioCoordinate != null) {
+            mapController.focus(radioCoordinate, 15.0)
+            pendingRadioMapFocus = false
+        }
     }
     LaunchedEffect(manualAnchor) {
         mapController.updateManualAnchor(manualAnchor)
