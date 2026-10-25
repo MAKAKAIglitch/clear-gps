@@ -472,6 +472,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     LaunchedEffect(Unit) {
+        refreshLocalUi()
         while (true) {
             monitorEnabled = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
