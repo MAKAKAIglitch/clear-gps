@@ -19,16 +19,17 @@ class MockLocationOutput(context: Context) {
     fun publish(source: Location): Boolean {
         if (!source.latitude.isFinite() || source.latitude !in -90.0..90.0 ||
             !source.longitude.isFinite() || source.longitude !in -180.0..180.0) {
-            lastError = "Отвергнуты некорректные координаты источника"
-            DiagnosticLogStore.log(appContext, "MOCK", lastError!!, "ERROR")
-            return false
+            return fail(
+                "Отвергнуты некорректные координаты источника",
+                IllegalArgumentException("Latitude/longitude out of range or not finite")
+            )
         }
 
         return try {
             if (!registered) {
                 try {
                     addGpsTestProvider()
-                } catch (duplicate: IllegalArgumentException) {
+                } catch (_: IllegalArgumentException) {
                     // A killed/recreated foreground service may lose its local flag while
                     // LocationManager still retains the old test provider. Clean that stale
                     // registration and retry exactly once instead of failing every later tick.
