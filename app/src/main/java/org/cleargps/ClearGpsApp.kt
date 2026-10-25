@@ -224,6 +224,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
     var filterState by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name) }
     var riskScore by remember { mutableStateOf(prefs.getInt(LocationMonitorService.KEY_SCORE, 0)) }
+    var riskReasons by remember {
+        mutableStateOf((prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() })
+    }
     var serviceStatus by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: "") }
 
     var pointToEdit by remember { mutableStateOf<RadioPointRecord?>(null) }
@@ -593,6 +596,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
+            riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
             if (positionMode == PositionMode.RADIO_ONLY && monitorEnabled) {
                 val stored = RadioGeolocationRepository.loadLastEstimate(context)?.takeIf {
@@ -793,7 +797,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     manualAnchor = manualAnchor, wifiCount = wifiCount, cellCount = cellCount, bleCount = bleCount,
                                     pointCount = pointCount, recording = recording, scanBusy = scanBusy, lookupPhase = lookupPhase,
                                     scanMessage = scanMessage, lastScanAt = lastScanAt, monitorEnabled = monitorEnabled,
-                                    mockEnabled = mockEnabled, filterState = filterState, riskScore = riskScore, serviceStatus = serviceStatus,
+                                    mockEnabled = mockEnabled, filterState = filterState, riskScore = riskScore,
+                                    riskReasons = riskReasons, serviceStatus = serviceStatus,
                                     onMode = { applyPositionMode(it) },
                                     onScan = { startScan(recording) },
                                     onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
@@ -1057,7 +1062,8 @@ private fun MapHomeScreen(
     coordinate: MapCoordinate?, accuracy: Double?, source: String, mode: PositionMode,
     currentEstimate: RadioEstimate?, manualAnchor: ManualAnchor?, wifiCount: Int, cellCount: Int, bleCount: Int,
     pointCount: Int, recording: Boolean, scanBusy: Boolean, lookupPhase: LookupPhase, scanMessage: String,
-    lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, filterState: String, riskScore: Int, serviceStatus: String,
+    lastScanAt: Long, monitorEnabled: Boolean, mockEnabled: Boolean, filterState: String, riskScore: Int,
+    riskReasons: List<String>, serviceStatus: String,
     onMode: (PositionMode) -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
@@ -1197,10 +1203,20 @@ private fun MapHomeScreen(
                     else -> filterState
                 }, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
-            Text(riskScore.toString() + "%", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(riskScore.toString() + "/100", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
         LinearProgressIndicator(progress = { riskScore.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth(),
             color = if (riskScore >= 60) colors.error else colors.primary, trackColor = colors.surfaceVariant)
+        Text("Индекс риска — эвристическая оценка, а не вероятность атаки.",
+            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        if (riskReasons.isNotEmpty()) {
+            Text("Основания: " + riskReasons.joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (riskScore >= 60) colors.error else colors.onSurfaceVariant)
+        } else {
+            Text("Проверяются траектория, скорость, расхождение с сетевой позицией и статистика спутников. Отсутствие тревоги не доказывает отсутствие спуфинга.",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
         Text(serviceStatus.ifBlank { if (monitorEnabled) "Мониторинг активен." else "Фоновый мониторинг выключен." },
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {

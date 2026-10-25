@@ -6,11 +6,13 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.IBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +38,53 @@ class LocationMonitorService : Service(), LocationListener {
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
+    private var gnssStatusRegistered = false
+
+    private val gnssStatusCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            val count = status.satelliteCount
+            val cn0Values = (0 until count).mapNotNull { index ->
+                status.getCn0DbHz(index).toDouble().takeIf { it.isFinite() && it > 0.0 }
+            }
+            val mean = cn0Values.average().takeIf { cn0Values.isNotEmpty() && it.isFinite() }
+            val spread = if (cn0Values.size >= 2 && mean != null) {
+                kotlin.math.sqrt(cn0Values.sumOf { value -> (value - mean) * (value - mean) } / cn0Values.size)
+            } else null
+            val constellations = (0 until count).map { status.getConstellationType(it) }
+                .filter { it != GnssStatus.CONSTELLATION_UNKNOWN }.distinct().size
+            engine.observeGnssSignal(
+                org.cleargps.core.GnssSignalSnapshot(
+                    elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+                    satellitesVisible = count,
+                    satellitesUsedInFix = (0 until count).count { status.usedInFix(it) },
+                    meanCn0DbHz = mean,
+                    cn0SpreadDb = spread,
+                    constellationCount = constellations
+                )
+            )
+        }
+    }
+
+    private fun registerGnssStatus() {
+        if (gnssStatusRegistered) return
+        try {
+            gnssStatusRegistered = manager.registerGnssStatusCallback(gnssStatusCallback)
+        } catch (_: SecurityException) {
+            gnssStatusRegistered = false
+        } catch (_: RuntimeException) {
+            gnssStatusRegistered = false
+        }
+    }
+
+    private fun unregisterGnssStatus() {
+        if (!gnssStatusRegistered) return
+        try {
+            manager.unregisterGnssStatusCallback(gnssStatusCallback)
+        } catch (_: RuntimeException) {
+        } finally {
+            gnssStatusRegistered = false
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -88,6 +137,7 @@ class LocationMonitorService : Service(), LocationListener {
 
         try {
             manager.removeUpdates(this)
+            unregisterGnssStatus()
             radioOnlyJob?.cancel()
             radioOnlyJob = null
 
@@ -100,11 +150,13 @@ class LocationMonitorService : Service(), LocationListener {
                 "gps" -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                        registerGnssStatus()
                     }
                 }
                 else -> {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
+                        registerGnssStatus()
                     }
                     if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2_000L, 0f, this)
@@ -146,7 +198,7 @@ class LocationMonitorService : Service(), LocationListener {
                             elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
                         }
                         prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
-                            .putInt(KEY_SCORE, 0).putString(KEY_SOURCE, "LOCAL_RADIO")
+                            .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "").putString(KEY_SOURCE, "LOCAL_RADIO")
                             .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
                             .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false) && mock?.publish(output) != true) {
@@ -160,6 +212,7 @@ class LocationMonitorService : Service(), LocationListener {
                             .putBoolean(KEY_HAS_OUTPUT, false)
                             .putString(KEY_SOURCE, "NONE")
                             .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
+                            .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
                             // Do not leave an older position displayed as if it matched this scan.
                             .remove(ClearGpsPreferences.KEY_LAST_LAT)
                             .remove(ClearGpsPreferences.KEY_LAST_LON)
@@ -184,6 +237,7 @@ class LocationMonitorService : Service(), LocationListener {
         radioOnlyJob?.cancel()
         radioOnlyJob = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
+        unregisterGnssStatus()
         mock?.disable()
     }
 
@@ -274,6 +328,7 @@ class LocationMonitorService : Service(), LocationListener {
             .putInt(KEY_SCORE, result.riskScore)
             .putBoolean(KEY_IN_ZONE, result.inRiskZone)
             .putString(KEY_SOURCE, result.source)
+            .putString(KEY_REASONS, result.reasons.joinToString("\n"))
             .putBoolean(KEY_HAS_OUTPUT, result.outputLocation != null)
         result.outputLocation?.let {
             edit.putString(KEY_LAT, it.latitude.toString()).putString(KEY_LON, it.longitude.toString())
@@ -302,6 +357,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_MOCK_ENABLED = "mock_enabled"
         const val KEY_STATE = "state"
         const val KEY_SCORE = "risk_score"
+        const val KEY_REASONS = "risk_reasons"
         const val KEY_IN_ZONE = "in_zone"
         const val KEY_SOURCE = "source"
         const val KEY_HAS_OUTPUT = "has_output"
