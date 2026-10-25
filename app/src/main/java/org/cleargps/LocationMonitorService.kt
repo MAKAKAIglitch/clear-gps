@@ -477,13 +477,9 @@ class LocationMonitorService : Service(), LocationListener {
                             .putString(KEY_SOURCE, "NONE")
                             .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
                             .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
-                            // Do not leave an older position displayed as if it matched this scan.
-                            .remove(ClearGpsPreferences.KEY_LAST_LAT)
-                            .remove(ClearGpsPreferences.KEY_LAST_LON)
-                            .remove(ClearGpsPreferences.KEY_LAST_ACCURACY)
-                            .remove(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT)
-                            .remove(ClearGpsPreferences.KEY_LAST_FINGERPRINT)
-                            .remove(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT)
+                            // Keep the last successful estimate as a short-lived display/cache
+                            // value. It is not published as a fresh mock fix after this miss;
+                            // the UI expires it by timestamp and the fallback has its own age cap.
                             .apply()
                         saveServiceStatus("Radio-only · no reliable local match yet")
                     }
@@ -684,7 +680,7 @@ class LocationMonitorService : Service(), LocationListener {
         private const val NOTIFICATION_ID = 4101
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 3
-        private const val RADIO_FALLBACK_MAX_AGE_MS = 30L * 60L * 1000L
+        private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L
         private const val RADIO_FALLBACK_MAX_ACCURACY_METERS = 1_000.0
         private const val MANUAL_FALLBACK_ACCURACY_METERS = 1_500f
         private const val MANUAL_FALLBACK_MAX_AGE_MS = 24L * 60L * 60L * 1000L
