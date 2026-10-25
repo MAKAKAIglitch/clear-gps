@@ -131,8 +131,14 @@ fun estimateObservationCenter(observations: List<RadioPointObservation>): RadioP
 
 data class RadioLookupResult(
     val estimate: RadioEstimate?, val wifiCount: Int, val cellCount: Int, val beaconCount: Int,
-    val fromCache: Boolean, val message: String, val matchedCount: Int = 0, val recordedCount: Int = 0
+    val fromCache: Boolean, val message: String, val matchedCount: Int = 0, val recordedCount: Int = 0,
+    /** Signals present in the local DB, including records without usable coordinates. */
+    val knownRadioCount: Int = 0,
+    /** Known signals with usable coordinates and a non-synthetic position source. */
+    val coordinateRadioCount: Int = 0
 )
+
+data class RadioMatchCounts(val knownRadios: Int, val usableCoordinateRadios: Int)
 
 /**
  * Normalize MAC-style identifiers from scanners and third-party CSV/SQLite exports.
@@ -802,6 +808,45 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.endTransaction()
         }
         return recorded
+    }
+
+    /**
+     * Explain why an estimate was rejected without conflating "radio exists in DB" with
+     * "radio has a recent, trustworthy coordinate". This is diagnostic only and never creates
+     * an estimate from an unlocated or synthetic point.
+     */
+    fun countMatchingPoints(
+        signals: List<RadioSignal>,
+        useWifi: Boolean,
+        useCells: Boolean,
+        useBle: Boolean,
+        now: Long = System.currentTimeMillis()
+    ): RadioMatchCounts {
+        val enabledTypes = buildSet {
+            if (useWifi) add("wifi")
+            if (useCells) add("cell")
+            if (useBle) add("ble")
+        }
+        val current = signals.asSequence()
+            .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
+            .distinctBy { it.type + "|" + canonicalIdentifier(it.identifier) }
+            .toList()
+        val db = readableDatabase
+        var known = 0
+        var located = 0
+        current.forEach { signal ->
+            val point = findPoint(db, signal.type, signal.identifier) ?: return@forEach
+            known++
+            val age = now - point.lastSeen
+            val hasCoordinates = point.latitude?.let { it.isFinite() && it in -90.0..90.0 } == true &&
+                point.longitude?.let { it.isFinite() && it in -180.0..180.0 } == true
+            val trustworthySource = !point.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
+                !point.positionSource.equals("radio-estimate", ignoreCase = true)
+            if (hasCoordinates && trustworthySource && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
+                located++
+            }
+        }
+        return RadioMatchCounts(known, located)
     }
 
     fun estimatePosition(
