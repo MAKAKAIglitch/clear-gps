@@ -18,8 +18,13 @@ internal object RadioFixReliability {
 
     fun shouldRequestWifiScan(nowElapsedMs: Long, lastRequestElapsedMs: Long): Boolean =
         lastRequestElapsedMs <= 0L ||
-            (nowElapsedMs >= lastRequestElapsedMs &&
-                nowElapsedMs - lastRequestElapsedMs >= WIFI_MIN_REQUEST_INTERVAL_MS)
+            nowElapsedMs < lastRequestElapsedMs ||
+            nowElapsedMs - lastRequestElapsedMs >= WIFI_MIN_REQUEST_INTERVAL_MS
+
+    fun shouldRequestBleScan(nowElapsedMs: Long, lastRequestElapsedMs: Long): Boolean =
+        lastRequestElapsedMs <= 0L ||
+            nowElapsedMs < lastRequestElapsedMs ||
+            nowElapsedMs - lastRequestElapsedMs >= BLE_MIN_REQUEST_INTERVAL_MS
 
     fun wifiAgePenaltyMeters(ageMillis: Long?, wifiSignalCount: Int, totalSignalCount: Int): Double =
         cachedRadioAgePenaltyMeters(
