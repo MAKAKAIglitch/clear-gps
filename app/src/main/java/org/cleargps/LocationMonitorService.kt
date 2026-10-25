@@ -43,6 +43,7 @@ class LocationMonitorService : Service(), LocationListener {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
     private var obd2FallbackJob: Job? = null
+    private var mockFreshnessJob: Job? = null
     private var lastTrustedGpsFixForObd2: Location? = null
     private var obd2FallbackPublished = false
     private var lastRadioMockFix: Location? = null
@@ -302,6 +303,7 @@ class LocationMonitorService : Service(), LocationListener {
             }
             activePositionMode = nextPositionMode
             lastTrustedGpsFixForObd2 = null
+            if (mockFreshnessJob?.isActive != true) startMockFreshnessWatchdog()
             DiagnosticLogStore.log(
                 this, "SERVICE",
                 "Запуск трекинга: mode=$nextPositionMode, interval=${configuredUpdateIntervalMillis() / 1_000}s, " +
@@ -793,11 +795,53 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    /**
+     * A successful setTestProviderLocation call is only a heartbeat, not a permanent lease.
+     * If location delivery stops, remove the old mock fix so apps cannot consume it forever.
+     */
+    private fun startMockFreshnessWatchdog() {
+        mockFreshnessJob?.cancel()
+        mockFreshnessJob = serviceScope.launch {
+            while (isActive && prefs.getBoolean(KEY_MONITORING, false)) {
+                delay(MOCK_WATCHDOG_CHECK_INTERVAL_MS)
+                if (!prefs.getBoolean(KEY_MOCK_ENABLED, false) ||
+                    !prefs.getBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)) continue
+
+                val nowElapsed = SystemClock.elapsedRealtime()
+                val lastPublished = prefs.getLong(KEY_MOCK_LAST_PUBLISHED_ELAPSED_MS, 0L)
+                val timeout = RadioFixReliability.mockPublicationTimeoutMillis(configuredUpdateIntervalMillis())
+                val age = if (lastPublished > 0L && nowElapsed >= lastPublished) {
+                    nowElapsed - lastPublished
+                } else Long.MAX_VALUE
+                if (age <= timeout) continue
+
+                mock?.disable()
+                lastRadioMockFix = null
+                lastRadioMockFixAtElapsedMs = 0L
+                val reason = "Mock GPS приостановлен: нет свежих координат более ${if (age == Long.MAX_VALUE) "неизвестного времени" else age / 1_000L} с."
+                prefs.edit()
+                    .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                    .putBoolean(KEY_HAS_OUTPUT, false)
+                    .putString(KEY_SOURCE, "NONE")
+                    .putString(KEY_REASONS, reason)
+                    .remove(KEY_LAT)
+                    .remove(KEY_LON)
+                    .remove(KEY_ACCURACY)
+                    .apply()
+                saveServiceStatus(reason)
+                DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", reason, "WARN")
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(reason))
+            }
+        }
+    }
+
     private fun stopTracking() {
         radioOnlyJob?.cancel()
         radioOnlyJob = null
         obd2FallbackJob?.cancel()
         obd2FallbackJob = null
+        mockFreshnessJob?.cancel()
+        mockFreshnessJob = null
         if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback stopped with location monitoring")
         lastTrustedGpsFixForObd2 = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
@@ -1020,6 +1064,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_MONITORING = "monitoring"
         const val KEY_MOCK_ENABLED = "mock_enabled"
         const val KEY_MOCK_OUTPUT_ACTIVE = "mock_output_active"
+        const val KEY_MOCK_LAST_PUBLISHED_ELAPSED_MS = "mock_last_published_elapsed_ms"
         const val KEY_STATE = "state"
         const val KEY_SCORE = "risk_score"
         const val KEY_REASONS = "risk_reasons"
@@ -1032,6 +1077,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_SERVICE_STATUS = "service_status"
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
+        private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 2
         private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L
