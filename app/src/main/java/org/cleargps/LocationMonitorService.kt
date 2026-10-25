@@ -215,6 +215,13 @@ class LocationMonitorService : Service(), LocationListener {
             ACTION_STOP -> {
                 prefs.edit().putBoolean(KEY_MONITORING, false).apply()
                 stopTracking()
+                prefs.edit()
+                    .putBoolean(KEY_HAS_OUTPUT, false)
+                    .putString(KEY_SOURCE, "NONE")
+                    .remove(KEY_LAT)
+                    .remove(KEY_LON)
+                    .remove(KEY_ACCURACY)
+                    .apply()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
