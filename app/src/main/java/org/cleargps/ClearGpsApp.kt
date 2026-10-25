@@ -632,6 +632,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
+                    if (!obd2Connected) break
                     obd2Status = error.message ?: "Связь с OBD-II адаптером потеряна."
                     obd2Connected = false
                     obd2Telemetry = Obd2Telemetry()
