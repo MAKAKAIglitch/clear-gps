@@ -1113,9 +1113,12 @@ class LocationMonitorService : Service(), LocationListener {
             reasons = listOf(reason)
         )
 
-        // The setting is off in this path. Clear any lingering output owned by Clear GPS,
-        // but never trust or forward the external mock coordinate.
-        mock?.disable()
+        // The setting is off in this path. Tear down our own provider only if preferences
+        // still report an active output; repeated external mock callbacks must not repeatedly
+        // unregister providers or flood diagnostic logs.
+        val ownOutputActive = prefs.getBoolean(KEY_MOCK_OUTPUT_ACTIVE, false) ||
+            prefs.getBoolean(KEY_FUSED_MOCK_ACTIVE, false)
+        if (ownOutputActive) mock?.disable()
         persistDecision(result)
         prefs.edit()
             .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
@@ -1130,8 +1133,8 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        // Return before updating status, trusted-fix cache, or mock output: our own test-provider
-        // updates must never be treated as new physical GPS fixes.
+        // Never feed any mock callback into the physical GNSS filter. Depending on our own
+        // mock setting, classify it as expected output or a possible external mock source.
         if (LocationFilterEngine.isMockLocation(location)) {
             val ownMockEnabled = prefs.getBoolean(KEY_MOCK_ENABLED, false)
             if (shouldFlagExternalMockLocation(location.provider, true, ownMockEnabled)) {
