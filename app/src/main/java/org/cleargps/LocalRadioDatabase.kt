@@ -1187,6 +1187,101 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
     }
 
+    /**
+     * Exports a WiGLE-shaped SQLite database: one network summary per radio and
+     * one location row per geolocated historical sighting. This is separate from
+     * exportSqliteBackup(), which preserves Clear GPS-only metadata and all history.
+     */
+    fun exportWigleSqlite(output: OutputStream) {
+        val tempFile = File.createTempFile("clear-gps-wigle-", ".sqlite", appContext.cacheDir)
+        var exportDb: SQLiteDatabase? = null
+        try {
+            exportDb = SQLiteDatabase.openOrCreateDatabase(tempFile, null)
+            exportDb.execSQL(
+                "CREATE TABLE network (" +
+                    "bssid TEXT NOT NULL, ssid TEXT NOT NULL DEFAULT '', " +
+                    "frequency INTEGER NOT NULL DEFAULT 0, capabilities TEXT NOT NULL DEFAULT '', " +
+                    "lasttime INTEGER NOT NULL DEFAULT 0, lastlat REAL NOT NULL DEFAULT 0, " +
+                    "lastlon REAL NOT NULL DEFAULT 0, type TEXT NOT NULL DEFAULT 'WIFI', " +
+                    "bestlevel INTEGER NOT NULL DEFAULT -100, bestlat REAL NOT NULL DEFAULT 0, " +
+                    "bestlon REAL NOT NULL DEFAULT 0, PRIMARY KEY(bssid, type))"
+            )
+            exportDb.execSQL(
+                "CREATE TABLE location (" +
+                    "_id INTEGER PRIMARY KEY AUTOINCREMENT, bssid TEXT NOT NULL, level INTEGER NOT NULL, " +
+                    "lat REAL NOT NULL, lon REAL NOT NULL, altitude REAL NOT NULL DEFAULT 0, " +
+                    "accuracy REAL NOT NULL DEFAULT 250, time INTEGER NOT NULL)"
+            )
+            exportDb.execSQL("CREATE INDEX network_bssid ON network(bssid)")
+            exportDb.execSQL("CREATE INDEX location_bssid_time ON location(bssid, time)")
+
+            val source = readableDatabase
+            exportDb.beginTransaction()
+            try {
+                source.rawQuery("SELECT * FROM radio_points ORDER BY radio_type, identifier", null).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val point = cursor.toRadioPoint()
+                        val type = when (point.type) {
+                            "ble" -> "BTLE"
+                            "cell" -> "BTS"
+                            else -> "WIFI"
+                        }
+                        val lat = point.latitude?.takeIf { it.isFinite() && it in -90.0..90.0 }
+                        val lon = point.longitude?.takeIf { it.isFinite() && it in -180.0..180.0 }
+                        val located = lat != null && lon != null
+                        val values = ContentValues().apply {
+                            put("bssid", canonicalIdentifier(point.identifier))
+                            put("ssid", point.ssid.ifBlank { point.label }.take(100))
+                            put("frequency", point.frequency.coerceAtLeast(0))
+                            put("capabilities", "")
+                            put("lasttime", point.lastSeen)
+                            put("lastlat", if (located) lat else 0.0)
+                            put("lastlon", if (located) lon else 0.0)
+                            put("type", type)
+                            put("bestlevel", point.peakRssi.coerceIn(-120, 0))
+                            put("bestlat", if (located) lat else 0.0)
+                            put("bestlon", if (located) lon else 0.0)
+                        }
+                        exportDb.insertOrThrow("network", null, values)
+                    }
+                }
+
+                source.rawQuery(
+                    "SELECT radio_type, identifier, latitude, longitude, accuracy, rssi, frequency, observed_at " +
+                        "FROM radio_observations ORDER BY observed_at, id",
+                    null
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val lat = cursor.doubleOrNull("latitude")
+                        val lon = cursor.doubleOrNull("longitude")
+                        if (!validCoordinates(lat, lon)) continue
+                        val values = ContentValues().apply {
+                            put("bssid", canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()))
+                            put("level", cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).coerceIn(-120, 0))
+                            put("lat", lat!!)
+                            put("lon", lon!!)
+                            put("altitude", 0.0)
+                            put("accuracy", cursor.doubleOrNull("accuracy")?.takeIf { it > 0.0 } ?: DEFAULT_IMPORTED_ACCURACY_METERS)
+                            put("time", cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")))
+                        }
+                        exportDb.insertOrThrow("location", null, values)
+                    }
+                }
+                exportDb.setTransactionSuccessful()
+            } finally {
+                exportDb.endTransaction()
+            }
+
+            exportDb.close()
+            exportDb = null
+            FileInputStream(tempFile).use { sourceFile -> sourceFile.copyTo(output) }
+            output.flush()
+        } finally {
+            try { exportDb?.close() } catch (_: Exception) { }
+            tempFile.delete()
+        }
+    }
+
     /** Creates a standalone Clear GPS database backup using SQLite's own schema and data. */
     fun exportSqliteBackup(output: OutputStream) {
         val tempFile = File.createTempFile("clear-gps-export-", ".sqlite", appContext.cacheDir)
@@ -1344,7 +1439,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val networkColumns = tableColumns(sourceDb, "network")
         val locationColumns = tableColumns(sourceDb, "location")
         if (!networkColumns.containsAll(setOf("bssid", "ssid", "frequency")) ||
-            !locationColumns.containsAll(setOf("bssid", "level", "lat", "lon", "accuracy", "time"))) {
+            !locationColumns.containsAll(setOf("_id", "bssid", "level", "lat", "lon", "accuracy", "time"))) {
             throw IllegalArgumentException("SQLite-файл WiGLE не содержит ожидаемые поля network/location.")
         }
 
