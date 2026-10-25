@@ -183,4 +183,12 @@ class RadioFixReliabilityTest {
             )
         )
     }
+
+    @Test fun mockPublicationTimeoutLeavesRoomForAndroidProviderJitter() {
+        assertEquals(30_000L, RadioFixReliability.mockPublicationTimeoutMillis(1_000L))
+        assertEquals(30_000L, RadioFixReliability.mockPublicationTimeoutMillis(10_000L))
+        assertEquals(90_000L, RadioFixReliability.mockPublicationTimeoutMillis(30_000L))
+        assertEquals(30_000L, RadioFixReliability.mockPublicationTimeoutMillis(0L))
+        assertEquals(90_000L, RadioFixReliability.mockPublicationTimeoutMillis(60_000L))
+    }
 }
