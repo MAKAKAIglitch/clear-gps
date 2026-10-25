@@ -132,6 +132,28 @@ data class RadioLookupResult(
     val fromCache: Boolean, val message: String, val matchedCount: Int = 0, val recordedCount: Int = 0
 )
 
+/**
+ * Normalize MAC-style identifiers from scanners and third-party CSV/SQLite exports.
+ * This keeps colon, hyphen, dotted and compact MAC formats from becoming different radios.
+ * Non-MAC identifiers (including cell keys) are preserved apart from case/whitespace.
+ */
+internal fun canonicalRadioIdentifier(value: String): String {
+    val normalized = value.trim().lowercase(Locale.ROOT)
+    val compact = normalized.filterNot { it == ':' || it == '-' || it == '.' }
+    val hexOnly = normalized.all { it in '0'..'9' || it in 'a'..'f' || it == ':' || it == '-' || it == '.' }
+    return if (hexOnly && compact.length == 12 && compact.all { it in '0'..'9' || it in 'a'..'f' }) {
+        compact.chunked(2).joinToString(":")
+    } else {
+        normalized
+    }
+}
+
+private fun compactRadioMacIdentifier(value: String): String? {
+    val canonical = canonicalRadioIdentifier(value)
+    if (!canonical.matches(Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) return null
+    return canonical.replace(":", "")
+}
+
 data class ManualAnchor(val latitude: Double, val longitude: Double)
 data class RadioReference(val latitude: Double, val longitude: Double, val accuracyMeters: Double, val source: String)
 
@@ -867,14 +889,29 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         if (keys.size < 2) return emptyList()
 
         val startTime = now - FINGERPRINT_HISTORY_AGE_MS
-        val keyPredicate = keys.joinToString(" OR ") { "(radio_type = ? AND identifier = ?)" }
+        val keyPredicate = keys.joinToString(" OR ") { signal ->
+            val compactMac = if (signal.type == "wifi" || signal.type == "ble")
+                compactRadioMacIdentifier(signal.identifier) else null
+            if (compactMac != null) {
+                "(radio_type = ? AND replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ?)"
+            } else {
+                "(radio_type = ? AND identifier = ?)"
+            }
+        }
         val timestampArguments = buildList {
             add(startTime.toString())
             add(now.toString())
             add("unlocated")
             add("local-radio-estimate")
             add("radio-estimate")
-            keys.forEach { add(it.type); add(it.identifier) }
+            keys.forEach { signal ->
+                add(signal.type)
+                add(
+                    if (signal.type == "wifi" || signal.type == "ble")
+                        compactRadioMacIdentifier(signal.identifier) ?: signal.identifier
+                    else signal.identifier
+                )
+            }
             add(MAX_FINGERPRINT_SCANS.toString())
         }.toTypedArray()
         val timestamps = readableDatabase.rawQuery(
@@ -920,7 +957,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 result.add(
                     RadioFingerprintSample(
                         radioType = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty(),
-                        identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
+                        identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()),
                         latitude = if (cursor.isNull(latIndex)) null else cursor.getDouble(latIndex),
                         longitude = if (cursor.isNull(lonIndex)) null else cursor.getDouble(lonIndex),
                         accuracyMeters = cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy"))
@@ -1708,7 +1745,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         return db.insert("radio_observations", null, values) != -1L
     }
 
-    private fun canonicalIdentifier(value: String) = value.trim().lowercase(Locale.ROOT)
+    private fun canonicalIdentifier(value: String) = canonicalRadioIdentifier(value)
 
     private fun validCoordinates(latitude: Double?, longitude: Double?): Boolean =
         latitude != null && longitude != null && latitude.isFinite() && longitude.isFinite() &&
@@ -1780,9 +1817,24 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         output.flush()
     }
 
-    private fun findPoint(db: SQLiteDatabase, type: String, identifier: String): RadioPointRecord? =
-        db.rawQuery("SELECT * FROM radio_points WHERE radio_type = ? AND identifier = ?",
-            arrayOf(type, identifier)).use { if (it.moveToFirst()) it.toRadioPoint() else null }
+    private fun findPoint(db: SQLiteDatabase, type: String, identifier: String): RadioPointRecord? {
+        val canonical = canonicalIdentifier(identifier)
+        val exact = db.rawQuery(
+            "SELECT * FROM radio_points WHERE radio_type = ? AND lower(identifier) = ? LIMIT 1",
+            arrayOf(type, canonical)
+        ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
+        if (exact != null) return exact
+
+        // Older imported databases may contain the same MAC in a compact/hyphen/dotted form.
+        // Try a normalized MAC lookup before treating a known radio as unmatched.
+        if (type != "wifi" && type != "ble") return null
+        val compact = compactRadioMacIdentifier(identifier) ?: return null
+        return db.rawQuery(
+            "SELECT * FROM radio_points WHERE radio_type = ? " +
+                "AND replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ? LIMIT 1",
+            arrayOf(type, compact)
+        ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
+    }
 
     private fun shouldReplacePosition(old: RadioPointRecord, reference: RadioReference, signal: RadioSignal): Boolean {
         // Do not move manually pinned coordinates or trusted imported WiGLE coordinates.
