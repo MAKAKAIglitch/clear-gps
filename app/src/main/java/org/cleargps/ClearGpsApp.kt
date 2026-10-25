@@ -845,6 +845,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     )
                 }
                 if (stored != currentRadioEstimate) currentRadioEstimate = stored
+                if (stored != null && lookupPhase in setOf(LookupPhase.NO_MATCH, LookupPhase.ERROR)) {
+                    lookupPhase = LookupPhase.STALE
+                }
             }
             delay(1_500L)
         }
