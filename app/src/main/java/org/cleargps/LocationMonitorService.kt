@@ -303,13 +303,8 @@ class LocationMonitorService : Service(), LocationListener {
             when (nextPositionMode) {
                 "radio", "radio_obd2" -> {
                     // Radio-based modes never request Android GPS for their coordinates.
-                    prefs.edit()
-                        .putBoolean(KEY_HAS_OUTPUT, false)
-                        .putString(KEY_SOURCE, "NONE")
-                        .remove(KEY_LAT)
-                        .remove(KEY_LON)
-                        .remove(KEY_ACCURACY)
-                        .apply()
+                    // A same-mode ACTION_START is often just a refresh-setting update: preserve
+                    // the registered mock provider and last known output in that case.
                     val radioObdMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "radio_obd2"
                     saveServiceStatus(
                         if (radioObdMode) "Radio + OBD-II mode: GPS provider is not requested; radio remains the coordinate source"
