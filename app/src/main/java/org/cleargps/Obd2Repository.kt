@@ -172,7 +172,7 @@ class Obd2Repository(context: Context) {
                 val count = input.read(buffer, 0, minOf(buffer.size, available))
                 if (count < 0) throw EOFException("Bluetooth stream closed.")
                 response.append(String(buffer, 0, count, Charsets.US_ASCII))
-                val promptIndex = response.indexOf(">")
+                val promptIndex = response.lastIndexOf(">")
                 if (promptIndex >= 0) return response.toString().substring(0, promptIndex)
                 if (response.length > MAX_RESPONSE_CHARS) {
                     throw IOException("Слишком длинный ответ адаптера.")
