@@ -46,4 +46,95 @@ class LocalSignalPositionTest {
             RadioPointObservation(1, 1000L, null, null, null, -50, 0, "unlocated")
         )))
     }
+
+    @Test fun fingerprintSearchPrefersTheMatchingPlaceOverAnOutlierFingerprint() {
+        val now = 1_000_000L
+        val current = listOf(
+            RadioSignal("wifi", "ap-a", -50),
+            RadioSignal("wifi", "ap-b", -60),
+            RadioSignal("wifi", "ap-c", -65)
+        )
+        fun sample(id: String, lat: Double, lon: Double, rssi: Int, at: Long, source: String = "android-location") =
+            RadioFingerprintSample("wifi", id, lat, lon, 10.0, rssi, at, source)
+
+        val matchingPlace = listOf(
+            sample("ap-a", 55.0000, 40.0000, -51, now - 1_000),
+            sample("ap-b", 55.0000, 40.0000, -61, now - 1_000),
+            sample("ap-c", 55.0000, 40.0000, -66, now - 1_000),
+            sample("ap-d", 55.0000, 40.0000, -72, now - 1_000)
+        )
+        val weakerPlace = listOf(
+            sample("ap-a", 55.1000, 40.1000, -85, now - 2_000),
+            sample("ap-b", 55.1000, 40.1000, -92, now - 2_000),
+            sample("other-1", 55.1000, 40.1000, -45, now - 2_000),
+            sample("other-2", 55.1000, 40.1000, -50, now - 2_000),
+            sample("other-3", 55.1000, 40.1000, -53, now - 2_000),
+            sample("other-4", 55.1000, 40.1000, -58, now - 2_000)
+        )
+
+        val estimate = estimateRadioFingerprintPosition(current, matchingPlace + weakerPlace, now)
+        requireNotNull(estimate)
+        assertTrue(abs(estimate.latitude - 55.0) < 0.002)
+        assertTrue(abs(estimate.longitude - 40.0) < 0.002)
+        assertEquals(3, estimate.matchedCount)
+        assertFalse(estimate.fallbackUsed)
+    }
+
+    @Test fun fingerprintSearchRefusesIdenticalFingerprintsAtDistantPlaces() {
+        val now = 1_000_000L
+        val current = listOf(
+            RadioSignal("wifi", "same-a", -50),
+            RadioSignal("wifi", "same-b", -60),
+            RadioSignal("wifi", "same-c", -65)
+        )
+        val history = listOf(55.0 to 40.0, 55.1 to 40.1).flatMapIndexed { index, (lat, lon) ->
+            listOf(
+                RadioFingerprintSample("wifi", "same-a", lat, lon, 10.0, -50, now - index * 1_000L, "android-location"),
+                RadioFingerprintSample("wifi", "same-b", lat, lon, 10.0, -60, now - index * 1_000L, "android-location"),
+                RadioFingerprintSample("wifi", "same-c", lat, lon, 10.0, -65, now - index * 1_000L, "android-location")
+            )
+        }
+
+        assertNull(estimateRadioFingerprintPosition(current, history, now))
+    }
+
+    @Test fun fingerprintSearchIgnoresUnlocatedAndSelfEstimatedSamples() {
+        val now = 1_000_000L
+        val current = listOf(
+            RadioSignal("wifi", "ap-a", -50),
+            RadioSignal("wifi", "ap-b", -60)
+        )
+        val history = listOf(
+            RadioFingerprintSample("wifi", "ap-a", 55.0, 40.0, 10.0, -50, now - 1_000, "unlocated"),
+            RadioFingerprintSample("wifi", "ap-b", 55.0, 40.0, 10.0, -60, now - 1_000, "local-radio-estimate")
+        )
+
+        assertNull(estimateRadioFingerprintPosition(current, history, now))
+    }
+
+    @Test fun anchorEstimatorRejectsAHighSignalSpatialOutlier() {
+        val now = 1_000_000L
+        fun point(id: Long, identifier: String, lat: Double, lon: Double, accuracy: Double, rssi: Int, source: String = "recorded") =
+            RadioPointRecord(
+                id = id, type = "wifi", identifier = identifier, label = "", ssid = "", notes = "",
+                latitude = lat, longitude = lon, accuracyMeters = accuracy,
+                rssi = rssi, peakRssi = rssi, frequency = 2412,
+                firstSeen = now - 5_000, lastSeen = now - 1_000, sightings = 4, positionSource = source
+            )
+        val matches = listOf(
+            RadioSignal("wifi", "near-a", -60) to point(1, "near-a", 55.0000, 40.0000, 100.0, -60),
+            RadioSignal("wifi", "near-b", -62) to point(2, "near-b", 55.0002, 40.0001, 100.0, -62),
+            RadioSignal("wifi", "near-c", -59) to point(3, "near-c", 54.9999, 40.0002, 100.0, -59),
+            RadioSignal("wifi", "near-d", -65) to point(4, "near-d", 55.0001, 39.9999, 100.0, -65),
+            RadioSignal("wifi", "outlier", -40) to point(5, "outlier", 55.1, 40.1, 20.0, -40, "manual-edit")
+        )
+
+        val estimate = estimateRadioAnchorPosition(matches, now)
+        requireNotNull(estimate)
+        assertTrue(abs(estimate.latitude - 55.0) < 0.002)
+        assertTrue(abs(estimate.longitude - 40.0) < 0.002)
+        assertTrue(estimate.accuracyMeters > 80.0)
+        assertTrue(estimate.fallbackUsed)
+    }
+
 }
