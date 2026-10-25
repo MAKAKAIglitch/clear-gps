@@ -96,8 +96,17 @@ class RadioGeolocationRepository(private val context: Context) {
                 totalSignalCount = snapshot.signals.size
             )
             val totalStalePenalty = staleWifiPenalty + staleCellPenalty + staleBlePenalty
-            if (totalStalePenalty <= 0.0) candidate
-            else candidate.copy(
+            // updatedAt denotes the age of the evidence, not the time we finished calculating.
+            // Otherwise repeatedly reading the same Android cache refreshes the fix timestamp
+            // forever and the UI can incorrectly label a stale radio result as fresh.
+            val oldestEvidenceAgeMillis = listOfNotNull(
+                snapshot.wifiAgeMillis.takeIf { snapshot.wifiCount > 0 },
+                snapshot.cellAgeMillis.takeIf { snapshot.cellCount > 0 },
+                snapshot.bleAgeMillis.takeIf { snapshot.bleCount > 0 }
+            ).maxOrNull()?.coerceAtLeast(0L) ?: 0L
+            val evidenceTimestamp = (System.currentTimeMillis() - oldestEvidenceAgeMillis).coerceAtLeast(0L)
+            candidate.copy(
+                updatedAt = evidenceTimestamp,
                 accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0)
             )
         }
