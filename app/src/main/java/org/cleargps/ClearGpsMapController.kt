@@ -34,6 +34,7 @@ class ClearGpsMapController {
     private var map: MapLibreMap? = null
     private var locationSource: GeoJsonSource? = null
     private var calculatedLocationSource: GeoJsonSource? = null
+    private var calculatedAccuracySource: GeoJsonSource? = null
     private var accuracySource: GeoJsonSource? = null
     private var anchorSource: GeoJsonSource? = null
     private var polygonSource: GeoJsonSource? = null
@@ -44,6 +45,11 @@ class ClearGpsMapController {
     private var blePointsSource: GeoJsonSource? = null
     private var primaryLocation: MapCoordinate? = null
     private var calculatedLocation: MapCoordinate? = null
+    /** Radio-estimate position and uncertainty currently displayed by the map animator. */
+    private var displayedCalculatedLocation: MapCoordinate? = null
+    private var calculatedAccuracyMeters: Double? = null
+    private var displayedCalculatedAccuracyMeters: Double? = null
+    private var calculatedLocationAnimator: ValueAnimator? = null
     /** Latest Android-reported horizontal accuracy, in metres. */
     private var primaryAccuracyMeters: Double? = null
     /** Displayed radius is animated toward the latest measured accuracy. */
@@ -244,14 +250,93 @@ class ClearGpsMapController {
         renderAnchor()
     }
 
-    fun updateCalculatedLocation(location: MapCoordinate?) {
-        if (calculatedLocation == location) return
+    fun updateCalculatedLocation(location: MapCoordinate?, accuracyMeters: Double? = null) {
+        val targetAccuracy = if (location != null) {
+            accuracyMeters?.takeIf { it.isFinite() && it > 0.0 }
+                ?.coerceIn(1.0, MAX_ACCURACY_RADIUS_METERS)
+        } else null
+        if (calculatedLocation == location && calculatedAccuracyMeters == targetAccuracy) return
+
         calculatedLocation = location
-        if (!cameraInitialized && mapReady && location != null) {
+        calculatedAccuracyMeters = targetAccuracy
+
+        if (location == null) {
+            cancelCalculatedLocationAnimation()
+            displayedCalculatedLocation = null
+            displayedCalculatedAccuracyMeters = null
+            renderCalculatedLocation()
+            return
+        }
+        if (!cameraInitialized && mapReady) {
             map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 14.0))
             cameraInitialized = true
         }
-        renderCalculatedLocation()
+
+        val currentPosition = displayedCalculatedLocation
+        if (currentPosition == null) {
+            // First radio fix appears with its actual estimated uncertainty, not a fake grow-in.
+            cancelCalculatedLocationAnimation()
+            displayedCalculatedLocation = location
+            displayedCalculatedAccuracyMeters = targetAccuracy
+            renderCalculatedLocation()
+            return
+        }
+
+        val currentRadius = displayedCalculatedAccuracyMeters
+        if (currentPosition == location && currentRadius == targetAccuracy) return
+        animateCalculatedLocation(location, targetAccuracy)
+    }
+
+    private fun cancelCalculatedLocationAnimation() {
+        val animator = calculatedLocationAnimator
+        calculatedLocationAnimator = null
+        animator?.cancel()
+    }
+
+    private fun animateCalculatedLocation(target: MapCoordinate, targetRadius: Double?) {
+        cancelCalculatedLocationAnimation()
+        val start = displayedCalculatedLocation ?: target
+        val startRadius = displayedCalculatedAccuracyMeters ?: targetRadius ?: 0.0
+        val endRadius = targetRadius ?: 0.0
+
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = RADIO_ACCURACY_ANIMATION_DURATION_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                if (calculatedLocationAnimator === this) {
+                    val fraction = (animation.animatedValue as Float).toDouble().coerceIn(0.0, 1.0)
+                    displayedCalculatedLocation = interpolateCoordinate(start, target, fraction)
+                    val radius = startRadius + (endRadius - startRadius) * fraction
+                    displayedCalculatedAccuracyMeters = if (targetRadius == null && fraction >= 1.0) {
+                        null
+                    } else {
+                        radius.coerceIn(0.0, MAX_ACCURACY_RADIUS_METERS).takeIf { it > 0.0 }
+                    }
+                    renderCalculatedLocation()
+                }
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    if (calculatedLocationAnimator === this@apply) {
+                        displayedCalculatedLocation = target
+                        displayedCalculatedAccuracyMeters = targetRadius
+                        calculatedLocationAnimator = null
+                        renderCalculatedLocation()
+                    }
+                }
+            })
+        }
+        calculatedLocationAnimator = animator
+        animator.start()
+    }
+
+    private fun interpolateCoordinate(from: MapCoordinate, to: MapCoordinate, fraction: Double): MapCoordinate {
+        val longitudeDelta = ((to.longitude - from.longitude + 540.0) % 360.0) - 180.0
+        val longitude = ((from.longitude + longitudeDelta * fraction + 540.0) % 360.0) - 180.0
+        return MapCoordinate(
+            latitude = from.latitude + (to.latitude - from.latitude) * fraction,
+            longitude = longitude
+        )
     }
 
     fun updateZones(zones: List<SavedRiskZone>, draft: List<ZonePoint>) {
@@ -291,13 +376,14 @@ class ClearGpsMapController {
         locationSource = GeoJsonSource(LOCATION_SOURCE, emptyCollection())
         anchorSource = GeoJsonSource(ANCHOR_SOURCE, emptyCollection())
         calculatedLocationSource = GeoJsonSource(CALCULATED_SOURCE, emptyCollection())
+        calculatedAccuracySource = GeoJsonSource(CALCULATED_ACCURACY_SOURCE, emptyCollection())
         polygonSource = GeoJsonSource(POLYGON_SOURCE, emptyCollection())
         lineSource = GeoJsonSource(LINE_SOURCE, emptyCollection())
         zonePointsSource = GeoJsonSource(ZONE_POINTS_SOURCE, emptyCollection())
         wifiPointsSource = GeoJsonSource(WIFI_POINTS_SOURCE, emptyCollection())
         cellPointsSource = GeoJsonSource(CELL_POINTS_SOURCE, emptyCollection())
         blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection())
-        listOf(locationSource, calculatedLocationSource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
+        listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
             wifiPointsSource, cellPointsSource, blePointsSource).forEach { style.addSource(it!!) }
 
         style.addLayer(FillLayer(POLYGON_LAYER, POLYGON_SOURCE).withProperties(
@@ -344,6 +430,14 @@ class ClearGpsMapController {
             PropertyFactory.circleRadius(6f), PropertyFactory.circleColor("#1A73E8"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f)
         ))
+        // The radio estimate has its own geodesic uncertainty circle, coloured red to match
+        // the calculated marker. It is drawn below the marker, not as a fixed-pixel halo.
+        style.addLayer(FillLayer(CALCULATED_ACCURACY_LAYER, CALCULATED_ACCURACY_SOURCE).withProperties(
+            PropertyFactory.fillColor("#DC2626"), PropertyFactory.fillOpacity(0.055f)
+        ))
+        style.addLayer(LineLayer(CALCULATED_ACCURACY_OUTLINE_LAYER, CALCULATED_ACCURACY_SOURCE).withProperties(
+            PropertyFactory.lineColor("#DC2626"), PropertyFactory.lineWidth(2.5f), PropertyFactory.lineOpacity(0.95f)
+        ))
         style.addLayer(CircleLayer(CALCULATED_DOT_LAYER, CALCULATED_SOURCE).withProperties(
             PropertyFactory.circleRadius(8f), PropertyFactory.circleColor("#DC2626"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f),
@@ -378,7 +472,11 @@ class ClearGpsMapController {
 
     private fun renderCalculatedLocation() {
         if (!mapReady) return
-        calculatedLocationSource?.setGeoJson(calculatedLocation?.let { pointCollection(it) } ?: emptyCollection())
+        val position = displayedCalculatedLocation ?: calculatedLocation
+        calculatedLocationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
+        calculatedAccuracySource?.setGeoJson(
+            if (position != null) accuracyCollection(position, displayedCalculatedAccuracyMeters) else emptyCollection()
+        )
         map?.triggerRepaint()
     }
 
@@ -486,6 +584,10 @@ class ClearGpsMapController {
         private const val CALCULATED_DOT_LAYER = "cleargps-calculated-location-dot"
         private const val ACCURACY_LAYER = "cleargps-accuracy-area"
         private const val ACCURACY_OUTLINE_LAYER = "cleargps-accuracy-outline"
+        private const val CALCULATED_ACCURACY_SOURCE = "cleargps-calculated-accuracy"
+        private const val CALCULATED_ACCURACY_LAYER = "cleargps-calculated-accuracy-area"
+        private const val CALCULATED_ACCURACY_OUTLINE_LAYER = "cleargps-calculated-accuracy-outline"
+        private const val RADIO_ACCURACY_ANIMATION_DURATION_MS = 420L
         private const val ANCHOR_HALO_LAYER = "cleargps-anchor-halo"
         private const val ANCHOR_DOT_LAYER = "cleargps-anchor-dot"
         private const val POLYGON_LAYER = "cleargps-risk-polygon-layer"
