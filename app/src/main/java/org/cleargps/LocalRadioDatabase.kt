@@ -1126,15 +1126,22 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     db, type, identifier, observedAt, coordinateLat, coordinateLon,
                     if (coordinateLat != null) accuracy else null, rssi, frequency, "wigle-import"
                 )
-                if (!newObservation) return@forEach
-
-                if (upsertImportedPoint(
-                        db, type, identifier, ssid, coordinateLat, coordinateLon,
-                        if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import"
-                    )
-                ) newRadios++
-                importedObservations++
-                touched.add(type + "|" + identifier)
+                // A stale/manual deletion may have removed the summary row while leaving history.
+                // Re-create that summary on a duplicate import, but don't increment sightings twice.
+                val summaryMissing = findPoint(db, type, identifier) == null
+                if (newObservation || summaryMissing) {
+                    if (upsertImportedPoint(
+                            db, type, identifier, ssid, coordinateLat, coordinateLon,
+                            if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import"
+                        )
+                    ) newRadios++
+                }
+                if (newObservation) {
+                    importedObservations++
+                    touched.add(type + "|" + identifier)
+                } else if (summaryMissing) {
+                    touched.add(type + "|" + identifier)
+                }
             }
             db.setTransactionSuccessful()
         } finally {
@@ -1495,19 +1502,20 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val frequency = info?.frequency ?: 0
                     val key = type + "|" + identifier
                     seenKeys.add(key)
-                    if (insertObservationIfAbsent(
-                            target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
-                            rssi, frequency, "wigle-import"
-                        )
-                    ) {
+                    val newObservation = insertObservationIfAbsent(
+                        target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
+                        rssi, frequency, "wigle-import"
+                    )
+                    val summaryMissing = findPoint(target, type, identifier) == null
+                    if (newObservation || summaryMissing) {
                         if (upsertImportedPoint(
                                 target, type, identifier, info?.ssid.orEmpty(), lat, lon,
                                 if (lat != null) accuracy else null, rssi, frequency, time, "wigle-import"
                             )
                         ) newRadios++
-                        observationsImported++
-                        touched.add(key)
                     }
+                    if (newObservation || summaryMissing) touched.add(key)
+                    if (newObservation) observationsImported++
                 }
             }
 
