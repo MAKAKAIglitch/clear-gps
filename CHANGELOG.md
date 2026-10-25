@@ -34,7 +34,9 @@
 - `core-detect/src/main/kotlin/org/cleargps/core/GnssSpoofingDetector.kt` — возвращает фактические внутренние значения компонент в модели `RiskBreakdown`; существующая формула и переходы состояния сохранены.
 - `app/src/main/java/org/cleargps/core/LocationFilterEngine.kt` — передаёт детализацию вместе с текущим решением.
 - `app/src/main/java/org/cleargps/LocationMonitorService.kt` — сохраняет ограниченную сводку вместе с решением и очищает её при остановке.
-- `app/src/main/java/org/cleargps/ClearGpsApp.kt` — хранилище сводки и Compose-панель в раскрываемой диагностике.
+- `app/src/main/java/org/cleargps/ClearGpsApp.kt` — загрузка и передача сводки в экран диагностики.
+- `app/src/main/java/org/cleargps/RiskBreakdownStore.kt` — приватное хранение ограниченной по свежести сводки.
+- `app/src/main/java/org/cleargps/RiskBreakdownPanel.kt` — Compose-панель компонентов и правил объединения.
 - `core-detect/src/test/kotlin/org/cleargps/core/GnssSpoofingDetectorTest.kt` — тесты трёх групп признаков, бонусов подтверждения, порога зоны и временного удержания тревоги.
 - `CHANGELOG.md` — эта запись.
 
