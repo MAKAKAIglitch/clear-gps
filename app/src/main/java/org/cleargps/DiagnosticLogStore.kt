@@ -2,6 +2,7 @@ package org.cleargps
 
 import android.content.Context
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -101,10 +102,7 @@ internal object DiagnosticLogStore {
             val line = "$timestamp [$level] [$safeCategory] $safeMessage\n".toByteArray(Charsets.UTF_8)
             // Append cheaply while there is headroom. Trimming on every line after the cap was
             // reached would rewrite hundreds of kilobytes every second on a live GNSS feed.
-            file.outputStream().use { output ->
-                output.channel.position(file.length())
-                output.write(line)
-            }
+            FileOutputStream(file, true).use { output -> output.write(line) }
             val limitBytes = maxBytes(context)
             if (file.length() > limitBytes) {
                 // Trim to 75% so subsequent log lines append cheaply until the next rotation.
