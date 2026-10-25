@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.GnssMeasurement
 import android.location.GnssMeasurementsEvent
 import android.location.GnssStatus
 import android.location.Location
@@ -116,7 +115,11 @@ class LocationMonitorService : Service(), LocationListener {
     private fun registerGnssStatus() {
         if (!gnssStatusRegistered) {
             try {
-                gnssStatusRegistered = manager.registerGnssStatusCallback(gnssStatusCallback)
+                gnssStatusRegistered = if (Build.VERSION.SDK_INT >= 30) {
+                    manager.registerGnssStatusCallback(mainExecutor, gnssStatusCallback)
+                } else {
+                    manager.registerGnssStatusCallback(gnssStatusCallback, Handler(Looper.getMainLooper()))
+                }
             } catch (_: SecurityException) {
                 gnssStatusRegistered = false
             } catch (_: RuntimeException) {
@@ -130,13 +133,15 @@ class LocationMonitorService : Service(), LocationListener {
     private fun registerGnssMeasurements() {
         if (gnssMeasurementsRegistered) return
         try {
-            gnssMeasurementsRegistered = if (Build.VERSION.SDK_INT >= 31) {
-                manager.registerGnssMeasurementsCallback(mainExecutor, gnssMeasurementsCallback)
-            } else {
-                manager.registerGnssMeasurementsCallback(
-                    gnssMeasurementsCallback,
-                    Handler(Looper.getMainLooper())
-                )
+            gnssMeasurementsRegistered = when {
+                Build.VERSION.SDK_INT >= 31 ->
+                    manager.registerGnssMeasurementsCallback(mainExecutor, gnssMeasurementsCallback)
+                Build.VERSION.SDK_INT <= 29 ->
+                    manager.registerGnssMeasurementsCallback(
+                        gnssMeasurementsCallback,
+                        Handler(Looper.getMainLooper())
+                    )
+                else -> false // Android 11's legacy measurement-delivery regression; signal status still works.
             }
         } catch (_: SecurityException) {
             gnssMeasurementsRegistered = false
