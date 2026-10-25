@@ -1544,12 +1544,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val latestLog = DiagnosticLogStore.read(context)
+                    diagnosticLogText = latestLog
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                     if (clipboard == null) {
                         Toast.makeText(context, "Буфер обмена недоступен.", Toast.LENGTH_SHORT).show()
                     } else {
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Clear GPS diagnostic log", diagnosticLogText))
-                        Toast.makeText(context, "Весь журнал скопирован.", Toast.LENGTH_SHORT).show()
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Clear GPS diagnostic log", latestLog))
+                        Toast.makeText(context, "Весь актуальный журнал скопирован.", Toast.LENGTH_SHORT).show()
                     }
                 }) {
                     Icon(Icons.Outlined.ContentCopy, null)
