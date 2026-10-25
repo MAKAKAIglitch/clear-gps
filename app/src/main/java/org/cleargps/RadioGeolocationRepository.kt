@@ -191,7 +191,10 @@ class RadioGeolocationRepository(private val context: Context) {
             return TimedRadioSignals(emptyList(), null)
         }
         val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return TimedRadioSignals(emptyList(), null)
+            ?: run {
+                DiagnosticLogStore.log(context, "RADIO_WIFI", "WifiManager недоступен", "ERROR")
+                return TimedRadioSignals(emptyList(), null)
+            }
         if (!manager.isWifiEnabled) {
             DiagnosticLogStore.log(context, "RADIO_WIFI", "Wi-Fi выключен системой")
             return TimedRadioSignals(emptyList(), null)
@@ -268,9 +271,11 @@ class RadioGeolocationRepository(private val context: Context) {
                 }
                 .toList()
             TimedRadioSignals(signals, ageMillis)
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Чтение результатов Wi-Fi запрещено: ${error.message ?: "SecurityException"}", "ERROR")
             TimedRadioSignals(emptyList(), null)
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            DiagnosticLogStore.log(context, "RADIO_WIFI", "Ошибка чтения результатов Wi-Fi: ${error.javaClass.simpleName}", "ERROR")
             TimedRadioSignals(emptyList(), null)
         }
     }
@@ -279,8 +284,14 @@ class RadioGeolocationRepository(private val context: Context) {
     private fun collectCells(): List<RadioSignal> {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) return emptyList()
-        val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return emptyList()
+        if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) {
+            DiagnosticLogStore.log(context, "RADIO_CELL", "Сотовые данные пропущены: нет разрешения точной геолокации")
+            return emptyList()
+        }
+        val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: run {
+            DiagnosticLogStore.log(context, "RADIO_CELL", "TelephonyManager недоступен", "ERROR")
+            return emptyList()
+        }
         return try {
             val allCellInfo = telephony.allCellInfo.orEmpty()
             val nowElapsedMs = SystemClock.elapsedRealtime()
@@ -355,18 +366,32 @@ class RadioGeolocationRepository(private val context: Context) {
 
     private suspend fun collectBluetooth(): TimedRadioSignals {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "BLE пропущен: нет разрешения точной геолокации")
             return TimedRadioSignals(emptyList(), null)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "BLE пропущен: нет BLUETOOTH_SCAN")
             return TimedRadioSignals(emptyList(), null)
         }
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            ?: return TimedRadioSignals(emptyList(), null)
-        val adapter = try { manager.adapter } catch (_: SecurityException) { null }
-            catch (_: RuntimeException) { null } ?: return TimedRadioSignals(emptyList(), null)
-        val scanner = try { adapter.bluetoothLeScanner } catch (_: SecurityException) { null }
-            catch (_: RuntimeException) { null } ?: return TimedRadioSignals(emptyList(), null)
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: run {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "BluetoothManager недоступен", "ERROR")
+            return TimedRadioSignals(emptyList(), null)
+        }
+        val adapter = try { manager.adapter } catch (error: SecurityException) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Доступ к Bluetooth-адаптеру запрещён: ${error.message ?: "SecurityException"}", "ERROR")
+            null
+        } catch (error: RuntimeException) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Не удалось получить Bluetooth-адаптер: ${error.javaClass.simpleName}", "ERROR")
+            null
+        } ?: return TimedRadioSignals(emptyList(), null)
+        val scanner = try { adapter.bluetoothLeScanner } catch (error: SecurityException) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "Доступ к BLE scanner запрещён", "ERROR")
+            null
+        } catch (error: RuntimeException) {
+            DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scanner недоступен: ${error.javaClass.simpleName}", "ERROR")
+            null
+        } ?: return TimedRadioSignals(emptyList(), null)
         val bluetoothEnabled = try { adapter.isEnabled }
             catch (_: SecurityException) { false }
             catch (_: RuntimeException) { false }
