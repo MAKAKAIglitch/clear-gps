@@ -669,19 +669,18 @@ class LocationMonitorService : Service(), LocationListener {
                             DiagnosticLogStore.log(this@LocationMonitorService, "MOCK", "Не удалось удержать mock-позицию после ошибки радио-сканирования: $reason", "ERROR")
                         }
                     } else {
-                        val failureReason = "Радиосканирование не удалось: ${error.message ?: error.javaClass.simpleName}"
+                        val failureReason = "Ошибка радиосканирования: " + (error.message ?: error.javaClass.simpleName)
                         DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_FIX", failureReason, "ERROR")
                         if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
                         lastRadioMockFix = null
                         lastRadioMockFixAtElapsedMs = 0L
-                        val failureReason = "Ошибка радиосканирования: " + (error.message ?: error.javaClass.simpleName)
                         prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
                             .putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
                             .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
                             .putString(KEY_REASONS, failureReason)
                             .putInt(KEY_SCORE, 0)
                             .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
-                        saveServiceStatus("Radio-only scan failed: " + (error.message ?: error.javaClass.simpleName))
+                        saveServiceStatus(failureReason)
                     }
                 }
                 val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
