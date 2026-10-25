@@ -73,10 +73,12 @@ class RadioGeolocationRepository(private val context: Context) {
         val message = when {
             snapshot.signals.isEmpty() ->
                 "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио и системные ограничения."
-            estimate != null ->
-                "Сканирование завершено: $summary. Совпадений в локальной базе: ${estimate.matchedCount}; оценка приблизительная, радиус ±${estimate.accuracyMeters.toInt()} м."
+            estimate != null -> {
+                val method = if (estimate.fallbackUsed) "по координатам локальных радиоточек" else "по похожему историческому радиоснимку"
+                "Сканирование завершено: $summary. Метод расчёта: $method. Совпадений: ${estimate.matchedCount}; оценка приблизительная, радиус ±${estimate.accuracyMeters.toInt()} м."
+            }
             else ->
-                "Сканирование завершено: $summary. Для этих сигналов нет сохранённых координат. Запиши точки на месте с известной позицией или отредактируй координаты вручную."
+                "Сканирование завершено: $summary. Не удалось получить однозначную оценку по локальной базе: совпадений мало, они противоречат друг другу или нет записей с координатами. Запиши сканы в местах с известным положением или импортируй геолокированные точки."
         }
         return RadioLookupResult(estimate, snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount,
             false, message, estimate?.matchedCount ?: 0, recorded)
