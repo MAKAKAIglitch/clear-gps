@@ -2,7 +2,6 @@ package org.cleargps
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,11 +18,11 @@ class Obd2LocationFusionTest {
             nowMillis = 11_000L
         )
 
-        assertNotNull(predicted)
-        assertEquals(100.0, predicted!!.travelledMeters, 0.01)
-        assertTrue("Northbound bearing should increase latitude", predicted.coordinate.latitude > 52.0)
-        assertEquals(39.0, predicted.coordinate.longitude, 0.001)
-        assertTrue(predicted.accuracyMeters > 5.0)
+        val actual = predicted ?: throw AssertionError("Fresh speed and course should produce a bounded prediction")
+        assertEquals(100.0, actual.travelledMeters, 0.01)
+        assertTrue("Northbound bearing should increase latitude", actual.coordinate.latitude > 52.0)
+        assertEquals(39.0, actual.coordinate.longitude, 0.001)
+        assertTrue(actual.accuracyMeters > 5.0)
     }
 
     @Test
