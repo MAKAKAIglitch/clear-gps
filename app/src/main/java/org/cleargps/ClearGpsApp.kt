@@ -47,6 +47,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
@@ -109,6 +110,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -188,6 +191,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var observationCount by remember { mutableStateOf(database.observationCount()) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
+    var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
+    var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
 
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
@@ -233,6 +238,35 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             observationCount = withContext(Dispatchers.IO) { database.observationCount() }
             zones = ZoneStore.loadAll(context)
         }
+    }
+
+    fun openRadioPointDetails(pointId: Long) {
+        scope.launch {
+            selectedMapPoint = null
+            selectedPointObservations = emptyList()
+            selectedPointCenter = null
+            val loaded = withContext(Dispatchers.IO) {
+                val point = database.findPoint(pointId) ?: return@withContext null
+                point to database.listObservations(point)
+            }
+            val point = loaded?.first ?: return@launch
+            val observations = loaded.second
+            val center = estimateObservationCenter(observations)
+            selectedMapPoint = point
+            selectedPointObservations = observations
+            selectedPointCenter = center
+            val focus = center?.let { MapCoordinate(it.latitude, it.longitude) }
+                ?: if (point.latitude != null && point.longitude != null) {
+                    MapCoordinate(point.latitude, point.longitude)
+                } else null
+            if (focus != null) mapController.focus(focus, 16.0)
+        }
+    }
+
+    fun closeRadioPointDetails() {
+        selectedMapPoint = null
+        selectedPointObservations = emptyList()
+        selectedPointCenter = null
     }
 
     fun saveUseFlags() {
@@ -586,15 +620,23 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     SideEffect {
         mapController.setDarkMode(mapIsDark)
         mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
-        mapController.setShowRadioPoints(showRadioPointsOnMap)
+        mapController.setShowRadioPoints(selectedMapPoint != null || showRadioPointsOnMap)
         mapController.updatePrimary(primaryCoordinate, primaryAccuracy)
         mapController.updateManualAnchor(manualAnchor)
         mapController.updateZones(zones, draftZone)
-        mapController.updateRadioPoints(mapPoints)
+        val detailPoint = selectedMapPoint
+        val selectedCenter = selectedPointCenter
+        val pointsToRender = if (detailPoint != null) {
+            val lat = selectedCenter?.latitude ?: detailPoint.latitude
+            val lon = selectedCenter?.longitude ?: detailPoint.longitude
+            if (lat != null && lon != null) listOf(detailPoint.copy(
+                latitude = lat, longitude = lon,
+                accuracyMeters = selectedCenter?.accuracyMeters ?: detailPoint.accuracyMeters
+            )) else emptyList()
+        } else mapPoints
+        mapController.updateRadioPoints(pointsToRender)
         mapController.setTapMode(mapTapMode)
-        mapController.onRadioPointTap = { pointId ->
-            scope.launch { selectedMapPoint = withContext(Dispatchers.IO) { database.findPoint(pointId) } }
-        }
+        mapController.onRadioPointTap = { pointId -> openRadioPointDetails(pointId) }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
                 MapTapMode.PLACE_ANCHOR -> {
@@ -660,7 +702,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    ClearGpsTheme {
+    ClearGpsTheme(dark = mapIsDark) {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
             val panelMaxHeight = maxHeight * panelFraction
@@ -743,7 +785,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                             }
                                         }
                                     },
-                                    selectedView = pointsView, onView = { pointsView = it }, onEdit = { pointToEdit = it },
+                                    selectedView = pointsView, onView = { pointsView = it }, onEdit = { openRadioPointDetails(it.id) },
                                     onDelete = {
                                         database.deletePoint(it.id); refreshLocalUi()
                                         Toast.makeText(context, "Точка удалена локально", Toast.LENGTH_SHORT).show()
@@ -864,9 +906,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     if (selectedMapPoint != null) {
-        RadioPointDetailsDialog(point = selectedMapPoint!!,
-            onDismiss = { selectedMapPoint = null },
-            onEdit = { pointToEdit = selectedMapPoint; selectedMapPoint = null })
+        RadioPointDetailsDialog(
+            point = selectedMapPoint!!,
+            observations = selectedPointObservations,
+            center = selectedPointCenter,
+            onDismiss = { closeRadioPointDetails() },
+            onEdit = {
+                pointToEdit = selectedMapPoint
+                closeRadioPointDetails()
+            }
+        )
     }
 
     if (pointToEdit != null) {
@@ -879,7 +928,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     if (showZoneNameDialog) {
         AlertDialog(
-            onDismissRequest = { showZoneNameDialog = false }, title = { Text("Сохранить зону спуфинга") },
+            onDismissRequest = { showZoneNameDialog = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            title = { Text("Сохранить зону спуфинга") },
             text = { OutlinedTextField(value = zoneName, onValueChange = { zoneName = it.take(80) }, label = { Text("Название зоны") }, singleLine = true) },
             confirmButton = {
                 TextButton(onClick = {
@@ -897,7 +949,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     if (zoneToRename != null) {
         AlertDialog(
-            onDismissRequest = { zoneToRename = null }, title = { Text("Переименовать зону") },
+            onDismissRequest = { zoneToRename = null },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            title = { Text("Переименовать зону") },
             text = { OutlinedTextField(value = zoneRenameText, onValueChange = { zoneRenameText = it.take(80) }, singleLine = true) },
             confirmButton = {
                 TextButton(onClick = {
@@ -912,7 +967,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     if (showDeleteAllDialog) {
         AlertDialog(
-            onDismissRequest = { showDeleteAllDialog = false }, title = { Text("Удалить локальную базу?") },
+            onDismissRequest = { showDeleteAllDialog = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            title = { Text("Удалить локальную базу?") },
             text = { Text("Будут удалены все сохранённые радио-точки и история сканирований. Зоны риска и ручной ориентир останутся.") },
             confirmButton = {
                 TextButton(onClick = {
@@ -933,7 +991,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     if (showRadioOnlyInfo) {
         AlertDialog(
-            onDismissRequest = { showRadioOnlyInfo = false }, icon = { Icon(Icons.Outlined.Info, null) },
+            onDismissRequest = { showRadioOnlyInfo = false },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            textContentColor = MaterialTheme.colorScheme.onSurface,
+            icon = { Icon(Icons.Outlined.Info, null) },
             title = { Text("Режим «Только радио»") },
             text = {
                 Text("Clear GPS не будет запрашивать GPS-провайдер и будет определять положение только по совпадениям с точками из локальной базы. Сначала собери базу в местах с известными координатами или импортируй WiGLE CSV. Без совпадений координат не будет. Обычное приложение Android не может физически выключить GPS-модуль для всей системы; для этого используй системные настройки. Android также может ограничивать Wi‑Fi/Bluetooth-сканирование, когда глобальная геолокация выключена.")
@@ -1178,7 +1239,8 @@ private fun DatabaseScreen(
 private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val typeLabel = when (point.type) { "wifi" -> "Wi‑Fi"; "cell" -> "Сотовая"; else -> "Bluetooth LE" }
-    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(17.dp), color = colors.surfaceContainerHigh) {
+    Surface(onClick = onEdit, modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(17.dp), color = colors.surfaceContainerHigh) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = CircleShape, color = when (point.type) {
                 "wifi" -> Color(0xFFD7F5E1); "cell" -> Color(0xFFF1DFFF); else -> Color(0xFFFFE8BE)
@@ -1208,7 +1270,7 @@ private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete:
                     maxLines = 1, overflow = TextOverflow.Ellipsis, color = colors.onSurfaceVariant)
             }
             Column {
-                IconButton(onClick = onEdit, modifier = Modifier.size(38.dp)) { Icon(Icons.Outlined.Edit, "Редактировать точку") }
+                IconButton(onClick = onEdit, modifier = Modifier.size(38.dp)) { Icon(Icons.Outlined.Edit, "Подробности и наблюдения точки") }
                 IconButton(onClick = onDelete, modifier = Modifier.size(38.dp)) { Icon(Icons.Outlined.DeleteOutline, "Удалить точку") }
             }
         }
@@ -1264,38 +1326,195 @@ private fun PointEditDialog(
 
 @Composable
 private fun RadioPointDetailsDialog(
-    point: RadioPointRecord, onDismiss: () -> Unit, onEdit: () -> Unit
+    point: RadioPointRecord,
+    observations: List<RadioPointObservation>,
+    center: RadioPointCenter?,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    val kind = when (point.type) { "wifi" -> "Wi‑Fi"; "cell" -> "Сотовая вышка"; else -> "Bluetooth LE" }
-    AlertDialog(
-        onDismissRequest = onDismiss, containerColor = colors.surfaceContainerHigh,
-        title = { Text(point.ssid.ifBlank { point.label.ifBlank { kind } }) },
-        text = {
-            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Text(kind, color = colors.primary, fontWeight = FontWeight.SemiBold)
-                Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
-                if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
-                Text("Последний сигнал: " + point.rssi + " dBm")
-                Text("Лучший за время наблюдений: " + point.peakRssi + " dBm")
-                if (point.positionSource == "strongest-signal-sample") {
-                    Text("Координаты уточнены по максимуму сигнала; оценка приблизительная.",
-                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+    val kind = when (point.type) {
+        "wifi" -> "Wi‑Fi"
+        "cell" -> "Сотовая вышка"
+        else -> "Bluetooth LE"
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).padding(10.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = colors.surfaceContainer,
+            tonalElevation = 5.dp
+        ) {
+            Column(
+                Modifier.fillMaxSize().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = CircleShape,
+                        color = when (point.type) {
+                            "wifi" -> Color(0xFFD7F5E1)
+                            "cell" -> Color(0xFFF1DFFF)
+                            else -> Color(0xFFFFE8BE)
+                        },
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                when (point.type) {
+                                    "wifi" -> Icons.Outlined.Wifi
+                                    "cell" -> Icons.Outlined.SignalCellularAlt
+                                    else -> Icons.Outlined.Bluetooth
+                                },
+                                contentDescription = null,
+                                tint = Color(0xFF263248)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            point.ssid.ifBlank { point.label.ifBlank { kind } },
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(kind + " · " + point.sightings + " записанных наблюдений",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
+                    }
                 }
-                if (point.frequency > 0) Text("Частота: " + point.frequency + " MHz")
-                Text("Наблюдений: " + point.sightings)
-                Text("Источник координат: " + point.positionSource)
-                if (point.latitude != null && point.longitude != null) {
-                    Text(String.format(Locale.US, "Координаты: %.6f, %.6f", point.latitude, point.longitude))
-                    Text("Оценка точности: ±" + (point.accuracyMeters?.toInt()?.toString() ?: "—") + " м")
-                } else Text("Координаты ещё не заданы.")
-                if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
+                Divider(color = colors.outlineVariant)
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item(key = "summary") {
+                        Surface(
+                            Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            color = colors.surfaceContainerHigh
+                        ) {
+                            Column(
+                                Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("Сведения о точке", style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold)
+                                Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
+                                if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
+                                Text("Последний сигнал в базе: " + point.rssi + " dBm · максимум: " + point.peakRssi + " dBm")
+                                if (point.frequency > 0) Text("Последняя частота: " + point.frequency + " MHz")
+                                Text("Источник сохранённой позиции: " + point.positionSource,
+                                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
+                                Divider(color = colors.outlineVariant)
+                                if (center != null) {
+                                    Text("Примерный центр наблюдений",
+                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                    Text(String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
+                                        style = MaterialTheme.typography.titleMedium)
+                                    Text("По ${center.sampleCount} наблюдениям с координатами · ориентировочная погрешность ±${center.accuracyMeters.toInt()} м",
+                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    Text("Это центр мест, из которых сигнал записывался, а не точная триангуляция передатчика.",
+                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                } else if (point.latitude != null && point.longitude != null) {
+                                    Text("Сохранённая координата",
+                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                    Text(String.format(Locale.US, "%.6f, %.6f", point.latitude, point.longitude),
+                                        style = MaterialTheme.typography.titleMedium)
+                                    Text("В истории пока нет координат для расчёта центра.",
+                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    Text("Точность сохранённой позиции: ±${point.accuracyMeters?.toInt()?.toString() ?: "—"} м",
+                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                } else {
+                                    Text("Координаты пока неизвестны",
+                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                    Text("В наблюдениях нет сохранённых координат. Центр появится после записи точки с доступной геопозицией.",
+                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                    item(key = "observations-title") {
+                        Text("Все наблюдения (${observations.size})",
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 4.dp))
+                        Text("История хранится локально; последние записи идут первыми.",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                    if (observations.isEmpty()) {
+                        item(key = "observations-empty") {
+                            EmptyState("Истории пока нет",
+                                "У импортированных точек может быть сохранена позиция, но отсутствовать история отдельных наблюдений.")
+                        }
+                    } else {
+                        items(observations, key = { it.id }) { observation ->
+                            RadioPointObservationRow(observation)
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(15.dp)
+                    ) { Text("Закрыть") }
+                    FilledTonalButton(
+                        onClick = onEdit,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(15.dp)
+                    ) {
+                        Icon(Icons.Outlined.Edit, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Редактировать")
+                    }
+                }
             }
-        },
-        confirmButton = { TextButton(onClick = onEdit) { Text("Редактировать") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
-    )
+        }
+    }
+}
+
+@Composable
+private fun RadioPointObservationRow(observation: RadioPointObservation) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = colors.surfaceContainerHigh
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.History, contentDescription = null, tint = colors.primary)
+                Spacer(Modifier.width(7.dp))
+                Text(dateTime(observation.observedAt), fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                Text("${observation.rssi} dBm", style = MaterialTheme.typography.labelLarge,
+                    color = colors.primary, fontWeight = FontWeight.SemiBold)
+            }
+            if (observation.latitude != null && observation.longitude != null) {
+                Text(String.format(Locale.US, "%.6f, %.6f", observation.latitude, observation.longitude),
+                    style = MaterialTheme.typography.bodyMedium)
+                Text("Точность позиции: ±${observation.accuracyMeters?.toInt()?.toString() ?: "—"} м",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            } else {
+                Text("Координаты не были доступны при этом наблюдении",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
+            if (observation.frequency > 0) {
+                Text("Частота: ${observation.frequency} MHz",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
+            Text("Источник позиции: " + observation.positionSource,
+                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        }
+    }
 }
 
 @Composable
@@ -1457,9 +1676,8 @@ private fun SettingSwitch(title: String, description: String, checked: Boolean, 
 }
 
 @Composable
-private fun ClearGpsTheme(content: @Composable () -> Unit) {
+private fun ClearGpsTheme(dark: Boolean, content: @Composable () -> Unit) {
     val context = LocalContext.current
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val scheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else if (dark) {
