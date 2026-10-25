@@ -1,0 +1,134 @@
+package org.cleargps
+
+import android.content.Context
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Optional, app-private diagnostic log. It deliberately avoids radio identifiers and exact
+ * coordinates so that copied logs are useful without needlessly exporting location history.
+ */
+internal object DiagnosticLogStore {
+    const val KEY_ENABLED = "diagnostic_logging_enabled"
+    const val KEY_MAX_KB = "diagnostic_log_max_kb"
+    const val DEFAULT_MAX_KB = 256
+    const val MIN_MAX_KB = 64
+    const val MAX_MAX_KB = 512
+
+    private const val LOG_DIRECTORY = "diagnostics"
+    private const val LOG_FILE = "clear-gps.log"
+    private val lock = Any()
+    private val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.ROOT)
+
+    fun isEnabled(context: Context): Boolean =
+        context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ENABLED, false)
+
+    fun maxKb(context: Context): Int =
+        context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_MAX_KB, DEFAULT_MAX_KB).coerceIn(MIN_MAX_KB, MAX_MAX_KB)
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+        synchronized(lock) {
+            if (enabled) {
+                prefs.edit().putBoolean(KEY_ENABLED, true).apply()
+                appendLine(context, "INFO", "DIAGNOSTICS", "Подробное логирование включено", force = true)
+            } else {
+                appendLine(context, "INFO", "DIAGNOSTICS", "Подробное логирование выключено", force = true)
+                prefs.edit().putBoolean(KEY_ENABLED, false).apply()
+            }
+        }
+    }
+
+    fun setMaxKb(context: Context, requestedKb: Int) {
+        val normalized = requestedKb.coerceIn(MIN_MAX_KB, MAX_MAX_KB)
+        context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_MAX_KB, normalized).apply()
+        synchronized(lock) { trimFile(context, maxBytes(context)) }
+        log(context, "INFO", "DIAGNOSTICS", "Лимит журнала установлен: $normalized КБ")
+    }
+
+    fun log(context: Context, category: String, message: String, level: String = "INFO") {
+        if (!isEnabled(context)) return
+        synchronized(lock) {
+            appendLine(context, level, category, message, force = false)
+        }
+    }
+
+    fun read(context: Context): String = synchronized(lock) {
+        val file = logFile(context)
+        if (!file.isFile) return@synchronized "Журнал пуст. Включи подробное логирование и повтори проблему."
+        try {
+            file.readText(Charsets.UTF_8).ifBlank { "Журнал пуст." }
+        } catch (error: Exception) {
+            "Не удалось прочитать журнал: ${error.javaClass.simpleName}: ${error.message.orEmpty()}"
+        }
+    }
+
+    fun clear(context: Context) = synchronized(lock) {
+        try {
+            val file = logFile(context)
+            if (file.exists()) file.writeText("", Charsets.UTF_8)
+            appendLine(context, "INFO", "DIAGNOSTICS", "Журнал очищен", force = true)
+        } catch (_: Exception) {
+            // Diagnostics must never affect location tracking or app startup.
+        }
+    }
+
+    fun sizeBytes(context: Context): Long = synchronized(lock) {
+        try { logFile(context).length() } catch (_: Exception) { 0L }
+    }
+
+    private fun appendLine(
+        context: Context,
+        level: String,
+        category: String,
+        message: String,
+        force: Boolean
+    ) {
+        if (!force && !isEnabled(context)) return
+        try {
+            val file = logFile(context)
+            file.parentFile?.mkdirs()
+            val safeCategory = category.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(24).ifBlank { "APP" }
+            val safeMessage = message.replace('\r', ' ').replace('\n', ' ').take(700)
+            val timestamp = synchronized(timestampFormat) { timestampFormat.format(Date()) }
+            val line = "$timestamp [$level] [$safeCategory] $safeMessage\n".toByteArray(Charsets.UTF_8)
+            val existing = if (file.isFile) file.readBytes() else byteArrayOf()
+            val combined = ByteArray(existing.size + line.size)
+            existing.copyInto(combined)
+            line.copyInto(combined, existing.size)
+            val bounded = trimToMaxBytes(combined, maxBytes(context))
+            file.writeBytes(bounded)
+        } catch (_: Exception) {
+            // A full disk or inaccessible file must not crash the foreground service.
+        }
+    }
+
+    private fun trimFile(context: Context, limitBytes: Int) {
+        try {
+            val file = logFile(context)
+            if (file.isFile && file.length() > limitBytes) file.writeBytes(trimToMaxBytes(file.readBytes(), limitBytes))
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun maxBytes(context: Context): Int = maxKb(context) * 1024
+
+    private fun logFile(context: Context): File =
+        File(File(context.filesDir, LOG_DIRECTORY), LOG_FILE)
+
+    /** Keep the newest bytes, advancing to the next complete line where possible. */
+    internal fun trimToMaxBytes(content: ByteArray, maxBytes: Int): ByteArray {
+        if (maxBytes <= 0 || content.isEmpty()) return byteArrayOf()
+        if (content.size <= maxBytes) return content
+        var start = content.size - maxBytes
+        while (start < content.size && content[start] != '\n'.code.toByte()) start++
+        if (start < content.size) start++
+        return if (start >= content.size) content.copyOfRange(content.size - maxBytes, content.size)
+        else content.copyOfRange(start, content.size)
+    }
+}
