@@ -27,7 +27,7 @@ data class RadioSignal(
 data class RadioPointRecord(
     val id: Long, val type: String, val identifier: String, val label: String, val ssid: String, val notes: String,
     val latitude: Double?, val longitude: Double?, val accuracyMeters: Double?,
-    val rssi: Int, val frequency: Int, val firstSeen: Long, val lastSeen: Long,
+    val rssi: Int, val peakRssi: Int, val frequency: Int, val firstSeen: Long, val lastSeen: Long,
     val sightings: Int, val positionSource: String
 )
 
@@ -49,6 +49,13 @@ data class RadioLookupResult(
 
 data class ManualAnchor(val latitude: Double, val longitude: Double)
 data class RadioReference(val latitude: Double, val longitude: Double, val accuracyMeters: Double, val source: String)
+
+/**
+ * Signal strength alone cannot triangulate a transmitter. This only promotes a recorded sample
+ * as the approximate strongest-reception location when its position fix is also reasonably good.
+ */
+internal fun isBetterSignalSample(rssi: Int, peakRssi: Int, accuracyMeters: Double): Boolean =
+    rssi >= peakRssi + 3 && accuracyMeters.isFinite() && accuracyMeters in 1.0..50.0
 
 object ClearGpsPreferences {
     const val PREFS = "clear_gps"
@@ -121,7 +128,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 radio_type TEXT NOT NULL, identifier TEXT NOT NULL,
                 label TEXT NOT NULL DEFAULT '', ssid TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
                 latitude REAL, longitude REAL, accuracy REAL,
-                last_rssi INTEGER NOT NULL DEFAULT -100, frequency INTEGER NOT NULL DEFAULT 0,
+                last_rssi INTEGER NOT NULL DEFAULT -100, peak_rssi INTEGER NOT NULL DEFAULT -120, frequency INTEGER NOT NULL DEFAULT 0,
                 first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
                 sightings INTEGER NOT NULL DEFAULT 1, position_source TEXT NOT NULL DEFAULT 'unknown',
                 UNIQUE(radio_type, identifier)
@@ -155,6 +162,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.execSQL("ALTER TABLE radio_points ADD COLUMN ssid TEXT NOT NULL DEFAULT ''")
             db.execSQL("UPDATE radio_points SET ssid = label WHERE radio_type = 'wifi' AND position_source = 'wigle-import' AND ssid = ''")
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE radio_points ADD COLUMN peak_rssi INTEGER NOT NULL DEFAULT -120")
+            db.execSQL("UPDATE radio_points SET peak_rssi = last_rssi WHERE peak_rssi = -120")
+        }
     }
 
     fun recordScan(
@@ -173,6 +184,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val old = findPoint(db, signal.type, signal.identifier)
                     val values = ContentValues().apply {
                         put("last_rssi", signal.rssi)
+                        put("peak_rssi", maxOf(old?.peakRssi ?: -120, signal.rssi))
                         put("frequency", signal.frequency)
                         if (signal.ssid.isNotBlank()) put("ssid", signal.ssid.take(100))
                         put("last_seen", now)
@@ -180,6 +192,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     }
                     if (old == null) {
                         values.put("radio_type", signal.type)
+                        values.put("peak_rssi", signal.rssi)
                         values.put("identifier", signal.identifier)
                         values.put("first_seen", now)
                         values.put("position_source", reference?.source ?: "unlocated")
@@ -190,11 +203,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         }
                         db.insertOrThrow("radio_points", null, values)
                     } else {
-                        if (reference != null && validReference(reference) && shouldReplacePosition(old, reference, signal)) {
+                        if (reference != null && validReference(reference) &&
+                            shouldReplacePosition(old, reference, signal)) {
+                            val newPeakSample = isBetterSignalSample(signal.rssi, old.peakRssi, reference.accuracyMeters)
                             values.put("latitude", reference.latitude)
                             values.put("longitude", reference.longitude)
-                            values.put("accuracy", reference.accuracyMeters)
-                            values.put("position_source", reference.source)
+                            values.put("accuracy", if (newPeakSample) maxOf(reference.accuracyMeters, MIN_SIGNAL_POINT_ACCURACY_METERS)
+                                else reference.accuracyMeters)
+                            values.put("position_source", if (newPeakSample) "strongest-signal-sample" else reference.source)
                         }
                         db.update("radio_points", values, "id = ?", arrayOf(old.id.toString()))
                     }
@@ -433,7 +449,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 val values = ContentValues().apply {
                     put("radio_type", type); put("identifier", identifier); put("label", label); put("ssid", label)
                     put("latitude", lat); put("longitude", lon); put("accuracy", accuracy)
-                    put("last_rssi", rssi); put("frequency", frequency)
+                    put("last_rssi", rssi); put("peak_rssi", rssi); put("frequency", frequency)
                     put("first_seen", now); put("last_seen", now); put("sightings", 1)
                     put("position_source", "wigle-import")
                 }
@@ -441,7 +457,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 if (inserted == -1L) {
                     val old = findPoint(db, type, identifier)
                     val update = ContentValues().apply {
-                        put("last_rssi", rssi); put("frequency", frequency); put("last_seen", now)
+                        put("last_rssi", rssi); put("peak_rssi", maxOf(old?.peakRssi ?: -120, rssi))
+                        put("frequency", frequency); put("last_seen", now)
                         put("sightings", (old?.sightings ?: 0) + 1)
                         if (old?.latitude == null || old.longitude == null) {
                             put("latitude", lat); put("longitude", lon); put("accuracy", accuracy)
@@ -466,10 +483,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             arrayOf(type, identifier)).use { if (it.moveToFirst()) it.toRadioPoint() else null }
 
     private fun shouldReplacePosition(old: RadioPointRecord, reference: RadioReference, signal: RadioSignal): Boolean {
+        // Do not move manually pinned coordinates or trusted imported WiGLE coordinates.
+        if (old.positionSource == "manual-edit" || old.positionSource == "wigle-import") return false
+        if (reference.accuracyMeters !in 1.0..MAX_SIGNAL_SAMPLE_ACCURACY_METERS) return false
+        if (old.latitude == null || old.longitude == null) return true
         val accuracy = old.accuracyMeters
-        if (old.latitude == null || old.longitude == null || accuracy == null) return true
-        if (reference.accuracyMeters < accuracy * 0.8) return true
-        return signal.rssi >= old.rssi + 8 && reference.accuracyMeters <= max(accuracy * 1.25, 150.0)
+        if (accuracy != null && reference.accuracyMeters < accuracy * 0.8) return true
+        return isBetterSignalSample(signal.rssi, old.peakRssi, reference.accuracyMeters)
     }
 
     private fun validReference(r: RadioReference) =
@@ -488,6 +508,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         if (isNull(getColumnIndexOrThrow("longitude"))) null else getDouble(getColumnIndexOrThrow("longitude")),
         if (isNull(getColumnIndexOrThrow("accuracy"))) null else getDouble(getColumnIndexOrThrow("accuracy")),
         getInt(getColumnIndexOrThrow("last_rssi")),
+        getInt(getColumnIndexOrThrow("peak_rssi")),
         getInt(getColumnIndexOrThrow("frequency")),
         getLong(getColumnIndexOrThrow("first_seen")),
         getLong(getColumnIndexOrThrow("last_seen")),
@@ -511,8 +532,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
+        private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
+        private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
         private const val MAX_POINT_AGE_MS = 365L * 24 * 60 * 60 * 1_000L
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024
         private val VALID_TYPES = setOf("wifi", "ble", "cell")
