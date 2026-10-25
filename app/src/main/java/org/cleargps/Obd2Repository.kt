@@ -62,7 +62,7 @@ class Obd2Repository(context: Context) {
                 )
             }
             .filter { it.address.isNotBlank() }
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name }.thenBy { it.address })
+            .sortedWith(compareBy<Obd2Adapter> { it.name.lowercase(Locale.ROOT) }.thenBy { it.address })
     }
 
     suspend fun connect(address: String): Obd2Adapter {
