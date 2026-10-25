@@ -1515,9 +1515,13 @@ private fun MapHomeScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     StatusPill(
-                        if (coordinate != null) "Есть фиксация" else "Нет фикса",
-                        if (coordinate != null) colors.primaryContainer else colors.surfaceVariant,
-                        if (coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
+                        when {
+                            fixEnabled -> "Фикс включён"
+                            coordinate != null -> "Координаты найдены"
+                            else -> "Нет фикса"
+                        },
+                        if (fixEnabled || coordinate != null) colors.primaryContainer else colors.surfaceVariant,
+                        if (fixEnabled || coordinate != null) colors.onPrimaryContainer else colors.onSurfaceVariant
                     )
                 }
                 if (coordinate != null) {
@@ -1610,8 +1614,18 @@ private fun MapHomeScreen(
             if (fixEnabled) "Фикс активен · mock location · обновление примерно каждые $scanIntervalSeconds с"
             else "Фикс выключен · координаты не передаются другим приложениям",
             style = MaterialTheme.typography.labelSmall,
-            color = if (fixEnabled) colors.primary else colors.onSurfaceVariant
+            color = if (fixEnabled) colors.primary else colors.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
+        if (fixEnabled && (serviceStatus.contains("unavailable", ignoreCase = true) ||
+                serviceStatus.contains("choose Clear GPS", ignoreCase = true))) {
+            Text(
+                "Mock-вывод недоступен. Проверь, что Clear GPS выбрано в настройках разработчика как приложение фиктивной геолокации.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.error
+            )
+        }
         if (scanBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
