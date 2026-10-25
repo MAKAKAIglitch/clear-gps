@@ -253,6 +253,16 @@ class LocationMonitorService : Service(), LocationListener {
 
             when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
                 "radio" -> {
+                    // Discard any previously published mock location before radio lookup begins.
+                    // The next output, when enabled, can only be produced by the local radio estimate.
+                    mock?.disable()
+                    prefs.edit()
+                        .putBoolean(KEY_HAS_OUTPUT, false)
+                        .putString(KEY_SOURCE, "NONE")
+                        .remove(KEY_LAT)
+                        .remove(KEY_LON)
+                        .remove(KEY_ACCURACY)
+                        .apply()
                     saveServiceStatus("Radio-only mode: GPS provider is not requested")
                     startRadioOnlyLoop()
                     return
