@@ -56,6 +56,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DirectionsCar
@@ -2425,6 +2426,7 @@ private fun SettingsScreen(
     var showRadioOptions by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
     var showDiagnosticOptions by remember { mutableStateOf(false) }
+    var pendingDiagnosticLogMaxKb by remember(diagnosticLogMaxKb) { mutableStateOf(diagnosticLogMaxKb.toFloat()) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
 
     Column(
@@ -2633,8 +2635,16 @@ private fun SettingsScreen(
                     )
                     Text("Максимальный размер: $diagnosticLogMaxKb КБ", style = MaterialTheme.typography.titleSmall)
                     Slider(
-                        value = diagnosticLogMaxKb.toFloat(),
-                        onValueChange = { onDiagnosticLogMaxKb(it.roundToInt()) },
+                        value = pendingDiagnosticLogMaxKb,
+                        onValueChange = { pendingDiagnosticLogMaxKb = it },
+                        onValueChangeFinished = {
+                            val requested = pendingDiagnosticLogMaxKb.roundToInt()
+                            val normalized = (((requested + 32) / 64) * 64).coerceIn(
+                                DiagnosticLogStore.MIN_MAX_KB, DiagnosticLogStore.MAX_MAX_KB
+                            )
+                            pendingDiagnosticLogMaxKb = normalized.toFloat()
+                            if (normalized != diagnosticLogMaxKb) onDiagnosticLogMaxKb(normalized)
+                        },
                         valueRange = DiagnosticLogStore.MIN_MAX_KB.toFloat()..DiagnosticLogStore.MAX_MAX_KB.toFloat(),
                         steps = 6,
                         modifier = Modifier.fillMaxWidth()
