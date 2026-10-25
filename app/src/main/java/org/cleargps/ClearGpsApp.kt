@@ -119,7 +119,6 @@ import org.cleargps.core.FilterState
 import org.cleargps.core.SavedRiskZone
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneGeometry
-import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.ZoneStore
 import org.maplibre.android.maps.MapView
 import java.text.DateFormat
@@ -266,8 +265,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     manualAnchor
                 )
                 val observedPosition = when {
-                    liveLocation != null && System.currentTimeMillis() - liveLocation!!.time in 0..30_000L &&
-                        !LocationFilterEngine.isMockLocation(liveLocation!!) ->
+                    liveLocation != null && System.currentTimeMillis() - liveLocation!!.time in 0..30_000L ->
                         ZonePoint(liveLocation!!.latitude, liveLocation!!.longitude)
                     positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null &&
                         System.currentTimeMillis() - currentRadioEstimate!!.updatedAt in 0..30L * 60L * 1_000L ->
