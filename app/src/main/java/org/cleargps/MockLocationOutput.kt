@@ -16,8 +16,9 @@ class MockLocationOutput(context: Context) {
             manager.addTestProvider(LocationManager.GPS_PROVIDER,
                 false, false, false, false, true, true, true,
                 Criteria.POWER_HIGH, Criteria.ACCURACY_FINE)
-            manager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            // Mark registered immediately so a failure enabling the provider can clean it up.
             registered = true
+            manager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
         }
         val out = Location(LocationManager.GPS_PROVIDER).apply {
             latitude = source.latitude
@@ -32,10 +33,13 @@ class MockLocationOutput(context: Context) {
         manager.setTestProviderLocation(LocationManager.GPS_PROVIDER, out)
         true
     } catch (_: SecurityException) {
+        disable()
         false
     } catch (_: IllegalArgumentException) {
+        disable()
         false
     } catch (_: RuntimeException) {
+        disable()
         false
     }
 
