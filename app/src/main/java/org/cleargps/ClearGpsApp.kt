@@ -824,8 +824,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 recordedCount = prefs.getInt(ClearGpsPreferences.KEY_LAST_RECORDED_COUNT, 0)
                 lastScanAt = storedScanAt
                 scanMessage = prefs.getString(ClearGpsPreferences.KEY_LAST_SCAN_MESSAGE, scanMessage) ?: scanMessage
+                val retainedEstimateStillCredible = positionMode.usesRadio && currentRadioEstimate?.let {
+                    RadioFixReliability.canRetainLastEstimate(
+                        it.updatedAt, System.currentTimeMillis(), it.matchedCount, it.accuracyMeters
+                    )
+                } == true
                 lookupPhase = when {
                     prefs.getBoolean(ClearGpsPreferences.KEY_LAST_SCAN_HAS_ESTIMATE, false) -> LookupPhase.UPDATED
+                    retainedEstimateStillCredible -> LookupPhase.STALE
                     wifiCount + cellCount + bleCount == 0 -> LookupPhase.ERROR
                     else -> LookupPhase.NO_MATCH
                 }
