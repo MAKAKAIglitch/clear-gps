@@ -200,6 +200,8 @@ object ClearGpsPreferences {
     const val KEY_USE_CELLS = "radio_use_cells"
     const val KEY_USE_BLE = "radio_use_ble"
     const val KEY_MAP_STYLE = "map_style"
+    const val KEY_DATABASE_VIEW_SOURCE = "database_view_source"
+    const val KEY_BEACONDB_LOOKUP_ENABLED = "beacondb_cell_lookup_enabled"
 }
 
 object ManualLocationStore {

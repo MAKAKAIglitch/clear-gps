@@ -146,6 +146,10 @@ import kotlin.math.roundToInt
 
 private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY }
+private enum class DatabaseDataSource(val key: String, val title: String) {
+    LOCAL("local", "Локальная"),
+    BEACONDB("beacondb", "BeaconDB · вышки")
+}
 private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     ALL("Все", null),
     WIFI("Wi‑Fi", "wifi"),
@@ -271,6 +275,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
+    var databaseDataSource by remember {
+        mutableStateOf(
+            DatabaseDataSource.values().firstOrNull {
+                it.key == prefs.getString(ClearGpsPreferences.KEY_DATABASE_VIEW_SOURCE, "local")
+            } ?: DatabaseDataSource.LOCAL
+        )
+    }
 
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
     var useCells by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true)) }
@@ -291,6 +302,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var bleCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_BLE_COUNT, 0)) }
     var lastScanAt by remember { mutableStateOf(prefs.getLong(ClearGpsPreferences.KEY_LAST_SCAN_AT, 0L)) }
     var recordedCount by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_LAST_RECORDED_COUNT, 0)) }
+    var beaconDbEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false))
+    }
+    var beaconDbLoading by remember { mutableStateOf(false) }
+    var beaconDbLookupResult by remember { mutableStateOf<BeaconDbLookupResult?>(null) }
+    var beaconDbMessage by remember {
+        mutableStateOf("BeaconDB отключён. Включи разрешение в настройках, если захочешь выполнить ручной запрос.")
+    }
+    var beaconDbLookupJob by remember { mutableStateOf<Job?>(null) }
+    var beaconDbRequestToken by remember { mutableStateOf(0) }
     var monitorEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
     var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
@@ -630,6 +651,42 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 launchRadioScan(recordNow)
             }
         }
+    }
+
+    fun startBeaconDbLookup() {
+        if (!beaconDbEnabled) {
+            beaconDbMessage = "BeaconDB отключён в настройках. Сетевого запроса не было."
+            return
+        }
+        if (beaconDbLoading || beaconDbLookupJob?.isActive == true) return
+
+        val requestToken = beaconDbRequestToken + 1
+        beaconDbRequestToken = requestToken
+        beaconDbLoading = true
+        beaconDbMessage = "Читаю только текущие сотовые ячейки; запрос ещё не отправлен…"
+        val queryJob = scope.launch {
+            try {
+                val result = repository.lookupBeaconDbCellsOnly()
+                if (requestToken == beaconDbRequestToken && beaconDbEnabled) {
+                    beaconDbLookupResult = result
+                    beaconDbMessage = result.message
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (requestToken == beaconDbRequestToken && beaconDbEnabled) {
+                    beaconDbMessage = "Ошибка BeaconDB: " + error.javaClass.simpleName +
+                        ". Локальная база не изменена."
+                    beaconDbLookupResult = null
+                }
+            } finally {
+                if (requestToken == beaconDbRequestToken) {
+                    beaconDbLoading = false
+                    beaconDbLookupJob = null
+                }
+            }
+        }
+        beaconDbLookupJob = queryJob
     }
 
     val exportCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
@@ -1348,7 +1405,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onImport = { importLauncher.launch(arrayOf("*/*")) },
                                     onExport = { showExportOptions = true },
                                     onClear = { showDeleteAllDialog = true },
-                                    onRefresh = { refreshLocalUi() }
+                                    onRefresh = { refreshLocalUi() },
+                                    dataSource = databaseDataSource,
+                                    beaconDbEnabled = beaconDbEnabled,
+                                    beaconDbLoading = beaconDbLoading,
+                                    beaconDbResult = beaconDbLookupResult,
+                                    beaconDbMessage = beaconDbMessage,
+                                    onDataSource = { source ->
+                                        databaseDataSource = source
+                                        prefs.edit().putString(ClearGpsPreferences.KEY_DATABASE_VIEW_SOURCE, source.key).apply()
+                                        if (source == DatabaseDataSource.LOCAL && beaconDbLookupJob?.isActive == true) {
+                                            beaconDbRequestToken += 1
+                                            beaconDbLookupJob?.cancel()
+                                            beaconDbLookupJob = null
+                                            beaconDbLoading = false
+                                            beaconDbMessage = "Запрос BeaconDB отменён при возврате к локальной базе."
+                                        }
+                                    },
+                                    onBeaconDbLookup = { startBeaconDbLookup() },
+                                    onOpenBeaconDbSettings = { navigateToTab(AppTab.SETTINGS) }
                                 )
                                 AppTab.ZONES -> ZonesScreen(
                                     zones = zones, draftZone = draftZone, mapTapMode = mapTapMode,
@@ -1448,6 +1523,21 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
                                     detailedLogging = detailedLogging,
                                     diagnosticLogMaxKb = diagnosticLogMaxKb,
+                                    beaconDbEnabled = beaconDbEnabled,
+                                    onBeaconDbEnabled = { enabled ->
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, enabled).apply()
+                                        beaconDbEnabled = enabled
+                                        beaconDbRequestToken += 1
+                                        beaconDbLookupJob?.cancel()
+                                        beaconDbLookupJob = null
+                                        beaconDbLoading = false
+                                        beaconDbLookupResult = null
+                                        beaconDbMessage = if (enabled) {
+                                            "Разрешено. Запросы выполняются только вручную из вкладки «База»."
+                                        } else {
+                                            "BeaconDB выключён. Новые запросы не отправляются; результат очищен с экрана."
+                                        }
+                                    },
                                     onDetailedLogging = { enabled ->
                                         DiagnosticLogStore.setEnabled(context, enabled)
                                         detailedLogging = enabled
@@ -2138,7 +2228,7 @@ private fun MapHomeScreen(
                     }
                 }
                 Text(
-                    "Радиоидентификаторы остаются на устройстве и не отправляются в BeaconDB или API WiGLE. Онлайн-карта OpenFreeMap видит сетевые метаданные обычных запросов тайлов.",
+                    "Радиоидентификаторы остаются на устройстве, кроме явно разрешённого ручного BeaconDB-запроса, который отправляет только ID сотовых ячеек и уровень сигнала. API WiGLE не вызывается. Онлайн-карта OpenFreeMap видит сетевые метаданные обычных запросов тайлов.",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant
                 )
@@ -2153,11 +2243,38 @@ private fun DatabaseScreen(
     searchQuery: String, onSearch: (String) -> Unit,
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
-    onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit
+    onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
+    dataSource: DatabaseDataSource, beaconDbEnabled: Boolean, beaconDbLoading: Boolean,
+    beaconDbResult: BeaconDbLookupResult?, beaconDbMessage: String,
+    onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit, onOpenBeaconDbSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            DatabaseDataSource.values().forEach { source ->
+                val selected = dataSource == source
+                AssistChip(
+                    onClick = { onDataSource(source) },
+                    label = { Text(source.title) },
+                    leadingIcon = {
+                        Icon(
+                            if (source == DatabaseDataSource.LOCAL) Icons.Outlined.Storage
+                            else Icons.Outlined.SignalCellularAlt,
+                            contentDescription = null
+                        )
+                    },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                        containerColor = if (selected) colors.secondaryContainer else colors.surfaceVariant,
+                        labelColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+                    )
+                )
+            }
+        }
+        if (dataSource == DatabaseDataSource.LOCAL) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Локальная база", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -2233,6 +2350,148 @@ private fun DatabaseScreen(
                             } else Text("Координаты не рассчитаны", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                         }
                     }
+                }
+            }
+        }
+        } else {
+            BeaconDbDatabaseContent(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                enabled = beaconDbEnabled,
+                loading = beaconDbLoading,
+                result = beaconDbResult,
+                message = beaconDbMessage,
+                onLookup = onBeaconDbLookup,
+                onOpenSettings = onOpenBeaconDbSettings
+            )
+        }
+    }
+}
+
+@Composable
+private fun BeaconDbDatabaseContent(
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    loading: Boolean,
+    result: BeaconDbLookupResult?,
+    message: String,
+    onLookup: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("BeaconDB · только сотовые вышки", fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Это не полный каталог всех вышек. Публичного дампа BeaconDB сейчас нет; её API возвращает оценку местоположения по текущим сотовым ячейкам. Данные не импортируются в локальную SQLite-базу.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+            }
+        }
+        if (!enabled) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Сетевые запросы выключены", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Пока выключено, Clear GPS ничего не отправляет в BeaconDB. Чтобы выполнить поиск, сначала явно разреши cell-only запросы в настройках.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)) {
+                        Icon(Icons.Outlined.Settings, null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("Настройки BeaconDB")
+                    }
+                }
+            }
+        } else {
+            FilledTonalButton(
+                onClick = onLookup,
+                enabled = !loading,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Outlined.Refresh, null)
+                Spacer(Modifier.width(7.dp))
+                Text(if (loading) "Запрашиваю BeaconDB…" else "Получить оценку по текущим сотам")
+            }
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant
+            )
+            if (result != null) {
+                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(
+                            if (result.success) "Оценка BeaconDB" else "Результат запроса",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        val coordinate = result.coordinate
+                        if (coordinate != null) {
+                            Text(
+                                String.format(Locale.US, "%.6f, %.6f", coordinate.latitude, coordinate.longitude),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                "Ориентировочная погрешность: ±" + coordinate.accuracyMeters.toInt() + " м",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        } else {
+                            Text("Координаты не получены.", style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant)
+                        }
+                        Text(
+                            "Сотовых ячеек в запросе: " + result.cells.size +
+                                if (result.unsupportedCellCount > 0) " · неподдерживаемых пропущено: " +
+                                    result.unsupportedCellCount else "",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.onSurfaceVariant
+                        )
+                        if (result.queriedAtMillis > 0L) {
+                            Text("Время запроса: " + dateTime(result.queriedAtMillis),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant)
+                        }
+                    }
+                }
+                if (result.cells.isNotEmpty()) {
+                    Text("Сотовые ячейки, включённые в этот запрос",
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("Это список сигналов, полученных от Android, а не выгрузка записей BeaconDB.",
+                        style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(result.cells, key = { it.identifier }) { cell ->
+                            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp),
+                                color = colors.surfaceContainerHigh) {
+                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Outlined.SignalCellularAlt, null, tint = colors.primary)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(cell.radioType.uppercase() + " · " + cell.mobileCountryCode +
+                                            "/" + cell.mobileNetworkCode, fontWeight = FontWeight.SemiBold)
+                                        Text("Зона " + cell.locationAreaCode + " · ID соты " + cell.cellId,
+                                            style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text(cell.signalStrength.toString() + " dBm",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colors.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.height(1.dp))
                 }
             }
         }
@@ -2580,6 +2839,7 @@ private fun SettingsScreen(
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
     detailedLogging: Boolean, diagnosticLogMaxKb: Int,
+    beaconDbEnabled: Boolean, onBeaconDbEnabled: (Boolean) -> Unit,
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
     onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean,
@@ -2604,6 +2864,22 @@ private fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                SettingSwitch(
+                    "Разрешить запросы к BeaconDB",
+                    "По умолчанию выключено. При включении и ручном поиске передаются только ID текущих поддерживаемых сотовых ячеек и уровни сигнала. IP-адрес виден серверу; Wi-Fi, Bluetooth и GPS-координаты в запрос не входят. Отправка вкладов/наблюдений не используется.",
+                    beaconDbEnabled,
+                    onBeaconDbEnabled
+                )
+                Text(
+                    "Включение не запускает запросы автоматически. BeaconDB вызывается только кнопкой во вкладке «База».",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
+            }
+        }
 
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -2761,7 +3037,11 @@ private fun SettingsScreen(
                     Divider(color = colors.outlineVariant)
                     Text("Приватность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Радиопозиционирование выполняется локально. BeaconDB и API WiGLE не вызываются; WiGLE используется только для ручного импорта/экспорта файлов. Радиоидентификаторы хранятся на устройстве.",
+                        if (beaconDbEnabled) {
+                            "BeaconDB разрешён только для ручных cell-only запросов из вкладки «База»: сервер получает ID текущих сотовых ячеек и уровни сигнала, а также видит IP-адрес. Wi-Fi, Bluetooth, GPS-координаты и вклад в базу не отправляются. API WiGLE не вызывается."
+                        } else {
+                            "Запросы BeaconDB выключены. Радиоидентификаторы остаются на устройстве; API WiGLE не вызывается. При включении BeaconDB доступны только ручные запросы по сотовым ячейкам, без загрузки наблюдений."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )

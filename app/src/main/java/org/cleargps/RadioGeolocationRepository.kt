@@ -186,6 +186,59 @@ class RadioGeolocationRepository(private val context: Context) {
         )
     }
 
+    /**
+     * Requests one cell-only estimate from BeaconDB. The preference is checked here as well as
+     * in the UI so no caller can accidentally contact the service when permission is off.
+     * This path reads Android's current cellular snapshot only; it does not use or modify
+     * LocalRadioDatabase and never submits contribution records.
+     */
+    suspend fun lookupBeaconDbCellsOnly(): BeaconDbLookupResult {
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false)) {
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                message = "Запросы BeaconDB выключены в настройках. Сетевого обращения не было."
+            )
+        }
+
+        val fineLocationGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!fineLocationGranted) {
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                message = "Для чтения сотовых ячеек нужно разрешение точной геолокации Android. Запрос не отправлялся."
+            )
+        }
+
+        val signals = withContext(Dispatchers.Main.immediate) { collectCells().signals }
+        val parsedCells = signals.mapNotNull { signal -> BeaconDbProtocol.cellFromSignal(signal) }
+            .distinctBy { it.identifier }
+        val unsupportedCount = (signals.size - parsedCells.size).coerceAtLeast(0)
+
+        // Recheck immediately before networking in case the user disabled BeaconDB while
+        // Android's telephony snapshot was being collected.
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false)) {
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                unsupportedCellCount = unsupportedCount,
+                message = "Запросы BeaconDB были выключены до отправки. Сетевого обращения не было."
+            )
+        }
+        if (parsedCells.isEmpty()) {
+            val detail = if (unsupportedCount > 0) {
+                " Android сообщил только неподдерживаемые типы ячеек; сетевой запрос не выполнялся."
+            } else {
+                " Android не предоставил актуальных сотовых ячеек; сетевой запрос не выполнялся."
+            }
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                unsupportedCellCount = unsupportedCount,
+                message = "Нет подходящих данных сотовой сети." + detail
+            )
+        }
+
+        return BeaconDbClient.lookup(parsedCells, unsupportedCount)
+    }
+
     private suspend fun collectSnapshot(
         useWifi: Boolean,
         useCells: Boolean,
