@@ -45,6 +45,9 @@ class LocationMonitorService : Service(), LocationListener {
     private var obd2FallbackJob: Job? = null
     private var lastTrustedGpsFixForObd2: Location? = null
     private var obd2FallbackPublished = false
+    private var lastRadioMockFix: Location? = null
+    private var lastRadioMockFixAtElapsedMs = 0L
+    private var activePositionMode: String? = null
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
 
@@ -270,12 +273,29 @@ class LocationMonitorService : Service(), LocationListener {
             obd2FallbackJob?.cancel()
             obd2FallbackJob = null
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
-            // Restore the physical GPS provider before subscribing again. This matters when
-            // switching from radio mock output to a GPS-backed source or applying new settings.
-            mock?.disable()
+
+            val nextPositionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+            val modeChanged = activePositionMode != nextPositionMode
+            // Don't unregister a working mock provider every time the user changes the refresh
+            // interval. Unregister only for a real source change or when mock output was turned off.
+            if (modeChanged || !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
+                mock?.disable()
+                lastRadioMockFix = null
+                lastRadioMockFixAtElapsedMs = 0L
+            }
+            if (modeChanged) {
+                prefs.edit()
+                    .putBoolean(KEY_HAS_OUTPUT, false)
+                    .putString(KEY_SOURCE, "NONE")
+                    .remove(KEY_LAT)
+                    .remove(KEY_LON)
+                    .remove(KEY_ACCURACY)
+                    .apply()
+            }
+            activePositionMode = nextPositionMode
             lastTrustedGpsFixForObd2 = null
 
-            when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
+            when (nextPositionMode) {
                 "radio", "radio_obd2" -> {
                     // Radio-based modes never request Android GPS for their coordinates.
                     prefs.edit()
@@ -456,6 +476,15 @@ class LocationMonitorService : Service(), LocationListener {
                         val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                         val mockPublished = !mockRequested || mock?.publish(output) == true
                         if (mockPublished) {
+                            if (mockRequested) {
+                                // Track only a genuinely confirmed radio estimate; held/stale
+                                // updates must never extend this grace period.
+                                lastRadioMockFix = Location(output)
+                                lastRadioMockFixAtElapsedMs = SystemClock.elapsedRealtime()
+                            } else {
+                                lastRadioMockFix = null
+                                lastRadioMockFixAtElapsedMs = 0L
+                            }
                             prefs.edit().putString(KEY_STATE, FilterState.CORRECTING.name)
                                 .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "").putString(KEY_SOURCE, "LOCAL_RADIO")
                                 .putBoolean(KEY_HAS_OUTPUT, true).putString(KEY_LAT, output.latitude.toString())
@@ -465,23 +494,74 @@ class LocationMonitorService : Service(), LocationListener {
                                     estimate.matchedCount + " local matches · ±" + estimate.accuracyMeters.toInt() + " m"
                             )
                         } else {
+                            lastRadioMockFix = null
+                            lastRadioMockFixAtElapsedMs = 0L
+                            mock?.disable()
                             // Keep the map's estimate separate from the system mock-provider state.
                             prefs.edit().putBoolean(KEY_HAS_OUTPUT, false).putString(KEY_SOURCE, "NONE")
                                 .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).apply()
                             saveServiceStatus("Radio match found, but mock GPS was not published; choose Clear GPS in Developer options")
                         }
                     } else {
-                        if (prefs.getBoolean(KEY_MOCK_ENABLED, false)) mock?.disable()
-                        prefs.edit()
-                            .putBoolean(KEY_HAS_OUTPUT, false)
-                            .putString(KEY_SOURCE, "NONE")
-                            .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
-                            .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
-                            // Keep the last successful estimate as a short-lived display/cache
-                            // value. It is not published as a fresh mock fix after this miss;
-                            // the UI expires it by timestamp and the fallback has its own age cap.
-                            .apply()
-                        saveServiceStatus("Radio-only · no reliable local match yet")
+                        val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                        val nowElapsedMs = SystemClock.elapsedRealtime()
+                        val confirmed = lastRadioMockFix
+                        val confirmedAt = lastRadioMockFixAtElapsedMs
+                        val ageMs = if (confirmedAt > 0L && nowElapsedMs >= confirmedAt) nowElapsedMs - confirmedAt else Long.MAX_VALUE
+                        val intervalMs = configuredUpdateIntervalMillis()
+                        val canHold = mockRequested && confirmed != null &&
+                            RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
+                        if (canHold && confirmed != null) {
+                            // A single missed/throttled radio scan must not unregister GPS.
+                            // Briefly hold the last confirmed position with a growing accuracy
+                            // radius, but never extend the hold based on another failed scan.
+                            val held = Location(confirmed).apply {
+                                accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
+                                time = System.currentTimeMillis()
+                                elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                            }
+                            if (mock?.publish(held) == true) {
+                                prefs.edit()
+                                    .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
+                                    .putString(KEY_STATE, FilterState.CORRECTING.name)
+                                    .putInt(KEY_SCORE, 0)
+                                    .putString(KEY_REASONS, "Временный пропуск радиосканирования; точность последней позиции снижена.")
+                                    .putBoolean(KEY_HAS_OUTPUT, true)
+                                    .putString(KEY_LAT, held.latitude.toString())
+                                    .putString(KEY_LON, held.longitude.toString())
+                                    .putFloat(KEY_ACCURACY, held.accuracy)
+                                    .apply()
+                                saveServiceStatus(
+                                    "Radio scan missed · holding last mock GPS fix for " +
+                                        (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m"
+                                )
+                            } else {
+                                lastRadioMockFix = null
+                                lastRadioMockFixAtElapsedMs = 0L
+                                mock?.disable()
+                                prefs.edit()
+                                    .putBoolean(KEY_HAS_OUTPUT, false)
+                                    .putString(KEY_SOURCE, "NONE")
+                                    .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
+                                    .apply()
+                                saveServiceStatus("Mock GPS unavailable; choose Clear GPS in Developer options")
+                            }
+                        } else {
+                            // A previous position is retained for at most a bounded grace
+                            // period. When it expires, remove the provider rather than silently
+                            // presenting an old coordinate as current forever.
+                            if (mockRequested) mock?.disable()
+                            lastRadioMockFix = null
+                            lastRadioMockFixAtElapsedMs = 0L
+                            prefs.edit()
+                                .putBoolean(KEY_HAS_OUTPUT, false)
+                                .putString(KEY_SOURCE, "NONE")
+                                .putString(KEY_STATE, FilterState.NO_FALLBACK.name)
+                                .putInt(KEY_SCORE, 0).putString(KEY_REASONS, "")
+                                .remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
+                                .apply()
+                            saveServiceStatus("Radio-only · no reliable local match yet")
+                        }
                     }
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
                         notification(prefs.getString(KEY_SERVICE_STATUS, "Radio-only") ?: "Radio-only"))
@@ -512,6 +592,9 @@ class LocationMonitorService : Service(), LocationListener {
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         mock?.disable()
+        lastRadioMockFix = null
+        lastRadioMockFixAtElapsedMs = 0L
+        activePositionMode = null
     }
 
     private fun createLastResortFallback(decision: FilterDecision): LastResortFallback? {
