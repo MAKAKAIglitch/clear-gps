@@ -69,9 +69,13 @@ class GnssSpoofingDetector {
         if (snapshot.elapsedRealtimeNanos <= 0L) return
         val old = currentSignal
         if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
+        val intervalSeconds = old?.let {
+            (snapshot.elapsedRealtimeNanos - it.elapsedRealtimeNanos) / 1_000_000_000.0
+        }
+        val hasContinuousPreviousSample = intervalSeconds?.let { it in 0.2..12.0 } == true
         if (old != null) {
-            val interval = (snapshot.elapsedRealtimeNanos - old.elapsedRealtimeNanos) / 1_000_000_000.0
-            if (interval in 0.2..12.0) {
+            val interval = intervalSeconds ?: Double.NaN
+            if (hasContinuousPreviousSample) {
                 val oldMean = old.meanCn0DbHz
                 val newMean = snapshot.meanCn0DbHz
                 if (old.satellitesVisible >= 4 && snapshot.satellitesVisible >= 4 &&
@@ -100,7 +104,13 @@ class GnssSpoofingDetector {
                 snapshot.meanCn0DbHz?.let { it.isFinite() && it >= 32.0 } == true &&
                 snapshot.satellitesUsedInFix <= max(2, snapshot.strongSignalCount / 4)
         if (underusedStrongSignals) {
-            underusedStrongSignalStreak++
+            // A delayed callback or a long GNSS outage breaks the evidence streak.
+            // Sparse snapshots must not be treated as consecutive receiver behaviour.
+            underusedStrongSignalStreak = if (hasContinuousPreviousSample) {
+                underusedStrongSignalStreak + 1
+            } else {
+                1
+            }
             if (underusedStrongSignalStreak >= 2) {
                 latchSignalAlert(
                     snapshot.elapsedRealtimeNanos,

@@ -133,6 +133,33 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.any { it.contains("не используются для фикса", ignoreCase = true) })
     }
 
+
+    @Test fun underusedStrongSignalsAcrossLongGapDoNotAccumulate() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 10, 8, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 10, 1, 38.1, 5.0, 3, strongSignalCount = 8)
+        )
+
+        // The next suspicious snapshot comes 28 seconds later, outside the continuity window.
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(30_100_000_000L, 10, 1, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        val afterGap = detector.assessSignalOnly(30_200_000_000L)
+        assertEquals(0, afterGap.score)
+        assertFalse(afterGap.confirmed)
+
+        // Two genuinely consecutive suspicious snapshots can still raise a warning.
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(31_100_000_000L, 10, 1, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        val afterConsecutiveEvidence = detector.assessSignalOnly(31_200_000_000L)
+        assertTrue(afterConsecutiveEvidence.score >= 30)
+        assertFalse(afterConsecutiveEvidence.confirmed)
+    }
+
     @Test fun repeatedOppositeCn0AndAgcShiftsAreSupportingEvidenceOnly() {
         val detector = GnssSpoofingDetector()
         detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10))
