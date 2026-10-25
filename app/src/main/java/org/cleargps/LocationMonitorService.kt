@@ -42,6 +42,9 @@ class LocationMonitorService : Service(), LocationListener {
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
+    private var obd2FallbackJob: Job? = null
+    private var lastTrustedGpsFixForObd2: Location? = null
+    private var obd2FallbackPublished = false
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
 
@@ -250,6 +253,10 @@ class LocationMonitorService : Service(), LocationListener {
             unregisterGnssStatus()
             radioOnlyJob?.cancel()
             radioOnlyJob = null
+            obd2FallbackJob?.cancel()
+            obd2FallbackJob = null
+            if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
+            lastTrustedGpsFixForObd2 = null
 
             when (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")) {
                 "radio", "radio_obd2" -> {
@@ -275,6 +282,9 @@ class LocationMonitorService : Service(), LocationListener {
                     if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
                         manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, this)
                         registerGnssStatus()
+                    }
+                    if (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "gps_obd2") {
+                        startObd2FallbackLoop()
                     }
                 }
                 else -> {
@@ -366,6 +376,10 @@ class LocationMonitorService : Service(), LocationListener {
     private fun stopTracking() {
         radioOnlyJob?.cancel()
         radioOnlyJob = null
+        obd2FallbackJob?.cancel()
+        obd2FallbackJob = null
+        if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback stopped with location monitoring")
+        lastTrustedGpsFixForObd2 = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         mock?.disable()
@@ -418,6 +432,11 @@ class LocationMonitorService : Service(), LocationListener {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
         } else observedDecision
         persistDecision(result)
+        if (gpsFix && result.state == FilterState.NORMAL && result.source == "GPS" && !inZone) {
+            lastTrustedGpsFixForObd2 = Location(location)
+            // A fresh physical GPS fix supersedes the synthetic prediction.
+            obd2FallbackPublished = false
+        }
 
         when (fallback?.source) {
             "LOCAL_RADIO" -> saveServiceStatus("Local radio fallback active · about ±" + fallback.location.accuracy.toInt() + " m")
