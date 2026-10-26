@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 
 @Composable
 internal fun Obd2Screen(
@@ -42,6 +43,7 @@ internal fun Obd2Screen(
     connected: Boolean,
     connecting: Boolean,
     telemetry: Obd2Telemetry,
+    calibration: Obd2SpeedCalibrationSnapshot,
     status: String,
     statusIsError: Boolean,
     onRefresh: () -> Unit,
@@ -268,6 +270,51 @@ internal fun Obd2Screen(
                     unit = "кПа",
                     modifier = Modifier.fillMaxWidth()
                 )
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = colors.surfaceContainer
+                ) {
+                    Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Сверка скорости GNSS ↔ OBD-II", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when (calibration.status) {
+                                Obd2CalibrationStatus.WAITING_FOR_DATA -> "Жду свежую пару скоростей с проверяемыми метками времени."
+                                Obd2CalibrationStatus.WAITING_FOR_TRUSTED_GNSS -> "Обучение разрешено только при состоянии доверия NORMAL; сейчас коэффициент не меняется."
+                                Obd2CalibrationStatus.WAITING_FOR_PHYSICAL_GNSS -> "Нужен физический GPS-фикс. Сетевые и mock-координаты не используются."
+                                Obd2CalibrationStatus.LOW_GNSS_QUALITY -> "Качества GPS недостаточно: точность должна быть до 20 м, а скорость — пригодна для сравнения."
+                                Obd2CalibrationStatus.TIME_MISMATCH -> "Измерения устарели или слишком далеко по времени; пара исключена."
+                                Obd2CalibrationStatus.OBD_QUERY_TOO_SLOW -> "Ответ OBD пришёл слишком медленно; пара исключена из калибровки."
+                                Obd2CalibrationStatus.WAITING_FOR_MOVEMENT -> "Нужны согласованные скорости в движении примерно от 8 до 160 км/ч."
+                                Obd2CalibrationStatus.COLLECTING -> "Набираю выборку. До завершения коэффициент только предлагается и не применяется."
+                                Obd2CalibrationStatus.SPEEDS_DIVERGE -> "Скорости заметно расходятся: эта пара не обучает коэффициент. Само расхождение не доказывает спуфинг."
+                                Obd2CalibrationStatus.CALIBRATED -> "Поправка проверена на повторяющихся согласованных измерениях и действует только в текущем соединении."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                        Text(
+                            "Принятых пар в окне: ${calibration.acceptedPairs} из ${Obd2SpeedCalibration.MAX_SAMPLE_WINDOW}. " +
+                                "Для включения нужно минимум ${Obd2SpeedCalibration.MIN_CALIBRATION_SAMPLES} пар, 30 секунд и диапазон скоростей.",
+                            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+                        )
+                        calibration.differenceKmh?.let { difference ->
+                            Text("GNSS − OBD: " + String.format(Locale.ROOT, "%+.1f км/ч", difference), style = MaterialTheme.typography.labelMedium)
+                        }
+                        calibration.candidateScale?.takeIf { calibration.activeCorrectionScale == null }?.let { scale ->
+                            Text(
+                                "Предварительный коэффициент: " + String.format(Locale.ROOT, "×%.3f", scale) + " · пока не применяется",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        calibration.activeCorrectionScale?.let { scale ->
+                            Text(
+                                "Поправка для счисления пути: " + String.format(Locale.ROOT, "×%.3f", scale) + " · только текущий сеанс",
+                                style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary
+                            )
+                        }
+                    }
+                }
                 val unavailablePids = telemetry.pidIssues.filterValues {
                     it == Obd2PidIssue.NO_VALID_RESPONSE
                 }.keys

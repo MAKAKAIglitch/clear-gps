@@ -243,6 +243,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     var liveLocation by remember { mutableStateOf<Location?>(null) }
+    // Physical GPS data is kept separate so network/passive/mock fixes cannot train calibration.
+    var liveGnssLocation by remember { mutableStateOf<Location?>(null) }
     var currentRadioEstimate by remember { mutableStateOf<RadioEstimate?>(null) }
     // Mirror the exact coordinate/accuracy last accepted by the foreground service so the
     // in-app map follows the same fix sent to Android's mock provider.
@@ -263,6 +265,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var obd2Connected by remember { mutableStateOf(false) }
     var obd2Connecting by remember { mutableStateOf(false) }
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
+    val obd2SpeedCalibration = remember { Obd2SpeedCalibration() }
+    var obd2CalibrationSnapshot by remember { mutableStateOf(Obd2SpeedCalibrationSnapshot()) }
     var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -460,7 +464,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         publishedMockCoordinate = null
         publishedMockAccuracy = null
         pendingRadioMapFocus = mode.usesRadio
-        if (mode.usesRadio || mode.gpsOnly) liveLocation = null
+        if (mode.usesRadio || mode.gpsOnly) {
+            liveLocation = null
+            liveGnssLocation = null
+        }
         if (monitorEnabled) {
             val intent = Intent(context, LocationMonitorService::class.java)
                 .setAction(LocationMonitorService.ACTION_START)
@@ -1098,6 +1105,40 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     LaunchedEffect(obd2Connected) {
+        if (!obd2Connected) {
+            obd2SpeedCalibration.reset()
+            obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
+            Obd2SharedState.setSpeedCorrectionScale(prefs, null)
+        }
+    }
+
+    LaunchedEffect(obd2Connected, obd2Telemetry, liveGnssLocation, filterState) {
+        if (!obd2Connected) return@LaunchedEffect
+        val gps = liveGnssLocation
+        val speedAccuracy = if (
+            gps != null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            gps.hasSpeedAccuracy()
+        ) gps.speedAccuracyMetersPerSecond.toDouble() else null
+        obd2CalibrationSnapshot = obd2SpeedCalibration.observe(
+            gnssSpeedKmh = gps?.takeIf { it.hasSpeed() }?.speed?.toDouble()?.times(3.6),
+            gnssAccuracyMeters = gps?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
+            gnssSpeedAccuracyMetersPerSecond = speedAccuracy,
+            gnssElapsedRealtimeNanos = gps?.elapsedRealtimeNanos ?: 0L,
+            gnssProvider = gps?.provider,
+            gnssIsMock = gps == null || isMockLocation(gps),
+            gnssTrustedNormal = filterState == FilterState.NORMAL.name,
+            obdSpeedKmh = obd2Telemetry.vehicleSpeedKmh,
+            obdSampleElapsedRealtimeNanos = obd2Telemetry.speedSampleElapsedRealtimeNanos,
+            obdQueryDurationMillis = obd2Telemetry.speedQueryDurationMillis,
+            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        )
+        obd2CalibrationSnapshot.activeCorrectionScale?.let { scale ->
+            Obd2SharedState.setSpeedCorrectionScale(prefs, scale)
+        }
+    }
+
+    LaunchedEffect(obd2Connected) {
         if (obd2Connected) {
             while (true) {
                 try {
@@ -1161,7 +1202,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     LaunchedEffect(positionMode, hasAnyLocationPermission(context)) {
-        if (positionMode.usesRadio || positionMode.gpsOnly) liveLocation = null
+        if (positionMode.usesRadio || positionMode.gpsOnly) {
+            liveLocation = null
+            liveGnssLocation = null
+        }
         if (positionMode.gpsOnly) {
             // Migrate older persisted settings: GPS-only mode must not keep a hidden
             // radio-recording switch armed for when the user later changes modes.
@@ -1189,6 +1233,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 override fun onLocationChanged(location: Location) {
                     if (isMockLocation(location)) return
                     if (positionMode.gpsOnly && !location.provider.equals(LocationManager.GPS_PROVIDER, true)) return
+                    if (location.provider.equals(LocationManager.GPS_PROVIDER, true)) {
+                        val oldGnss = liveGnssLocation
+                        if (oldGnss == null || isBetterLocation(location, oldGnss)) {
+                            liveGnssLocation = Location(location)
+                        }
+                    }
                     val old = liveLocation
                     if (old == null || isBetterLocation(location, old)) liveLocation = Location(location)
                 }
@@ -1199,6 +1249,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 providers.forEach { provider ->
                     try {
                         val cached = manager.getLastKnownLocation(provider)
+                        if (cached != null && !isMockLocation(cached) &&
+                            provider.equals(LocationManager.GPS_PROVIDER, true) &&
+                            (liveGnssLocation == null || isBetterLocation(cached, liveGnssLocation!!))) {
+                            liveGnssLocation = Location(cached)
+                        }
                         if (cached != null && !isMockLocation(cached) &&
                             (!positionMode.gpsOnly || provider == LocationManager.GPS_PROVIDER) &&
                             (liveLocation == null || isBetterLocation(cached, liveLocation!!))) liveLocation = Location(cached)
@@ -1860,6 +1915,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     connected = obd2Connected,
                                     connecting = obd2Connecting,
                                     telemetry = obd2Telemetry,
+                                    calibration = obd2CalibrationSnapshot,
                                     status = obd2Status,
                                     statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },
@@ -1884,6 +1940,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     selectedObd2Address = adapter.address
                                                     prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
                                                     Obd2SharedState.clearSpeed(prefs)
+                                                    obd2SpeedCalibration.reset()
+                                                    obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
                                                     obd2Telemetry = Obd2Telemetry()
                                                     obd2Connected = true
                                                     obd2StatusIsError = false

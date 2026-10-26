@@ -87,7 +87,10 @@ data class Obd2Telemetry(
     val barometricPressureKpa: Int? = null,
     val pidIssues: Map<Int, Obd2PidIssue> = emptyMap(),
     val vehicleVin: String? = null,
-    val vinIssue: Obd2VinIssue? = null
+    val vinIssue: Obd2VinIssue? = null,
+    /** Monotonic midpoint of the PID 0D request/response interval, not an ECU timestamp. */
+    val speedSampleElapsedRealtimeNanos: Long? = null,
+    val speedQueryDurationMillis: Long? = null
 )
 
 internal object Obd2Protocol {
@@ -268,7 +271,9 @@ internal object Obd2Protocol {
         pidIssues: Map<Int, Obd2PidIssue> = emptyMap(),
         now: Long = System.currentTimeMillis(),
         vehicleVin: String? = null,
-        vinIssue: Obd2VinIssue? = null
+        vinIssue: Obd2VinIssue? = null,
+        speedSampleElapsedRealtimeNanos: Long? = null,
+        speedQueryDurationMillis: Long? = null
     ): Obd2Telemetry {
         val values = responses.mapNotNull { (pid, response) ->
             if (pid !in telemetryPids) return@mapNotNull null
@@ -292,7 +297,9 @@ internal object Obd2Protocol {
             barometricPressureKpa = values[0x33],
             pidIssues = pidIssues.toMap(),
             vehicleVin = vehicleVin,
-            vinIssue = vinIssue
+            vinIssue = vinIssue,
+            speedSampleElapsedRealtimeNanos = speedSampleElapsedRealtimeNanos,
+            speedQueryDurationMillis = speedQueryDurationMillis
         )
     }
 

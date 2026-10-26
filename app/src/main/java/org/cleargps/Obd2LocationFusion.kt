@@ -5,6 +5,7 @@ import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.roundToInt
 
 /**
  * Shared, short-lived OBD-II speed sample for the map and foreground location service.
@@ -15,6 +16,7 @@ internal object Obd2SharedState {
     const val KEY_ADAPTER_ADDRESS = "obd2_adapter_address"
     const val KEY_SPEED_KMH = "obd2_vehicle_speed_kmh"
     const val KEY_SPEED_AT = "obd2_vehicle_speed_at"
+    const val KEY_SPEED_CORRECTION_SCALE = "obd2_session_speed_correction_scale"
     const val SPEED_MAX_AGE_MS = 5_000L
     const val MAX_PLAUSIBLE_SPEED_KMH = Obd2Protocol.MAX_PLAUSIBLE_SPEED_KMH
 
@@ -33,7 +35,11 @@ internal object Obd2SharedState {
     }
 
     fun storeTelemetry(prefs: SharedPreferences, telemetry: Obd2Telemetry) {
-        val speed = telemetry.vehicleSpeedKmh
+        val rawSpeed = telemetry.vehicleSpeedKmh?.takeIf { it in 0..MAX_PLAUSIBLE_SPEED_KMH }
+        val scale = prefs.getFloat(KEY_SPEED_CORRECTION_SCALE, 1.0f).toDouble()
+            .takeIf { it.isFinite() && it in Obd2SpeedCalibration.MIN_CORRECTION_SCALE..Obd2SpeedCalibration.MAX_CORRECTION_SCALE }
+            ?: 1.0
+        val speed = rawSpeed?.let { (it * scale).roundToInt() }
             ?.takeIf { it in 0..MAX_PLAUSIBLE_SPEED_KMH }
         prefs.edit()
             .putInt(KEY_SPEED_KMH, speed ?: -1)
@@ -41,8 +47,23 @@ internal object Obd2SharedState {
             .apply()
     }
 
+    /** Session-only service hand-off; never keyed by VIN or saved as a vehicle profile. */
+    fun setSpeedCorrectionScale(prefs: SharedPreferences, scale: Double?) {
+        val validated = scale?.takeIf {
+            it.isFinite() && it in Obd2SpeedCalibration.MIN_CORRECTION_SCALE..Obd2SpeedCalibration.MAX_CORRECTION_SCALE
+        }?.toFloat()
+        val editor = prefs.edit()
+        if (validated == null) editor.remove(KEY_SPEED_CORRECTION_SCALE)
+        else editor.putFloat(KEY_SPEED_CORRECTION_SCALE, validated)
+        editor.apply()
+    }
+
     fun clearSpeed(prefs: SharedPreferences) {
-        prefs.edit().putInt(KEY_SPEED_KMH, -1).putLong(KEY_SPEED_AT, 0L).apply()
+        prefs.edit()
+            .putInt(KEY_SPEED_KMH, -1)
+            .putLong(KEY_SPEED_AT, 0L)
+            .remove(KEY_SPEED_CORRECTION_SCALE)
+            .apply()
     }
 }
 

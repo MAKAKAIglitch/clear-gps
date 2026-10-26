@@ -126,6 +126,8 @@ class Obd2Repository(context: Context) {
                 val knownSupportedPids = current.supportedPids
                 val responses = linkedMapOf<Int, String>()
                 val issues = linkedMapOf<Int, Obd2PidIssue>()
+                var speedSampleElapsedRealtimeNanos: Long? = null
+                var speedQueryDurationMillis: Long? = null
 
                 // Read less critical values before speed so the freshest speed sample is the
                 // last command in the cycle. Each PID has an independent circuit breaker.
@@ -144,7 +146,11 @@ class Obd2Repository(context: Context) {
                         continue
                     }
 
+                    val queryStartedAtNanos = SystemClock.elapsedRealtimeNanos()
                     val response = queryPid(current, pid)
+                    val queryReceivedAtNanos = SystemClock.elapsedRealtimeNanos()
+                    val queryDurationMillis = ((queryReceivedAtNanos - queryStartedAtNanos) / 1_000_000L)
+                        .coerceAtLeast(0L)
                     if (Obd2Protocol.decode(pid, response) == null) {
                         val disabled = current.pidCircuitBreaker.recordFailure(pid)
                         issues[pid] = if (disabled) {
@@ -155,6 +161,12 @@ class Obd2Repository(context: Context) {
                     } else {
                         current.pidCircuitBreaker.recordSuccess(pid)
                         responses[pid] = response
+                        if (pid == 0x0D) {
+                            // ELM-compatible adapters expose no ECU timestamp; this midpoint is approximate.
+                            speedSampleElapsedRealtimeNanos =
+                                queryStartedAtNanos + (queryReceivedAtNanos - queryStartedAtNanos) / 2L
+                            speedQueryDurationMillis = queryDurationMillis
+                        }
                     }
                 }
 
@@ -163,7 +175,9 @@ class Obd2Repository(context: Context) {
                     pidIssues = issues,
                     now = System.currentTimeMillis(),
                     vehicleVin = current.vehicleVin,
-                    vinIssue = current.vinIssue
+                    vinIssue = current.vinIssue,
+                    speedSampleElapsedRealtimeNanos = speedSampleElapsedRealtimeNanos,
+                    speedQueryDurationMillis = speedQueryDurationMillis
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
