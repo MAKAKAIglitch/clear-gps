@@ -285,6 +285,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapPointsRevision by remember { mutableStateOf(0) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var radioSources by remember { mutableStateOf(database.listRadioSources()) }
+    var sourceDaysBySource by remember { mutableStateOf(database.listRadioSourceDays().groupBy { it.sourceId }) }
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
     var observationRetentionLimit by remember { mutableStateOf(database.observationRetentionLimit()) }
@@ -389,6 +390,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var showExportOptions by remember { mutableStateOf(false) }
     var pendingSourceExportId by remember { mutableStateOf<Long?>(null) }
+    var pendingSourceExportDay by remember { mutableStateOf<String?>(null) }
     var showZoneNameDialog by remember { mutableStateOf(false) }
     var zoneName by remember { mutableStateOf("") }
     var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
@@ -408,6 +410,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mapPointsRevision++
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
+        sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
         pointCount = withContext(Dispatchers.IO) { database.pointCount() }
         observationCount = withContext(Dispatchers.IO) { database.observationCount() }
         zones = ZoneStore.loadAll(context)
@@ -910,10 +913,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
     val exportSourceCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         val sourceId = pendingSourceExportId
+        val dayKey = pendingSourceExportDay
         pendingSourceExportId = null
+        pendingSourceExportDay = null
         if (uri != null && sourceId != null) scope.launch {
             try {
-                val csv = withContext(Dispatchers.IO) { database.exportWigleCsv(sourceId) }
+                val csv = withContext(Dispatchers.IO) { database.exportWigleCsv(sourceId, dayKey) }
                 withContext(Dispatchers.IO) {
                     context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(csv) }
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
@@ -2073,7 +2078,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onOpenZones = { navigateToTab(AppTab.ZONES) }
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
-                                    points = points, history = history, sources = radioSources, pointCount = pointCount, observationCount = observationCount,
+                                    points = points, history = history, sources = radioSources, sourceDaysBySource = sourceDaysBySource,
+                                    pointCount = pointCount, observationCount = observationCount,
                                     onSetSourceEnabled = { source, enabled ->
                                         scope.launch {
                                             try {
@@ -2112,7 +2118,30 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     },
                                     onExportSource = { source ->
                                         pendingSourceExportId = source.id
+                                        pendingSourceExportDay = null
                                         exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + ".csv")
+                                    },
+                                    onExportSourceDay = { source, day ->
+                                        pendingSourceExportId = source.id
+                                        pendingSourceExportDay = day.dayKey
+                                        exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + "-" + day.dayKey + ".csv")
+                                    },
+                                    onDeleteSourceDay = { day ->
+                                        scope.launch {
+                                            try {
+                                                val result = withContext(Dispatchers.IO) {
+                                                    database.deleteRadioSourceDay(day.sourceId, day.dayKey)
+                                                }
+                                                refreshLocalUiInCurrentCoroutine()
+                                                Toast.makeText(
+                                                    context,
+                                                    "Удалено наблюдений: " + result.observationsDeleted + "; пересчитано радиоточек: " + result.radiosRecalculated + "; удалено сканирований: " + result.scanHistoryDeleted,
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } catch (error: Exception) {
+                                                Toast.makeText(context, "Не удалось удалить день: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
                                     },
                                     observationRetentionLimit = observationRetentionLimit,
                                     retentionLimitUpdating = retentionLimitUpdating,
@@ -3172,10 +3201,13 @@ private fun DatabaseScreen(
     observationRetentionLimit: Int, retentionLimitUpdating: Boolean, onObservationRetentionLimit: (Int) -> Unit,
     searchQuery: String, onSearch: (String) -> Unit,
     sources: List<RadioSourceRecord>,
+    sourceDaysBySource: Map<Long, List<RadioSourceDayRecord>>,
     onSetSourceEnabled: (RadioSourceRecord, Boolean) -> Unit,
     onSetSourceTrustWeight: (RadioSourceRecord, Double) -> Unit,
     onDeleteSource: (RadioSourceRecord) -> Unit,
     onExportSource: (RadioSourceRecord) -> Unit,
+    onExportSourceDay: (RadioSourceRecord, RadioSourceDayRecord) -> Unit,
+    onDeleteSourceDay: (RadioSourceDayRecord) -> Unit,
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
@@ -3186,6 +3218,8 @@ private fun DatabaseScreen(
 ) {
     val colors = MaterialTheme.colorScheme
     var pendingDeleteSource by remember { mutableStateOf<RadioSourceRecord?>(null) }
+    var pendingDeleteSourceDay by remember { mutableStateOf<RadioSourceDayRecord?>(null) }
+    var expandedSourceIds by remember { mutableStateOf(emptySet<Long>()) }
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -3327,10 +3361,17 @@ private fun DatabaseScreen(
                     items(sources, key = { it.id }) { source ->
                         RadioSourceRow(
                             source = source,
+                            days = sourceDaysBySource[source.id].orEmpty(),
+                            daysExpanded = source.id in expandedSourceIds,
+                            onToggleDays = {
+                                expandedSourceIds = if (source.id in expandedSourceIds) expandedSourceIds - source.id else expandedSourceIds + source.id
+                            },
                             onEnabled = { enabled -> onSetSourceEnabled(source, enabled) },
                             onTrustWeight = { weight -> onSetSourceTrustWeight(source, weight) },
                             onExport = { onExportSource(source) },
-                            onDelete = { pendingDeleteSource = source }
+                            onDelete = { pendingDeleteSource = source },
+                            onExportDay = { day -> onExportSourceDay(source, day) },
+                            onDeleteDay = { day -> pendingDeleteSourceDay = day }
                         )
                     }
                 }
@@ -3357,6 +3398,25 @@ private fun DatabaseScreen(
                 }
             )
         }
+        val dayPendingDeletion = pendingDeleteSourceDay
+        if (dayPendingDeletion != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteSourceDay = null },
+                title = { Text("Удалить день " + dayPendingDeletion.dayKey + "?") },
+                text = {
+                    Text("Будут удалены подробные наблюдения этого источника за выбранный локальный календарный день. Другие дни не затрагиваются; затронутые координаты пересчитываются по оставшимся данным. Для локальной записи также удаляется история сканирований за этот день.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingDeleteSourceDay = null
+                        onDeleteSourceDay(dayPendingDeletion)
+                    }) { Text("Удалить день") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteSourceDay = null }) { Text("Отмена") }
+                }
+            )
+        }
         } else {
             BeaconDbDatabaseContent(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -3376,10 +3436,15 @@ private fun DatabaseScreen(
 @Composable
 private fun RadioSourceRow(
     source: RadioSourceRecord,
+    days: List<RadioSourceDayRecord>,
+    daysExpanded: Boolean,
+    onToggleDays: () -> Unit,
     onEnabled: (Boolean) -> Unit,
     onTrustWeight: (Double) -> Unit,
     onExport: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onExportDay: (RadioSourceDayRecord) -> Unit,
+    onDeleteDay: (RadioSourceDayRecord) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     var trustWeight by remember(source.id, source.trustWeight) {
@@ -3450,6 +3515,47 @@ private fun RadioSourceRow(
                         shape = RoundedCornerShape(12.dp)
                     ) { Text("Экспорт CSV") }
                     TextButton(onClick = onDelete) { Text("Удалить источник") }
+                }
+            }
+            Divider(color = colors.outlineVariant)
+            TextButton(onClick = onToggleDays) {
+                Text((if (daysExpanded) "Скрыть дни" else "Показать дни") + " (" + days.size + ")")
+            }
+            if (daysExpanded) {
+                if (days.isEmpty()) {
+                    Text("Нет подробных наблюдений по дням. Сводные радиоточки сохранены отдельно.",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(days, key = { it.dayKey }) { day ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                color = colors.surface
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text(day.dayKey, fontWeight = FontWeight.SemiBold)
+                                        Text(day.observationCount.toString() + " наблюдений · " + day.radioCount + " радиоточек",
+                                            style = MaterialTheme.typography.bodySmall)
+                                        Text("Wi‑Fi " + day.wifiObservations + " · соты " + day.cellObservations + " · BLE " + day.bleObservations,
+                                            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        TextButton(onClick = { onExportDay(day) }) { Text("CSV") }
+                                        TextButton(onClick = { onDeleteDay(day) }) { Text("Удалить") }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
