@@ -45,6 +45,7 @@ internal fun Obd2Screen(
     telemetry: Obd2Telemetry,
     calibration: Obd2SpeedCalibrationSnapshot,
     gearLearning: Obd2GearLearningSnapshot,
+    driveMetrics: Obd2DriveMetricsSnapshot,
     status: String,
     statusIsError: Boolean,
     onRefresh: () -> Unit,
@@ -271,6 +272,39 @@ internal fun Obd2Screen(
                     unit = "кПа",
                     modifier = Modifier.fillMaxWidth()
                 )
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = colors.surfaceContainer
+                ) {
+                    Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Движение за текущее подключение", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            VehicleMetric(
+                                title = "Расчётный путь",
+                                value = String.format(Locale.ROOT, "%.2f", driveMetrics.sessionDistanceMeters / 1_000.0),
+                                unit = "км",
+                                modifier = Modifier.weight(1f)
+                            )
+                            VehicleMetric(
+                                title = "Ускорение",
+                                value = driveMetrics.longitudinalAccelerationMps2?.let { String.format(Locale.ROOT, "%+.1f", it) } ?: "—",
+                                unit = "м/с²",
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Text(
+                            "Принятых отсчётов скорости: ${driveMetrics.acceptedSpeedSamples}. Неизвестные интервалы не заполняются догадками.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                        Text(
+                            "Это оценка пути за подключение, а не одометр или история поездки. Данные не сохраняются и не влияют на риск спуфинга.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                }
                 Surface(
                     Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(13.dp),

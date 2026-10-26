@@ -269,6 +269,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var obd2CalibrationSnapshot by remember { mutableStateOf(Obd2SpeedCalibrationSnapshot()) }
     val obd2GearRatioLearner = remember { Obd2GearRatioLearner() }
     var obd2GearLearningSnapshot by remember { mutableStateOf(Obd2GearLearningSnapshot()) }
+    val obd2DriveMetricsTracker = remember { Obd2DriveMetricsTracker() }
+    var obd2DriveMetricsSnapshot by remember { mutableStateOf(Obd2DriveMetricsSnapshot()) }
     var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -1112,8 +1114,23 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
             obd2GearRatioLearner.reset()
             obd2GearLearningSnapshot = Obd2GearLearningSnapshot()
+            obd2DriveMetricsTracker.reset()
+            obd2DriveMetricsSnapshot = Obd2DriveMetricsSnapshot()
             Obd2SharedState.setSpeedCorrectionScale(prefs, null)
         }
+    }
+
+    LaunchedEffect(obd2Connected, obd2Telemetry) {
+        if (!obd2Connected) {
+            obd2DriveMetricsTracker.reset()
+            obd2DriveMetricsSnapshot = Obd2DriveMetricsSnapshot()
+            return@LaunchedEffect
+        }
+        obd2DriveMetricsSnapshot = obd2DriveMetricsTracker.observe(
+            speedKmh = Obd2SharedState.freshSpeedKmh(prefs),
+            speedSampleElapsedRealtimeNanos = obd2Telemetry.speedSampleElapsedRealtimeNanos,
+            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        )
     }
 
     LaunchedEffect(obd2Connected, obd2Telemetry, liveGnssLocation, filterState) {
@@ -1938,6 +1955,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     telemetry = obd2Telemetry,
                                     calibration = obd2CalibrationSnapshot,
                                     gearLearning = obd2GearLearningSnapshot,
+                                    driveMetrics = obd2DriveMetricsSnapshot,
                                     status = obd2Status,
                                     statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },
@@ -1964,6 +1982,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     Obd2SharedState.clearSpeed(prefs)
                                                     obd2SpeedCalibration.reset()
                                                     obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
+                                                    obd2DriveMetricsTracker.reset()
+                                                    obd2DriveMetricsSnapshot = Obd2DriveMetricsSnapshot()
                                                     obd2Telemetry = Obd2Telemetry()
                                                     obd2Connected = true
                                                     obd2StatusIsError = false
