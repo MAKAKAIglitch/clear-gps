@@ -33,6 +33,8 @@ import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
+import org.cleargps.core.GnssReplayMeasurement
+import org.cleargps.core.GnssReplaySatellite
 
 private data class LastResortFallback(val source: String, val location: Location)
 
@@ -109,17 +111,25 @@ class LocationMonitorService : Service(), LocationListener {
                 )
             }
             GnssDiagnosticsLiveStore.updateSatelliteStatus(nowNanos, liveSatellites)
-            val assessment = engine.observeGnssSignal(
-                org.cleargps.core.GnssSignalSnapshot(
-                    elapsedRealtimeNanos = nowNanos,
-                    satellitesVisible = count,
-                    satellitesUsedInFix = (0 until count).count { status.usedInFix(it) },
-                    meanCn0DbHz = mean,
-                    cn0SpreadDb = spread,
-                    constellationCount = constellations,
-                    strongSignalCount = cn0Values.count { it >= 32.0 }
-                )
+            val signalSnapshot = org.cleargps.core.GnssSignalSnapshot(
+                elapsedRealtimeNanos = nowNanos,
+                satellitesVisible = count,
+                satellitesUsedInFix = (0 until count).count { status.usedInFix(it) },
+                meanCn0DbHz = mean,
+                cn0SpreadDb = spread,
+                constellationCount = constellations,
+                strongSignalCount = cn0Values.count { it >= 32.0 }
             )
+            try {
+                GnssReplayRecorder.recordSignal(this@LocationMonitorService, nowNanos, signalSnapshot,
+                    liveSatellites.map { r -> GnssReplaySatellite(
+                        r.constellationType, r.svid, r.cn0DbHz, r.elevationDegrees, r.azimuthDegrees,
+                        r.usedInFix, r.reportedCarrierFrequencyHz, r.basebandCn0DbHz
+                    ) })
+            } catch (_: RuntimeException) {
+                // Replay capture must never interrupt live GNSS callbacks.
+            }
+            val assessment = engine.observeGnssSignal(signalSnapshot)
             persistGnssReceptionDiagnostics()
             assessment?.let(::publishSignalDecision)
         }
@@ -202,16 +212,37 @@ class LocationMonitorService : Service(), LocationListener {
                 val constellationCount = if (measurementConstellations > 0) measurementConstellations
                     else lastStatusConstellationCount.takeIf { statusFresh } ?: 0
                 val signalCount = maxOf(cn0Values.size, agcValues.size)
-                val assessment = engine.observeGnssMeasurements(
-                    GnssRfSnapshot(
-                        elapsedRealtimeNanos = nowNanos,
-                        signalCount = signalCount,
-                        constellationCount = constellationCount,
-                        meanCn0DbHz = meanCn0,
-                        meanAgcDb = meanAgc,
-                        agcSampleCount = agcValues.size
-                    )
+                val rfSnapshot = GnssRfSnapshot(
+                    elapsedRealtimeNanos = nowNanos,
+                    signalCount = signalCount,
+                    constellationCount = constellationCount,
+                    meanCn0DbHz = meanCn0,
+                    meanAgcDb = meanAgc,
+                    agcSampleCount = agcValues.size
                 )
+                try {
+                    val replayMeasurements = measurements.mapNotNull { m ->
+                        try {
+                            val frequency = m.carrierFrequencyHz.toDouble().takeIf { it.isFinite() && it > 0.0 }
+                            val agc = if (Build.VERSION.SDK_INT < 33) {
+                                try { if (m.hasAutomaticGainControlLevelDb()) m.getAutomaticGainControlLevelDb().takeIf(Double::isFinite) else null }
+                                catch (_: RuntimeException) { null }
+                            } else null
+                            GnssReplayMeasurement(
+                                m.constellationType, m.svid,
+                                m.cn0DbHz.toDouble().takeIf { it.isFinite() && it > 0.0 }, frequency, agc,
+                                m.pseudorangeRateMetersPerSecond.takeIf(Double::isFinite),
+                                m.pseudorangeRateUncertaintyMetersPerSecond.takeIf { it.isFinite() && it >= 0.0 },
+                                m.receivedSvTimeNanos.takeIf { it >= 0L },
+                                m.receivedSvTimeUncertaintyNanos.takeIf { it >= 0L }, m.state
+                            )
+                        } catch (_: RuntimeException) { null }
+                    }
+                    GnssReplayRecorder.recordRf(this@LocationMonitorService, nowNanos, rfSnapshot, replayMeasurements)
+                } catch (_: RuntimeException) {
+                    // Replay capture must never interrupt live measurements processing.
+                }
+                val assessment = engine.observeGnssMeasurements(rfSnapshot)
                 persistGnssReceptionDiagnostics()
                 assessment?.let(::publishSignalDecision)
             } catch (_: RuntimeException) {
@@ -284,6 +315,7 @@ class LocationMonitorService : Service(), LocationListener {
         super.onCreate()
         manager = getSystemService(LOCATION_SERVICE) as LocationManager
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        GnssReplayRecorder.reconcileInterruptedSession(this)
         GnssDeviceBaselineStore.load(this)?.let { savedBaseline ->
             if (!engine.restoreDeviceBaseline(savedBaseline)) GnssDeviceBaselineStore.clear(this)
         }
@@ -533,6 +565,7 @@ class LocationMonitorService : Service(), LocationListener {
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
 
             val nextPositionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+            if (nextPositionMode in setOf("radio", "radio_obd2")) GnssReplayRecorder.stop(this, "SERVICE_STOP")
             val modeChanged = activePositionMode != nextPositionMode
             // Don't unregister a working mock provider every time the user changes the refresh
             // interval. Unregister only for a real source change or when mock output was turned off.
@@ -1110,6 +1143,7 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        GnssReplayRecorder.stop(this, "SERVICE_STOP")
         cancelBeaconDbMockOutput()
         radioOnlyJob?.cancel()
         radioOnlyJob = null
@@ -1249,6 +1283,8 @@ class LocationMonitorService : Service(), LocationListener {
         val result = if (fallback != null) {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
         } else observedDecision
+        try { GnssReplayRecorder.recordPosition(this, location, inZone, result) }
+        catch (_: RuntimeException) { /* Replay capture never changes live filter behavior. */ }
         persistDecision(result)
         DiagnosticLogStore.log(
             this, "GNSS",

@@ -354,6 +354,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var gnssLiveSnapshot by remember {
         mutableStateOf(GnssDiagnosticsLiveStore.snapshot(SystemClock.elapsedRealtimeNanos()))
     }
+    var gnssReplayRecording by remember { mutableStateOf(GnssReplayRecorder.isRecording(context)) }
+    var gnssReplayBytes by remember { mutableStateOf(GnssReplayRecorder.fileSize(context)) }
+    var gnssReplayStopReason by remember { mutableStateOf(GnssReplayRecorder.lastStopReason(context)) }
+    var gnssReplaySummary by remember { mutableStateOf("") }
     var detailedLogging by remember { mutableStateOf(prefs.getBoolean(DiagnosticLogStore.KEY_ENABLED, false)) }
     var diagnosticLogMaxKb by remember {
         mutableStateOf(prefs.getInt(DiagnosticLogStore.KEY_MAX_KB, DiagnosticLogStore.DEFAULT_MAX_KB)
@@ -762,6 +766,63 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
+    val exportGnssReplayLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val data = withContext(Dispatchers.IO) { GnssReplayRecorder.readLogBytes(context) }
+                if (data.isEmpty()) throw IllegalStateException("Нет доступного replay-файла.")
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "w")?.use { it.write(data) }
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                }
+                Toast.makeText(context, "Replay сохранён в выбранный файл. Автоматической отправки нет.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка экспорта replay: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val openGnssReplayLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val raw = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть replay-файл.")
+                    input.use { stream ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        var total = 0
+                        while (true) {
+                            val read = stream.read(buffer)
+                            if (read < 0) break
+                            total += read
+                            if (total > org.cleargps.core.GnssReplayCodec.MAX_BYTES)
+                                throw IllegalArgumentException("Replay превышает лимит 2 МиБ.")
+                            out.write(buffer, 0, read)
+                        }
+                        out.toByteArray()
+                    }
+                }
+                val decoded = org.cleargps.core.GnssReplayCodec.decode(String(raw, Charsets.UTF_8))
+                if (decoded.error != null) throw IllegalArgumentException(decoded.error)
+                val summary = withContext(Dispatchers.Default) { org.cleargps.core.GnssReplayRunner().replay(decoded) }
+                gnssReplaySummary = if (summary.error != null) {
+                    "Реплей не выполнен: " + summary.error
+                } else {
+                    "Реплей завершён: GPS ${summary.gpsFixes}, network ${summary.networkFixes}, " +
+                        "GNSS-кадров ${summary.signalFrames}, raw measurements ${summary.rawMeasurementRecords}; " +
+                        "пиковый пересчитанный риск ${summary.peakRiskScore}/100, подтверждённых состояний ${summary.confirmedAssessments}. " +
+                        "Пропущено строк: ${summary.skippedLines}. " +
+                        (if (summary.hasFooter) "Файл завершён корректно." else "Файл неполный: завершающая запись отсутствует.")
+                }
+            } catch (error: Exception) {
+                gnssReplaySummary = "Не удалось выполнить реплей: " + (error.message ?: error.javaClass.simpleName)
+            }
+        }
+    }
     val exportRiskFeedbackLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri: Uri? ->
@@ -1096,6 +1157,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             gnssDiagnosticsAtNanos = prefs.getLong(LocationMonitorService.KEY_GNSS_DIAGNOSTICS_AT_NANOS, 0L)
             gnssDiagnosticsNowNanos = SystemClock.elapsedRealtimeNanos()
             gnssLiveSnapshot = GnssDiagnosticsLiveStore.snapshot(gnssDiagnosticsNowNanos)
+            gnssReplayRecording = GnssReplayRecorder.isRecording(context)
+            gnssReplayBytes = GnssReplayRecorder.fileSize(context)
+            gnssReplayStopReason = GnssReplayRecorder.lastStopReason(context)
 
             // The foreground service owns radio scans while monitoring is active. Mirror its
             // latest persisted counters/message so the screen cannot stay stuck on an older scan.
@@ -1509,6 +1573,35 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         RiskFeedbackStore.clear(prefs)
                                         riskFeedbackCount = 0
                                         Toast.makeText(context, "Локальная разметка очищена.", Toast.LENGTH_SHORT).show()
+                                    },
+                                    replayRecording = gnssReplayRecording,
+                                    replayBytes = gnssReplayBytes,
+                                    replayStopReason = gnssReplayStopReason,
+                                    replaySaved = GnssReplayRecorder.hasSavedLog(context),
+                                    replayCanStart = GnssReplayRecorder.canStart(context),
+                                    replaySummary = gnssReplaySummary,
+                                    onStartReplayRecord = {
+                                        val ok = GnssReplayRecorder.start(context)
+                                        gnssReplayRecording = GnssReplayRecorder.isRecording(context)
+                                        gnssReplayBytes = GnssReplayRecorder.fileSize(context)
+                                        gnssReplayStopReason = GnssReplayRecorder.lastStopReason(context)
+                                        if (!ok) Toast.makeText(context,
+                                            "Не удалось начать запись. Проверь режим, мониторинг и наличие старого replay-файла.",
+                                            Toast.LENGTH_LONG).show()
+                                    },
+                                    onStopReplayRecord = {
+                                        GnssReplayRecorder.stop(context, "USER_STOP")
+                                        gnssReplayRecording = false
+                                        gnssReplayBytes = GnssReplayRecorder.fileSize(context)
+                                        gnssReplayStopReason = GnssReplayRecorder.lastStopReason(context)
+                                    },
+                                    onExportReplay = { exportGnssReplayLauncher.launch("clear-gps-gnss-replay.cgreplay") },
+                                    onOpenReplay = { openGnssReplayLauncher.launch(arrayOf("application/octet-stream","text/plain","*/*")) },
+                                    onDeleteReplay = {
+                                        GnssReplayRecorder.clear(context)
+                                        gnssReplayBytes = 0L
+                                        gnssReplayStopReason = ""
+                                        gnssReplaySummary = ""
                                     },
                                     gnssEnvironment = gnssEnvironment, gnssEnvironmentReasons = gnssEnvironmentReasons,
                                     gnssBaselineReady = gnssBaselineReady, gnssBaselineDeviations = gnssBaselineDeviations,
@@ -2021,6 +2114,17 @@ private fun MapHomeScreen(
     onRiskFeedback: (RiskFeedbackLabel) -> Unit,
     onExportRiskFeedback: () -> Unit,
     onClearRiskFeedback: () -> Unit,
+    replayRecording: Boolean,
+    replayBytes: Long,
+    replayStopReason: String,
+    replaySaved: Boolean,
+    replayCanStart: Boolean,
+    replaySummary: String,
+    onStartReplayRecord: () -> Unit,
+    onStopReplayRecord: () -> Unit,
+    onExportReplay: () -> Unit,
+    onOpenReplay: () -> Unit,
+    onDeleteReplay: () -> Unit,
     gnssEnvironment: String, gnssEnvironmentReasons: List<String>,
     gnssBaselineReady: Boolean, gnssBaselineDeviations: List<String>,
     gnssDiagnosticsAtNanos: Long, gnssDiagnosticsNowNanos: Long,
@@ -2385,6 +2489,14 @@ private fun MapHomeScreen(
                     onLabel = onRiskFeedback,
                     onExport = onExportRiskFeedback,
                     onClear = onClearRiskFeedback
+                )
+                GnssReplayPanel(
+                    monitorEnabled=monitorEnabled, radioOnly=mode.usesRadio,
+                    recording=replayRecording, canStart=replayCanStart,
+                    hasSavedLog=GnssReplayRecorder.hasSavedLog(context), sizeBytes=replayBytes,
+                    stopReason=replayStopReason, replayResult=replaySummary,
+                    onStart=onStartReplayRecord, onStop=onStopReplayRecord,
+                    onExport=onExportReplay, onImport=onOpenReplay, onDelete=onDeleteReplay
                 )
                 if (riskReasons.isNotEmpty()) {
                     Text(
