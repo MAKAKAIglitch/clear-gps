@@ -31,6 +31,18 @@ class GnssReplayTest {
         assertEquals(1_000.0,(decoded.events[3] as GnssReplayEvent.Position).eastMeters,0.0)
     }
 
+    @Test fun sensorSamplesRoundTripWithRelativeMonotonicOffsets() {
+        val sensor = GnssReplayEvent.Sensor(
+            2_500_000_000L, GnssReplaySensorType.ACCELEROMETER, true,
+            0.12, -0.34, 9.71, null, null, null
+        )
+        val decoded = GnssReplayCodec.decode(GnssReplayCodec.encodeDocument(listOf(sensor)))
+        assertEquals(null, decoded.error)
+        assertEquals(listOf(sensor), decoded.events)
+        val summary = GnssReplayRunner().replay(decoded)
+        assertEquals(1, summary.sensorSamples)
+    }
+
     @Test fun exportedReplayHasNoAbsoluteCoordinatesWallClockOrRadioIds() {
         val text=GnssReplayCodec.encodeDocument(fixture())
         assertTrue(text.startsWith("CLEAR_GPS_REPLAY|1|ENU_RELATIVE|OFFSET_ONLY"))

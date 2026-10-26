@@ -2,6 +2,10 @@ package org.cleargps
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.os.SystemClock
 import org.cleargps.core.FilterDecision
@@ -10,6 +14,7 @@ import org.cleargps.core.GnssReplayEvent
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplayPositionSource
 import org.cleargps.core.GnssReplaySatellite
+import org.cleargps.core.GnssReplaySensorType
 import org.cleargps.core.GnssRfSnapshot
 import org.cleargps.core.GnssSignalSnapshot
 import java.io.File
@@ -26,8 +31,22 @@ internal object GnssReplayRecorder {
     private const val KEY_LAST_STOP = "gnss_replay_last_stop_reason"
     private const val MAX_FILE_BYTES = GnssReplayCodec.MAX_BYTES
     private const val EARTH_RADIUS_METERS = 6_371_008.8
+    private const val SENSOR_SAMPLE_INTERVAL_NANOS = 200_000_000L // At most 5 samples/second per sensor.
+    private const val SENSOR_SAMPLE_PERIOD_MICROS = 200_000
+
+    private data class SensorSample(
+        val type: GnssReplaySensorType,
+        val calibrated: Boolean,
+        val x: Double,
+        val y: Double,
+        val z: Double
+    )
 
     private val lock = Any()
+    private val sensorLock = Any()
+    private var activeSensorManager: SensorManager? = null
+    private var activeSensorListener: SensorEventListener? = null
+    private val lastSensorSampleAtNanos = mutableMapOf<Int, Long>()
     private val pending = AtomicInteger(0)
     private val writer = Executors.newSingleThreadExecutor { task ->
         Thread(task, "ClearGPS-replay-writer").apply { isDaemon = true }
@@ -88,11 +107,124 @@ internal object GnssReplayRecorder {
             target.writeText(GnssReplayCodec.encodeHeader()+"\n",Charsets.UTF_8)
             p.edit().putBoolean(KEY_ENABLED,true).putLong(KEY_START_NANOS,startedAtNanos)
                 .putString(KEY_LAST_STOP,"").apply()
+            // Sensor capture is best-effort: missing sensors must not prevent GNSS recording.
+            startSensorCapture(context.applicationContext)
             true
         } catch (_: Exception) {
             startedAtNanos=0L
             p.edit().putBoolean(KEY_ENABLED,false).remove(KEY_START_NANOS).apply()
             false
+        }
+    }
+
+    private fun startSensorCapture(context: Context) {
+        synchronized(sensorLock) {
+            stopSensorCaptureLocked()
+            val manager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+                ?: return@synchronized
+            val sensors = listOf(
+                Sensor.TYPE_ACCELEROMETER,
+                Sensor.TYPE_GYROSCOPE,
+                Sensor.TYPE_MAGNETIC_FIELD,
+                Sensor.TYPE_ROTATION_VECTOR
+            ).distinct().mapNotNull { type ->
+                runCatching { manager.getDefaultSensor(type) }.getOrNull()
+            }
+            if (sensors.isEmpty()) return@synchronized
+
+            val appContext = context.applicationContext
+            val listener = object : SensorEventListener {
+                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+                override fun onSensorChanged(event: SensorEvent) {
+                    val atNanos = event.timestamp
+                    if (atNanos <= 0L || event.values.size < 3) return
+                    val values = event.values
+                    val sample = try {
+                        when (event.sensor.type) {
+                            Sensor.TYPE_ACCELEROMETER -> SensorSample(
+                                GnssReplaySensorType.ACCELEROMETER, true,
+                                values[0].toDouble(), values[1].toDouble(), values[2].toDouble()
+                            )
+                            Sensor.TYPE_GYROSCOPE -> SensorSample(
+                                GnssReplaySensorType.GYROSCOPE, true,
+                                values[0].toDouble(), values[1].toDouble(), values[2].toDouble()
+                            )
+                            Sensor.TYPE_MAGNETIC_FIELD -> SensorSample(
+                                GnssReplaySensorType.MAGNETOMETER, true,
+                                values[0].toDouble(), values[1].toDouble(), values[2].toDouble()
+                            )
+                            Sensor.TYPE_ROTATION_VECTOR -> {
+                                val rotationMatrix = FloatArray(9)
+                                val orientation = FloatArray(3)
+                                SensorManager.getRotationMatrixFromVector(rotationMatrix, values)
+                                SensorManager.getOrientation(rotationMatrix, orientation)
+                                SensorSample(
+                                    GnssReplaySensorType.ORIENTATION_DEGREES, true,
+                                    normalizeHeading(Math.toDegrees(orientation[0].toDouble())),
+                                    Math.toDegrees(orientation[1].toDouble()),
+                                    Math.toDegrees(orientation[2].toDouble())
+                                )
+                            }
+                            else -> null
+                        }
+                    } catch (_: RuntimeException) {
+                        null
+                    } ?: return
+
+                    if (!sample.x.isFinite() || !sample.y.isFinite() || !sample.z.isFinite()) return
+                    val accepted = synchronized(sensorLock) {
+                        if (activeSensorListener !== this ||
+                            !prefs(appContext).getBoolean(KEY_ENABLED, false)
+                        ) return@synchronized false
+                        val last = lastSensorSampleAtNanos[event.sensor.type]
+                        if (last != null &&
+                            (atNanos <= last || atNanos - last < SENSOR_SAMPLE_INTERVAL_NANOS)
+                        ) {
+                            false
+                        } else {
+                            lastSensorSampleAtNanos[event.sensor.type] = atNanos
+                            true
+                        }
+                    }
+                    if (accepted) {
+                        recordSensor(
+                            appContext, atNanos, sample.type, sample.calibrated,
+                            sample.x, sample.y, sample.z
+                        )
+                    }
+                }
+            }
+
+            activeSensorManager = manager
+            activeSensorListener = listener
+            val registered = sensors.count { sensor ->
+                try {
+                    manager.registerListener(listener, sensor, SENSOR_SAMPLE_PERIOD_MICROS)
+                } catch (_: RuntimeException) {
+                    false
+                }
+            }
+            if (registered == 0) stopSensorCaptureLocked()
+        }
+    }
+
+    private fun stopSensorCapture() {
+        synchronized(sensorLock) { stopSensorCaptureLocked() }
+    }
+
+    private fun stopSensorCaptureLocked() {
+        val manager = activeSensorManager
+        val listener = activeSensorListener
+        activeSensorManager = null
+        activeSensorListener = null
+        lastSensorSampleAtNanos.clear()
+        if (manager != null && listener != null) {
+            try {
+                manager.unregisterListener(listener)
+            } catch (_: RuntimeException) {
+                // Recorder shutdown must not affect the foreground monitor.
+            }
         }
     }
 
@@ -102,6 +234,7 @@ internal object GnssReplayRecorder {
         val wasEnabled=p.getBoolean(KEY_ENABLED,false)
         p.edit().putBoolean(KEY_ENABLED,false).remove(KEY_START_NANOS)
             .putString(KEY_LAST_STOP,normalized).apply()
+        stopSensorCapture()
         if (wasEnabled || startedAtNanos>0L) enqueue { stopWorker(context,normalized) }
     }
 
@@ -115,6 +248,7 @@ internal object GnssReplayRecorder {
     }
 
     private fun stopWorker(context: Context, reason: String) {
+        stopSensorCapture()
         if (startedAtNanos>0L) {
             appendLines(context,listOf(GnssReplayCodec.encodeFooter(lastOffsetNanos,eventCount,reason)),false)
         }
@@ -136,6 +270,33 @@ internal object GnssReplayRecorder {
         enqueue {
             appendEvent(context,atNanos) { offset ->
                 GnssReplayEvent.Rf(offset,snapshot.copy(elapsedRealtimeNanos=offset+1L),measurements)
+            }
+        }
+    }
+
+    fun recordSensor(
+        context: Context,
+        atNanos: Long,
+        type: GnssReplaySensorType,
+        calibrated: Boolean,
+        x: Double,
+        y: Double,
+        z: Double
+    ) {
+        if (!prefs(context).getBoolean(KEY_ENABLED, false) || startedAtNanos <= 0L ||
+            atNanos <= 0L || !x.isFinite() || !y.isFinite() || !z.isFinite()
+        ) return
+        val valid = if (type == GnssReplaySensorType.ORIENTATION_DEGREES) {
+            x in 0.0..360.0 && y in -180.0..180.0 && z in -180.0..180.0
+        } else {
+            kotlin.math.abs(x) <= 100_000.0 &&
+                kotlin.math.abs(y) <= 100_000.0 &&
+                kotlin.math.abs(z) <= 100_000.0
+        }
+        if (!valid) return
+        enqueue {
+            appendEvent(context, atNanos) { offset ->
+                GnssReplayEvent.Sensor(offset, type, calibrated, x, y, z, null, null, null)
             }
         }
     }
@@ -222,6 +383,11 @@ internal object GnssReplayRecorder {
             file(context).delete()
             prefs(context).edit().putString(KEY_LAST_STOP,"").apply()
         }
+    }
+
+    private fun normalizeHeading(degrees: Double): Double {
+        val normalized = degrees % 360.0
+        return if (normalized < 0.0) normalized + 360.0 else normalized
     }
 
     private fun normalizeLongitude(degrees: Double): Double {
