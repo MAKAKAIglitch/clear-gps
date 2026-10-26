@@ -205,6 +205,7 @@ object ClearGpsPreferences {
     const val KEY_DATABASE_VIEW_SOURCE = "database_view_source"
     const val KEY_BEACONDB_LOOKUP_ENABLED = "beacondb_cell_lookup_enabled"
     const val KEY_RADIO_OBSERVATION_LIMIT = "radio_observation_retention_limit"
+    const val KEY_WIFI_SSID_BLACKLIST = "wifi_ssid_blacklist"
 }
 
 object ManualLocationStore {
@@ -741,13 +742,23 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         db.execSQL("UPDATE radio_observations SET radio_type = LOWER(radio_type), identifier = LOWER(identifier)")
     }
 
+    private fun applyWifiSsidFilter(signals: List<RadioSignal>): List<RadioSignal> {
+        val preferences = appContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+        val configured = preferences.getString(
+            ClearGpsPreferences.KEY_WIFI_SSID_BLACKLIST, RadioSsidFilter.DEFAULT_PATTERNS
+        ) ?: RadioSsidFilter.DEFAULT_PATTERNS
+        val patterns = RadioSsidFilter.compilePatterns(configured)
+        if (patterns.isEmpty()) return signals
+        return signals.filterNot { signal -> RadioSsidFilter.excludes(signal.type, signal.ssid, patterns) }
+    }
+
     fun recordScan(
         signals: List<RadioSignal>, reference: RadioReference?, estimate: RadioEstimate?,
         mode: String, wifiCount: Int, cellCount: Int, bleCount: Int, shouldRecord: Boolean
     ): Int {
         val db = writableDatabase
         val now = System.currentTimeMillis()
-        val unique = signals.filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
+        val unique = applyWifiSsidFilter(signals).filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
             .distinctBy { it.type + "|" + it.identifier }
         var recorded = 0
         db.beginTransaction()
@@ -842,7 +853,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (useCells) add("cell")
             if (useBle) add("ble")
         }
-        val current = signals.asSequence()
+        val current = applyWifiSsidFilter(signals).asSequence()
             .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
             .distinctBy { it.type + "|" + canonicalIdentifier(it.identifier) }
             .groupBy { it.type }
@@ -880,7 +891,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (useCells) add("cell")
             if (useBle) add("ble")
         }
-        val current = signals.asSequence()
+        val current = applyWifiSsidFilter(signals).asSequence()
             .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
             .distinctBy { it.type + "|" + it.identifier }
             .groupBy { it.type }

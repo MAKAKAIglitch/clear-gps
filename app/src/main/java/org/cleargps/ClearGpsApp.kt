@@ -305,6 +305,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
     var useCells by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true)) }
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
+    var wifiSsidBlacklist by remember {
+        mutableStateOf(prefs.getString(ClearGpsPreferences.KEY_WIFI_SSID_BLACKLIST, RadioSsidFilter.DEFAULT_PATTERNS) ?: RadioSsidFilter.DEFAULT_PATTERNS)
+    }
     var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)) }
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
     var recording by remember {
@@ -2246,6 +2249,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 AppTab.SETTINGS -> SettingsScreen(
                                     mode = positionMode, mapTheme = mapThemeMode, useWifi = useWifi, useCells = useCells,
                                     useBle = useBle, showRadioPoints = showRadioPointsOnMap,
+                                    wifiSsidBlacklist = wifiSsidBlacklist,
                                     manualFallbackEnabled = manualFallbackEnabled,
                                     mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
@@ -2313,6 +2317,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onWifi = { useWifi = it; saveUseFlags() },
                                     onCells = { useCells = it; saveUseFlags() },
                                     onBle = { useBle = it; saveUseFlags() },
+                                    onWifiSsidBlacklist = { value ->
+                                        val bounded = value.take(RadioSsidFilter.MAX_CONFIG_LENGTH)
+                                        wifiSsidBlacklist = bounded
+                                        prefs.edit().putString(ClearGpsPreferences.KEY_WIFI_SSID_BLACKLIST, bounded).apply()
+                                    },
                                     onShowPoints = { showRadioPointsOnMap = it },
                                     onManualFallback = {
                                         manualFallbackEnabled = it
@@ -3747,6 +3756,7 @@ private fun ZonesScreen(
 private fun SettingsScreen(
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
+    wifiSsidBlacklist: String, onWifiSsidBlacklist: (String) -> Unit,
     detailedLogging: Boolean, diagnosticLogMaxKb: Int,
     beaconDbEnabled: Boolean, onBeaconDbEnabled: (Boolean) -> Unit,
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
@@ -3882,6 +3892,22 @@ private fun SettingsScreen(
                     SettingSwitch("Мобильные соты", "GSM / WCDMA / LTE / NR, если доступны.", useCells, onCells)
                     Divider(color = colors.outlineVariant)
                     SettingSwitch("Bluetooth LE", "Адрес и уровень сигнала; имена устройств не читаются.", useBle, onBle)
+                    Divider(color = colors.outlineVariant)
+                    Text("Фильтр SSID Wi‑Fi", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = wifiSsidBlacklist,
+                        onValueChange = onWifiSsidBlacklist,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Шаблоны через запятую или с новой строки") },
+                        placeholder = { Text("70mai*, guest-*") },
+                        minLines = 2,
+                        maxLines = 3
+                    )
+                    Text(
+                        "По умолчанию исключаются SSID 70mai*. Поддерживаются * и ? без учёта регистра. Фильтр применяется при сохранении и позиционировании; пустое поле отключает фильтр. Уже сохранённые записи не удаляются.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
                     Divider(color = colors.outlineVariant)
                     Text("Интервал обновления фикса: " + pendingScanInterval.roundToInt() + " с", style = MaterialTheme.typography.titleSmall)
                     Slider(
