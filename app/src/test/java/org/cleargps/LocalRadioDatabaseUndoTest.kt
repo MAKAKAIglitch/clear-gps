@@ -118,6 +118,9 @@ class LocalRadioDatabaseUndoTest {
     @Test
     fun laterDatabaseMutationInvalidatesPreviousUndoToken() {
         val seed = seedData()
+        // Keep another observation on a different day so the point still exists after deletion
+        // and can be edited to prove that this mutation invalidates the pending Undo token.
+        insertOlderObservation(seed)
         val deleted = database.deleteRadioSourceDay(seed.sourceId, seed.dayKey)
         val undoToken = deleted.undoToken
         assertNotNull(undoToken)
@@ -213,6 +216,26 @@ class LocalRadioDatabaseUndoTest {
         insertSegmentSetting(sourceId, dayKey, "cell", enabled = true, trustWeight = 0.8)
 
         return Seed(sourceId, dayKey, pointId, observationId, historyId, observedAt)
+    }
+
+    private fun insertOlderObservation(seed: Seed) {
+        val olderAt = seed.observedAt - 3L * 24L * 60L * 60L * 1_000L
+        sqlite.insertOrThrow(
+            "radio_observations",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", "aa:bb:cc:dd:ee:01")
+                put("latitude", 52.274)
+                put("longitude", 40.452)
+                put("accuracy", 23.0)
+                put("rssi", -58)
+                put("frequency", 2412)
+                put("observed_at", olderAt)
+                put("position_source", "manual-reference")
+                put("source_id", seed.sourceId)
+            }
+        )
     }
 
     private fun insertSegmentSetting(
