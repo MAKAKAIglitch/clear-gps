@@ -16,6 +16,7 @@ internal object BeaconDbClient {
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 12_000
     private const val MAX_RESPONSE_CHARS = 16_384
+    private val lookupCache = BeaconDbLookupCache()
 
     suspend fun lookup(
         cells: List<BeaconDbCell>,
@@ -31,6 +32,23 @@ internal object BeaconDbClient {
 
         var connection: HttpsURLConnection? = null
         val requestCells = cells.filter { it.isValid() }.distinctBy { it.identifier }
+        lookupCache.get(requestCells)?.let { cached ->
+            val ageText = if (cached.ageMillis < 1_000L) {
+                "менее 1 с"
+            } else {
+                (cached.ageMillis / 1_000L).toString() + " с"
+            }
+            return@withContext BeaconDbLookupResult(
+                cells = requestCells,
+                unsupportedCellCount = unsupportedCellCount,
+                coordinate = cached.coordinate,
+                queriedAtMillis = cached.queriedAtMillis,
+                message = "Использован временный кэш BeaconDB (возраст при повторном поиске: " +
+                    ageText + "). Сетевой запрос не отправлялся; результат не сохранён в SQLite.",
+                fromCache = true,
+                cacheAgeMillis = cached.ageMillis
+            )
+        }
         try {
             val body = BeaconDbProtocol.buildCellOnlyRequestBody(requestCells)
             val activeConnection = URL(ENDPOINT).openConnection() as? HttpsURLConnection
@@ -93,6 +111,7 @@ internal object BeaconDbClient {
                     message = "BeaconDB вернула ответ без пригодных координат. Результат не сохранён."
                 )
 
+            lookupCache.put(requestCells, coordinate, queriedAt)
             BeaconDbLookupResult(
                 cells = requestCells,
                 unsupportedCellCount = unsupportedCellCount,

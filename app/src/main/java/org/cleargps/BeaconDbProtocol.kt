@@ -39,7 +39,11 @@ data class BeaconDbLookupResult(
     val unsupportedCellCount: Int = 0,
     val coordinate: BeaconDbCoordinate? = null,
     val queriedAtMillis: Long = 0L,
-    val message: String
+    val message: String,
+    /** True when this explicit lookup reused a successful in-memory cache entry. */
+    val fromCache: Boolean = false,
+    /** Age of the cache entry at lookup time; zero for network results. */
+    val cacheAgeMillis: Long = 0L
 ) {
     val success: Boolean get() = coordinate != null
 }

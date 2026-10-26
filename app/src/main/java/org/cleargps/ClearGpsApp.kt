@@ -3890,6 +3890,18 @@ private fun BeaconDbDatabaseContent(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant
                             )
+                            if (result.fromCache) {
+                                val cacheAge = if (result.cacheAgeMillis < 1_000L) {
+                                    "менее 1 с"
+                                } else {
+                                    (result.cacheAgeMillis / 1_000L).toString() + " с"
+                                }
+                                Text(
+                                    "Временный кэш · возраст при повторном поиске: " + cacheAge + ".",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
                             FilledTonalButton(
                                 onClick = onPublishAsMock,
                                 enabled = !loading,
