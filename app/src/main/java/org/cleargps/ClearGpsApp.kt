@@ -441,7 +441,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 duration = SnackbarDuration.Long
             )
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            withContext(Dispatchers.IO) { database.discardRadioSourceDeletionUndo(undoToken) }
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                database.discardRadioSourceDeletionUndo(undoToken)
+            }
             throw cancelled
         }
         if (result == SnackbarResult.ActionPerformed) {
@@ -2186,6 +2188,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                         "; удалено сканирований: " + result.scanHistoryDeleted,
                                                     result.undoToken
                                                 )
+                                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                                throw cancelled
                                             } catch (error: Exception) {
                                                 snackbarHostState.showSnackbar(
                                                     "Не удалось удалить день: " + (error.message ?: error.javaClass.simpleName),
@@ -2234,6 +2238,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                         "; пересчитано радиоточек: " + result.radiosRecalculated,
                                                     result.undoToken
                                                 )
+                                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                                throw cancelled
                                             } catch (error: Exception) {
                                                 snackbarHostState.showSnackbar(
                                                     "Не удалось удалить запись: " + (error.message ?: error.javaClass.simpleName),

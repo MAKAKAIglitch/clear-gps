@@ -1452,14 +1452,19 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 arrayOf(token, dayKey)
             )
         }
-        if (radioType != null) {
-            db.execSQL(
-                "INSERT INTO radio_deletion_undo_segments (undo_token, source_id, day_key, radio_type, enabled, trust_weight) " +
-                    "SELECT ?, source_id, day_key, radio_type, enabled, trust_weight FROM radio_source_segment_settings " +
-                    "WHERE source_id = ? AND day_key = ? AND radio_type = ?",
-                arrayOf(token, sourceId.toString(), dayKey, radioType)
-            )
+        val segmentSettingsFilter = if (radioType == null) {
+            "source_id = ? AND day_key = ?"
+        } else {
+            "source_id = ? AND day_key = ? AND radio_type = ?"
         }
+        val segmentSettingsArgs = mutableListOf(token, sourceId.toString(), dayKey)
+        if (radioType != null) segmentSettingsArgs.add(radioType)
+        db.execSQL(
+            "INSERT INTO radio_deletion_undo_segments (undo_token, source_id, day_key, radio_type, enabled, trust_weight) " +
+                "SELECT ?, source_id, day_key, radio_type, enabled, trust_weight FROM radio_source_segment_settings " +
+                "WHERE " + segmentSettingsFilter,
+            segmentSettingsArgs.toTypedArray()
+        )
         return token
     }
 
@@ -1610,6 +1615,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     arrayOf(dayKey)
                 )
             } else 0
+            val deletedSegmentSettings = db.delete(
+                "radio_source_segment_settings",
+                "source_id = ? AND day_key = ?",
+                arrayOf(sourceId.toString(), dayKey)
+            )
 
             db.execSQL(
                 "UPDATE radio_sources SET last_seen = MAX(created_at, COALESCE(" +
@@ -1617,7 +1627,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 arrayOf(sourceId.toString(), sourceId.toString())
             )
             affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
-            val hasChanges = deleted > 0 || deletedHistory > 0 || affected.isNotEmpty()
+            val hasChanges = deleted > 0 || deletedHistory > 0 || deletedSegmentSettings > 0 || affected.isNotEmpty()
             if (!hasChanges) clearRadioDeletionUndoToken(db, undoToken)
             db.setTransactionSuccessful()
             return RadioSourceDayDeleteResult(
@@ -2144,8 +2154,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     fun clearAll() {
         val db = writableDatabase
         db.beginTransaction()
-        clearAllRadioDeletionUndo(db)
         try {
+            clearAllRadioDeletionUndo(db)
             db.delete("radio_observations", null, null)
             db.delete("radio_points", null, null)
             db.delete("scan_history", null, null)
