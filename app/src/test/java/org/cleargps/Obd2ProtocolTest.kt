@@ -63,7 +63,7 @@ class Obd2ProtocolTest {
     fun rejectsUnknownBitmapBasesAndMalformedContinuationPages() {
         assertNull(Obd2Protocol.supportedPids("41E000000000>", basePid = 0xE0))
         assertNull(Obd2Protocol.supportedPids("NO DATA>", basePid = 0x20))
-        assertNull(Obd2Protocol.supportedPids("412080000000", basePid = 0x20))
+        assertNull(Obd2Protocol.supportedPids("4120800000", basePid = 0x20))
     }
 
     @Test
