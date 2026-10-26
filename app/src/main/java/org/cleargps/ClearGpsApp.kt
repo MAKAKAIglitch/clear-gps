@@ -264,6 +264,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
     var obd2Connected by remember { mutableStateOf(false) }
     var obd2Connecting by remember { mutableStateOf(false) }
+    var obd2ConnectionRequested by remember { mutableStateOf(false) }
+    var obd2ConnectJob by remember { mutableStateOf<Job?>(null) }
+    var obd2ReconnectJob by remember { mutableStateOf<Job?>(null) }
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
     val obd2SpeedCalibration = remember { Obd2SpeedCalibration() }
     var obd2CalibrationSnapshot by remember { mutableStateOf(Obd2SpeedCalibrationSnapshot()) }
@@ -1108,6 +1111,83 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (selectedTab == AppTab.OBD2) refreshPairedObdAdapters()
     }
 
+    fun scheduleObdReconnect() {
+        if (!obd2ConnectionRequested || obd2ReconnectJob?.isActive == true) return
+        val addressToReconnect = selectedObd2Address
+        if (addressToReconnect.isBlank()) {
+            obd2ConnectionRequested = false
+            return
+        }
+
+        obd2Connecting = true
+        obd2StatusIsError = false
+        obd2Status = "Связь с OBD-II потеряна. Пытаюсь восстановить подключение к тому же сопряжённому адаптеру."
+        obd2ReconnectJob = scope.launch {
+            var lastError: Exception? = null
+            try {
+                for (attemptIndex in 0 until Obd2ReconnectPolicy.MAX_ATTEMPTS) {
+                    if (!obd2ConnectionRequested) return@launch
+                    val waitMillis = Obd2ReconnectPolicy.delayBeforeAttempt(attemptIndex) ?: break
+                    obd2StatusIsError = false
+                    obd2Status = "Автоподключение ${attemptIndex + 1}/${Obd2ReconnectPolicy.MAX_ATTEMPTS} через ${waitMillis / 1_000} с…"
+                    delay(waitMillis)
+                    if (!obd2ConnectionRequested) return@launch
+
+                    try {
+                        val adapter = obd2Repository.connect(addressToReconnect)
+                        if (!obd2ConnectionRequested) {
+                            obd2Repository.disconnect()
+                            return@launch
+                        }
+                        selectedObd2Address = adapter.address
+                        prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
+                        Obd2SharedState.clearSpeed(prefs)
+                        obd2SpeedCalibration.reset()
+                        obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
+                        obd2GearRatioLearner.reset()
+                        obd2GearLearningSnapshot = Obd2GearLearningSnapshot()
+                        obd2DriveMetricsTracker.reset()
+                        obd2DriveMetricsSnapshot = Obd2DriveMetricsSnapshot()
+                        obd2Telemetry = Obd2Telemetry()
+                        obd2Connected = true
+                        obd2StatusIsError = false
+                        obd2Status = "Связь с OBD-II восстановлена. Проверяю свежие данные; позиционирование продолжает работать независимо."
+                        return@launch
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        lastError = error
+                        obd2Repository.disconnect()
+                        if (!obd2ConnectionRequested) return@launch
+                        if (!Obd2ReconnectPolicy.shouldRetry(error)) {
+                            obd2ConnectionRequested = false
+                            obd2StatusIsError = true
+                            obd2Status = "Автопереподключение остановлено: " +
+                                (error.message ?: error.javaClass.simpleName) +
+                                ". Проверь Bluetooth и разрешение «Устройства поблизости». GPS/радио продолжает работать."
+                            return@launch
+                        }
+                        if (attemptIndex < Obd2ReconnectPolicy.MAX_ATTEMPTS - 1) {
+                            obd2StatusIsError = false
+                            obd2Status = "Попытка ${attemptIndex + 1}/${Obd2ReconnectPolicy.MAX_ATTEMPTS} не удалась. " +
+                                "Повторяю подключение к выбранному адаптеру."
+                        }
+                    }
+                }
+                if (obd2ConnectionRequested && !obd2Connected) {
+                    obd2ConnectionRequested = false
+                    obd2StatusIsError = true
+                    obd2Status = "Не удалось восстановить связь после ${Obd2ReconnectPolicy.MAX_ATTEMPTS} попыток" +
+                        (lastError?.message?.let { ": $it" } ?: "") +
+                        ". Нажми «Подключить и читать параметры», чтобы попробовать снова. GPS/радио продолжает работать."
+                }
+            } finally {
+                obd2Connecting = false
+                obd2ReconnectJob = null
+            }
+        }
+    }
+
     LaunchedEffect(obd2Connected) {
         if (!obd2Connected) {
             obd2SpeedCalibration.reset()
@@ -1206,13 +1286,21 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     throw cancelled
                 } catch (error: Exception) {
                     if (!obd2Connected) break
-                    obd2StatusIsError = true
-                    obd2Status = (error.message ?: "Связь с OBD-II адаптером потеряна.") +
-                        " Пробуем резервный вариант: GPS/радиопозиционирование продолжается без автомобильной скорости. Старое значение очищено; переподключи адаптер, чтобы возобновить чтение."
+                    val failureMessage = error.message ?: "Связь с OBD-II адаптером потеряна."
                     obd2Connected = false
                     obd2Telemetry = Obd2Telemetry()
                     Obd2SharedState.clearSpeed(prefs)
                     obd2Repository.disconnect()
+                    if (obd2ConnectionRequested) {
+                        obd2StatusIsError = false
+                        obd2Status = failureMessage +
+                            " Старые данные очищены. Пробую автоматически восстановить связь с тем же адаптером; GPS/радио продолжает работать."
+                        scheduleObdReconnect()
+                    } else {
+                        obd2StatusIsError = true
+                        obd2Status = failureMessage +
+                            " Старые данные очищены. GPS/радиопозиционирование продолжает работать; при необходимости подключи адаптер вручную."
+                    }
                     break
                 }
             }
@@ -1220,7 +1308,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
 
     DisposableEffect(obd2Repository) {
-        onDispose { obd2Repository.close() }
+        onDispose {
+            obd2ReconnectJob?.cancel()
+            obd2ConnectJob?.cancel()
+            obd2Repository.close()
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -1967,20 +2059,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                             obd2StatusIsError = true
                                             obd2Status = "Сначала выбери сопряжённый адаптер. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
                                         } else {
-                                            scope.launch {
+                                            obd2ReconnectJob?.cancel()
+                                            obd2ReconnectJob = null
+                                            obd2ConnectJob?.cancel()
+                                            obd2ConnectionRequested = false
+                                            val addressToConnect = selectedObd2Address
+                                            obd2ConnectJob = scope.launch {
                                                 obd2Connecting = true
                                                 obd2StatusIsError = false
                                                 obd2Status = "Подключение к Bluetooth-адаптеру…"
                                                 try {
-                                                    val adapter = obd2Repository.connect(selectedObd2Address)
+                                                    val adapter = obd2Repository.connect(addressToConnect)
                                                     selectedObd2Address = adapter.address
                                                     prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
                                                     Obd2SharedState.clearSpeed(prefs)
                                                     obd2SpeedCalibration.reset()
                                                     obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
+                                                    obd2GearRatioLearner.reset()
+                                                    obd2GearLearningSnapshot = Obd2GearLearningSnapshot()
                                                     obd2DriveMetricsTracker.reset()
                                                     obd2DriveMetricsSnapshot = Obd2DriveMetricsSnapshot()
                                                     obd2Telemetry = Obd2Telemetry()
+                                                    obd2ConnectionRequested = true
                                                     obd2Connected = true
                                                     obd2StatusIsError = false
                                                     obd2Status = "Подключено. Проверяю карты возможностей, VIN и стандартные параметры; для позиции используется только свежая скорость PID 0D."
@@ -1988,17 +2088,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     throw cancelled
                                                 } catch (error: Exception) {
                                                     obd2Connected = false
+                                                    obd2ConnectionRequested = false
                                                     Obd2SharedState.clearSpeed(prefs)
                                                     obd2StatusIsError = true
                                                     obd2Status = (error.message ?: "Не удалось подключиться к адаптеру.") +
                                                         " Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
                                                 } finally {
                                                     obd2Connecting = false
+                                                    obd2ConnectJob = null
                                                 }
                                             }
                                         }
                                     },
                                     onDisconnect = {
+                                        obd2ConnectionRequested = false
+                                        obd2ReconnectJob?.cancel()
+                                        obd2ReconnectJob = null
+                                        obd2ConnectJob?.cancel()
+                                        obd2ConnectJob = null
+                                        obd2Connecting = false
                                         obd2Connected = false
                                         obd2Telemetry = Obd2Telemetry()
                                         Obd2SharedState.clearSpeed(prefs)

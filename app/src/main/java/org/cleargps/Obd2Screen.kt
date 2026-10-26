@@ -72,7 +72,7 @@ internal fun Obd2Screen(
             AssistChip(
                 onClick = { },
                 enabled = false,
-                label = { Text(if (connected) "Подключено" else "Отключено") },
+                label = { Text(when { connected -> "Подключено"; connecting -> "Подключение"; else -> "Отключено" }) },
                 leadingIcon = { Icon(Icons.Outlined.DirectionsCar, null, modifier = Modifier.size(17.dp)) }
             )
         }
@@ -148,12 +148,12 @@ internal fun Obd2Screen(
                     }
                 }
                 if (connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
-                if (connected) {
+                if (connected || connecting) {
                     OutlinedButton(
                         onClick = onDisconnect,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
                         shape = RoundedCornerShape(14.dp)
-                    ) { Text("Отключить адаптер") }
+                    ) { Text(if (connecting) "Отменить подключение" else "Отключить адаптер") }
                 } else {
                     FilledTonalButton(
                         onClick = onConnect,
