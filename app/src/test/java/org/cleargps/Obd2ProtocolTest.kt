@@ -10,7 +10,7 @@ import java.util.Random
 
 class Obd2ProtocolTest {
     @Test
-    fun requestsOnlyCapabilityBitmapsAndVehicleSpeed() {
+    fun requestsOnlyCapabilityBitmapsAndPlannedTelemetryPids() {
         assertEquals("0100", Obd2Protocol.requestFor(0x00))
         assertEquals("0120", Obd2Protocol.requestFor(0x20))
         assertEquals("0140", Obd2Protocol.requestFor(0x40))
@@ -18,12 +18,13 @@ class Obd2ProtocolTest {
         assertEquals("0180", Obd2Protocol.requestFor(0x80))
         assertEquals("01A0", Obd2Protocol.requestFor(0xA0))
         assertEquals("01C0", Obd2Protocol.requestFor(0xC0))
-        assertEquals("010D", Obd2Protocol.requestFor(0x0D))
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x04) }
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x05) }
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x0C) }
+        for (pid in Obd2Protocol.telemetryPids) {
+            assertEquals("01" + pid.toString(16).uppercase().padStart(2, '0'), Obd2Protocol.requestFor(pid))
+        }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x09) }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0x10) }
         assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.requestFor(0xE0) }
-        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.decode(0x0C, "410C1AF8") }
+        assertThrows(IllegalArgumentException::class.java) { Obd2Protocol.decode(0x09, "4902") }
     }
 
     @Test
@@ -82,6 +83,56 @@ class Obd2ProtocolTest {
     }
 
     @Test
+    fun decodesEveryPlannedReadOnlyTelemetryPid() {
+        assertEquals(50, Obd2Protocol.decode(0x04, "410480>"))
+        assertEquals(50, Obd2Protocol.decode(0x05, "41055A>"))
+        assertEquals(60, Obd2Protocol.decode(0x0B, "410B3C>"))
+        assertEquals(1_726, Obd2Protocol.decode(0x0C, "410C1AF8>"))
+        assertEquals(88, Obd2Protocol.decode(0x0D, "410D58>"))
+        assertEquals(50, Obd2Protocol.decode(0x11, "411180>"))
+        assertEquals(100, Obd2Protocol.decode(0x33, "413364>"))
+        assertEquals(0, Obd2Protocol.decode(0x04, "410400>"))
+        assertEquals(-40, Obd2Protocol.decode(0x05, "410500>"))
+        assertEquals(215, Obd2Protocol.decode(0x05, "4105FF>"))
+        assertEquals(16_383, Obd2Protocol.decode(0x0C, "410CFFFF>"))
+    }
+
+    @Test
+    fun rejectsShortResponsesAndOversizedParserInputs() {
+        assertNull(Obd2Protocol.decode(0x0C, "410C1A>"))
+        assertNull(Obd2Protocol.decode(0x0D, "410D"))
+        val oversized = "410D58" + "A".repeat(3_000)
+        assertNull(Obd2Protocol.decode(0x0D, oversized))
+        assertNull(Obd2Protocol.supportedPids("4100" + "F".repeat(3_000)))
+    }
+
+    @Test
+    fun batchTelemetryKeepsOnlyValidValuesAndReportsPerPidIssues() {
+        val telemetry = Obd2Protocol.telemetry(
+            responses = mapOf(
+                0x0D to "410D58>",
+                0x0C to "410C1AF8>",
+                0x05 to "41055A>"
+            ),
+            pidIssues = mapOf(
+                0x04 to Obd2PidIssue.PID_UNSUPPORTED,
+                0x0B to Obd2PidIssue.NO_VALID_RESPONSE,
+                0x11 to Obd2PidIssue.PID_DISABLED_FOR_SESSION
+            ),
+            now = 10_000L
+        )
+
+        assertEquals(88, telemetry.vehicleSpeedKmh)
+        assertEquals(1_726, telemetry.engineRpm)
+        assertEquals(50, telemetry.coolantTemperatureCelsius)
+        assertEquals(10_000L, telemetry.updatedAt)
+        assertNull(telemetry.speedIssue)
+        assertEquals(Obd2PidIssue.PID_UNSUPPORTED, telemetry.pidIssues[0x04])
+        assertEquals(Obd2PidIssue.NO_VALID_RESPONSE, telemetry.pidIssues[0x0B])
+        assertEquals(Obd2PidIssue.PID_DISABLED_FOR_SESSION, telemetry.pidIssues[0x11])
+    }
+
+    @Test
     fun rejectsNoDataNegativeIncompleteAndWrongPidResponses() {
         assertNull(Obd2Protocol.decode(0x0D, "NO DATA>"))
         assertNull(Obd2Protocol.decode(0x0D, "7F 01 12>"))
@@ -126,8 +177,16 @@ class Obd2ProtocolTest {
                     append(alphabet[random.nextInt(alphabet.length)])
                 }
             }
-            val speed = Obd2Protocol.decode(0x0D, response)
-            if (speed != null) assertTrue("Out-of-range decoded speed: $speed", speed in 0..250)
+            for (pid in Obd2Protocol.telemetryPids) {
+                val value = Obd2Protocol.decode(pid, response) ?: continue
+                when (pid) {
+                    0x04, 0x11 -> assertTrue("Out-of-range percentage for PID $pid: $value", value in 0..100)
+                    0x05 -> assertTrue("Out-of-range temperature: $value", value in -40..215)
+                    0x0B, 0x33 -> assertTrue("Out-of-range pressure for PID $pid: $value", value in 0..255)
+                    0x0C -> assertTrue("Out-of-range RPM: $value", value in 0..16_383)
+                    0x0D -> assertTrue("Out-of-range speed: $value", value in 0..250)
+                }
+            }
 
             for (basePid in Obd2Protocol.supportBitmapBases) {
                 val supported = Obd2Protocol.supportedPids(response, basePid)

@@ -204,12 +204,84 @@ internal fun Obd2Screen(
                 } else {
                     Text(status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    VehicleMetric(
+                        title = "Скорость PID 0D",
+                        value = telemetry.vehicleSpeedKmh?.toString() ?: "—",
+                        unit = "км/ч",
+                        modifier = Modifier.weight(1f)
+                    )
+                    VehicleMetric(
+                        title = "Обороты PID 0C",
+                        value = telemetry.engineRpm?.toString() ?: "—",
+                        unit = "об/мин",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    VehicleMetric(
+                        title = "Нагрузка PID 04",
+                        value = telemetry.engineLoadPercent?.toString() ?: "—",
+                        unit = "%",
+                        modifier = Modifier.weight(1f)
+                    )
+                    VehicleMetric(
+                        title = "Дроссель PID 11",
+                        value = telemetry.throttlePercent?.toString() ?: "—",
+                        unit = "%",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    VehicleMetric(
+                        title = "MAP PID 0B",
+                        value = telemetry.manifoldPressureKpa?.toString() ?: "—",
+                        unit = "кПа",
+                        modifier = Modifier.weight(1f)
+                    )
+                    VehicleMetric(
+                        title = "Температура PID 05",
+                        value = telemetry.coolantTemperatureCelsius?.toString() ?: "—",
+                        unit = "°C",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
                 VehicleMetric(
-                    title = "Скорость по PID 0D",
-                    value = telemetry.vehicleSpeedKmh?.toString() ?: "—",
-                    unit = "км/ч",
+                    title = "Барометрическое давление PID 33",
+                    value = telemetry.barometricPressureKpa?.toString() ?: "—",
+                    unit = "кПа",
                     modifier = Modifier.fillMaxWidth()
                 )
+                val unavailablePids = telemetry.pidIssues.filterValues {
+                    it == Obd2PidIssue.NO_VALID_RESPONSE
+                }.keys
+                val unsupportedPids = telemetry.pidIssues.filterValues {
+                    it == Obd2PidIssue.PID_UNSUPPORTED
+                }.keys
+                val disabledPids = telemetry.pidIssues.filterValues {
+                    it == Obd2PidIssue.PID_DISABLED_FOR_SESSION
+                }.keys
+                if (unsupportedPids.isNotEmpty()) {
+                    Text(
+                        "ЭБУ не объявил поддержку: " + unsupportedPids.sorted().joinToString { Obd2Protocol.pidLabel(it) },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                if (unavailablePids.isNotEmpty()) {
+                    Text(
+                        "Некорректный ответ: " + unavailablePids.sorted().joinToString { Obd2Protocol.pidLabel(it) },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.error
+                    )
+                }
+                if (disabledPids.isNotEmpty()) {
+                    Text(
+                        "Отключены до переподключения: " + disabledPids.sorted().joinToString { Obd2Protocol.pidLabel(it) },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.error
+                    )
+                }
                 if (telemetry.updatedAt > 0L) {
                     Text(
                         "Последняя попытка: " +
@@ -230,7 +302,7 @@ internal fun Obd2Screen(
                     Text("Гарантии режима чтения", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Сначала читается PID 00 — битовая карта поддержки стандартных PID. Затем приложение запрашивает только PID 0D (скорость автомобиля). Если карта отсутствует, проверяется только этот PID; неподдерживаемые значения пропускаются. Обороты, температура и другие диагностические параметры не запрашиваются.",
+                    "Сначала читаются битовые карты поддержки SAE J1979 (00/20/40/60/80/A0/C0), затем только объявленные ЭБУ стандартные PID 04, 05, 0B, 0C, 0D, 11 и 33. Если карта возможностей недоступна, приложение безопасно ограничивается проверкой скорости 0D. VIN, Mode 09 и произвольные команды не запрашиваются.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
@@ -239,7 +311,7 @@ internal fun Obd2Screen(
                     color = colors.onSurfaceVariant
                 )
                 Text(
-                    "Поддерживаются уже сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые); BLE и USB пока не поддерживаются. При неподдерживаемом PID или ошибке чтения появляется красный статус с причиной и резервным вариантом. Три подряд завершённых, но некорректных ответа PID 0D отключают его до переподключения; таймаут или потеря Bluetooth-соединения завершают текущую сессию, чтобы не использовать потенциально рассинхронизированный поток. Старые значения скорости очищаются, а выбранный GPS/радио источник продолжает работать независимо от OBD-II. Скорость сама по себе не определяет направление или координаты.",
+                    "Поддерживаются уже сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые); BLE и USB пока не поддерживаются. Три подряд завершённых, но некорректных ответа отключают только соответствующий PID до переподключения. Таймаут или потеря Bluetooth-соединения завершают текущую сессию, чтобы не использовать потенциально рассинхронизированный поток. Дополнительные параметры выводятся только на этом экране и не сохраняются в историю; для прогноза координат используется только свежая скорость 0D. Старые данные скорости очищаются, а выбранный GPS/радио источник продолжает работать независимо от OBD-II.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )

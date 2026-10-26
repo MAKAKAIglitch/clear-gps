@@ -109,47 +109,53 @@ class Obd2Repository(context: Context) {
         ioMutex.withLock {
             val current = activeSession ?: throw IllegalStateException("OBD-II адаптер не подключён.")
             try {
-                // Walk the SAE J1979 support-bitmap chain only when each page advertises
-                // its continuation. These requests discover capabilities; they do not read
-                // RPM, load, temperature, VIN or other vehicle telemetry.
+                // Discover capabilities once per connection. If the first bitmap is missing,
+                // retain the conservative speed-only fallback rather than guessing support.
                 if (!current.supportProbeCompleted) {
                     current.supportedPids = probeSupportedPids(current)
                     current.supportProbeCompleted = true
                 }
-                val speedPidSupported = current.supportedPids?.contains(0x0D)
-                if (speedPidSupported == false) {
-                    // The ECU explicitly reports that speed is unsupported. Skip the PID.
-                    return@withLock Obd2Protocol.telemetry(
-                        speedResponse = "NO DATA>",
-                        speedPidSupported = false,
-                        now = System.currentTimeMillis()
-                    )
-                }
-                if (current.pidCircuitBreaker.isDisabled(0x0D)) {
-                    return@withLock Obd2Protocol.telemetry(
-                        speedResponse = "NO DATA>",
-                        speedPidSupported = speedPidSupported,
-                        now = System.currentTimeMillis(),
-                        pidDisabledForSession = true
-                    )
+
+                val knownSupportedPids = current.supportedPids
+                val responses = linkedMapOf<Int, String>()
+                val issues = linkedMapOf<Int, Obd2PidIssue>()
+
+                // Read less critical values before speed so the freshest speed sample is the
+                // last command in the cycle. Each PID has an independent circuit breaker.
+                val pollOrder = (Obd2Protocol.telemetryPids - 0x0D) + 0x0D
+                for (pid in pollOrder) {
+                    if (knownSupportedPids == null && pid != 0x0D) {
+                        // No trustworthy capability bitmap: do not probe extra PIDs blindly.
+                        continue
+                    }
+                    if (knownSupportedPids != null && pid !in knownSupportedPids) {
+                        issues[pid] = Obd2PidIssue.PID_UNSUPPORTED
+                        continue
+                    }
+                    if (current.pidCircuitBreaker.isDisabled(pid)) {
+                        issues[pid] = Obd2PidIssue.PID_DISABLED_FOR_SESSION
+                        continue
+                    }
+
+                    val response = queryPid(current, pid)
+                    if (Obd2Protocol.decode(pid, response) == null) {
+                        val disabled = current.pidCircuitBreaker.recordFailure(pid)
+                        issues[pid] = if (disabled) {
+                            Obd2PidIssue.PID_DISABLED_FOR_SESSION
+                        } else {
+                            Obd2PidIssue.NO_VALID_RESPONSE
+                        }
+                    } else {
+                        current.pidCircuitBreaker.recordSuccess(pid)
+                        responses[pid] = response
+                    }
                 }
 
-                // A framed but invalid reply counts toward the breaker. A valid zero speed
-                // is a successful reading and resets a prior failure streak.
-                val speedResponse = queryPid(current, 0x0D)
-                val telemetry = Obd2Protocol.telemetry(
-                    speedResponse = speedResponse,
-                    speedPidSupported = speedPidSupported,
+                Obd2Protocol.telemetry(
+                    responses = responses,
+                    pidIssues = issues,
                     now = System.currentTimeMillis()
                 )
-                if (telemetry.vehicleSpeedKmh == null) {
-                    if (current.pidCircuitBreaker.recordFailure(0x0D)) {
-                        telemetry.copy(speedIssue = Obd2SpeedIssue.PID_DISABLED_FOR_SESSION)
-                    } else telemetry
-                } else {
-                    current.pidCircuitBreaker.recordSuccess(0x0D)
-                    telemetry
-                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
