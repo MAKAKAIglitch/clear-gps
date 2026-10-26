@@ -6,6 +6,8 @@ package org.cleargps
  */
 internal object GnssReplayRadioCapturePolicy {
     const val MIN_INTERVAL_MILLIS = 15_000L
+    const val REPEAT_SUPPRESSION_MILLIS = 30_000L
+    private const val NANOS_PER_MILLI = 1_000_000L
     private const val MAX_CONFIGURED_INTERVAL_SECONDS = 30
 
     fun shouldCapture(
@@ -16,4 +18,19 @@ internal object GnssReplayRadioCapturePolicy {
 
     fun intervalMillis(configuredSeconds: Int): Long =
         maxOf(configuredSeconds.coerceIn(1, MAX_CONFIGURED_INTERVAL_SECONDS) * 1_000L, MIN_INTERVAL_MILLIS)
+
+    /** Applied inside the recorder so manual scans cannot bypass the rate limit. */
+    fun shouldRecordFrame(
+        lastFrameAtNanos: Long,
+        nowNanos: Long,
+        sameSignature: Boolean
+    ): Boolean {
+        if (nowNanos <= 0L) return false
+        if (lastFrameAtNanos <= 0L) return true
+        if (nowNanos < lastFrameAtNanos) return false
+        val elapsedNanos = nowNanos - lastFrameAtNanos
+        if (elapsedNanos < MIN_INTERVAL_MILLIS * NANOS_PER_MILLI) return false
+        if (sameSignature && elapsedNanos < REPEAT_SUPPRESSION_MILLIS * NANOS_PER_MILLI) return false
+        return true
+    }
 }
