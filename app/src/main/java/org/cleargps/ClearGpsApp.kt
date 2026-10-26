@@ -1054,12 +1054,21 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     suspend fun loadPairedObdAdapters() {
         try {
             val pairedClassic = obd2Repository.pairedAdapters()
-            val previousBleCandidates = obd2Adapters.filter { it.transportType == Obd2TransportType.BLE_GATT }
-            val available = (pairedClassic + previousBleCandidates).distinctBy { it.selectionKey }
+            val previousNonClassicCandidates = obd2Adapters.filter {
+                it.transportType != Obd2TransportType.CLASSIC_SPP
+            }
+            val savedWifiCandidate = selectedObd2Address
+                .takeIf { it.startsWith("wifi:", ignoreCase = true) }
+                ?.let { key -> runCatching { Obd2AdapterSelection.parse(key) }.getOrNull() }
+                ?.takeIf { it.transportType == Obd2TransportType.WIFI_TCP }
+                ?.let { Obd2Adapter("Wi-Fi OBD-II TCP", it.address, Obd2TransportType.WIFI_TCP, it.port) }
+            val available = (pairedClassic + previousNonClassicCandidates + listOfNotNull(savedWifiCandidate))
+                .distinctBy { it.selectionKey }
             obd2Adapters = available
-            val selectionIsBle = selectedObd2Address.startsWith("ble:", ignoreCase = true)
+            val selectionIsManualEndpoint = selectedObd2Address.startsWith("ble:", ignoreCase = true) ||
+                selectedObd2Address.startsWith("wifi:", ignoreCase = true)
             if (available.none { it.selectionKey.equals(selectedObd2Address, ignoreCase = true) } &&
-                (!selectionIsBle || selectedObd2Address.isBlank())
+                (!selectionIsManualEndpoint || selectedObd2Address.isBlank())
             ) {
                 selectedObd2Address = available.firstOrNull()?.selectionKey.orEmpty()
                 prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
@@ -1070,7 +1079,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             when {
                 available.isEmpty() -> {
                     obd2StatusIsError = false
-                    obd2Status = "Сопряжённых Classic SPP-адаптеров не найдено. Можно выполнить отдельный BLE-поиск кнопкой «Найти BLE OBD». GPS/радиопозиционирование работает независимо."
+                    obd2Status = "Сопряжённых Classic SPP-адаптеров не найдено. Можно выполнить BLE-поиск или вручную добавить Wi-Fi OBD. GPS/радиопозиционирование работает независимо."
                 }
                 obd2Connected && obd2Telemetry.updatedAt > 0L -> {
                     // Refreshing the paired-device list must not hide a live speed-reading
@@ -1083,11 +1092,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 else -> {
                     obd2StatusIsError = false
                     obd2Status = "Classic SPP: " + pairedClassic.size + "; BLE-кандидатов в текущем списке: " +
-                        previousBleCandidates.size + ". BLE-поиск выполняется только вручную."
+                        previousNonClassicCandidates.count { it.transportType == Obd2TransportType.BLE_GATT } + ". BLE-поиск выполняется только вручную."
                 }
             }
         } catch (error: Exception) {
-            obd2Adapters = obd2Adapters.filter { it.transportType == Obd2TransportType.BLE_GATT }
+            obd2Adapters = obd2Adapters.filter { it.transportType != Obd2TransportType.CLASSIC_SPP }
             obd2StatusIsError = true
             obd2Status = (error.message ?: "Не удалось получить список Bluetooth-устройств.") +
                 " Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
@@ -1185,6 +1194,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             } else {
                 scope.launch { loadBleObdAdapters() }
             }
+        }
+    }
+
+    val addWifiObdAdapter: (String, String) -> Unit = { hostInput, portInput ->
+        try {
+            val selection = Obd2AdapterSelection.parse("wifi:${hostInput.trim()}:${portInput.trim()}")
+            val adapter = Obd2Adapter(
+                name = "Wi-Fi OBD-II TCP",
+                address = selection.address,
+                transportType = Obd2TransportType.WIFI_TCP,
+                port = selection.port
+            )
+            obd2Adapters = (obd2Adapters.filterNot {
+                it.selectionKey.equals(selection.key, ignoreCase = true)
+            } + adapter).distinctBy { it.selectionKey }
+            selectedObd2Address = selection.key
+            prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selection.key).apply()
+            obd2StatusIsError = false
+            obd2Status = "Wi-Fi OBD добавлен: ${selection.address}:${selection.port}. Подключись к Wi-Fi сети адаптера в настройках Android, затем нажми «Подключить и читать параметры»."
+        } catch (error: Exception) {
+            obd2StatusIsError = true
+            obd2Status = error.message ?: "Некорректный адрес Wi-Fi OBD."
         }
     }
 
@@ -2130,12 +2161,14 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },
                                     onScanBle = { scanBleObdAdapters() },
+                                    onAddWifi = { host, port -> addWifiObdAdapter(host, port) },
                                     onSelect = {
                                         selectedObd2Address = it
                                         prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, it).apply()
                                     },
                                     onConnect = {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                                        if (!selectedObd2Address.startsWith("wifi:", ignoreCase = true) &&
+                                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                                             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
                                             obd2PermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
                                         } else if (selectedObd2Address.isBlank()) {
@@ -2150,7 +2183,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                             obd2ConnectJob = scope.launch {
                                                 obd2Connecting = true
                                                 obd2StatusIsError = false
-                                                obd2Status = "Подключение к Bluetooth-адаптеру…"
+                                                obd2Status = if (addressToConnect.startsWith("wifi:", ignoreCase = true)) {
+                                                    "Подключение к Wi-Fi OBD TCP…"
+                                                } else {
+                                                    "Подключение к Bluetooth-адаптеру…"
+                                                }
                                                 try {
                                                     val adapter = obd2Repository.connect(addressToConnect)
                                                     selectedObd2Address = adapter.selectionKey

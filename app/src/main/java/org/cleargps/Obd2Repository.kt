@@ -9,6 +9,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.IpPrefix
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
@@ -19,6 +23,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -27,9 +34,10 @@ import kotlin.coroutines.resumeWithException
 data class Obd2Adapter(
     val name: String,
     val address: String,
-    val transportType: Obd2TransportType = Obd2TransportType.CLASSIC_SPP
+    val transportType: Obd2TransportType = Obd2TransportType.CLASSIC_SPP,
+    val port: Int? = null
 ) {
-    val selectionKey: String get() = Obd2AdapterSelection(address, transportType).key
+    val selectionKey: String get() = Obd2AdapterSelection(address, transportType, port).key
 }
 
 class Obd2Repository(context: Context) {
@@ -73,60 +81,103 @@ class Obd2Repository(context: Context) {
     }
 
     /**
-     * Connect only to the explicitly selected adapter. A bare MAC keeps meaning Classic SPP
-     * for backwards compatibility; BLE selections use the "ble:" prefix.
+     * Connect only to the selected endpoint. Bare MAC and ble:MAC keys remain compatible;
+     * Wi-Fi uses wifi:private-ip:port and never changes Android's active network.
      */
     suspend fun connect(selectionKey: String): Obd2Adapter {
         val selection = Obd2AdapterSelection.parse(selectionKey)
         disconnect()
         return withContext(Dispatchers.IO) {
-            requireBluetoothPermission()
-            val bluetoothAdapter = getBluetoothAdapter()
-            if (!bluetoothAdapter.isEnabled) {
-                throw IllegalStateException("Bluetooth выключен. Включи его в системных настройках.")
-            }
-            val device = bluetoothAdapter.getRemoteDevice(selection.address)
-            val adapter = Obd2Adapter(
-                name = safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" },
-                address = device.address.orEmpty().uppercase(Locale.ROOT),
-                transportType = selection.transportType
-            )
+            var adapter: Obd2Adapter? = null
             var transport: Obd2ElmTransport? = null
             try {
-                transport = when (selection.transportType) {
-                    Obd2TransportType.CLASSIC_SPP -> {
-                        val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                when (selection.transportType) {
+                    Obd2TransportType.WIFI_TCP -> {
+                        val port = selection.port ?: throw IllegalArgumentException("Не задан TCP-порт Wi-Fi OBD.")
+                        adapter = Obd2Adapter("Wi-Fi OBD-II TCP", selection.address, Obd2TransportType.WIFI_TCP, port)
+                        val network = findWifiNetworkForHost(selection.address)
+                        val socket = Socket()
                         try {
-                            connectSocketCancellable(socket)
-                            ClassicObd2Transport(socket)
+                            network.bindSocket(socket)
+                            connectWifiSocketCancellable(socket, selection.address, port, WIFI_CONNECT_TIMEOUT_MS)
+                            transport = Obd2WifiTcpTransport(socket)
                         } catch (error: Exception) {
                             try { socket.close() } catch (_: Exception) { }
                             throw error
                         }
                     }
-                    Obd2TransportType.BLE_GATT -> BleGattObd2Transport(appContext, device).connect()
+                    Obd2TransportType.CLASSIC_SPP, Obd2TransportType.BLE_GATT -> {
+                        requireBluetoothPermission()
+                        val bluetoothAdapter = getBluetoothAdapter()
+                        if (!bluetoothAdapter.isEnabled) {
+                            throw IllegalStateException("Bluetooth выключен. Включи его в системных настройках.")
+                        }
+                        val device = bluetoothAdapter.getRemoteDevice(selection.address)
+                        adapter = Obd2Adapter(
+                            name = safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" },
+                            address = device.address.orEmpty().uppercase(Locale.ROOT),
+                            transportType = selection.transportType
+                        )
+                        transport = when (selection.transportType) {
+                            Obd2TransportType.CLASSIC_SPP -> {
+                                val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                                try {
+                                    connectSocketCancellable(socket)
+                                    ClassicObd2Transport(socket)
+                                } catch (error: Exception) {
+                                    try { socket.close() } catch (_: Exception) { }
+                                    throw error
+                                }
+                            }
+                            Obd2TransportType.BLE_GATT -> BleGattObd2Transport(appContext, device).connect()
+                            Obd2TransportType.WIFI_TCP -> error("Wi-Fi selection is handled separately.")
+                        }
+                    }
                 }
-                val newSession = Session(adapter, transport ?: throw IOException("OBD-транспорт не создан."))
-                // Publish the in-progress session before setup so a user cancellation closes
-                // the active transport instead of leaving the setup exchange running.
-                activeSession = newSession
-                // These setup commands configure the ELM-compatible adapter, never the ECU.
+                val selectedAdapter = adapter ?: throw IOException("OBD-адаптер не создан.")
+                val selectedTransport = transport ?: throw IOException("OBD-транспорт не создан.")
+                val session = Session(selectedAdapter, selectedTransport)
+                activeSession = session
                 ADAPTER_OUTPUT_SETUP.forEach { command ->
-                    exchange(newSession, command, ADAPTER_COMMAND_TIMEOUT_MS)
+                    exchange(session, command, ADAPTER_COMMAND_TIMEOUT_MS)
                 }
-                adapter
+                selectedAdapter
             } catch (cancelled: CancellationException) {
-                if (activeSession?.adapter?.selectionKey == adapter.selectionKey) activeSession = null
+                if (activeSession?.adapter?.selectionKey == adapter?.selectionKey) activeSession = null
                 transport?.close()
                 throw cancelled
             } catch (error: Exception) {
-                if (activeSession?.adapter?.selectionKey == adapter.selectionKey) activeSession = null
+                if (activeSession?.adapter?.selectionKey == adapter?.selectionKey) activeSession = null
                 transport?.close()
                 if (error is SecurityException || error is IllegalStateException || error is IllegalArgumentException) throw error
-                val transportName = if (selection.transportType == Obd2TransportType.BLE_GATT) "BLE GATT" else "Bluetooth Classic SPP"
-                throw IOException("Не удалось подключиться через $transportName. Проверь адаптер и совместимость ELM327.", error)
+                val mode = when (selection.transportType) {
+                    Obd2TransportType.CLASSIC_SPP -> "Bluetooth Classic SPP"
+                    Obd2TransportType.BLE_GATT -> "BLE GATT"
+                    Obd2TransportType.WIFI_TCP -> "Wi-Fi TCP"
+                }
+                throw IOException("Не удалось подключиться через $mode. Проверь адрес, сеть и совместимость ELM327.", error)
             }
         }
+    }
+
+    /** Match the destination against an on-link Wi-Fi prefix, not a generic default route. */
+    private fun findWifiNetworkForHost(host: String): Network {
+        val manager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: throw IllegalStateException("Android не предоставляет информацию о сетях.")
+        val destination = InetAddress.getByName(host)
+        return manager.allNetworks.firstOrNull { network ->
+            val capabilities = manager.getNetworkCapabilities(network)
+            val properties = manager.getLinkProperties(network)
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                properties?.linkAddresses?.any { linkAddress ->
+                    runCatching {
+                        IpPrefix(linkAddress.address, linkAddress.prefixLength).contains(destination)
+                    }.getOrDefault(false)
+                } == true
+        } ?: throw IllegalStateException(
+            "Сначала подключись в настройках Android к Wi-Fi-сети самого OBD-адаптера. " +
+                "Clear GPS не переключает сеть автоматически; интернет на этой сети может быть недоступен."
+        )
     }
 
     /**
@@ -325,6 +376,43 @@ class Obd2Repository(context: Context) {
         return session.transport.exchange(command, timeoutMs)
     }
 
+    private suspend fun connectWifiSocketCancellable(
+        socket: Socket,
+        host: String,
+        port: Int,
+        timeoutMs: Int
+    ) = suspendCancellableCoroutine<Unit> { continuation ->
+        val connector = Thread({
+            try {
+                socket.connect(InetSocketAddress(host, port), timeoutMs)
+                if (continuation.isActive) {
+                    try {
+                        continuation.resume(Unit)
+                    } catch (_: IllegalStateException) {
+                        try { socket.close() } catch (_: Exception) { }
+                    }
+                } else {
+                    try { socket.close() } catch (_: Exception) { }
+                }
+            } catch (error: Exception) {
+                if (continuation.isActive) {
+                    try {
+                        continuation.resumeWithException(error)
+                    } catch (_: IllegalStateException) {
+                        try { socket.close() } catch (_: Exception) { }
+                    }
+                } else {
+                    try { socket.close() } catch (_: Exception) { }
+                }
+            }
+        }, "ClearGPS-OBD2-wifi-connect").apply { isDaemon = true }
+        continuation.invokeOnCancellation {
+            try { socket.close() } catch (_: Exception) { }
+            connector.interrupt()
+        }
+        connector.start()
+    }
+
     private suspend fun connectSocketCancellable(socket: BluetoothSocket) =
         suspendCancellableCoroutine<Unit> { continuation ->
             val connector = Thread({
@@ -393,6 +481,7 @@ class Obd2Repository(context: Context) {
         private const val ADAPTER_COMMAND_TIMEOUT_MS = 1_500L
         private const val PID_RESPONSE_TIMEOUT_MS = 2_200L
         private const val BLE_SCAN_DURATION_MS = 8_000L
+        private const val WIFI_CONNECT_TIMEOUT_MS = 3_500
 
         // These AT commands configure only the ELM-compatible adapter, not the ECU.
         // ATSP0 improves compatibility across standard vehicle OBD protocols.

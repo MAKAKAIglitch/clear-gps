@@ -2,6 +2,7 @@ package org.cleargps
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,13 +26,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.util.Locale
@@ -51,12 +58,15 @@ internal fun Obd2Screen(
     statusIsError: Boolean,
     onRefresh: () -> Unit,
     onScanBle: () -> Unit,
+    onAddWifi: (String, String) -> Unit,
     onSelect: (String) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenBluetoothSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    var wifiHost by remember { mutableStateOf("192.168.0.10") }
+    var wifiPort by remember { mutableStateOf(Obd2AdapterSelection.DEFAULT_WIFI_PORT.toString()) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -66,7 +76,7 @@ internal fun Obd2Screen(
             Column(Modifier.weight(1f)) {
                 Text("OBD-II · только чтение", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Bluetooth Classic SPP + BLE GATT · без записи в ЭБУ",
+                    "Bluetooth Classic SPP + BLE GATT + Wi-Fi TCP · без записи в ЭБУ",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
@@ -84,16 +94,16 @@ internal fun Obd2Screen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Bluetooth, null, tint = colors.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text("OBD-II адаптеры Bluetooth", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("OBD-II адаптеры", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Classic SPP берётся только из ранее сопряжённых устройств. BLE-поиск запускается отдельно по кнопке ниже; результаты остаются на устройстве.",
+                    "Classic SPP берётся только из сопряжённых устройств. BLE-поиск запускается только вручную. Для Wi-Fi OBD укажи локальный адрес и порт после подключения к точке доступа адаптера в настройках Android.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
                 if (adapters.isEmpty()) {
                     Text(
-                        "Пока адаптеров нет. Выполни сопряжение Classic SPP в настройках Bluetooth или нажми кнопку поиска BLE OBD.",
+                        "Пока список пуст. Можно сопрячь Classic SPP, найти BLE OBD кнопкой поиска или вручную добавить Wi-Fi OBD ниже.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
@@ -139,6 +149,38 @@ internal fun Obd2Screen(
                     Text(if (scanningBle) "Поиск BLE OBD…" else "Найти BLE OBD (8 секунд)")
                 }
                 if (scanningBle) LinearProgressIndicator(Modifier.fillMaxWidth())
+
+                Text("Wi-Fi OBD · ручное подключение", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Сначала подключись к Wi-Fi сети адаптера через настройки Android. Clear GPS не переключает сеть автоматически; интернет на сети адаптера может отсутствовать. Ввод разрешён только для приватного IPv4 и TCP-порта.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = wifiHost,
+                    onValueChange = { wifiHost = it.trim().take(15) },
+                    label = { Text("Локальный IPv4") },
+                    placeholder = { Text("192.168.0.10") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = wifiPort,
+                    onValueChange = { wifiPort = it.filter(Char::isDigit).take(5) },
+                    label = { Text("TCP-порт") },
+                    placeholder = { Text("35000") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(
+                    onClick = { onAddWifi(wifiHost.trim(), wifiPort.trim()) },
+                    enabled = !connected && !connecting && !scanningBle,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) { Text("Добавить Wi-Fi OBD") }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = onRefresh,
