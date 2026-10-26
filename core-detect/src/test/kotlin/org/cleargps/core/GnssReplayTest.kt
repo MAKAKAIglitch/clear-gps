@@ -78,7 +78,7 @@ class GnssReplayTest {
 
     @Test fun exportedReplayHasNoAbsoluteCoordinatesWallClockOrRadioIds() {
         val text=GnssReplayCodec.encodeDocument(fixture())
-        assertTrue(text.startsWith("CLEAR_GPS_REPLAY|1|ENU_RELATIVE|OFFSET_ONLY"))
+        assertTrue(text.startsWith(GnssReplayCodec.FORMAT_HEADER))
         assertFalse(text.contains("55.7558")); assertFalse(text.contains("37.6173"))
         assertFalse(text.contains("SSID")); assertFalse(text.contains("BSSID"))
         assertFalse(text.contains("timestampEpochMillis")); assertTrue(text.contains("OFFSET_ONLY"))
