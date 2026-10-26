@@ -6,6 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Random
 
 class Obd2ProtocolTest {
     @Test
@@ -112,6 +113,42 @@ class Obd2ProtocolTest {
         )
         assertNull(noResponse.vehicleSpeedKmh)
         assertEquals(Obd2SpeedIssue.NO_VALID_RESPONSE, noResponse.speedIssue)
+    }
+
+    @Test
+    fun seededFuzzInputsNeverCrashParsersOrReturnOutOfRangeValues() {
+        val random = Random(0x0B_D2_2026L)
+        val alphabet = "0123456789abcdefABCDEF >\\r\\n:-?NO DATAUNAVAILABLE"
+
+        repeat(5_000) {
+            val response = buildString {
+                repeat(random.nextInt(160)) {
+                    append(alphabet[random.nextInt(alphabet.length)])
+                }
+            }
+            val speed = Obd2Protocol.decode(0x0D, response)
+            if (speed != null) assertTrue("Out-of-range decoded speed: $speed", speed in 0..250)
+
+            for (basePid in Obd2Protocol.supportBitmapBases) {
+                val supported = Obd2Protocol.supportedPids(response, basePid)
+                if (supported != null) {
+                    assertTrue(supported.all { it in (basePid + 1)..(basePid + 32) })
+                }
+            }
+        }
+    }
+
+    @Test
+    fun disabledForSessionTelemetryNeverExposesMalformedResponseAsSpeed() {
+        val telemetry = Obd2Protocol.telemetry(
+            speedResponse = "410D58",
+            speedPidSupported = true,
+            now = 2_026L,
+            pidDisabledForSession = true
+        )
+        assertNull(telemetry.vehicleSpeedKmh)
+        assertEquals(Obd2SpeedIssue.PID_DISABLED_FOR_SESSION, telemetry.speedIssue)
+        assertEquals(2_026L, telemetry.updatedAt)
     }
 
     @Test

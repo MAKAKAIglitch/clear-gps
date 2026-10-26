@@ -5,7 +5,57 @@ import java.util.Locale
 /** Why a current vehicle-speed sample could not be obtained. */
 enum class Obd2SpeedIssue {
     PID_UNSUPPORTED,
-    NO_VALID_RESPONSE
+    NO_VALID_RESPONSE,
+    PID_DISABLED_FOR_SESSION
+}
+
+/**
+ * Per-connection circuit breaker for a PID with a supported/unknown capability.
+ * Only completed responses that fail value validation count as PID failures. Transport exceptions
+ * are handled by the connection layer because a timed-out byte stream may be out of sync.
+ * Three consecutive bad responses disable that PID until a new connection creates a fresh breaker.
+ */
+internal class Obd2PidCircuitBreaker(private val maxConsecutiveFailures: Int = 3) {
+    private val consecutiveFailures = mutableMapOf<Int, Int>()
+    private val disabledPids = mutableSetOf<Int>()
+
+    init {
+        require(maxConsecutiveFailures in 1..10) { "Invalid PID circuit-breaker threshold." }
+    }
+
+    @Synchronized
+    fun recordFailure(pid: Int): Boolean {
+        require(pid in 0..0xFF) { "PID must be a byte value." }
+        if (pid in disabledPids) return true
+        val failures = (consecutiveFailures[pid] ?: 0) + 1
+        consecutiveFailures[pid] = failures
+        if (failures >= maxConsecutiveFailures) disabledPids += pid
+        return pid in disabledPids
+    }
+
+    @Synchronized
+    fun recordSuccess(pid: Int) {
+        require(pid in 0..0xFF) { "PID must be a byte value." }
+        if (pid !in disabledPids) consecutiveFailures.remove(pid)
+    }
+
+    @Synchronized
+    fun isDisabled(pid: Int): Boolean {
+        require(pid in 0..0xFF) { "PID must be a byte value." }
+        return pid in disabledPids
+    }
+
+    @Synchronized
+    fun consecutiveFailureCount(pid: Int): Int {
+        require(pid in 0..0xFF) { "PID must be a byte value." }
+        return consecutiveFailures[pid] ?: 0
+    }
+
+    @Synchronized
+    fun reset() {
+        consecutiveFailures.clear()
+        disabledPids.clear()
+    }
 }
 
 /**
@@ -71,18 +121,17 @@ internal object Obd2Protocol {
     fun telemetry(
         speedResponse: String,
         speedPidSupported: Boolean? = null,
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        pidDisabledForSession: Boolean = false
     ): Obd2Telemetry {
-        val speed = if (speedPidSupported == false) null else decode(0x0D, speedResponse)
+        val speed = if (speedPidSupported == false || pidDisabledForSession) null
+            else decode(0x0D, speedResponse)
         val issue = when {
             speed != null -> null
+            pidDisabledForSession -> Obd2SpeedIssue.PID_DISABLED_FOR_SESSION
             speedPidSupported == false -> Obd2SpeedIssue.PID_UNSUPPORTED
             else -> Obd2SpeedIssue.NO_VALID_RESPONSE
         }
-        return Obd2Telemetry(
-            vehicleSpeedKmh = speed,
-            updatedAt = now,
-            speedIssue = issue
-        )
+        return Obd2Telemetry(vehicleSpeedKmh = speed, updatedAt = now, speedIssue = issue)
     }
 }

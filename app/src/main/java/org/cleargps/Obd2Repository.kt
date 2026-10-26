@@ -43,7 +43,8 @@ class Obd2Repository(context: Context) {
         val input: InputStream,
         val output: OutputStream,
         var supportedPids: Set<Int>? = null,
-        var supportProbeCompleted: Boolean = false
+        var supportProbeCompleted: Boolean = false,
+        val pidCircuitBreaker: Obd2PidCircuitBreaker = Obd2PidCircuitBreaker()
     )
 
     /**
@@ -116,17 +117,39 @@ class Obd2Repository(context: Context) {
                     current.supportProbeCompleted = true
                 }
                 val speedPidSupported = current.supportedPids?.contains(0x0D)
-                val speedResponse = if (speedPidSupported != false) {
-                    queryPid(current, 0x0D)
-                } else {
-                    // The ECU explicitly reports that speed is unsupported. Skip the PID and
-                    // let the GPS/radio source continue without vehicle-speed assistance.
-                    "NO DATA>"
+                if (speedPidSupported == false) {
+                    // The ECU explicitly reports that speed is unsupported. Skip the PID.
+                    return@withLock Obd2Protocol.telemetry(
+                        speedResponse = "NO DATA>",
+                        speedPidSupported = false,
+                        now = System.currentTimeMillis()
+                    )
                 }
-                Obd2Protocol.telemetry(
+                if (current.pidCircuitBreaker.isDisabled(0x0D)) {
+                    return@withLock Obd2Protocol.telemetry(
+                        speedResponse = "NO DATA>",
+                        speedPidSupported = speedPidSupported,
+                        now = System.currentTimeMillis(),
+                        pidDisabledForSession = true
+                    )
+                }
+
+                // A framed but invalid reply counts toward the breaker. A valid zero speed
+                // is a successful reading and resets a prior failure streak.
+                val speedResponse = queryPid(current, 0x0D)
+                val telemetry = Obd2Protocol.telemetry(
                     speedResponse = speedResponse,
-                    speedPidSupported = speedPidSupported
+                    speedPidSupported = speedPidSupported,
+                    now = System.currentTimeMillis()
                 )
+                if (telemetry.vehicleSpeedKmh == null) {
+                    if (current.pidCircuitBreaker.recordFailure(0x0D)) {
+                        telemetry.copy(speedIssue = Obd2SpeedIssue.PID_DISABLED_FOR_SESSION)
+                    } else telemetry
+                } else {
+                    current.pidCircuitBreaker.recordSuccess(0x0D)
+                    telemetry
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

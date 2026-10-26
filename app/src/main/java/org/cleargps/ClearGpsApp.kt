@@ -1113,12 +1113,20 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             obd2StatusIsError = true
                             obd2Status = "ЭБУ сообщил, что PID 0D не поддерживается. Пробуем резервный вариант: продолжаем позиционирование по GPS/радиобазе без автомобильной скорости; неподдерживаемый PID не опрашиваем."
                         }
+                        latest.speedIssue == Obd2SpeedIssue.PID_DISABLED_FOR_SESSION -> {
+                            obd2StatusIsError = true
+                            obd2Status = "Три подряд некорректных ответа PID 0D. Этот PID отключён до переподключения; старые данные очищены, GPS/радиопозиционирование продолжает работать."
+                        }
                         else -> {
                             obd2StatusIsError = true
                             obd2Status = "Не удалось получить корректную скорость через PID 0D. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику без старой скорости. Повторяем безопасное чтение; недостоверное значение отброшено."
                         }
                     }
-                    delay(if (latest.speedIssue == Obd2SpeedIssue.PID_UNSUPPORTED) 5_000L else 1_500L)
+                    delay(
+                        if (latest.speedIssue == Obd2SpeedIssue.PID_UNSUPPORTED ||
+                            latest.speedIssue == Obd2SpeedIssue.PID_DISABLED_FOR_SESSION
+                        ) 5_000L else 1_500L
+                    )
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
