@@ -9,7 +9,7 @@ class RiskFeedbackCodecTest {
     private fun record(
         at: Long = 1_000L,
         label: RiskFeedbackLabel = RiskFeedbackLabel.FALSE_ALARM,
-        reasons: List<String> = listOf("MOTION_JUMP", "GNSS_SIGNAL")
+        reasons: List<String> = listOf("GNSS_SIGNAL", "MOTION_JUMP")
     ) = RiskFeedbackRecord(
         timestampEpochMillis = at,
         label = label,
