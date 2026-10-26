@@ -95,6 +95,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -214,6 +218,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     val prefs = remember { context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE) }
     val repository = remember { RadioGeolocationRepository(context.applicationContext) }
     val database = remember { LocalRadioDatabase(context.applicationContext) }
@@ -422,6 +427,39 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     fun refreshLocalUi() {
         scope.launch { refreshLocalUiInCurrentCoroutine() }
     }
+
+    suspend fun showRadioDeletionUndoSnackbar(message: String, undoToken: String?) {
+        if (undoToken == null) {
+            snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+            return
+        }
+        val result = try {
+            snackbarHostState.showSnackbar(
+                message = message,
+                actionLabel = "Отменить",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            withContext(Dispatchers.IO) { database.discardRadioSourceDeletionUndo(undoToken) }
+            throw cancelled
+        }
+        if (result == SnackbarResult.ActionPerformed) {
+            val restored = withContext(Dispatchers.IO) {
+                database.undoRadioSourceDeletion(undoToken)
+            }
+            refreshLocalUiInCurrentCoroutine()
+            snackbarHostState.showSnackbar(
+                if (restored) "Удаление отменено, данные восстановлены."
+                else "Отмена недоступна: срок истёк или источник уже изменён.",
+                withDismissAction = true,
+                duration = SnackbarDuration.Short
+            )
+        } else {
+            withContext(Dispatchers.IO) { database.discardRadioSourceDeletionUndo(undoToken) }
+        }
+    }
+
 
     fun navigateToTab(tab: AppTab) {
         selectedTab = tab
@@ -2135,19 +2173,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + "-" + day.dayKey + ".csv")
                                     },
                                     onDeleteSourceDay = { day ->
+                                        snackbarHostState.currentSnackbarData?.dismiss()
                                         scope.launch {
                                             try {
                                                 val result = withContext(Dispatchers.IO) {
                                                     database.deleteRadioSourceDay(day.sourceId, day.dayKey)
                                                 }
                                                 refreshLocalUiInCurrentCoroutine()
-                                                Toast.makeText(
-                                                    context,
-                                                    "Удалено наблюдений: " + result.observationsDeleted + "; пересчитано радиоточек: " + result.radiosRecalculated + "; удалено сканирований: " + result.scanHistoryDeleted,
-                                                    Toast.LENGTH_LONG
-                                                ).show()
+                                                showRadioDeletionUndoSnackbar(
+                                                    "Удалено наблюдений: " + result.observationsDeleted +
+                                                        "; пересчитано радиоточек: " + result.radiosRecalculated +
+                                                        "; удалено сканирований: " + result.scanHistoryDeleted,
+                                                    result.undoToken
+                                                )
                                             } catch (error: Exception) {
-                                                Toast.makeText(context, "Не удалось удалить день: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                                snackbarHostState.showSnackbar(
+                                                    "Не удалось удалить день: " + (error.message ?: error.javaClass.simpleName),
+                                                    withDismissAction = true,
+                                                    duration = SnackbarDuration.Short
+                                                )
                                             }
                                         }
                                     },
@@ -2178,19 +2222,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         }
                                     },
                                     onDeleteSourceSegment = { segment ->
+                                        snackbarHostState.currentSnackbarData?.dismiss()
                                         scope.launch {
                                             try {
                                                 val result = withContext(Dispatchers.IO) {
                                                     database.deleteRadioSourceSegment(segment.sourceId, segment.dayKey, segment.radioType)
                                                 }
                                                 refreshLocalUiInCurrentCoroutine()
-                                                Toast.makeText(
-                                                    context,
-                                                    "Удалено наблюдений: " + result.observationsDeleted + "; пересчитано радиоточек: " + result.radiosRecalculated,
-                                                    Toast.LENGTH_LONG
-                                                ).show()
+                                                showRadioDeletionUndoSnackbar(
+                                                    "Удалено наблюдений: " + result.observationsDeleted +
+                                                        "; пересчитано радиоточек: " + result.radiosRecalculated,
+                                                    result.undoToken
+                                                )
                                             } catch (error: Exception) {
-                                                Toast.makeText(context, "Не удалось удалить запись: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                                snackbarHostState.showSnackbar(
+                                                    "Не удалось удалить запись: " + (error.message ?: error.javaClass.simpleName),
+                                                    withDismissAction = true,
+                                                    duration = SnackbarDuration.Short
+                                                )
                                             }
                                         }
                                     },
@@ -2559,6 +2608,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     }
                 )
             }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp)
+                    .padding(
+                        bottom = panelBottomOffset +
+                            WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
+                            (if (panelVisible) 88.dp else 72.dp)
+                    )
+            )
         }
     }
 

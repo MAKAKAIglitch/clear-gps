@@ -867,6 +867,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         mode: String, wifiCount: Int, cellCount: Int, bleCount: Int, shouldRecord: Boolean
     ): Int {
         val db = writableDatabase
+        clearAllRadioDeletionUndo(db)
         val now = System.currentTimeMillis()
         val localSourceId = ensureLocalSource(db)
         db.update("radio_sources", ContentValues().apply { put("last_seen", now) }, "id = ?", arrayOf(localSourceId.toString()))
@@ -1518,11 +1519,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     "b.last_rssi, b.peak_rssi, b.frequency, b.first_seen, b.last_seen, b.sightings, b.position_source, " +
                     "b.source_id, b.position_observed_at FROM radio_deletion_undo_points b " +
                     "WHERE b.undo_token = ? AND (b.source_id IS NULL OR EXISTS " +
-                    "(SELECT 1 FROM radio_sources s WHERE s.id = b.source_id)) " +
-                    "AND NOT EXISTS (SELECT 1 FROM radio_points current WHERE current.radio_type = b.radio_type " +
-                    "AND current.identifier = b.identifier AND NOT (" +
-                    "current.position_source = 'unlocated' AND current.source_id IS NULL " +
-                    "AND current.latitude IS NULL AND current.longitude IS NULL))",
+                    "(SELECT 1 FROM radio_sources s WHERE s.id = b.source_id))",
                 arrayOf(undoToken)
             )
             db.execSQL(
@@ -1708,6 +1705,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             if (readSourceState(db, sourceId) == null) return false
             var weight = 1.0
             db.rawQuery(
@@ -1731,6 +1729,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             if (readSourceState(db, sourceId) == null) return false
             var enabled = true
             db.rawQuery(
@@ -1826,6 +1825,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             val source = readSourceState(db, sourceId) ?: return false
             if (source.first == "local" && !enabled) return false
             val changed = db.update("radio_sources", ContentValues().apply { put("enabled", if (enabled) 1 else 0) },
@@ -1841,6 +1841,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             val source = readSourceState(db, sourceId) ?: return false
             if (source.first == "local") return false
             val changed = db.update("radio_sources", ContentValues().apply { put("trust_weight", weight) },
@@ -1855,6 +1856,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             val source = readSourceState(db, sourceId) ?: return false
             if (source.first == "local") return false
             val affected = affectedRadioKeys(db, sourceId)
@@ -2074,6 +2076,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val db = writableDatabase
         db.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(db)
             val removed = pruneObservations(db, limit)
             db.setTransactionSuccessful()
             return removed
@@ -2127,14 +2130,21 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 put("position_source", "manual-edit"); putNull("source_id"); putNull("position_observed_at")
             }
         }
-        return writableDatabase.update("radio_points", values, "id = ?", arrayOf(id.toString())) > 0
+        val db = writableDatabase
+        clearAllRadioDeletionUndo(db)
+        return db.update("radio_points", values, "id = ?", arrayOf(id.toString())) > 0
     }
 
-    fun deletePoint(id: Long): Boolean = writableDatabase.delete("radio_points", "id = ?", arrayOf(id.toString())) > 0
+    fun deletePoint(id: Long): Boolean {
+        val db = writableDatabase
+        clearAllRadioDeletionUndo(db)
+        return db.delete("radio_points", "id = ?", arrayOf(id.toString())) > 0
+    }
 
     fun clearAll() {
         val db = writableDatabase
         db.beginTransaction()
+        clearAllRadioDeletionUndo(db)
         try {
             db.delete("radio_observations", null, null)
             db.delete("radio_points", null, null)
@@ -2241,6 +2251,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     fun importWigleCsv(input: InputStream): RadioImportResult {
+        clearAllRadioDeletionUndo(writableDatabase)
         val raw = input.use { readBounded(it, MAX_IMPORT_BYTES) }
         val decoded = if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
             GZIPInputStream(ByteArrayInputStream(raw)).use { readBounded(it, MAX_IMPORT_BYTES) }
@@ -2328,6 +2339,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
      * Source content is only read; importing merges records and never replaces local data.
      */
     fun importSqliteDatabase(input: InputStream): RadioImportResult {
+        clearAllRadioDeletionUndo(writableDatabase)
         val tempFile = File.createTempFile("clear-gps-import-", ".sqlite", appContext.cacheDir)
         try {
             input.use { source ->
