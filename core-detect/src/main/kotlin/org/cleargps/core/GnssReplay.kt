@@ -226,7 +226,7 @@ object GnssReplayCodec {
             require(event.offsetNanos >= last) { "Replay events must be chronological." }
             lines += encode(event)
             last = event.offsetNanos
-            require(lines.size <= MAX_LINES)
+            require(lines.size + 1 <= MAX_LINES) { "Replay has too many lines including its footer." }
         }
         lines += encodeFooter(last.coerceAtLeast(0L), events.size, stopReason)
         val text = lines.joinToString("\n", postfix = "\n")

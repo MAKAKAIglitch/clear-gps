@@ -134,6 +134,8 @@ internal object GnssReplayRecorder {
             startSensorCapture(context.applicationContext)
             true
         } catch (_: Exception) {
+            stopSensorCapture()
+            resetRadioIdentityState()
             startedAtNanos=0L
             p.edit().putBoolean(KEY_ENABLED,false).remove(KEY_START_NANOS).apply()
             false

@@ -31,6 +31,25 @@ class GnssReplayTest {
         assertEquals(1_000.0,(decoded.events[3] as GnssReplayEvent.Position).eastMeters,0.0)
     }
 
+    @Test fun encoderReservesTheFooterInsideTheMaximumLineCount() {
+        val fullFrame = (1..GnssReplayCodec.MAX_RADIO_OBSERVATIONS_PER_FRAME).map { id ->
+            GnssReplayRadioObservation(id, GnssReplayRadioType.WIFI, -52, 2412, 10L)
+        }
+        val events = buildList {
+            repeat(515) { index ->
+                add(GnssReplayEvent.RadioSnapshot(index.toLong() + 1L, fullFrame))
+            }
+            add(GnssReplayEvent.RadioSnapshot(516L, fullFrame.take(43)))
+        }
+        var rejected = false
+        try {
+            GnssReplayCodec.encodeDocument(events)
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+        assertTrue(rejected)
+    }
+
     @Test fun radioSnapshotsRoundTripWithoutRawRadioIdentifiers() {
         val first = GnssReplayEvent.RadioSnapshot(1_300_000_000L, listOf(
             GnssReplayRadioObservation(1, GnssReplayRadioType.WIFI, -52, 2412, 12L),
