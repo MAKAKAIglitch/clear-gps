@@ -134,6 +134,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.cleargps.core.FilterState
+import org.cleargps.core.RiskFeedbackCodec
+import org.cleargps.core.RiskFeedbackLabel
+import org.cleargps.core.RiskFeedbackRecord
 import org.cleargps.core.SavedRiskZone
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneGeometry
@@ -318,6 +321,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
     var filterState by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name) }
     var riskScore by remember { mutableStateOf(prefs.getInt(LocationMonitorService.KEY_SCORE, 0)) }
+    var riskEventSource by remember {
+        mutableStateOf(prefs.getString(LocationMonitorService.KEY_SOURCE, "NONE") ?: "NONE")
+    }
+    var riskFeedbackCount by remember { mutableStateOf(RiskFeedbackStore.count(prefs)) }
     var riskBreakdown by remember {
         mutableStateOf(RiskBreakdownStore.read(prefs, SystemClock.elapsedRealtimeNanos()))
     }
@@ -755,6 +762,22 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
+    val exportRiskFeedbackLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val json = withContext(Dispatchers.IO) { RiskFeedbackStore.exportJson(prefs) }
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(json) }
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                }
+                Toast.makeText(context, "Обезличенная разметка риска экспортирована. Отправки в сеть не было.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка экспорта разметки: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     val exportCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri != null) scope.launch {
             try {
@@ -1060,6 +1083,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             if (publishedMockAccuracy != outputAccuracy) publishedMockAccuracy = outputAccuracy
             filterState = prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name
             riskScore = prefs.getInt(LocationMonitorService.KEY_SCORE, 0)
+            riskEventSource = prefs.getString(LocationMonitorService.KEY_SOURCE, "NONE") ?: "NONE"
+            riskFeedbackCount = RiskFeedbackStore.count(prefs)
             riskReasons = (prefs.getString(LocationMonitorService.KEY_REASONS, "") ?: "").split('\n').filter { it.isNotBlank() }
             riskBreakdown = RiskBreakdownStore.read(prefs, SystemClock.elapsedRealtimeNanos())
             serviceStatus = prefs.getString(LocationMonitorService.KEY_SERVICE_STATUS, "") ?: ""
@@ -1454,6 +1479,37 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     filterState = filterState, riskScore = riskScore,
                                     riskReasons = riskReasons, serviceStatus = serviceStatus,
                                     riskBreakdown = riskBreakdown,
+                                    riskEventSource = riskEventSource,
+                                    riskFeedbackCount = riskFeedbackCount,
+                                    onRiskFeedback = { label ->
+                                        val matchingBreakdown = riskBreakdown?.takeIf { it.finalScore == riskScore }
+                                        val record = RiskFeedbackRecord(
+                                            timestampEpochMillis = System.currentTimeMillis(),
+                                            label = label,
+                                            filterState = RiskFeedbackCodec.normalizeState(filterState),
+                                            riskScore = riskScore.coerceIn(0, 100),
+                                            sourceCode = RiskFeedbackCodec.normalizeSource(riskEventSource),
+                                            motionScore = matchingBreakdown?.takeIf { it.motionEvaluated }?.motionScore,
+                                            crossSourceScore = matchingBreakdown?.takeIf { it.crossSourceEvaluated }?.crossSourceScore,
+                                            gnssSignalScore = matchingBreakdown?.takeIf { it.gnssSignalEvaluated }?.gnssSignalScore,
+                                            inRiskZone = prefs.getBoolean(LocationMonitorService.KEY_IN_ZONE, false),
+                                            temporalHoldFloorApplied = matchingBreakdown?.temporalHoldFloorApplied == true,
+                                            reasonCodes = RiskFeedbackCodec.classifyReasons(
+                                                riskReasons, riskEventSource, matchingBreakdown
+                                            )
+                                        )
+                                        RiskFeedbackStore.append(prefs, record)
+                                        riskFeedbackCount = RiskFeedbackStore.count(prefs)
+                                        Toast.makeText(context, "Метка сохранена локально. Она не меняет детектор.", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onExportRiskFeedback = {
+                                        exportRiskFeedbackLauncher.launch("clear-gps-risk-feedback.json")
+                                    },
+                                    onClearRiskFeedback = {
+                                        RiskFeedbackStore.clear(prefs)
+                                        riskFeedbackCount = 0
+                                        Toast.makeText(context, "Локальная разметка очищена.", Toast.LENGTH_SHORT).show()
+                                    },
                                     gnssEnvironment = gnssEnvironment, gnssEnvironmentReasons = gnssEnvironmentReasons,
                                     gnssBaselineReady = gnssBaselineReady, gnssBaselineDeviations = gnssBaselineDeviations,
                                     gnssDiagnosticsAtNanos = gnssDiagnosticsAtNanos, gnssDiagnosticsNowNanos = gnssDiagnosticsNowNanos,
@@ -1960,6 +2016,11 @@ private fun MapHomeScreen(
     filterState: String, riskScore: Int,
     riskReasons: List<String>, serviceStatus: String,
     riskBreakdown: org.cleargps.core.RiskBreakdown?,
+    riskEventSource: String,
+    riskFeedbackCount: Int,
+    onRiskFeedback: (RiskFeedbackLabel) -> Unit,
+    onExportRiskFeedback: () -> Unit,
+    onClearRiskFeedback: () -> Unit,
     gnssEnvironment: String, gnssEnvironmentReasons: List<String>,
     gnssBaselineReady: Boolean, gnssBaselineDeviations: List<String>,
     gnssDiagnosticsAtNanos: Long, gnssDiagnosticsNowNanos: Long,
@@ -2311,6 +2372,19 @@ private fun MapHomeScreen(
                     currentRiskScore = riskScore,
                     monitorEnabled = monitorEnabled,
                     radioOnly = mode.usesRadio
+                )
+                RiskFeedbackPanel(
+                    filterState = filterState,
+                    riskScore = riskScore,
+                    riskSource = riskEventSource,
+                    riskReasons = riskReasons,
+                    riskBreakdown = riskBreakdown,
+                    monitorEnabled = monitorEnabled,
+                    radioOnly = mode.usesRadio,
+                    savedCount = riskFeedbackCount,
+                    onLabel = onRiskFeedback,
+                    onExport = onExportRiskFeedback,
+                    onClear = onClearRiskFeedback
                 )
                 if (riskReasons.isNotEmpty()) {
                     Text(
