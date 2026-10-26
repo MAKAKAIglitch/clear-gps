@@ -193,6 +193,27 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     /**
+     * Capture a radio snapshot for an explicitly enabled replay without calculating or persisting
+     * a radio-derived position. The same mutex serializes this with manual/background scans.
+     */
+    suspend fun captureReplaySnapshot(
+        useWifi: Boolean,
+        useCells: Boolean,
+        useBle: Boolean
+    ): Int = scanMutex.withLock {
+        if (!GnssReplayRecorder.isRecording(context)) return@withLock 0
+        val snapshot = withContext(Dispatchers.Main.immediate) {
+            collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
+        }
+        if (GnssReplayRecorder.isRecording(context) && snapshot.signals.isNotEmpty()) {
+            GnssReplayRecorder.recordRadioSnapshot(
+                context, SystemClock.elapsedRealtimeNanos(), snapshot.signals
+            )
+        }
+        snapshot.signals.size
+    }
+
+    /**
      * Requests one cell-only estimate from BeaconDB. The preference is checked here as well as
      * in the UI so no caller can accidentally contact the service when permission is off.
      * This path reads Android's current cellular snapshot only; it does not use or modify

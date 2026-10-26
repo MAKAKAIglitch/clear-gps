@@ -1603,6 +1603,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     replaySummary = gnssReplaySummary,
                                     onStartReplayRecord = {
                                         val ok = GnssReplayRecorder.start(context)
+                                        if (ok) LocationMonitorService.notifyReplayRecordingChanged(context)
                                         gnssReplayRecording = GnssReplayRecorder.isRecording(context)
                                         gnssReplayBytes = GnssReplayRecorder.fileSize(context)
                                         gnssReplayStopReason = GnssReplayRecorder.lastStopReason(context)
@@ -1612,6 +1613,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     },
                                     onStopReplayRecord = {
                                         GnssReplayRecorder.stop(context, "USER_STOP")
+                                        LocationMonitorService.notifyReplayRecordingChanged(context)
                                         gnssReplayRecording = false
                                         gnssReplayBytes = GnssReplayRecorder.fileSize(context)
                                         gnssReplayStopReason = GnssReplayRecorder.lastStopReason(context)
@@ -2513,6 +2515,7 @@ private fun MapHomeScreen(
                 )
                 GnssReplayPanel(
                     monitorEnabled=monitorEnabled, radioOnly=mode.usesRadio,
+                    radioCaptureAvailable=mode == PositionMode.AUTO,
                     recording=replayRecording, canStart=replayCanStart,
                     hasSavedLog=replaySaved, sizeBytes=replayBytes,
                     stopReason=replayStopReason, replayResult=replaySummary,

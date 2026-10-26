@@ -23,7 +23,8 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 internal fun GnssReplayPanel(
-    monitorEnabled: Boolean, radioOnly: Boolean, recording: Boolean, canStart: Boolean,
+    monitorEnabled: Boolean, radioOnly: Boolean, radioCaptureAvailable: Boolean,
+    recording: Boolean, canStart: Boolean,
     hasSavedLog: Boolean, sizeBytes: Long, stopReason: String, replayResult: String,
     onStart: () -> Unit, onStop: () -> Unit, onExport: () -> Unit,
     onImport: () -> Unit, onDelete: () -> Unit
@@ -39,7 +40,11 @@ internal fun GnssReplayPanel(
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             Text(
-                "Трек и IMU-показания могут раскрывать характер движения и положение/поворот телефона. Файл хранится только в закрытом хранилище приложения; экспортируй его вручную. Лимит — 2 МиБ.",
+                if (radioCaptureAvailable) {
+                    "В режиме «Авто» во время записи дополнительно собираются доступные Wi‑Fi, сотовые и BLE-наблюдения. Сканирование выполняется не чаще раза в 15 секунд (или реже по интервалу в настройках); Android может ограничить его. В режиме GPS дополнительного радио-сканирования нет."
+                } else {
+                    "В текущем режиме дополнительные радиосканирования для replay не запускаются. Трек и IMU могут раскрывать характер движения и положение/поворот телефона. Файл хранится только в закрытом хранилище приложения; экспортируй его вручную. Лимит — 2 МиБ."
+                },
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             Text(
@@ -89,7 +94,11 @@ internal fun GnssReplayPanel(
     if (showConsent) AlertDialog(
         onDismissRequest = { showConsent = false },
         title = { Text("Разрешить локальную запись GNSS?") },
-        text = { Text("Будут сохранены доступные спутниковые поля, относительный GPS/network-трек, сводка фильтра, доступная IMU до 5 образцов/с на тип и ограниченный набор радионаблюдений. Реальные BSSID, SSID, ID сотовых ячеек и BLE-адреса в файл не входят; вместо них используются временные порядковые ID только внутри записи. Трек, датчики и сочетание радионаблюдений могут быть чувствительными. Экспорт только вручную; IMU и радио пока не влияют на оценку риска. Автостоп — 2 МиБ или остановка мониторинга.") },
+        text = { Text(
+            "Будут сохранены доступные спутниковые поля, относительный GPS/network-трек, сводка фильтра и доступная IMU до 5 образцов/с на тип. " +
+                (if (radioCaptureAvailable) "В режиме «Авто» при записи дополнительно собираются радионаблюдения с интервалом не чаще раза в 15 секунд. " else "В текущем режиме дополнительный сбор радио не запускается. ") +
+                "Реальные BSSID, SSID, ID сотовых ячеек и BLE-адреса в файл не входят; вместо них используются временные порядковые ID только внутри записи. Трек, датчики и состав радио-наблюдений могут раскрывать контекст движения. Экспорт только вручную; IMU и радио пока не влияют на оценку риска. Автостоп — 2 МиБ или остановка мониторинга."
+        ) },
         confirmButton = { TextButton(onClick = { showConsent = false; onStart() }) { Text("Начать запись") } },
         dismissButton = { TextButton(onClick = { showConsent = false }) { Text("Отмена") } }
     )

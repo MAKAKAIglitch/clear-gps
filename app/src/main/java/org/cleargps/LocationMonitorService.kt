@@ -45,6 +45,7 @@ class LocationMonitorService : Service(), LocationListener {
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
+    private var replayRadioCaptureJob: Job? = null
     private var obd2FallbackJob: Job? = null
     private var mockFreshnessJob: Job? = null
     private var beaconDbOutputJob: Job? = null
@@ -372,6 +373,18 @@ class LocationMonitorService : Service(), LocationListener {
                 startBeaconDbMockOutput(latitude, longitude, accuracy)
                 return START_STICKY
             }
+            ACTION_REPLAY_CAPTURE_CHANGED -> {
+                if (!prefs.getBoolean(KEY_MONITORING, false)) {
+                    stopReplayRadioCapture()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                val status = prefs.getString(KEY_SERVICE_STATUS, "Monitoring") ?: "Monitoring"
+                startForeground(NOTIFICATION_ID, notification(status))
+                configureReplayRadioCapture()
+                return START_STICKY
+            }
             ACTION_DISABLE_MOCK -> {
                 cancelBeaconDbMockOutput()
                 prefs.edit()
@@ -585,6 +598,7 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
+            configureReplayRadioCapture(nextPositionMode)
             lastTrustedGpsFixForObd2 = null
             if (mockFreshnessJob?.isActive != true) startMockFreshnessWatchdog()
             DiagnosticLogStore.log(
@@ -837,6 +851,66 @@ class LocationMonitorService : Service(), LocationListener {
         }
         val warning = mock?.lastWarning
         return if (warning.isNullOrBlank()) base else "$base · $warning"
+    }
+
+    private fun configureReplayRadioCapture(positionMode: String? =
+        prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+    ) {
+        val shouldCapture = GnssReplayRadioCapturePolicy.shouldCapture(
+            monitoring = prefs.getBoolean(KEY_MONITORING, false),
+            recording = GnssReplayRecorder.isRecording(this),
+            positionMode = positionMode
+        )
+        if (!shouldCapture) {
+            stopReplayRadioCapture()
+            return
+        }
+        if (replayRadioCaptureJob?.isActive == true) return
+
+        val repository = RadioGeolocationRepository(applicationContext)
+        replayRadioCaptureJob = serviceScope.launch {
+            while (isActive && GnssReplayRadioCapturePolicy.shouldCapture(
+                monitoring = prefs.getBoolean(KEY_MONITORING, false),
+                recording = GnssReplayRecorder.isRecording(this@LocationMonitorService),
+                positionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+            )) {
+                try {
+                    val observations = repository.captureReplaySnapshot(
+                        useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
+                        useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
+                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                    )
+                    if (observations > 0) {
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "REPLAY_RADIO",
+                            "Captured $observations radio observations for local replay"
+                        )
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "REPLAY_RADIO",
+                        "Radio replay sample skipped: ${error.javaClass.simpleName}", "WARN"
+                    )
+                }
+                if (!GnssReplayRadioCapturePolicy.shouldCapture(
+                    monitoring = prefs.getBoolean(KEY_MONITORING, false),
+                    recording = GnssReplayRecorder.isRecording(this@LocationMonitorService),
+                    positionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+                )) break
+                delay(
+                    GnssReplayRadioCapturePolicy.intervalMillis(
+                        prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15)
+                    )
+                )
+            }
+        }
+    }
+
+    private fun stopReplayRadioCapture() {
+        replayRadioCaptureJob?.cancel()
+        replayRadioCaptureJob = null
     }
 
     private fun startRadioOnlyLoop() {
@@ -1144,6 +1218,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun stopTracking() {
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
+        stopReplayRadioCapture()
         cancelBeaconDbMockOutput()
         radioOnlyJob?.cancel()
         radioOnlyJob = null
@@ -1464,6 +1539,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val ACTION_START = "org.cleargps.START"
         const val ACTION_STOP = "org.cleargps.STOP"
         const val ACTION_DISABLE_MOCK = "org.cleargps.DISABLE_MOCK"
+        const val ACTION_REPLAY_CAPTURE_CHANGED = "org.cleargps.REPLAY_CAPTURE_CHANGED"
         const val ACTION_PUBLISH_BEACONDB_FIX = "org.cleargps.PUBLISH_BEACONDB_FIX"
         const val EXTRA_BEACONDB_LATITUDE = "beacondb_latitude"
         const val EXTRA_BEACONDB_LONGITUDE = "beacondb_longitude"
@@ -1490,6 +1566,30 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_GNSS_BASELINE_READY = "gnss_baseline_ready"
         const val KEY_GNSS_BASELINE_DEVIATIONS = "gnss_baseline_deviations"
         const val KEY_GNSS_DIAGNOSTICS_AT_NANOS = "gnss_diagnostics_at_nanos"
+
+        /**
+         * Notify the existing foreground monitor when the user starts/stops an opt-in replay.
+         * Does not restart location registration or alter the live positioning source.
+         */
+        fun notifyReplayRecordingChanged(context: Context) {
+            val currentPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (!currentPrefs.getBoolean(KEY_MONITORING, false)) return
+            val intent = Intent(context, LocationMonitorService::class.java)
+                .setAction(ACTION_REPLAY_CAPTURE_CHANGED)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (error: Exception) {
+                DiagnosticLogStore.log(
+                    context, "REPLAY_RADIO",
+                    "Could not update replay radio capture: ${error.javaClass.simpleName}", "WARN"
+                )
+            }
+        }
+
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
         private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
