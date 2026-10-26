@@ -100,6 +100,25 @@ data class RadioSourceDayDeleteResult(
     val radiosRecalculated: Int
 )
 
+data class RadioSourceSegmentRecord(
+    val sourceId: Long,
+    val dayKey: String,
+    val radioType: String,
+    val firstObservedAt: Long,
+    val lastObservedAt: Long,
+    val observationCount: Int,
+    val radioCount: Int,
+    val minRssi: Int,
+    val maxRssi: Int,
+    val enabled: Boolean,
+    val trustWeight: Double
+)
+
+data class RadioSourceSegmentDeleteResult(
+    val observationsDeleted: Int,
+    val radiosRecalculated: Int
+)
+
 data class RadioPointCenter(
     val latitude: Double,
     val longitude: Double,
@@ -659,6 +678,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     override fun onCreate(db: SQLiteDatabase) {
         createRadioSourcesTable(db)
+        createRadioSourceSegmentSettingsTable(db)
         ensureLocalSource(db)
         db.execSQL("""
             CREATE TABLE radio_points (
@@ -750,6 +770,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.execSQL("UPDATE radio_points SET position_observed_at = last_seen " +
                 "WHERE source_id IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL " +
                 "AND position_source <> 'manual-edit'")
+        }
+        if (oldVersion < 7) {
+            createRadioSourceSegmentSettingsTable(db)
         }
     }
 
@@ -958,7 +981,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.longitude?.let { it.isFinite() && it in -180.0..180.0 } == true
             val trustworthySource = !point.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
                 !point.positionSource.equals("radio-estimate", ignoreCase = true)
-            val weight = point.sourceId?.let { sourceTrust(db, it) ?: 0.0 } ?: 1.0
+            val weight = point.sourceId?.let {
+                sourceTrust(db, it, point.type, point.positionObservedAt ?: point.lastSeen) ?: 0.0
+            } ?: 1.0
             if (hasCoordinates && trustworthySource && weight > 0.0 && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
                 located++
             }
@@ -1026,7 +1051,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
                 (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
-                val weight = point.sourceId?.let { sourceTrust(db, it) ?: 0.0 } ?: 1.0
+                val weight = point.sourceId?.let {
+                sourceTrust(db, it, point.type, point.positionObservedAt ?: point.lastSeen) ?: 0.0
+            } ?: 1.0
                 if (weight > 0.0) {
                     val rawAccuracy = point.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS
                     matches.add(signal to point.copy(accuracyMeters = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)))
@@ -1085,10 +1112,15 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }.toTypedArray()
         val timestamps = readableDatabase.rawQuery(
             """
-            SELECT observed_at
-            FROM radio_observations
-            WHERE source_id IN (SELECT id FROM radio_sources WHERE enabled = 1 AND trust_weight > 0)
-              AND observed_at >= ? AND observed_at <= ?
+            SELECT o.observed_at
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = o.radio_type
+            WHERE s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1) AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+              AND o.observed_at >= ? AND o.observed_at <= ?
               AND latitude IS NOT NULL AND longitude IS NOT NULL
               AND position_source NOT IN (?, ?, ?)
               AND ($keyPredicate)
@@ -1111,10 +1143,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         return readableDatabase.rawQuery(
             """
             SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
-                   o.accuracy / MAX(s.trust_weight, 0.01) AS effective_accuracy,
+                   o.accuracy / MAX(s.trust_weight * COALESCE(sg.trust_weight, 1.0), 0.01) AS effective_accuracy,
                    o.rssi, o.observed_at, o.position_source
             FROM radio_observations o JOIN radio_sources s ON s.id = o.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = o.radio_type
             WHERE s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1) AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.observed_at IN ($placeholders)
               AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
               AND o.position_source NOT IN (?, ?, ?)
@@ -1157,6 +1193,19 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 "fingerprint TEXT UNIQUE)"
         )
         db.execSQL("CREATE INDEX radio_sources_created ON radio_sources(created_at DESC, id DESC)")
+    }
+
+    private fun createRadioSourceSegmentSettingsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE radio_source_segment_settings (" +
+                "source_id INTEGER NOT NULL REFERENCES radio_sources(id) ON DELETE CASCADE, " +
+                "day_key TEXT NOT NULL, " +
+                "radio_type TEXT NOT NULL CHECK(radio_type IN ('wifi','cell','ble')), " +
+                "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), " +
+                "trust_weight REAL NOT NULL DEFAULT 1.0 CHECK(trust_weight >= 0.0 AND trust_weight <= 1.0), " +
+                "PRIMARY KEY(source_id, day_key, radio_type))"
+        )
+        db.execSQL("CREATE INDEX radio_source_segment_enabled ON radio_source_segment_settings(enabled, source_id, day_key)")
     }
 
     private fun ensureLocalSource(db: SQLiteDatabase): Long {
@@ -1295,6 +1344,161 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
     }
 
+
+    fun listRadioSourceSegments(sourceId: Long? = null): List<RadioSourceSegmentRecord> {
+        val where = if (sourceId == null) "" else "WHERE o.source_id = ? "
+        val args = sourceId?.let { arrayOf(it.toString()) } ?: emptyArray()
+        val result = ArrayList<RadioSourceSegmentRecord>()
+        readableDatabase.rawQuery(
+            "SELECT o.source_id, strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime') AS day_key, " +
+                "o.radio_type, MIN(o.observed_at) AS first_observed, MAX(o.observed_at) AS last_observed, " +
+                "COUNT(*) AS observations, COUNT(DISTINCT o.identifier) AS radios, " +
+                "MIN(o.rssi) AS min_rssi, MAX(o.rssi) AS max_rssi, " +
+                "COALESCE(st.enabled, 1) AS segment_enabled, COALESCE(st.trust_weight, 1.0) AS segment_weight " +
+                "FROM radio_observations o " +
+                "LEFT JOIN radio_source_segment_settings st ON st.source_id = o.source_id " +
+                "AND st.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime') " +
+                "AND st.radio_type = o.radio_type " +
+                where + "GROUP BY o.source_id, day_key, o.radio_type " +
+                "ORDER BY day_key DESC, o.source_id ASC, o.radio_type ASC",
+            args
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val dayKey = cursor.getString(cursor.getColumnIndexOrThrow("day_key")).orEmpty()
+                if (!isValidSourceDayKey(dayKey)) continue
+                result.add(
+                    RadioSourceSegmentRecord(
+                        sourceId = cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
+                        dayKey = dayKey,
+                        radioType = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty(),
+                        firstObservedAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_observed")),
+                        lastObservedAt = cursor.getLong(cursor.getColumnIndexOrThrow("last_observed")),
+                        observationCount = cursor.getInt(cursor.getColumnIndexOrThrow("observations")),
+                        radioCount = cursor.getInt(cursor.getColumnIndexOrThrow("radios")),
+                        minRssi = cursor.getInt(cursor.getColumnIndexOrThrow("min_rssi")),
+                        maxRssi = cursor.getInt(cursor.getColumnIndexOrThrow("max_rssi")),
+                        enabled = cursor.getInt(cursor.getColumnIndexOrThrow("segment_enabled")) != 0,
+                        trustWeight = RadioSourceTrustPolicy.normalizeWeight(cursor.getDouble(cursor.getColumnIndexOrThrow("segment_weight")))
+                    )
+                )
+            }
+        }
+        return result
+    }
+
+    private fun affectedRadioKeysForSegment(
+        db: SQLiteDatabase, sourceId: Long, dayKey: String, radioType: String
+    ): Set<Pair<String, String>> {
+        val result = LinkedHashSet<Pair<String, String>>()
+        db.rawQuery(
+            "SELECT radio_type, identifier FROM radio_points WHERE source_id = ? AND radio_type = ? " +
+                "AND position_observed_at IS NOT NULL " +
+                "AND strftime('%Y-%m-%d', position_observed_at / 1000, 'unixepoch', 'localtime') = ? " +
+                "UNION SELECT radio_type, identifier FROM radio_observations WHERE source_id = ? AND radio_type = ? " +
+                "AND strftime('%Y-%m-%d', observed_at / 1000, 'unixepoch', 'localtime') = ?",
+            arrayOf(sourceId.toString(), radioType, dayKey, sourceId.toString(), radioType, dayKey)
+        ).use { cursor ->
+            while (cursor.moveToNext()) result.add(cursor.getString(0).orEmpty() to cursor.getString(1).orEmpty())
+        }
+        return result
+    }
+
+    private fun saveRadioSourceSegmentSetting(
+        db: SQLiteDatabase, sourceId: Long, dayKey: String, radioType: String,
+        enabled: Boolean, weight: Double
+    ) {
+        val values = ContentValues().apply {
+            put("source_id", sourceId); put("day_key", dayKey); put("radio_type", radioType)
+            put("enabled", if (enabled) 1 else 0)
+            put("trust_weight", RadioSourceTrustPolicy.normalizeWeight(weight))
+        }
+        db.insertWithOnConflict("radio_source_segment_settings", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun setRadioSourceSegmentEnabled(sourceId: Long, dayKey: String, radioType: String, enabled: Boolean): Boolean {
+        require(isValidSourceDayKey(dayKey)) { "Неверная дата источника." }
+        require(radioType in VALID_TYPES) { "Неизвестный тип радиосигнала." }
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            if (readSourceState(db, sourceId) == null) return false
+            var weight = 1.0
+            db.rawQuery(
+                "SELECT trust_weight FROM radio_source_segment_settings WHERE source_id = ? AND day_key = ? AND radio_type = ?",
+                arrayOf(sourceId.toString(), dayKey, radioType)
+            ).use { if (it.moveToFirst()) weight = it.getDouble(0) }
+            saveRadioSourceSegmentSetting(db, sourceId, dayKey, radioType, enabled, weight)
+            affectedRadioKeysForSegment(db, sourceId, dayKey, radioType).forEach { (type, identifier) ->
+                rebuildRadioPointPosition(db, type, identifier)
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally { db.endTransaction() }
+    }
+
+    fun setRadioSourceSegmentTrustWeight(
+        sourceId: Long, dayKey: String, radioType: String, requestedWeight: Double
+    ): Boolean {
+        require(isValidSourceDayKey(dayKey)) { "Неверная дата источника." }
+        require(radioType in VALID_TYPES) { "Неизвестный тип радиосигнала." }
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            if (readSourceState(db, sourceId) == null) return false
+            var enabled = true
+            db.rawQuery(
+                "SELECT enabled FROM radio_source_segment_settings WHERE source_id = ? AND day_key = ? AND radio_type = ?",
+                arrayOf(sourceId.toString(), dayKey, radioType)
+            ).use { if (it.moveToFirst()) enabled = it.getInt(0) != 0 }
+            saveRadioSourceSegmentSetting(db, sourceId, dayKey, radioType, enabled, requestedWeight)
+            affectedRadioKeysForSegment(db, sourceId, dayKey, radioType).forEach { (type, identifier) ->
+                rebuildRadioPointPosition(db, type, identifier)
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally { db.endTransaction() }
+    }
+
+    fun deleteRadioSourceSegment(sourceId: Long, dayKey: String, radioType: String): RadioSourceSegmentDeleteResult {
+        require(isValidSourceDayKey(dayKey)) { "Неверная дата источника." }
+        require(radioType in VALID_TYPES) { "Неизвестный тип радиосигнала." }
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            if (readSourceState(db, sourceId) == null) return RadioSourceSegmentDeleteResult(0, 0)
+            val affected = affectedRadioKeysForSegment(db, sourceId, dayKey, radioType)
+            db.update(
+                "radio_points",
+                ContentValues().apply {
+                    putNull("latitude"); putNull("longitude"); putNull("accuracy")
+                    putNull("source_id"); putNull("position_observed_at")
+                    put("position_source", "unlocated")
+                },
+                "source_id = ? AND radio_type = ? AND position_observed_at IS NOT NULL " +
+                    "AND strftime('%Y-%m-%d', position_observed_at / 1000, 'unixepoch', 'localtime') = ?",
+                arrayOf(sourceId.toString(), radioType, dayKey)
+            )
+            val deleted = db.delete(
+                "radio_observations",
+                "source_id = ? AND radio_type = ? AND strftime('%Y-%m-%d', observed_at / 1000, 'unixepoch', 'localtime') = ?",
+                arrayOf(sourceId.toString(), radioType, dayKey)
+            )
+            db.delete(
+                "radio_source_segment_settings",
+                "source_id = ? AND day_key = ? AND radio_type = ?",
+                arrayOf(sourceId.toString(), dayKey, radioType)
+            )
+            db.execSQL(
+                "UPDATE radio_sources SET last_seen = MAX(created_at, COALESCE(" +
+                    "(SELECT MAX(observed_at) FROM radio_observations WHERE source_id = ?), created_at)) WHERE id = ?",
+                arrayOf(sourceId.toString(), sourceId.toString())
+            )
+            affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+            db.setTransactionSuccessful()
+            return RadioSourceSegmentDeleteResult(deleted, affected.size)
+        } finally { db.endTransaction() }
+    }
+
     fun listRadioSources(): List<RadioSourceRecord> {
         val result = ArrayList<RadioSourceRecord>()
         readableDatabase.rawQuery(
@@ -1372,10 +1576,35 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 ((it.getInt(1) != 0) to RadioSourceTrustPolicy.normalizeWeight(it.getDouble(2)))
         }
 
-    private fun sourceTrust(db: SQLiteDatabase, sourceId: Long): Double? =
-        db.rawQuery("SELECT trust_weight FROM radio_sources WHERE id = ? AND enabled = 1", arrayOf(sourceId.toString())).use {
-            if (!it.moveToFirst()) null else RadioSourceTrustPolicy.normalizeWeight(it.getDouble(0))
+    private fun sourceTrust(
+        db: SQLiteDatabase,
+        sourceId: Long,
+        radioType: String? = null,
+        observedAt: Long? = null
+    ): Double? {
+        val sourceWeight = db.rawQuery(
+            "SELECT trust_weight FROM radio_sources WHERE id = ? AND enabled = 1",
+            arrayOf(sourceId.toString())
+        ).use {
+            if (!it.moveToFirst()) return null
+            RadioSourceTrustPolicy.normalizeWeight(it.getDouble(0))
         }
+        if (radioType == null || observedAt == null || radioType !in VALID_TYPES) return sourceWeight
+        val dayKey = db.rawQuery(
+            "SELECT strftime('%Y-%m-%d', ? / 1000, 'unixepoch', 'localtime')",
+            arrayOf(observedAt.toString())
+        ).use { if (it.moveToFirst()) it.getString(0).orEmpty() else "" }
+        if (!isValidSourceDayKey(dayKey)) return sourceWeight
+        return db.rawQuery(
+            "SELECT enabled, trust_weight FROM radio_source_segment_settings " +
+                "WHERE source_id = ? AND day_key = ? AND radio_type = ?",
+            arrayOf(sourceId.toString(), dayKey, radioType)
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) sourceWeight
+            else if (cursor.getInt(0) == 0) null
+            else sourceWeight * RadioSourceTrustPolicy.normalizeWeight(cursor.getDouble(1))
+        }
+    }
 
     private fun affectedRadioKeys(db: SQLiteDatabase, sourceId: Long): Set<Pair<String, String>> {
         val result = LinkedHashSet<Pair<String, String>>()
@@ -1404,7 +1633,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val candidates = ArrayList<PositionCandidate>()
         fun addCandidate(lat: Double?, lon: Double?, accuracy: Double?, sourceId: Long?, source: String, at: Long) {
             if (sourceId == null || !validCoordinates(lat, lon)) return
-            val weight = sourceTrust(db, sourceId) ?: return
+            val weight = sourceTrust(db, sourceId, type, at) ?: return
             if (weight <= 0.0) return
             val rawAccuracy = accuracy?.takeIf { it.isFinite() && it > 0.0 } ?: DEFAULT_IMPORTED_ACCURACY_METERS
             candidates.add(PositionCandidate(lat!!, lon!!, rawAccuracy, source, sourceId, at,
@@ -1414,7 +1643,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         db.rawQuery(
             "SELECT o.latitude, o.longitude, o.accuracy, o.position_source, o.source_id, o.observed_at " +
                 "FROM radio_observations o JOIN radio_sources s ON s.id = o.source_id " +
+                "LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id " +
+                "AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime') " +
+                "AND sg.radio_type = o.radio_type " +
                 "WHERE o.radio_type = ? AND o.identifier = ? AND s.enabled = 1 AND s.trust_weight > 0 " +
+                "AND (sg.enabled IS NULL OR sg.enabled = 1) AND (sg.trust_weight IS NULL OR sg.trust_weight > 0) " +
                 "AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL " +
                 "AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180 " +
                 "AND o.position_source NOT IN ('unlocated','local-radio-estimate','radio-estimate')",
@@ -1618,9 +1851,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
     }
 
-    fun exportWigleCsv(sourceId: Long? = null, dayKey: String? = null): String {
+    fun exportWigleCsv(sourceId: Long? = null, dayKey: String? = null, radioType: String? = null): String {
         require(dayKey == null || sourceId != null) { "Для экспорта по дню нужно выбрать источник." }
         require(dayKey == null || isValidSourceDayKey(dayKey)) { "Неверная дата источника." }
+        require(radioType == null || (sourceId != null && dayKey != null && radioType in VALID_TYPES)) {
+            "Для экспорта отдельной записи нужны источник, дата и тип радиосигнала."
+        }
         val observationClauses = ArrayList<String>()
         val filterArgs = ArrayList<String>()
         if (sourceId != null) { observationClauses.add("o.source_id = ?"); filterArgs.add(sourceId.toString()) }
@@ -1628,10 +1864,15 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             observationClauses.add("strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime') = ?")
             filterArgs.add(dayKey)
         }
+        if (radioType != null) {
+            observationClauses.add("o.radio_type = ?")
+            filterArgs.add(radioType)
+        }
         val observationWhere = if (observationClauses.isEmpty()) "" else "WHERE " + observationClauses.joinToString(" AND ") + " "
         val pointClauses = ArrayList<String>()
         if (sourceId != null) pointClauses.add("p.source_id = ?")
         if (dayKey != null) pointClauses.add("strftime('%Y-%m-%d', p.position_observed_at / 1000, 'unixepoch', 'localtime') = ?")
+        if (radioType != null) pointClauses.add("p.radio_type = ?")
         val pointFilters = if (pointClauses.isEmpty()) "" else " AND " + pointClauses.joinToString(" AND ")
         val args = filterArgs.toTypedArray()
         val db = readableDatabase
@@ -2460,7 +2701,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 6
+        private const val DB_VERSION = 7
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
