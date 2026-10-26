@@ -12,6 +12,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.io.InputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -37,7 +38,7 @@ data class RadioPointRecord(
     val id: Long, val type: String, val identifier: String, val label: String, val ssid: String, val notes: String,
     val latitude: Double?, val longitude: Double?, val accuracyMeters: Double?,
     val rssi: Int, val peakRssi: Int, val frequency: Int, val firstSeen: Long, val lastSeen: Long,
-    val sightings: Int, val positionSource: String
+    val sightings: Int, val positionSource: String, val sourceId: Long? = null
 )
 
 data class RadioScanHistoryItem(
@@ -50,7 +51,8 @@ data class RadioImportResult(
     val observationsImported: Int,
     val uniqueRadios: Int,
     val newRadios: Int,
-    val format: String
+    val format: String,
+    val sourceId: Long? = null
 )
 
 data class RadioEstimate(
@@ -68,7 +70,15 @@ data class RadioPointObservation(
     val accuracyMeters: Double?,
     val rssi: Int,
     val frequency: Int,
-    val positionSource: String
+    val positionSource: String,
+    val sourceId: Long? = null,
+    val sourceName: String? = null
+)
+
+data class RadioSourceRecord(
+    val id: Long, val kind: String, val name: String,
+    val createdAt: Long, val lastSeen: Long, val enabled: Boolean,
+    val trustWeight: Double, val observationCount: Int, val radioCount: Int
 )
 
 data class RadioPointCenter(
@@ -629,6 +639,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     override fun onCreate(db: SQLiteDatabase) {
+        createRadioSourcesTable(db)
+        ensureLocalSource(db)
         db.execSQL("""
             CREATE TABLE radio_points (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -638,6 +650,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 last_rssi INTEGER NOT NULL DEFAULT -100, peak_rssi INTEGER NOT NULL DEFAULT -120, frequency INTEGER NOT NULL DEFAULT 0,
                 first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
                 sightings INTEGER NOT NULL DEFAULT 1, position_source TEXT NOT NULL DEFAULT 'unknown',
+                source_id INTEGER REFERENCES radio_sources(id) ON DELETE SET NULL,
                 UNIQUE(radio_type, identifier)
             )
         """.trimIndent())
@@ -648,10 +661,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 radio_type TEXT NOT NULL, identifier TEXT NOT NULL,
                 latitude REAL, longitude REAL, accuracy REAL,
                 rssi INTEGER NOT NULL, frequency INTEGER NOT NULL,
-                observed_at INTEGER NOT NULL, position_source TEXT NOT NULL
+                observed_at INTEGER NOT NULL, position_source TEXT NOT NULL,
+                source_id INTEGER NOT NULL REFERENCES radio_sources(id) ON DELETE CASCADE
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX radio_obs_time ON radio_observations(observed_at DESC)")
+        db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
+        db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         db.execSQL("""
             CREATE TABLE scan_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -675,6 +691,37 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
         if (oldVersion < 4) {
             normalizeIdentifiersAndMergeDuplicates(db)
+        }
+        if (oldVersion < 5) {
+            createRadioSourcesTable(db)
+            val localId = ensureLocalSource(db)
+            val oldWigleBounds = db.rawQuery(
+                "SELECT MIN(observed_at), MAX(observed_at) FROM radio_observations WHERE LOWER(position_source) LIKE 'wigle%'", null
+            ).use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0).coerceAtLeast(0L) to cursor.getLong(1).coerceAtLeast(0L) else null
+            }
+            val hasLegacyWiglePoints = db.rawQuery(
+                "SELECT 1 FROM radio_points WHERE LOWER(position_source) LIKE 'wigle%' LIMIT 1", null
+            ).use { it.moveToFirst() }
+            val importedId = if (oldWigleBounds != null || hasLegacyWiglePoints) {
+                val now = System.currentTimeMillis()
+                val values = ContentValues().apply {
+                    put("kind", "wigle"); put("name", "WiGLE — импорт до версии 0.5")
+                    put("created_at", oldWigleBounds?.first ?: now)
+                    put("last_seen", oldWigleBounds?.second ?: now)
+                    put("enabled", 1); put("trust_weight", 1.0)
+                }
+                db.insert("radio_sources", null, values).takeIf { it > 0L }
+            } else null
+            db.execSQL("ALTER TABLE radio_points ADD COLUMN source_id INTEGER REFERENCES radio_sources(id) ON DELETE SET NULL")
+            db.execSQL("ALTER TABLE radio_observations ADD COLUMN source_id INTEGER REFERENCES radio_sources(id) ON DELETE CASCADE")
+            val legacyImportId = importedId ?: localId
+            db.execSQL("UPDATE radio_points SET source_id = CASE WHEN position_source = 'manual-edit' THEN NULL " +
+                "WHEN LOWER(position_source) LIKE 'wigle%' THEN $legacyImportId ELSE $localId END")
+            db.execSQL("UPDATE radio_observations SET source_id = CASE WHEN LOWER(position_source) LIKE 'wigle%' " +
+                "THEN $legacyImportId ELSE $localId END")
+            db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
+            db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         }
     }
 
@@ -758,6 +805,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     ): Int {
         val db = writableDatabase
         val now = System.currentTimeMillis()
+        val localSourceId = ensureLocalSource(db)
+        db.update("radio_sources", ContentValues().apply { put("last_seen", now) }, "id = ?", arrayOf(localSourceId.toString()))
         val unique = applyWifiSsidFilter(signals).filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
             .distinctBy { it.type + "|" + it.identifier }
         var recorded = 0
@@ -780,6 +829,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         values.put("identifier", signal.identifier)
                         values.put("first_seen", now)
                         values.put("position_source", reference?.source ?: "unlocated")
+                        if (reference != null && validReference(reference)) values.put("source_id", localSourceId)
                         if (reference != null && validReference(reference)) {
                             values.put("latitude", reference.latitude)
                             values.put("longitude", reference.longitude)
@@ -792,6 +842,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                             val newPeakSample = isBetterSignalSample(signal.rssi, old.peakRssi, reference.accuracyMeters)
                             values.put("latitude", reference.latitude)
                             values.put("longitude", reference.longitude)
+                            values.put("source_id", localSourceId)
                             values.put("accuracy", if (newPeakSample) maxOf(reference.accuracyMeters, MIN_SIGNAL_POINT_ACCURACY_METERS)
                                 else reference.accuracyMeters)
                             values.put("position_source", if (newPeakSample) "strongest-signal-sample" else reference.source)
@@ -805,6 +856,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         put("frequency", signal.frequency)
                         put("observed_at", now)
                         put("position_source", reference?.source ?: "unlocated")
+                        put("source_id", localSourceId)
                         if (reference != null && validReference(reference)) {
                             put("latitude", reference.latitude)
                             put("longitude", reference.longitude)
@@ -876,7 +928,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.longitude?.let { it.isFinite() && it in -180.0..180.0 } == true
             val trustworthySource = !point.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
                 !point.positionSource.equals("radio-estimate", ignoreCase = true)
-            if (hasCoordinates && trustworthySource && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
+            val weight = point.sourceId?.let { sourceTrust(db, it) } ?: 1.0
+            if (hasCoordinates && trustworthySource && weight > 0.0 && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
                 located++
             }
         }
@@ -943,7 +996,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
                 (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
-                matches.add(signal to point)
+                val weight = point.sourceId?.let { sourceTrust(db, it) } ?: 1.0
+                if (weight > 0.0) {
+                    val rawAccuracy = point.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS
+                    matches.add(signal to point.copy(accuracyMeters = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)))
+                }
             }
         }
         val anchorEstimate = estimateRadioAnchorPosition(matches, now)
@@ -1000,7 +1057,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             """
             SELECT observed_at
             FROM radio_observations
-            WHERE observed_at >= ? AND observed_at <= ?
+            WHERE source_id IN (SELECT id FROM radio_sources WHERE enabled = 1 AND trust_weight > 0)
+              AND observed_at >= ? AND observed_at <= ?
               AND latitude IS NOT NULL AND longitude IS NOT NULL
               AND position_source NOT IN (?, ?, ?)
               AND ($keyPredicate)
@@ -1022,11 +1080,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         )).toTypedArray()
         return readableDatabase.rawQuery(
             """
-            SELECT radio_type, identifier, latitude, longitude, accuracy, rssi, observed_at, position_source
-            FROM radio_observations
-            WHERE observed_at IN ($placeholders)
-              AND latitude IS NOT NULL AND longitude IS NOT NULL
-              AND position_source NOT IN (?, ?, ?)
+            SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
+                   o.accuracy / MAX(s.trust_weight, 0.01) AS effective_accuracy,
+                   o.rssi, o.observed_at, o.position_source
+            FROM radio_observations o JOIN radio_sources s ON s.id = o.source_id
+            WHERE s.enabled = 1 AND s.trust_weight > 0
+              AND o.observed_at IN ($placeholders)
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.position_source NOT IN (?, ?, ?)
             ORDER BY observed_at DESC
             LIMIT 20000
             """.trimIndent(),
@@ -1042,8 +1103,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()),
                         latitude = if (cursor.isNull(latIndex)) null else cursor.getDouble(latIndex),
                         longitude = if (cursor.isNull(lonIndex)) null else cursor.getDouble(lonIndex),
-                        accuracyMeters = cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy"))
-                            .takeUnless { cursor.isNull(cursor.getColumnIndexOrThrow("accuracy")) },
+                        accuracyMeters = cursor.getDouble(cursor.getColumnIndexOrThrow("effective_accuracy"))
+                            .takeUnless { cursor.isNull(cursor.getColumnIndexOrThrow("effective_accuracy")) },
                         rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
                         observedAt = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
                         positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
@@ -1052,6 +1113,213 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             }
             result
         }
+    }
+
+
+    private fun createRadioSourcesTable(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE radio_sources (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "kind TEXT NOT NULL CHECK(kind IN ('local','wigle','beacondb','custom')), " +
+                "name TEXT NOT NULL, created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL, " +
+                "enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)), " +
+                "trust_weight REAL NOT NULL DEFAULT 1.0 CHECK(trust_weight >= 0.0 AND trust_weight <= 1.0), " +
+                "fingerprint TEXT UNIQUE)"
+        )
+        db.execSQL("CREATE INDEX radio_sources_created ON radio_sources(created_at DESC, id DESC)")
+    }
+
+    private fun ensureLocalSource(db: SQLiteDatabase): Long {
+        db.rawQuery("SELECT id FROM radio_sources WHERE kind = 'local' ORDER BY id LIMIT 1", null).use {
+            if (it.moveToFirst()) return it.getLong(0)
+        }
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("kind", "local"); put("name", "Локальная запись")
+            put("created_at", now); put("last_seen", now); put("enabled", 1); put("trust_weight", 1.0)
+        }
+        return db.insertOrThrow("radio_sources", null, values)
+    }
+
+    private fun createOrGetImportedSource(
+        db: SQLiteDatabase, kind: String, name: String, fingerprint: String, now: Long
+    ): Long {
+        require(kind == "wigle" || kind == "custom") { "Недопустимый вид источника импорта." }
+        val key = fingerprint.take(100)
+        db.rawQuery("SELECT id FROM radio_sources WHERE fingerprint = ?", arrayOf(key)).use {
+            if (it.moveToFirst()) {
+                val id = it.getLong(0)
+                db.update("radio_sources", ContentValues().apply { put("last_seen", now) },
+                    "id = ?", arrayOf(id.toString()))
+                return id
+            }
+        }
+        val values = ContentValues().apply {
+            put("kind", kind); put("name", name.take(120))
+            put("created_at", now); put("last_seen", now)
+            put("enabled", 1); put("trust_weight", 1.0); put("fingerprint", key)
+        }
+        val inserted = db.insertWithOnConflict("radio_sources", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        if (inserted > 0L) return inserted
+        db.rawQuery("SELECT id FROM radio_sources WHERE fingerprint = ?", arrayOf(key)).use {
+            if (it.moveToFirst()) return it.getLong(0)
+        }
+        throw IllegalStateException("Не удалось создать источник импорта.")
+    }
+
+    fun listRadioSources(): List<RadioSourceRecord> {
+        val result = ArrayList<RadioSourceRecord>()
+        readableDatabase.rawQuery(
+            "SELECT s.id, s.kind, s.name, s.created_at, s.last_seen, s.enabled, s.trust_weight, " +
+                "(SELECT COUNT(*) FROM radio_observations o WHERE o.source_id = s.id) AS observations, " +
+                "(SELECT COUNT(DISTINCT o.radio_type || ':' || o.identifier) FROM radio_observations o WHERE o.source_id = s.id) AS radios " +
+                "FROM radio_sources s ORDER BY CASE WHEN s.kind = 'local' THEN 0 ELSE 1 END, s.created_at DESC, s.id DESC",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) result.add(
+                RadioSourceRecord(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    kind = cursor.getString(cursor.getColumnIndexOrThrow("kind")).orEmpty(),
+                    name = cursor.getString(cursor.getColumnIndexOrThrow("name")).orEmpty(),
+                    createdAt = cursor.getLong(cursor.getColumnIndexOrThrow("created_at")),
+                    lastSeen = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen")),
+                    enabled = cursor.getInt(cursor.getColumnIndexOrThrow("enabled")) != 0,
+                    trustWeight = RadioSourceTrustPolicy.normalizeWeight(cursor.getDouble(cursor.getColumnIndexOrThrow("trust_weight"))),
+                    observationCount = cursor.getInt(cursor.getColumnIndexOrThrow("observations")),
+                    radioCount = cursor.getInt(cursor.getColumnIndexOrThrow("radios"))
+                )
+            )
+        }
+        return result
+    }
+
+    fun setRadioSourceEnabled(sourceId: Long, enabled: Boolean): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val source = readSourceState(db, sourceId) ?: return false
+            if (source.first == "local" && !enabled) return false
+            val changed = db.update("radio_sources", ContentValues().apply { put("enabled", if (enabled) 1 else 0) },
+                "id = ?", arrayOf(sourceId.toString())) > 0
+            if (changed) rebuildPositionsForSource(db, sourceId)
+            db.setTransactionSuccessful()
+            return changed
+        } finally { db.endTransaction() }
+    }
+
+    fun setRadioSourceTrustWeight(sourceId: Long, requestedWeight: Double): Boolean {
+        val weight = RadioSourceTrustPolicy.normalizeWeight(requestedWeight)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val source = readSourceState(db, sourceId) ?: return false
+            if (source.first == "local") return false
+            val changed = db.update("radio_sources", ContentValues().apply { put("trust_weight", weight) },
+                "id = ?", arrayOf(sourceId.toString())) > 0
+            if (changed) rebuildPositionsForSource(db, sourceId)
+            db.setTransactionSuccessful()
+            return changed
+        } finally { db.endTransaction() }
+    }
+
+    fun deleteRadioSource(sourceId: Long): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val source = readSourceState(db, sourceId) ?: return false
+            if (source.first == "local") return false
+            val affected = affectedRadioKeys(db, sourceId)
+            if (db.delete("radio_sources", "id = ?", arrayOf(sourceId.toString())) == 0) return false
+            affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+            db.setTransactionSuccessful()
+            return true
+        } finally { db.endTransaction() }
+    }
+
+    private fun readSourceState(db: SQLiteDatabase, sourceId: Long): Pair<String, Pair<Boolean, Double>>? =
+        db.rawQuery("SELECT kind, enabled, trust_weight FROM radio_sources WHERE id = ?", arrayOf(sourceId.toString())).use {
+            if (!it.moveToFirst()) null else it.getString(0).orEmpty() to
+                ((it.getInt(1) != 0) to RadioSourceTrustPolicy.normalizeWeight(it.getDouble(2)))
+        }
+
+    private fun sourceTrust(db: SQLiteDatabase, sourceId: Long): Double? =
+        db.rawQuery("SELECT trust_weight FROM radio_sources WHERE id = ? AND enabled = 1", arrayOf(sourceId.toString())).use {
+            if (!it.moveToFirst()) null else RadioSourceTrustPolicy.normalizeWeight(it.getDouble(0))
+        }
+
+    private fun affectedRadioKeys(db: SQLiteDatabase, sourceId: Long): Set<Pair<String, String>> {
+        val result = LinkedHashSet<Pair<String, String>>()
+        db.rawQuery(
+            "SELECT radio_type, identifier FROM radio_points WHERE source_id = ? " +
+                "UNION SELECT radio_type, identifier FROM radio_observations WHERE source_id = ?",
+            arrayOf(sourceId.toString(), sourceId.toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) result.add(cursor.getString(0).orEmpty() to cursor.getString(1).orEmpty())
+        }
+        return result
+    }
+
+    private data class PositionCandidate(
+        val latitude: Double, val longitude: Double, val accuracy: Double?,
+        val positionSource: String, val sourceId: Long, val observedAt: Long, val effectiveAccuracy: Double
+    )
+
+    private fun rebuildPositionsForSource(db: SQLiteDatabase, sourceId: Long) {
+        affectedRadioKeys(db, sourceId).forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+    }
+
+    private fun rebuildRadioPointPosition(db: SQLiteDatabase, type: String, identifier: String) {
+        val point = findPoint(db, type, identifier) ?: return
+        if (point.positionSource == "manual-edit") return
+        val candidates = ArrayList<PositionCandidate>()
+        fun addCandidate(lat: Double?, lon: Double?, accuracy: Double?, sourceId: Long?, source: String, at: Long) {
+            if (sourceId == null || !validCoordinates(lat, lon)) return
+            val weight = sourceTrust(db, sourceId) ?: return
+            if (weight <= 0.0) return
+            val rawAccuracy = accuracy?.takeIf { it.isFinite() && it > 0.0 } ?: DEFAULT_IMPORTED_ACCURACY_METERS
+            candidates.add(PositionCandidate(lat!!, lon!!, rawAccuracy, source, sourceId, at,
+                RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)))
+        }
+        addCandidate(point.latitude, point.longitude, point.accuracyMeters, point.sourceId, point.positionSource, point.lastSeen)
+        db.rawQuery(
+            "SELECT o.latitude, o.longitude, o.accuracy, o.position_source, o.source_id, o.observed_at " +
+                "FROM radio_observations o JOIN radio_sources s ON s.id = o.source_id " +
+                "WHERE o.radio_type = ? AND o.identifier = ? AND s.enabled = 1 AND s.trust_weight > 0 " +
+                "AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL " +
+                "AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180 " +
+                "AND o.position_source NOT IN ('unlocated','local-radio-estimate','radio-estimate')",
+            arrayOf(type, identifier)
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val ai = cursor.getColumnIndexOrThrow("accuracy")
+                addCandidate(cursor.getDouble(cursor.getColumnIndexOrThrow("latitude")),
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("longitude")),
+                    if (cursor.isNull(ai)) null else cursor.getDouble(ai),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
+                    cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty(),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")))
+            }
+        }
+        val best = candidates.minWithOrNull(
+            compareBy<PositionCandidate> { it.effectiveAccuracy }.thenByDescending { it.observedAt }
+        )
+        if (best != null) {
+            db.update("radio_points", ContentValues().apply {
+                put("latitude", best.latitude); put("longitude", best.longitude)
+                put("accuracy", best.accuracy ?: DEFAULT_IMPORTED_ACCURACY_METERS)
+                put("position_source", best.positionSource); put("source_id", best.sourceId)
+            }, "id = ?", arrayOf(point.id.toString()))
+            return
+        }
+        val retained = db.rawQuery(
+            "SELECT COUNT(*) FROM radio_observations WHERE radio_type = ? AND identifier = ?",
+            arrayOf(type, identifier)
+        ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        if (retained == 0) db.delete("radio_points", "id = ?", arrayOf(point.id.toString()))
+        else db.update("radio_points", ContentValues().apply {
+            putNull("latitude"); putNull("longitude"); putNull("accuracy"); putNull("source_id")
+            put("position_source", "unlocated")
+        }, "id = ?", arrayOf(point.id.toString()))
     }
 
     fun listPoints(limit: Int = 2_000): List<RadioPointRecord> {
@@ -1071,8 +1339,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     fun listObservations(point: RadioPointRecord, limit: Int = 20_000): List<RadioPointObservation> {
         val result = ArrayList<RadioPointObservation>()
         readableDatabase.rawQuery(
-            "SELECT id, observed_at, latitude, longitude, accuracy, rssi, frequency, position_source " +
-                "FROM radio_observations WHERE radio_type = ? AND identifier = ? " +
+            "SELECT o.id, o.observed_at, o.latitude, o.longitude, o.accuracy, o.rssi, o.frequency, o.position_source, o.source_id, s.name AS source_name " +
+                "FROM radio_observations o LEFT JOIN radio_sources s ON s.id = o.source_id " +
+                "WHERE o.radio_type = ? AND o.identifier = ? " +
                 "ORDER BY observed_at DESC, id DESC LIMIT ?",
             arrayOf(point.type, point.identifier, limit.coerceIn(1, 20_000).toString())
         ).use { cursor ->
@@ -1088,7 +1357,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     accuracyMeters = if (cursor.isNull(accuracyIndex)) null else cursor.getDouble(accuracyIndex),
                     rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
                     frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
-                    positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty(),
+                    sourceId = if (cursor.isNull(cursor.getColumnIndexOrThrow("source_id"))) null else cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
+                    sourceName = cursor.getString(cursor.getColumnIndexOrThrow("source_name"))
                 ))
             }
         }
@@ -1190,11 +1461,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             put("notes", notes.trim().take(1_000))
             if (latitude == null || longitude == null) {
                 putNull("latitude"); putNull("longitude"); putNull("accuracy")
-                put("position_source", "unlocated")
+                put("position_source", "unlocated"); putNull("source_id")
             } else {
                 put("latitude", latitude); put("longitude", longitude)
                 put("accuracy", (accuracy ?: DEFAULT_IMPORTED_ACCURACY_METERS).coerceIn(1.0, 100_000.0))
-                put("position_source", "manual-edit")
+                put("position_source", "manual-edit"); putNull("source_id")
             }
         }
         return writableDatabase.update("radio_points", values, "id = ?", arrayOf(id.toString())) > 0
@@ -1209,13 +1480,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.delete("radio_observations", null, null)
             db.delete("radio_points", null, null)
             db.delete("scan_history", null, null)
+            db.delete("radio_sources", "kind <> 'local'", null)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
     }
 
-    fun exportWigleCsv(): String {
+    fun exportWigleCsv(sourceId: Long? = null): String {
         val db = readableDatabase
         val out = StringBuilder()
         out.append("WigleWifi-1.6,appRelease=Clear GPS 0.4,model=Android,device=Clear GPS,brand=Android\n")
@@ -1245,8 +1517,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 "o.observed_at, o.frequency, o.rssi, o.latitude, o.longitude, o.accuracy " +
                 "FROM radio_observations o LEFT JOIN radio_points p " +
                 "ON LOWER(p.radio_type) = LOWER(o.radio_type) AND LOWER(p.identifier) = LOWER(o.identifier) " +
+                (sourceId?.let { "WHERE o.source_id = ? " }.orEmpty()) +
                 "ORDER BY o.observed_at ASC, o.id ASC",
-            null
+            sourceId?.let { arrayOf(it.toString()) } ?: emptyArray()
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 appendRow(
@@ -1267,8 +1540,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 "p.first_seen AS observed_at, p.frequency, p.last_rssi AS rssi, p.latitude, p.longitude, p.accuracy " +
                 "FROM radio_points p WHERE NOT EXISTS (" +
                 "SELECT 1 FROM radio_observations o WHERE LOWER(o.radio_type) = LOWER(p.radio_type) " +
-                "AND LOWER(o.identifier) = LOWER(p.identifier)) ORDER BY p.first_seen ASC, p.id ASC",
-            null
+                "AND LOWER(o.identifier) = LOWER(p.identifier)) " +
+                (sourceId?.let { "AND p.source_id = ? " }.orEmpty()) +
+                "ORDER BY p.first_seen ASC, p.id ASC",
+            sourceId?.let { arrayOf(it.toString()) } ?: emptyArray()
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 appendRow(
@@ -1309,8 +1584,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         var validRows = 0
         val touched = LinkedHashSet<String>()
         val db = writableDatabase
+        val sourceFingerprint = "wigle-csv:" + sha256(decoded)
+        val importTime = System.currentTimeMillis()
+        var sourceId = 0L
         db.beginTransaction()
         try {
+            sourceId = createOrGetImportedSource(db, "wigle", "WiGLE CSV", sourceFingerprint, importTime)
             rows.drop(headerIndex + 1).forEach { row ->
                 val rawIdentifier = field(row, "MAC")
                 if (rawIdentifier.isBlank()) return@forEach
@@ -1341,7 +1620,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
                 val newObservation = insertObservationIfAbsent(
                     db, type, identifier, observedAt, coordinateLat, coordinateLon,
-                    if (coordinateLat != null) accuracy else null, rssi, frequency, "wigle-import"
+                    if (coordinateLat != null) accuracy else null, rssi, frequency, "wigle-import", sourceId
                 )
                 // A stale/manual deletion may have removed the summary row while leaving history.
                 // Re-create that summary on a duplicate import, but don't increment sightings twice.
@@ -1349,19 +1628,19 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 if (newObservation || summaryMissing) {
                     if (upsertImportedPoint(
                             db, type, identifier, ssid, coordinateLat, coordinateLon,
-                            if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import"
+                            if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import", sourceId
                         )
                     ) newRadios++
                 }
                 if (newObservation) importedObservations++
             }
+            if (validRows == 0) throw IllegalArgumentException("В CSV нет корректных строк с MAC/BSSID.")
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
-        if (validRows == 0) throw IllegalArgumentException("В CSV нет корректных строк с MAC/BSSID.")
         pruneToObservationLimit(observationRetentionLimit())
-        return RadioImportResult(importedObservations, touched.size, newRadios, "WiGLE CSV")
+        return RadioImportResult(importedObservations, touched.size, newRadios, "WiGLE CSV", sourceId)
     }
 
     /**
@@ -1374,6 +1653,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             input.use { source ->
                 FileOutputStream(tempFile).use { target -> copyBounded(source, target, MAX_SQLITE_IMPORT_BYTES) }
             }
+            val sourceFingerprint = "sqlite:" + sha256File(tempFile)
             val sourceDb = try {
                 SQLiteDatabase.openDatabase(
                     tempFile.absolutePath, null,
@@ -1392,9 +1672,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 val tables = tableNames(sourceDb)
                 val imported = when {
                     setOf("radio_points", "radio_observations", "scan_history").all { it in tables } ->
-                        importClearGpsSqlite(sourceDb)
+                        importClearGpsSqlite(sourceDb, sourceFingerprint)
                     "network" in tables && "location" in tables ->
-                        importWigleSqlite(sourceDb)
+                        importWigleSqlite(sourceDb, sourceFingerprint)
                     else -> throw IllegalArgumentException(
                         "Неизвестная SQLite-схема. Поддерживаются Clear GPS и WiGLE (таблицы network/location)."
                     )
@@ -1551,7 +1831,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val time: Long, val rssi: Int, val latitude: Double?, val longitude: Double?
     )
 
-    private fun importClearGpsSqlite(sourceDb: SQLiteDatabase): RadioImportResult {
+    private fun importClearGpsSqlite(sourceDb: SQLiteDatabase, fingerprint: String): RadioImportResult {
         val pointColumns = tableColumns(sourceDb, "radio_points")
         val observationColumns = tableColumns(sourceDb, "radio_observations")
         val historyColumns = tableColumns(sourceDb, "scan_history")
@@ -1572,8 +1852,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         var observationsImported = 0
         var newRadios = 0
         val touched = LinkedHashSet<String>()
+        var sourceId = 0L
         target.beginTransaction()
         try {
+            sourceId = createOrGetImportedSource(target, "custom", "Clear GPS SQLite", "clear-gps:" + fingerprint, System.currentTimeMillis())
             sourceDb.rawQuery("SELECT * FROM radio_points", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     val type = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty().lowercase(Locale.ROOT)
@@ -1592,10 +1874,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val firstSeen = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen")).coerceAtLeast(0L)
                     val lastSeen = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen")).coerceAtLeast(firstSeen)
                     val sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")).coerceAtLeast(1)
-                    val positionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    val originalPositionSource = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty()
+                    val positionSource = if (originalPositionSource == "manual-edit") "imported-manual-edit" else originalPositionSource
                     if (upsertNativePoint(
                             target, type, identifier, label, ssid, notes, lat, lon, accuracy,
-                            rssi, peak, frequency, firstSeen, lastSeen, sightings, positionSource
+                            rssi, peak, frequency, firstSeen, lastSeen, sightings, positionSource, sourceId
                         )
                     ) newRadios++
                     touched.add(type + "|" + identifier)
@@ -1616,7 +1899,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).coerceIn(-120, 0)
                     val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0)
                     val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty().take(100)
-                    if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source)) {
+                    if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source, sourceId)) {
                         observationsImported++
                     }
                 }
@@ -1656,10 +1939,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         } finally {
             target.endTransaction()
         }
-        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite Clear GPS")
+        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite Clear GPS", sourceId)
     }
 
-    private fun importWigleSqlite(sourceDb: SQLiteDatabase): RadioImportResult {
+    private fun importWigleSqlite(sourceDb: SQLiteDatabase, fingerprint: String): RadioImportResult {
         val networkColumns = tableColumns(sourceDb, "network")
         val locationColumns = tableColumns(sourceDb, "location")
         if (!networkColumns.containsAll(setOf("bssid", "ssid", "frequency")) ||
@@ -1700,10 +1983,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val target = writableDatabase
         var observationsImported = 0
         var newRadios = 0
+        var sourceId = 0L
         val touched = LinkedHashSet<String>()
         val seenKeys = HashSet<String>()
         target.beginTransaction()
         try {
+            sourceId = createOrGetImportedSource(target, "wigle", "WiGLE SQLite", "wigle-sqlite:" + fingerprint, System.currentTimeMillis())
             sourceDb.rawQuery("SELECT * FROM location ORDER BY time, _id", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
@@ -1724,13 +2009,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     touched.add(key)
                     val newObservation = insertObservationIfAbsent(
                         target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
-                        rssi, frequency, "wigle-import"
+                        rssi, frequency, "wigle-import", sourceId
                     )
                     val summaryMissing = findPoint(target, type, identifier) == null
                     if (newObservation || summaryMissing) {
                         if (upsertImportedPoint(
                                 target, type, identifier, info?.ssid.orEmpty(), lat, lon,
-                                if (lat != null) accuracy else null, rssi, frequency, time, "wigle-import"
+                                if (lat != null) accuracy else null, rssi, frequency, time, "wigle-import", sourceId
                             )
                         ) newRadios++
                     }
@@ -1742,7 +2027,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 if (key in seenKeys) return@forEach
                 if (upsertImportedPoint(
                         target, info.type, info.identifier, info.ssid, info.latitude, info.longitude,
-                        DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import"
+                        DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import", sourceId
                     )
                 ) newRadios++
                 touched.add(key)
@@ -1751,13 +2036,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         } finally {
             target.endTransaction()
         }
-        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite WiGLE")
+        return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite WiGLE", sourceId)
     }
 
     private fun upsertImportedPoint(
         db: SQLiteDatabase, type: String, identifier: String, label: String,
         latitude: Double?, longitude: Double?, accuracy: Double?,
-        rssi: Int, frequency: Int, observedAt: Long, source: String
+        rssi: Int, frequency: Int, observedAt: Long, source: String, sourceId: Long
     ): Boolean {
         val validPosition = validCoordinates(latitude, longitude)
         val old = findPoint(db, type, identifier)
@@ -1771,10 +2056,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 put("last_rssi", rssi); put("peak_rssi", rssi); put("frequency", frequency)
                 put("first_seen", observedAt); put("last_seen", observedAt)
                 put("sightings", 1); put("position_source", if (validPosition) source else "unlocated")
+                if (validPosition) put("source_id", sourceId)
             }
             val inserted = db.insertWithOnConflict("radio_points", null, values, SQLiteDatabase.CONFLICT_IGNORE)
             if (inserted != -1L) return true
-            return upsertImportedPoint(db, type, identifier, label, latitude, longitude, accuracy, rssi, frequency, observedAt, source)
+            return upsertImportedPoint(db, type, identifier, label, latitude, longitude, accuracy, rssi, frequency, observedAt, source, sourceId)
         }
 
         val update = ContentValues().apply {
@@ -1793,7 +2079,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         (rssi > old.peakRssi || (accuracy != null && (oldAccuracy == null || accuracy < oldAccuracy)))))
             if (improvesPosition) {
                 put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
-                put("position_source", source)
+                put("position_source", source); put("source_id", sourceId)
             }
         }
         db.update("radio_points", update, "id = ?", arrayOf(old.id.toString()))
@@ -1805,7 +2091,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         label: String, ssid: String, notes: String,
         latitude: Double?, longitude: Double?, accuracy: Double?,
         rssi: Int, peakRssi: Int, frequency: Int, firstSeen: Long, lastSeen: Long,
-        sightings: Int, positionSource: String
+        sightings: Int, positionSource: String, sourceId: Long
     ): Boolean {
         val old = findPoint(db, type, identifier)
         val validPosition = validCoordinates(latitude, longitude)
@@ -1819,11 +2105,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 put("last_rssi", rssi); put("peak_rssi", peakRssi); put("frequency", frequency)
                 put("first_seen", firstSeen); put("last_seen", lastSeen)
                 put("sightings", sightings.coerceAtLeast(1)); put("position_source", positionSource)
+                if (validPosition && positionSource != "manual-edit") put("source_id", sourceId)
             }
             val inserted = db.insertWithOnConflict("radio_points", null, values, SQLiteDatabase.CONFLICT_IGNORE)
             if (inserted != -1L) return true
             return upsertNativePoint(db, type, identifier, label, ssid, notes, latitude, longitude, accuracy,
-                rssi, peakRssi, frequency, firstSeen, lastSeen, sightings, positionSource)
+                rssi, peakRssi, frequency, firstSeen, lastSeen, sightings, positionSource, sourceId)
         }
 
         val sourceHasManualFix = positionSource == "manual-edit"
@@ -1837,6 +2124,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (shouldReplaceCoordinate) {
                 put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
                 put("position_source", positionSource)
+                if (positionSource != "manual-edit") put("source_id", sourceId) else putNull("source_id")
             }
             if (lastSeen >= old.lastSeen) {
                 put("last_rssi", rssi); if (frequency > 0) put("frequency", frequency)
@@ -1852,13 +2140,14 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     private fun insertObservationIfAbsent(
         db: SQLiteDatabase, type: String, identifier: String, observedAt: Long,
-        latitude: Double?, longitude: Double?, accuracy: Double?, rssi: Int, frequency: Int, positionSource: String
+        latitude: Double?, longitude: Double?, accuracy: Double?, rssi: Int, frequency: Int, positionSource: String,
+        sourceId: Long
     ): Boolean {
         val exists = db.rawQuery(
-            "SELECT 1 FROM radio_observations WHERE radio_type = ? AND identifier = ? AND observed_at = ? " +
+            "SELECT 1 FROM radio_observations WHERE source_id = ? AND radio_type = ? AND identifier = ? AND observed_at = ? " +
                 "AND rssi = ? AND frequency = ? AND COALESCE(latitude, 999.0) = COALESCE(?, 999.0) " +
                 "AND COALESCE(longitude, 999.0) = COALESCE(?, 999.0) LIMIT 1",
-            arrayOf(type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
+            arrayOf(sourceId.toString(), type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
                 latitude?.toString(), longitude?.toString())
         ).use { it.moveToFirst() }
         if (exists) return false
@@ -1867,6 +2156,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
             put("rssi", rssi); put("frequency", frequency); put("observed_at", observedAt)
             put("position_source", positionSource)
+            put("source_id", sourceId)
         }
         return db.insert("radio_observations", null, values) != -1L
     }
@@ -1993,7 +2283,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         getLong(getColumnIndexOrThrow("first_seen")),
         getLong(getColumnIndexOrThrow("last_seen")),
         getInt(getColumnIndexOrThrow("sightings")),
-        getString(getColumnIndexOrThrow("position_source")).orEmpty()
+        getString(getColumnIndexOrThrow("position_source")).orEmpty(),
+        if (getColumnIndex("source_id") >= 0 && !isNull(getColumnIndexOrThrow("source_id"))) getLong(getColumnIndexOrThrow("source_id")) else null
     )
 
     private fun Cursor.toHistory() = RadioScanHistoryItem(
@@ -2012,7 +2303,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
@@ -2038,6 +2329,22 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 out.write(buffer, 0, count)
             }
             return out.toByteArray()
+        }
+
+        private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+            .digest(bytes).joinToString("") { byte -> "%02x".format(Locale.ROOT, byte.toInt() and 0xff) }
+
+        private fun sha256File(file: File): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { input ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().joinToString("") { byte -> "%02x".format(Locale.ROOT, byte.toInt() and 0xff) }
         }
 
         private fun csvEscape(value: String): String {
