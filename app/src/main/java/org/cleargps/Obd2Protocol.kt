@@ -16,6 +16,12 @@ enum class Obd2PidIssue {
     PID_DISABLED_FOR_SESSION
 }
 
+/** VIN lookup outcome; the VIN itself is deliberately not persisted. */
+enum class Obd2VinIssue {
+    INFO_TYPE_UNSUPPORTED,
+    NO_VALID_RESPONSE
+}
+
 /**
  * Per-connection circuit breaker for a PID with a supported/unknown capability.
  * Only completed responses that fail value validation count as PID failures. Transport exceptions
@@ -79,7 +85,9 @@ data class Obd2Telemetry(
     val manifoldPressureKpa: Int? = null,
     val coolantTemperatureCelsius: Int? = null,
     val barometricPressureKpa: Int? = null,
-    val pidIssues: Map<Int, Obd2PidIssue> = emptyMap()
+    val pidIssues: Map<Int, Obd2PidIssue> = emptyMap(),
+    val vehicleVin: String? = null,
+    val vinIssue: Obd2VinIssue? = null
 )
 
 internal object Obd2Protocol {
@@ -88,18 +96,27 @@ internal object Obd2Protocol {
     private const val HEX_DIGITS = "0123456789ABCDEF"
     private const val MAX_RESPONSE_CHARS = 2_048
 
-    // Capability pages are read-only metadata. Only the explicitly listed standard telemetry
-    // PIDs are queried; VIN/Mode 09 and arbitrary PIDs remain outside this first level.
-    // A page's final bitmap bit advertises the next page (00 -> 20 -> ... -> C0).
+    // Capability pages are read-only metadata. Mode 01 telemetry is queried only from this
+    // explicit allowlist. Mode 09 has its own smaller allowlist for support discovery and VIN.
+    // A page's final bitmap bit advertises the next Mode 01 page (00 -> 20 -> ... -> C0).
     val supportBitmapBases = listOf(0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0)
     val telemetryPids = listOf(0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x11, 0x33)
     private val readOnlyRequestPids = supportBitmapBases.toSet() + telemetryPids
+    private val mode09ReadOnlyInfoTypes = setOf(0x00, 0x02)
 
     fun requestFor(pid: Int): String {
         require(pid in readOnlyRequestPids) {
             "Only allowlisted support bitmaps and standard telemetry PIDs are permitted."
         }
         return "01" + pid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
+    }
+
+    /** Only Mode 09 support discovery (00) and VIN (02) are permitted. */
+    fun requestForMode09InfoType(infoType: Int): String {
+        require(infoType in mode09ReadOnlyInfoTypes) {
+            "Only Mode 09 support discovery and VIN are permitted."
+        }
+        return "09" + infoType.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
     }
 
     fun pidLabel(pid: Int): String = when (pid) {
@@ -130,6 +147,76 @@ internal object Obd2Protocol {
         return (1..32).filterTo(linkedSetOf<Int>()) { offset ->
             (bitmap and (1L shl (32 - offset))) != 0L
         }.mapTo(linkedSetOf()) { basePid + it }
+    }
+
+    /** Parses the Mode 09 InfoType 00 bitmap (InfoTypes 01..20). */
+    fun supportedMode09InfoTypes(response: String): Set<Int>? {
+        if (response.length > MAX_RESPONSE_CHARS) return null
+        val compact = response.uppercase(Locale.ROOT).filter { it in HEX_DIGITS }
+        val markerAt = compact.indexOf("4900")
+        if (markerAt < 0) return null
+        val dataStart = markerAt + 4
+        val dataEnd = dataStart + 8
+        if (dataEnd > compact.length) return null
+        val bitmap = compact.substring(dataStart, dataEnd).toLongOrNull(16) ?: return null
+        return (1..32).filterTo(linkedSetOf()) { offset ->
+            (bitmap and (1L shl (32 - offset))) != 0L
+        }
+    }
+
+    /**
+     * Decodes the VIN from SAE J1979 Mode 09 InfoType 02.
+     *
+     * Supports the single ISO-TP/CAN payload (49 02 01 + 17 ASCII bytes) and legacy
+     * transports that repeat 49 02 plus a sequence number for five four-byte frames.
+     * Partial, out-of-order, padded incorrectly, or invalid VINs are rejected.
+     */
+    fun decodeVin(response: String): String? {
+        if (response.length > MAX_RESPONSE_CHARS) return null
+        val compact = response.uppercase(Locale.ROOT).filter { it in HEX_DIGITS }
+        val frames = mutableListOf<Pair<Int, String>>()
+        var markerAt = compact.indexOf("4902")
+        while (markerAt >= 0) {
+            val sequenceStart = markerAt + 4
+            if (sequenceStart + 2 > compact.length) return null
+            val sequence = compact.substring(sequenceStart, sequenceStart + 2).toIntOrNull(16) ?: return null
+            val payloadStart = sequenceStart + 2
+            val nextMarker = compact.indexOf("4902", payloadStart)
+            val payloadEnd = if (nextMarker >= 0) nextMarker else compact.length
+            if (payloadEnd < payloadStart) return null
+            frames += sequence to compact.substring(payloadStart, payloadEnd)
+            if (nextMarker < 0) break
+            markerAt = nextMarker
+        }
+        if (frames.isEmpty()) return null
+
+        // CAN ISO-TP response: the 01 byte is the number of VIN records, followed by 17 bytes.
+        if (frames.size == 1 && frames[0].first == 0x01) {
+            val payload = frames[0].second
+            if (payload.length != 34) return null
+            return decodeVinAscii(payload)
+        }
+
+        // Non-CAN/J1850-style response: five numbered messages with four data bytes each.
+        if (frames.size != 5 || frames.map { it.first } != (1..5).toList()) return null
+        if (frames.any { it.second.length != 8 }) return null
+        val firstPayload = frames.first().second
+        // SAE J1979 specifies three 00 fill bytes before the first VIN character.
+        if (!firstPayload.startsWith("000000")) return null
+        val vinHex = buildString {
+            append(firstPayload.substring(6, 8))
+            frames.drop(1).forEach { append(it.second) }
+        }
+        return decodeVinAscii(vinHex)
+    }
+
+    private fun decodeVinAscii(hexBytes: String): String? {
+        if (hexBytes.length != 34) return null
+        val vin = hexBytes.chunked(2).map { it.toIntOrNull(16)?.toChar() ?: return null }.joinToString("")
+        if (vin.length != 17 || vin.any { it !in 'A'..'H' && it !in 'J'..'N' && it != 'P' && it !in 'R'..'Z' && it !in '0'..'9' }) {
+            return null
+        }
+        return vin
     }
 
     /**
@@ -179,7 +266,9 @@ internal object Obd2Protocol {
     fun telemetry(
         responses: Map<Int, String>,
         pidIssues: Map<Int, Obd2PidIssue> = emptyMap(),
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        vehicleVin: String? = null,
+        vinIssue: Obd2VinIssue? = null
     ): Obd2Telemetry {
         val values = responses.mapNotNull { (pid, response) ->
             if (pid !in telemetryPids) return@mapNotNull null
@@ -201,7 +290,9 @@ internal object Obd2Protocol {
             manifoldPressureKpa = values[0x0B],
             coolantTemperatureCelsius = values[0x05],
             barometricPressureKpa = values[0x33],
-            pidIssues = pidIssues.toMap()
+            pidIssues = pidIssues.toMap(),
+            vehicleVin = vehicleVin,
+            vinIssue = vinIssue
         )
     }
 

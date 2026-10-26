@@ -44,6 +44,9 @@ class Obd2Repository(context: Context) {
         val output: OutputStream,
         var supportedPids: Set<Int>? = null,
         var supportProbeCompleted: Boolean = false,
+        var vinProbeCompleted: Boolean = false,
+        var vehicleVin: String? = null,
+        var vinIssue: Obd2VinIssue? = null,
         val pidCircuitBreaker: Obd2PidCircuitBreaker = Obd2PidCircuitBreaker()
     )
 
@@ -115,6 +118,10 @@ class Obd2Repository(context: Context) {
                     current.supportedPids = probeSupportedPids(current)
                     current.supportProbeCompleted = true
                 }
+                if (!current.vinProbeCompleted) {
+                    probeVehicleVin(current)
+                    current.vinProbeCompleted = true
+                }
 
                 val knownSupportedPids = current.supportedPids
                 val responses = linkedMapOf<Int, String>()
@@ -154,7 +161,9 @@ class Obd2Repository(context: Context) {
                 Obd2Protocol.telemetry(
                     responses = responses,
                     pidIssues = issues,
-                    now = System.currentTimeMillis()
+                    now = System.currentTimeMillis(),
+                    vehicleVin = current.vehicleVin,
+                    vinIssue = current.vinIssue
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -191,14 +200,38 @@ class Obd2Repository(context: Context) {
         return combined
     }
 
+    private suspend fun probeVehicleVin(session: Session) {
+        // Mode 09 InfoType 00 must advertise InfoType 02 before the VIN is requested.
+        val supportedInfoTypes = Obd2Protocol.supportedMode09InfoTypes(
+            queryMode09InfoType(session, 0x00)
+        )
+        if (supportedInfoTypes == null) {
+            session.vehicleVin = null
+            session.vinIssue = Obd2VinIssue.NO_VALID_RESPONSE
+            return
+        }
+        if (0x02 !in supportedInfoTypes) {
+            session.vehicleVin = null
+            session.vinIssue = Obd2VinIssue.INFO_TYPE_UNSUPPORTED
+            return
+        }
+
+        val vin = Obd2Protocol.decodeVin(queryMode09InfoType(session, 0x02))
+        session.vehicleVin = vin
+        session.vinIssue = if (vin == null) Obd2VinIssue.NO_VALID_RESPONSE else null
+    }
+
+    private suspend fun queryMode09InfoType(session: Session, infoType: Int): String =
+        exchange(session, Obd2Protocol.requestForMode09InfoType(infoType), PID_RESPONSE_TIMEOUT_MS)
+
     private suspend fun queryPid(session: Session, pid: Int): String {
         val request = Obd2Protocol.requestFor(pid)
         return exchange(session, request, PID_RESPONSE_TIMEOUT_MS)
     }
 
     private suspend fun exchange(session: Session, command: String, timeoutMs: Long): String {
-        // Only the fixed adapter-output setup list and allowlisted Mode 01 PID requests can
-        // reach this method. The UI never accepts arbitrary diagnostic commands.
+        // Only adapter setup commands and allowlisted Mode 01/Mode 09 requests can reach this
+        // method. The UI cannot issue arbitrary diagnostic or ECU-writing commands.
         session.output.write((command + "\r").toByteArray(Charsets.US_ASCII))
         session.output.flush()
         return readUntilPrompt(session.input, timeoutMs)

@@ -204,6 +204,22 @@ internal fun Obd2Screen(
                 } else {
                     Text(status, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "VIN · только в памяти",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text(
+                        telemetry.vehicleVin ?: when (telemetry.vinIssue) {
+                            Obd2VinIssue.INFO_TYPE_UNSUPPORTED -> "ЭБУ не объявил поддержку VIN"
+                            Obd2VinIssue.NO_VALID_RESPONSE -> "VIN не получен или ответ некорректен"
+                            null -> if (connected) "Проверка VIN…" else "—"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (telemetry.vehicleVin != null) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     VehicleMetric(
                         title = "Скорость PID 0D",

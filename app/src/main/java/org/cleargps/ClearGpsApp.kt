@@ -1887,7 +1887,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                     obd2Telemetry = Obd2Telemetry()
                                                     obd2Connected = true
                                                     obd2StatusIsError = false
-                                                    obd2Status = "Подключено. Проверяю поддержку стандартного PID скорости; остальные автомобильные параметры не запрашиваются."
+                                                    obd2Status = "Подключено. Проверяю карты возможностей, VIN и стандартные параметры; для позиции используется только свежая скорость PID 0D."
                                                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                                     throw cancelled
                                                 } catch (error: Exception) {

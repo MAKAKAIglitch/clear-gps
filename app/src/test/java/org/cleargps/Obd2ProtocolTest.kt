@@ -221,4 +221,96 @@ class Obd2ProtocolTest {
         assertEquals(1_234L, telemetry.updatedAt)
         assertNull(telemetry.speedIssue)
     }
+
+    @Test
+    fun mode09RequestsAreRestrictedToSupportBitmapAndVin() {
+        assertEquals("0900", Obd2Protocol.requestForMode09InfoType(0x00))
+        assertEquals("0902", Obd2Protocol.requestForMode09InfoType(0x02))
+        assertThrows(IllegalArgumentException::class.java) {
+            Obd2Protocol.requestForMode09InfoType(0x01)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            Obd2Protocol.requestForMode09InfoType(0x0A)
+        }
+    }
+
+    @Test
+    fun parsesMode09SupportBitmapBeforeAllowingVinRequest() {
+        val vinSupported = Obd2Protocol.supportedMode09InfoTypes("49 00 40 00 00 00")
+        assertEquals(setOf(0x02), vinSupported)
+
+        val onlyInfoTypeOne = Obd2Protocol.supportedMode09InfoTypes("490080000000")
+        assertTrue(onlyInfoTypeOne!!.contains(0x01))
+        assertFalse(onlyInfoTypeOne.contains(0x02))
+
+        assertNull(Obd2Protocol.supportedMode09InfoTypes("410040000000"))
+        assertNull(Obd2Protocol.supportedMode09InfoTypes("49004000"))
+        assertNull(Obd2Protocol.supportedMode09InfoTypes("F".repeat(2_049)))
+    }
+
+    @Test
+    fun decodesCanVinPayloadAndIgnoresAdapterLengthPrefix() {
+        val response = "014 49 02 01 31 44 34 47 50 30 30 52 35 35 42 31 32 33 34 35 36"
+        assertEquals("1D4GP00R55B123456", Obd2Protocol.decodeVin(response))
+    }
+
+    @Test
+    fun decodesOrderedLegacyVinFramesAndSkipsOnlySpecifiedFillBytes() {
+        val response = """
+            49 02 01 00 00 00 31
+            49 02 02 44 34 47 50
+            49 02 03 30 30 52 35
+            49 02 04 35 42 31 32
+            49 02 05 33 34 35 36
+        """.trimIndent()
+        assertEquals("1D4GP00R55B123456", Obd2Protocol.decodeVin(response))
+    }
+
+    @Test
+    fun rejectsIncompleteInvalidOrOutOfOrderVinResponses() {
+        assertNull(Obd2Protocol.decodeVin(""))
+        assertNull(Obd2Protocol.decodeVin("NO DATA"))
+        assertNull(Obd2Protocol.decodeVin("490201"))
+        assertNull(Obd2Protocol.decodeVin("4902010000003149020330305235"))
+        assertNull(Obd2Protocol.decodeVin("4902014944344750303052353542313233343536")) // 17 characters, but forbidden VIN character I
+        assertNull(Obd2Protocol.decodeVin("F".repeat(2_049)))
+    }
+
+    @Test
+    fun vinRemainsTransientTelemetryAndDoesNotReplacePositionSpeed() {
+        val telemetry = Obd2Protocol.telemetry(
+            responses = mapOf(0x0D to "410D58"),
+            now = 1_234L,
+            vehicleVin = "1D4GP00R55B123456"
+        )
+        assertEquals(88, telemetry.vehicleSpeedKmh)
+        assertEquals("1D4GP00R55B123456", telemetry.vehicleVin)
+        assertNull(telemetry.vinIssue)
+        assertEquals(1_234L, telemetry.updatedAt)
+    }
+
+    @Test
+    fun mode09ParsersRemainBoundedOnDeterministicRandomInputs() {
+        val random = Random(0x09_02_2026L)
+        repeat(5_000) {
+            val input = buildString {
+                val alphabet = "0123456789ABCDEFxyz -:\r\n"
+                repeat(random.nextInt(0, 80)) {
+                    append(alphabet[random.nextInt(alphabet.length)])
+                }
+            }
+            val supported = Obd2Protocol.supportedMode09InfoTypes(input)
+            if (supported != null) {
+                assertTrue(supported.all { pid -> pid in 1..32 })
+            }
+            val vin = Obd2Protocol.decodeVin(input)
+            if (vin != null) {
+                assertEquals(17, vin.length)
+                assertTrue(vin.all { it in 'A'..'H' || it in 'J'..'N' || it == 'P' || it in 'R'..'Z' || it in '0'..'9' })
+            }
+        }
+        assertNull(Obd2Protocol.supportedMode09InfoTypes("F".repeat(2_049)))
+        assertNull(Obd2Protocol.decodeVin("F".repeat(2_049)))
+    }
+
 }
