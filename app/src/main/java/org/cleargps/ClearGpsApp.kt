@@ -806,9 +806,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         out.toByteArray()
                     }
                 }
-                val decoded = org.cleargps.core.GnssReplayCodec.decode(String(raw, Charsets.UTF_8))
-                if (decoded.error != null) throw IllegalArgumentException(decoded.error)
-                val summary = withContext(Dispatchers.Default) { org.cleargps.core.GnssReplayRunner().replay(decoded) }
+                val summary = withContext(Dispatchers.Default) {
+                    val decoded = org.cleargps.core.GnssReplayCodec.decode(String(raw, Charsets.UTF_8))
+                    if (decoded.error != null) throw IllegalArgumentException(decoded.error)
+                    org.cleargps.core.GnssReplayRunner().replay(decoded)
+                }
                 gnssReplaySummary = if (summary.error != null) {
                     "Реплей не выполнен: " + summary.error
                 } else {
@@ -2493,7 +2495,7 @@ private fun MapHomeScreen(
                 GnssReplayPanel(
                     monitorEnabled=monitorEnabled, radioOnly=mode.usesRadio,
                     recording=replayRecording, canStart=replayCanStart,
-                    hasSavedLog=GnssReplayRecorder.hasSavedLog(context), sizeBytes=replayBytes,
+                    hasSavedLog=replaySaved, sizeBytes=replayBytes,
                     stopReason=replayStopReason, replayResult=replaySummary,
                     onStart=onStartReplayRecord, onStop=onStopReplayRecord,
                     onExport=onExportReplay, onImport=onOpenReplay, onDelete=onDeleteReplay
