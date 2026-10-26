@@ -30,7 +30,7 @@ import org.cleargps.core.FilterDecision
 import org.cleargps.core.FilterState
 import org.cleargps.core.GnssRfSnapshot
 import org.cleargps.core.LocationFilterEngine
-import org.cleargps.core.ZoneGeometry
+import org.cleargps.core.RiskZoneMembershipTracker
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
@@ -43,6 +43,7 @@ class LocationMonitorService : Service(), LocationListener {
     private lateinit var manager: LocationManager
     private lateinit var prefs: android.content.SharedPreferences
     private val engine = LocationFilterEngine()
+    private val riskZoneMembership = RiskZoneMembershipTracker()
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
@@ -1234,6 +1235,7 @@ class LocationMonitorService : Service(), LocationListener {
         clearGnssReceptionDiagnostics()
         GnssDiagnosticsLiveStore.clear()
         RiskBreakdownStore.clear(prefs)
+        riskZoneMembership.reset()
         mock?.disable()
         // This method also runs from onDestroy(), not only from ACTION_STOP. Clear every
         // shared position flag here so the UI cannot claim GPS is active after service death.
@@ -1347,8 +1349,14 @@ class LocationMonitorService : Service(), LocationListener {
         }
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
         val point = ZonePoint(location.latitude, location.longitude)
+        val accuracyMeters = if (location.hasAccuracy() && location.accuracy.isFinite() &&
+            location.accuracy >= 0f) location.accuracy.toDouble() else null
         val inZone = if (gpsFix) {
-            ZoneStore.loadAll(this).any { zone -> zone.enabled && ZoneGeometry.contains(point, zone.points) }
+            riskZoneMembership.update(
+                point = point,
+                enabledZones = ZoneStore.loadAll(this).filter { it.enabled }.map { it.points },
+                accuracyMeters = accuracyMeters
+            )
         } else engine.currentDecision().inRiskZone
 
         val observedDecision = engine.observe(location, inZone)

@@ -490,14 +490,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
                 val reference = if (positionMode.usesRadio) null
                     else currentReference(liveLocation, manualAnchor)
+                val liveFixForZone = if (positionMode.usesRadio) null
+                    else liveLocation?.takeIf { now - it.time in 0..30_000L }
                 val observedPosition = if (positionMode.usesRadio) {
                     trustedRadioEstimate?.let { ZonePoint(it.latitude, it.longitude) }
                 } else {
-                    liveLocation?.takeIf { now - it.time in 0..30_000L }
-                        ?.let { ZonePoint(it.latitude, it.longitude) }
+                    liveFixForZone?.let { ZonePoint(it.latitude, it.longitude) }
+                }
+                val observedAccuracyMeters = if (positionMode.usesRadio) {
+                    trustedRadioEstimate?.accuracyMeters
+                } else {
+                    liveFixForZone?.takeIf {
+                        it.hasAccuracy() && it.accuracy.isFinite() && it.accuracy >= 0f
+                    }?.accuracy?.toDouble()
                 }
                 val insideRiskZone = observedPosition?.let { point ->
-                    zones.any { zone -> zone.enabled && ZoneGeometry.contains(point, zone.points) }
+                    zones.any { zone ->
+                        zone.enabled && ZoneGeometry.contains(point, zone.points, observedAccuracyMeters)
+                    }
                 } == true
                 val result = repository.scan(
                     record = recordNow && !insideRiskZone,
