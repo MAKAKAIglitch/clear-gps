@@ -204,6 +204,7 @@ object ClearGpsPreferences {
     const val KEY_MAP_STYLE = "map_style"
     const val KEY_DATABASE_VIEW_SOURCE = "database_view_source"
     const val KEY_BEACONDB_LOOKUP_ENABLED = "beacondb_cell_lookup_enabled"
+    const val KEY_RADIO_OBSERVATION_LIMIT = "radio_observation_retention_limit"
 }
 
 object ManualLocationStore {
@@ -802,8 +803,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     db.insert("radio_observations", null, obs)
                     recorded++
                 }
-                // Bound detailed history to avoid unbounded storage use.
-                db.execSQL("DELETE FROM radio_observations WHERE id NOT IN (SELECT id FROM radio_observations ORDER BY observed_at DESC LIMIT 20000)")
+                // Keep only recent detail rows at the user's configured cap. Summary points and
+                // coordinates remain intact after their detailed observation history is trimmed.
+                pruneObservations(db, observationRetentionLimit())
             }
 
             val history = ContentValues().apply {
@@ -1111,8 +1113,49 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     fun pointCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM radio_points", null)
         .use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
-    fun observationCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM radio_observations", null)
-        .use { if (it.moveToFirst()) it.getInt(0) else 0 }
+    fun observationCount(): Int = countObservations(readableDatabase)
+
+    fun observationRetentionLimit(): Int {
+        val stored = appContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .getInt(ClearGpsPreferences.KEY_RADIO_OBSERVATION_LIMIT, RadioDatabaseRetentionPolicy.DEFAULT_LIMIT)
+        return RadioDatabaseRetentionPolicy.normalizeLimit(stored)
+    }
+
+    /** Saves the selected cap and immediately removes the oldest detailed rows if necessary. */
+    fun setObservationRetentionLimit(requestedLimit: Int): Int {
+        val limit = RadioDatabaseRetentionPolicy.normalizeLimit(requestedLimit)
+        appContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(ClearGpsPreferences.KEY_RADIO_OBSERVATION_LIMIT, limit).apply()
+        return pruneToObservationLimit(limit)
+    }
+
+    private fun pruneToObservationLimit(limit: Int): Int {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val removed = pruneObservations(db, limit)
+            db.setTransactionSuccessful()
+            return removed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun pruneObservations(db: SQLiteDatabase, requestedLimit: Int): Int {
+        val limit = RadioDatabaseRetentionPolicy.normalizeLimit(requestedLimit)
+        val before = countObservations(db)
+        if (RadioDatabaseRetentionPolicy.recordsToDelete(before, limit) == 0) return 0
+        // The interpolated number is safe because normalizeLimit accepts only fixed choices.
+        db.execSQL(
+            "DELETE FROM radio_observations WHERE id NOT IN " +
+                "(SELECT id FROM radio_observations ORDER BY observed_at DESC, id DESC LIMIT $limit)"
+        )
+        return (before - countObservations(db)).coerceAtLeast(0)
+    }
+
+    private fun countObservations(db: SQLiteDatabase): Int =
+        db.rawQuery("SELECT COUNT(*) FROM radio_observations", null)
+            .use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
     fun listHistory(limit: Int = 200): List<RadioScanHistoryItem> {
         val result = ArrayList<RadioScanHistoryItem>()
@@ -1306,6 +1349,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             db.endTransaction()
         }
         if (validRows == 0) throw IllegalArgumentException("В CSV нет корректных строк с MAC/BSSID.")
+        pruneToObservationLimit(observationRetentionLimit())
         return RadioImportResult(importedObservations, touched.size, newRadios, "WiGLE CSV")
     }
 
@@ -1335,7 +1379,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                     throw IllegalArgumentException("SQLite-база повреждена: " + integrity)
                 }
                 val tables = tableNames(sourceDb)
-                return when {
+                val imported = when {
                     setOf("radio_points", "radio_observations", "scan_history").all { it in tables } ->
                         importClearGpsSqlite(sourceDb)
                     "network" in tables && "location" in tables ->
@@ -1344,6 +1388,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                         "Неизвестная SQLite-схема. Поддерживаются Clear GPS и WiGLE (таблицы network/location)."
                     )
                 }
+                pruneToObservationLimit(observationRetentionLimit())
+                return imported
             } finally {
                 sourceDb.close()
             }

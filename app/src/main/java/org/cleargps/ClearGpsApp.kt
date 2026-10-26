@@ -273,6 +273,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
+    var observationRetentionLimit by remember { mutableStateOf(database.observationRetentionLimit()) }
+    var retentionLimitUpdating by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
@@ -1650,6 +1652,37 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
                                     points = points, history = history, pointCount = pointCount, observationCount = observationCount,
+                                    observationRetentionLimit = observationRetentionLimit,
+                                    retentionLimitUpdating = retentionLimitUpdating,
+                                    onObservationRetentionLimit = { requestedLimit ->
+                                        if (!retentionLimitUpdating && requestedLimit != observationRetentionLimit) {
+                                            retentionLimitUpdating = true
+                                            scope.launch {
+                                                try {
+                                                    val normalized = RadioDatabaseRetentionPolicy.normalizeLimit(requestedLimit)
+                                                    val removed = withContext(Dispatchers.IO) {
+                                                        database.setObservationRetentionLimit(normalized)
+                                                    }
+                                                    observationRetentionLimit = normalized
+                                                    refreshLocalUiInCurrentCoroutine()
+                                                    val message = if (removed > 0) {
+                                                        "Лимит применён: удалено старых наблюдений $removed. Точки и координаты сохранены."
+                                                    } else {
+                                                        "Лимит наблюдений обновлён; удалять старые записи не пришлось."
+                                                    }
+                                                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                                } catch (error: Exception) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Не удалось применить лимит: ${error.message ?: error.javaClass.simpleName}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                } finally {
+                                                    retentionLimitUpdating = false
+                                                }
+                                            }
+                                        }
+                                    },
                                     searchQuery = searchQuery, onSearch = { query ->
                                         searchQuery = query
                                         scope.launch {
@@ -2631,6 +2664,7 @@ private fun MapHomeScreen(
 @Composable
 private fun DatabaseScreen(
     points: List<RadioPointRecord>, history: List<RadioScanHistoryItem>, pointCount: Int, observationCount: Int,
+    observationRetentionLimit: Int, retentionLimitUpdating: Boolean, onObservationRetentionLimit: (Int) -> Unit,
     searchQuery: String, onSearch: (String) -> Unit,
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
@@ -2674,6 +2708,34 @@ private fun DatabaseScreen(
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
             IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Обновить список") }
+        }
+        Surface(
+            Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = colors.surfaceContainer
+        ) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Лимит подробных наблюдений", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "$observationCount / $observationRetentionLimit записей. Старейшие наблюдения удаляются при превышении; сводные точки и координаты сохраняются. История сканирований ограничена 500 записями.",
+                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    RadioDatabaseRetentionPolicy.LIMIT_OPTIONS.forEach { limit ->
+                        val selected = observationRetentionLimit == limit
+                        AssistChip(
+                            onClick = { onObservationRetentionLimit(limit) },
+                            enabled = !retentionLimitUpdating,
+                            label = { Text(RadioDatabaseRetentionPolicy.label(limit)) },
+                            colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                                containerColor = if (selected) colors.secondaryContainer else colors.surfaceVariant,
+                                labelColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+                            )
+                        )
+                    }
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AssistChip(onClick = { onView(PointsView.POINTS) }, label = { Text("Точки") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
