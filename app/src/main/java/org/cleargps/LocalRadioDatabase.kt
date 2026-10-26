@@ -17,6 +17,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 import java.util.zip.GZIPInputStream
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -97,7 +98,8 @@ data class RadioSourceDayRecord(
 data class RadioSourceDayDeleteResult(
     val observationsDeleted: Int,
     val scanHistoryDeleted: Int,
-    val radiosRecalculated: Int
+    val radiosRecalculated: Int,
+    val undoToken: String? = null
 )
 
 data class RadioSourceSegmentRecord(
@@ -116,7 +118,8 @@ data class RadioSourceSegmentRecord(
 
 data class RadioSourceSegmentDeleteResult(
     val observationsDeleted: Int,
-    val radiosRecalculated: Int
+    val radiosRecalculated: Int,
+    val undoToken: String? = null
 )
 
 data class RadioPointCenter(
@@ -676,6 +679,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         db.setForeignKeyConstraintsEnabled(true)
     }
 
+    override fun onOpen(db: SQLiteDatabase) {
+        super.onOpen(db)
+        if (!db.isReadOnly) purgeRadioDeletionUndo(db)
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         createRadioSourcesTable(db)
         createRadioSourceSegmentSettingsTable(db)
@@ -717,6 +725,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             )
         """.trimIndent())
         db.execSQL("CREATE INDEX scan_history_time ON scan_history(scanned_at DESC)")
+        createRadioDeletionUndoTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -773,6 +782,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
         if (oldVersion < 7) {
             createRadioSourceSegmentSettingsTable(db)
+        }
+        if (oldVersion < 8) {
+            createRadioDeletionUndoTables(db)
         }
     }
 
@@ -1287,6 +1299,273 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     /**
+     * Undo payloads are short-lived snapshots. They are scoped to the current process so a
+     * process restart cannot leave a previous snackbar capable of restoring deleted data.
+     */
+    private fun createRadioDeletionUndoTables(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo (" +
+                "undo_token TEXT PRIMARY KEY, source_id INTEGER NOT NULL, day_key TEXT NOT NULL, " +
+                "radio_type TEXT, action TEXT NOT NULL CHECK(action IN ('day','segment')), " +
+                "created_at INTEGER NOT NULL, process_session TEXT NOT NULL, source_last_seen INTEGER NOT NULL)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo_keys (" +
+                "undo_token TEXT NOT NULL, radio_type TEXT NOT NULL, identifier TEXT NOT NULL, " +
+                "PRIMARY KEY(undo_token, radio_type, identifier))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo_points (" +
+                "undo_token TEXT NOT NULL, id INTEGER NOT NULL, radio_type TEXT NOT NULL, identifier TEXT NOT NULL, " +
+                "label TEXT NOT NULL, ssid TEXT NOT NULL, notes TEXT NOT NULL, latitude REAL, longitude REAL, accuracy REAL, " +
+                "last_rssi INTEGER NOT NULL, peak_rssi INTEGER NOT NULL, frequency INTEGER NOT NULL, " +
+                "first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, sightings INTEGER NOT NULL, " +
+                "position_source TEXT NOT NULL, source_id INTEGER, position_observed_at INTEGER, " +
+                "PRIMARY KEY(undo_token, id))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo_observations (" +
+                "undo_token TEXT NOT NULL, id INTEGER NOT NULL, radio_type TEXT NOT NULL, identifier TEXT NOT NULL, " +
+                "latitude REAL, longitude REAL, accuracy REAL, rssi INTEGER NOT NULL, frequency INTEGER NOT NULL, " +
+                "observed_at INTEGER NOT NULL, position_source TEXT NOT NULL, source_id INTEGER NOT NULL, " +
+                "PRIMARY KEY(undo_token, id))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo_history (" +
+                "undo_token TEXT NOT NULL, id INTEGER NOT NULL, scanned_at INTEGER NOT NULL, " +
+                "wifi_count INTEGER NOT NULL, cell_count INTEGER NOT NULL, ble_count INTEGER NOT NULL, " +
+                "matched_count INTEGER NOT NULL, latitude REAL, longitude REAL, accuracy REAL, " +
+                "mode TEXT NOT NULL, recorded INTEGER NOT NULL, PRIMARY KEY(undo_token, id))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_deletion_undo_segments (" +
+                "undo_token TEXT NOT NULL, source_id INTEGER NOT NULL, day_key TEXT NOT NULL, radio_type TEXT NOT NULL, " +
+                "enabled INTEGER NOT NULL, trust_weight REAL NOT NULL, PRIMARY KEY(undo_token, source_id, day_key, radio_type))"
+        )
+    }
+
+    private fun clearRadioDeletionUndoToken(db: SQLiteDatabase, undoToken: String) {
+        db.delete("radio_deletion_undo_keys", "undo_token = ?", arrayOf(undoToken))
+        db.delete("radio_deletion_undo_points", "undo_token = ?", arrayOf(undoToken))
+        db.delete("radio_deletion_undo_observations", "undo_token = ?", arrayOf(undoToken))
+        db.delete("radio_deletion_undo_history", "undo_token = ?", arrayOf(undoToken))
+        db.delete("radio_deletion_undo_segments", "undo_token = ?", arrayOf(undoToken))
+        db.delete("radio_deletion_undo", "undo_token = ?", arrayOf(undoToken))
+    }
+
+    private fun clearAllRadioDeletionUndo(db: SQLiteDatabase) {
+        db.delete("radio_deletion_undo_keys", null, null)
+        db.delete("radio_deletion_undo_points", null, null)
+        db.delete("radio_deletion_undo_observations", null, null)
+        db.delete("radio_deletion_undo_history", null, null)
+        db.delete("radio_deletion_undo_segments", null, null)
+        db.delete("radio_deletion_undo", null, null)
+    }
+
+    private fun purgeRadioDeletionUndo(db: SQLiteDatabase) {
+        val expiryBefore = System.currentTimeMillis() - RADIO_DELETION_UNDO_TTL_MS
+        val staleTokens = ArrayList<String>()
+        db.rawQuery(
+            "SELECT undo_token FROM radio_deletion_undo WHERE process_session <> ? OR created_at < ?",
+            arrayOf(PROCESS_UNDO_SESSION_ID, expiryBefore.toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) staleTokens.add(cursor.getString(0).orEmpty())
+        }
+        staleTokens.forEach { clearRadioDeletionUndoToken(db, it) }
+    }
+
+    private fun createRadioDeletionUndoSnapshot(
+        db: SQLiteDatabase,
+        sourceId: Long,
+        dayKey: String,
+        radioType: String?,
+        action: String,
+        affected: Set<Pair<String, String>>,
+        includeScanHistory: Boolean
+    ): String {
+        clearAllRadioDeletionUndo(db)
+        val oldLastSeen = db.rawQuery(
+            "SELECT last_seen FROM radio_sources WHERE id = ?",
+            arrayOf(sourceId.toString())
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getLong(0) else System.currentTimeMillis()
+        }
+        val token = UUID.randomUUID().toString()
+        db.insertOrThrow(
+            "radio_deletion_undo",
+            null,
+            ContentValues().apply {
+                put("undo_token", token)
+                put("source_id", sourceId)
+                put("day_key", dayKey)
+                if (radioType == null) putNull("radio_type") else put("radio_type", radioType)
+                put("action", action)
+                put("created_at", System.currentTimeMillis())
+                put("process_session", PROCESS_UNDO_SESSION_ID)
+                put("source_last_seen", oldLastSeen)
+            }
+        )
+        affected.forEach { (type, identifier) ->
+            db.insertOrThrow(
+                "radio_deletion_undo_keys",
+                null,
+                ContentValues().apply {
+                    put("undo_token", token)
+                    put("radio_type", type)
+                    put("identifier", identifier)
+                }
+            )
+        }
+
+        db.execSQL(
+            "INSERT INTO radio_deletion_undo_points (" +
+                "undo_token, id, radio_type, identifier, label, ssid, notes, latitude, longitude, accuracy, " +
+                "last_rssi, peak_rssi, frequency, first_seen, last_seen, sightings, position_source, source_id, position_observed_at) " +
+                "SELECT ?, p.id, p.radio_type, p.identifier, p.label, p.ssid, p.notes, p.latitude, p.longitude, p.accuracy, " +
+                "p.last_rssi, p.peak_rssi, p.frequency, p.first_seen, p.last_seen, p.sightings, p.position_source, " +
+                "p.source_id, p.position_observed_at FROM radio_points p WHERE EXISTS (" +
+                "SELECT 1 FROM radio_deletion_undo_keys k WHERE k.undo_token = ? " +
+                "AND k.radio_type = p.radio_type AND k.identifier = p.identifier)",
+            arrayOf(token, token)
+        )
+
+        val observationFilter = buildString {
+            append("source_id = ? AND strftime('%Y-%m-%d', observed_at / 1000, 'unixepoch', 'localtime') = ?")
+            if (radioType != null) append(" AND radio_type = ?")
+        }
+        val observationArgs = mutableListOf(token, sourceId.toString(), dayKey)
+        if (radioType != null) observationArgs.add(radioType)
+        db.execSQL(
+            "INSERT INTO radio_deletion_undo_observations (" +
+                "undo_token, id, radio_type, identifier, latitude, longitude, accuracy, rssi, frequency, observed_at, position_source, source_id) " +
+                "SELECT ?, id, radio_type, identifier, latitude, longitude, accuracy, rssi, frequency, observed_at, position_source, source_id " +
+                "FROM radio_observations WHERE " + observationFilter,
+            observationArgs.toTypedArray()
+        )
+        if (includeScanHistory) {
+            db.execSQL(
+                "INSERT INTO radio_deletion_undo_history (" +
+                    "undo_token, id, scanned_at, wifi_count, cell_count, ble_count, matched_count, latitude, longitude, accuracy, mode, recorded) " +
+                    "SELECT ?, id, scanned_at, wifi_count, cell_count, ble_count, matched_count, latitude, longitude, accuracy, mode, recorded " +
+                    "FROM scan_history WHERE strftime('%Y-%m-%d', scanned_at / 1000, 'unixepoch', 'localtime') = ?",
+                arrayOf(token, dayKey)
+            )
+        }
+        if (radioType != null) {
+            db.execSQL(
+                "INSERT INTO radio_deletion_undo_segments (undo_token, source_id, day_key, radio_type, enabled, trust_weight) " +
+                    "SELECT ?, source_id, day_key, radio_type, enabled, trust_weight FROM radio_source_segment_settings " +
+                    "WHERE source_id = ? AND day_key = ? AND radio_type = ?",
+                arrayOf(token, sourceId.toString(), dayKey, radioType)
+            )
+        }
+        return token
+    }
+
+    /**
+     * Undo the latest source/day or source/day/type deletion during the snackbar window.
+     * The original rows are restored transactionally; snapshots are discarded on success.
+     */
+    fun undoRadioSourceDeletion(undoToken: String): Boolean {
+        if (undoToken.isBlank() || undoToken.length > 64) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            var sourceId: Long? = null
+            var createdAt = 0L
+            var processSession = ""
+            var sourceLastSeen = 0L
+            db.rawQuery(
+                "SELECT source_id, created_at, process_session, source_last_seen FROM radio_deletion_undo WHERE undo_token = ?",
+                arrayOf(undoToken)
+            ).use { cursor ->
+                if (cursor.moveToFirst()) {
+                    sourceId = cursor.getLong(0)
+                    createdAt = cursor.getLong(1)
+                    processSession = cursor.getString(2).orEmpty()
+                    sourceLastSeen = cursor.getLong(3)
+                }
+            }
+            val savedSourceId = sourceId
+            if (savedSourceId == null) {
+                db.setTransactionSuccessful()
+                return false
+            }
+            val age = System.currentTimeMillis() - createdAt
+            if (processSession != PROCESS_UNDO_SESSION_ID || age < 0L || age > RADIO_DELETION_UNDO_TTL_MS) {
+                clearRadioDeletionUndoToken(db, undoToken)
+                db.setTransactionSuccessful()
+                return false
+            }
+            if (readSourceState(db, savedSourceId) == null) {
+                clearRadioDeletionUndoToken(db, undoToken)
+                db.setTransactionSuccessful()
+                return false
+            }
+
+            db.execSQL(
+                "INSERT OR REPLACE INTO radio_observations (" +
+                    "id, radio_type, identifier, latitude, longitude, accuracy, rssi, frequency, observed_at, position_source, source_id) " +
+                    "SELECT id, radio_type, identifier, latitude, longitude, accuracy, rssi, frequency, observed_at, position_source, source_id " +
+                    "FROM radio_deletion_undo_observations WHERE undo_token = ?",
+                arrayOf(undoToken)
+            )
+            db.execSQL(
+                "INSERT OR REPLACE INTO radio_points (" +
+                    "id, radio_type, identifier, label, ssid, notes, latitude, longitude, accuracy, last_rssi, peak_rssi, frequency, " +
+                    "first_seen, last_seen, sightings, position_source, source_id, position_observed_at) " +
+                    "SELECT b.id, b.radio_type, b.identifier, b.label, b.ssid, b.notes, b.latitude, b.longitude, b.accuracy, " +
+                    "b.last_rssi, b.peak_rssi, b.frequency, b.first_seen, b.last_seen, b.sightings, b.position_source, " +
+                    "b.source_id, b.position_observed_at FROM radio_deletion_undo_points b " +
+                    "WHERE b.undo_token = ? AND (b.source_id IS NULL OR EXISTS " +
+                    "(SELECT 1 FROM radio_sources s WHERE s.id = b.source_id)) " +
+                    "AND NOT EXISTS (SELECT 1 FROM radio_points current WHERE current.radio_type = b.radio_type " +
+                    "AND current.identifier = b.identifier AND NOT (" +
+                    "current.position_source = 'unlocated' AND current.source_id IS NULL " +
+                    "AND current.latitude IS NULL AND current.longitude IS NULL))",
+                arrayOf(undoToken)
+            )
+            db.execSQL(
+                "INSERT OR REPLACE INTO scan_history (" +
+                    "id, scanned_at, wifi_count, cell_count, ble_count, matched_count, latitude, longitude, accuracy, mode, recorded) " +
+                    "SELECT id, scanned_at, wifi_count, cell_count, ble_count, matched_count, latitude, longitude, accuracy, mode, recorded " +
+                    "FROM radio_deletion_undo_history WHERE undo_token = ?",
+                arrayOf(undoToken)
+            )
+            db.execSQL(
+                "INSERT OR REPLACE INTO radio_source_segment_settings (source_id, day_key, radio_type, enabled, trust_weight) " +
+                    "SELECT b.source_id, b.day_key, b.radio_type, b.enabled, b.trust_weight " +
+                    "FROM radio_deletion_undo_segments b WHERE b.undo_token = ? " +
+                    "AND EXISTS (SELECT 1 FROM radio_sources s WHERE s.id = b.source_id)",
+                arrayOf(undoToken)
+            )
+            db.update(
+                "radio_sources",
+                ContentValues().apply { put("last_seen", sourceLastSeen) },
+                "id = ?",
+                arrayOf(savedSourceId.toString())
+            )
+            clearRadioDeletionUndoToken(db, undoToken)
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun discardRadioSourceDeletionUndo(undoToken: String) {
+        if (undoToken.isBlank() || undoToken.length > 64) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            clearRadioDeletionUndoToken(db, undoToken)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
      * Deletes detailed observations for one source/day, then recomputes affected summary positions.
      * The selected-coordinate timestamp prevents a deleted day from becoming a stale position candidate.
      */
@@ -1307,6 +1586,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 while (cursor.moveToNext()) affected.add(cursor.getString(0).orEmpty() to cursor.getString(1).orEmpty())
             }
 
+            val undoToken = createRadioDeletionUndoSnapshot(
+                db, sourceId, dayKey, radioType = null, action = "day",
+                affected = affected, includeScanHistory = sourceState.first == "local"
+            )
             db.update(
                 "radio_points",
                 ContentValues().apply {
@@ -1337,8 +1620,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 arrayOf(sourceId.toString(), sourceId.toString())
             )
             affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+            val hasChanges = deleted > 0 || deletedHistory > 0 || affected.isNotEmpty()
+            if (!hasChanges) clearRadioDeletionUndoToken(db, undoToken)
             db.setTransactionSuccessful()
-            return RadioSourceDayDeleteResult(deleted, deletedHistory, affected.size)
+            return RadioSourceDayDeleteResult(
+                deleted, deletedHistory, affected.size, undoToken.takeIf { hasChanges }
+            )
         } finally {
             db.endTransaction()
         }
@@ -1467,6 +1754,10 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         try {
             if (readSourceState(db, sourceId) == null) return RadioSourceSegmentDeleteResult(0, 0)
             val affected = affectedRadioKeysForSegment(db, sourceId, dayKey, radioType)
+            val undoToken = createRadioDeletionUndoSnapshot(
+                db, sourceId, dayKey, radioType = radioType, action = "segment",
+                affected = affected, includeScanHistory = false
+            )
             db.update(
                 "radio_points",
                 ContentValues().apply {
@@ -1483,7 +1774,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 "source_id = ? AND radio_type = ? AND strftime('%Y-%m-%d', observed_at / 1000, 'unixepoch', 'localtime') = ?",
                 arrayOf(sourceId.toString(), radioType, dayKey)
             )
-            db.delete(
+            val deletedSettings = db.delete(
                 "radio_source_segment_settings",
                 "source_id = ? AND day_key = ? AND radio_type = ?",
                 arrayOf(sourceId.toString(), dayKey, radioType)
@@ -1494,8 +1785,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 arrayOf(sourceId.toString(), sourceId.toString())
             )
             affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+            val hasChanges = deleted > 0 || deletedSettings > 0 || affected.isNotEmpty()
+            if (!hasChanges) clearRadioDeletionUndoToken(db, undoToken)
             db.setTransactionSuccessful()
-            return RadioSourceSegmentDeleteResult(deleted, affected.size)
+            return RadioSourceSegmentDeleteResult(
+                deleted, affected.size, undoToken.takeIf { hasChanges }
+            )
         } finally { db.endTransaction() }
     }
 
@@ -2701,7 +2996,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 7
+        private const val DB_VERSION = 8
+        private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
+        private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
