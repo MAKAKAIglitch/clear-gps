@@ -262,6 +262,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var selectedObd2Address by remember {
         mutableStateOf(prefs.getString(Obd2SharedState.KEY_ADAPTER_ADDRESS, "").orEmpty())
     }
+    var pendingObdBleScan by remember { mutableStateOf(false) }
+    var obd2BleScanning by remember { mutableStateOf(false) }
     var obd2Connected by remember { mutableStateOf(false) }
     var obd2Connecting by remember { mutableStateOf(false) }
     var obd2ConnectionRequested by remember { mutableStateOf(false) }
@@ -1051,10 +1053,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     suspend fun loadPairedObdAdapters() {
         try {
-            val available = obd2Repository.pairedAdapters()
+            val pairedClassic = obd2Repository.pairedAdapters()
+            val previousBleCandidates = obd2Adapters.filter { it.transportType == Obd2TransportType.BLE_GATT }
+            val available = (pairedClassic + previousBleCandidates).distinctBy { it.selectionKey }
             obd2Adapters = available
-            if (available.none { it.address.equals(selectedObd2Address, ignoreCase = true) }) {
-                selectedObd2Address = available.firstOrNull()?.address.orEmpty()
+            val selectionIsBle = selectedObd2Address.startsWith("ble:", ignoreCase = true)
+            if (available.none { it.selectionKey.equals(selectedObd2Address, ignoreCase = true) } &&
+                (!selectionIsBle || selectedObd2Address.isBlank())
+            ) {
+                selectedObd2Address = available.firstOrNull()?.selectionKey.orEmpty()
                 prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
             }
             val previousFailureCanNowBeCleared =
@@ -1062,8 +1069,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     obd2Status.startsWith("Без разрешения «Устройства поблизости»")
             when {
                 available.isEmpty() -> {
-                    obd2StatusIsError = true
-                    obd2Status = "Не найден сопряжённый OBD-II адаптер. Пробуем резервный вариант: выбранный GPS/радио источник продолжает работать без автомобильной скорости. Сопряги адаптер в настройках Bluetooth."
+                    obd2StatusIsError = false
+                    obd2Status = "Сопряжённых Classic SPP-адаптеров не найдено. Можно выполнить отдельный BLE-поиск кнопкой «Найти BLE OBD». GPS/радиопозиционирование работает независимо."
                 }
                 obd2Connected && obd2Telemetry.updatedAt > 0L -> {
                     // Refreshing the paired-device list must not hide a live speed-reading
@@ -1075,26 +1082,73 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
                 else -> {
                     obd2StatusIsError = false
-                    obd2Status = "Найдено сопряжённых Bluetooth-устройств: " + available.size + ". Поддерживаются адаптеры Classic SPP."
+                    obd2Status = "Classic SPP: " + pairedClassic.size + "; BLE-кандидатов в текущем списке: " +
+                        previousBleCandidates.size + ". BLE-поиск выполняется только вручную."
                 }
             }
         } catch (error: Exception) {
-            obd2Adapters = emptyList()
+            obd2Adapters = obd2Adapters.filter { it.transportType == Obd2TransportType.BLE_GATT }
             obd2StatusIsError = true
             obd2Status = (error.message ?: "Не удалось получить список Bluetooth-устройств.") +
                 " Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
         }
     }
 
+    suspend fun loadBleObdAdapters() {
+        obd2BleScanning = true
+        try {
+            val found = obd2Repository.scanBleAdapters()
+            val classic = obd2Adapters.filter { it.transportType == Obd2TransportType.CLASSIC_SPP }
+            obd2Adapters = (classic + found).distinctBy { it.selectionKey }
+            if (found.isNotEmpty() && obd2Adapters.none {
+                it.selectionKey.equals(selectedObd2Address, ignoreCase = true)
+            }) {
+                selectedObd2Address = found.first().selectionKey
+                prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, selectedObd2Address).apply()
+            }
+            obd2StatusIsError = false
+            obd2Status = if (found.isEmpty()) {
+                "BLE-поиск завершён: подходящие по имени OBD/ELM-устройства не найдены. Некоторые клоны не рекламируют распознаваемое имя; Classic SPP доступен отдельно."
+            } else {
+                "Найдено BLE-кандидатов: " + found.size + ". Выбери устройство и подключись; совместимость подтверждается только успешным чтением."
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            obd2StatusIsError = true
+            obd2Status = (error.message ?: "Не удалось выполнить BLE-поиск.") +
+                " BLE-идентификаторы не сохранены и не отправлены в сеть."
+        } finally {
+            obd2BleScanning = false
+        }
+    }
+
     val obd2PermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            permissions[Manifest.permission.BLUETOOTH_CONNECT] != true) {
-            obd2StatusIsError = true
-            obd2Status = "Без разрешения «Устройства поблизости» нельзя подключиться к Bluetooth-адаптеру. Пробуем резервный вариант: позиционирование продолжается по выбранному GPS/радио источнику."
-        } else {
-            scope.launch { loadPairedObdAdapters() }
+    ) { _ ->
+        val connectMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        val scanMissing = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
+        val locationMissingForLegacyScan = Build.VERSION.SDK_INT < Build.VERSION_CODES.S &&
+            context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        when {
+            connectMissing -> {
+                pendingObdBleScan = false
+                obd2StatusIsError = true
+                obd2Status = "Без разрешения «Устройства поблизости» нельзя подключиться к Bluetooth-адаптеру. GPS/радио продолжает работать."
+            }
+            pendingObdBleScan && (scanMissing || locationMissingForLegacyScan) -> {
+                pendingObdBleScan = false
+                obd2StatusIsError = true
+                obd2Status = "Для BLE-поиска требуется разрешение сканирования Bluetooth (на старых версиях Android — геолокации)."
+            }
+            pendingObdBleScan -> {
+                pendingObdBleScan = false
+                scope.launch { loadBleObdAdapters() }
+            }
+            else -> scope.launch { loadPairedObdAdapters() }
         }
     }
 
@@ -1104,6 +1158,33 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             obd2PermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
         } else {
             scope.launch { loadPairedObdAdapters() }
+        }
+    }
+
+    val scanBleObdAdapters: () -> Unit = {
+        if (obd2Connected || obd2Connecting || obd2BleScanning) {
+            obd2Status = "Сначала отключи текущий адаптер, чтобы выполнять BLE-поиск."
+        } else {
+            val requested = mutableListOf<String>()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                    requested += Manifest.permission.BLUETOOTH_SCAN
+                }
+                if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    requested += Manifest.permission.BLUETOOTH_CONNECT
+                }
+            } else if (
+                context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+            ) {
+                requested += Manifest.permission.ACCESS_FINE_LOCATION
+            }
+            if (requested.isNotEmpty()) {
+                pendingObdBleScan = true
+                obd2PermissionLauncher.launch(requested.toTypedArray())
+            } else {
+                scope.launch { loadBleObdAdapters() }
+            }
         }
     }
 
@@ -1139,8 +1220,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                             obd2Repository.disconnect()
                             return@launch
                         }
-                        selectedObd2Address = adapter.address
-                        prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
+                        selectedObd2Address = adapter.selectionKey
+                        prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.selectionKey).apply()
                         Obd2SharedState.clearSpeed(prefs)
                         obd2SpeedCalibration.reset()
                         obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
@@ -2040,6 +2121,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     selectedAddress = selectedObd2Address,
                                     connected = obd2Connected,
                                     connecting = obd2Connecting,
+                                    scanningBle = obd2BleScanning,
                                     telemetry = obd2Telemetry,
                                     calibration = obd2CalibrationSnapshot,
                                     gearLearning = obd2GearLearningSnapshot,
@@ -2047,6 +2129,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     status = obd2Status,
                                     statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },
+                                    onScanBle = { scanBleObdAdapters() },
                                     onSelect = {
                                         selectedObd2Address = it
                                         prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, it).apply()
@@ -2070,8 +2153,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                                 obd2Status = "Подключение к Bluetooth-адаптеру…"
                                                 try {
                                                     val adapter = obd2Repository.connect(addressToConnect)
-                                                    selectedObd2Address = adapter.address
-                                                    prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.address).apply()
+                                                    selectedObd2Address = adapter.selectionKey
+                                                    prefs.edit().putString(Obd2SharedState.KEY_ADAPTER_ADDRESS, adapter.selectionKey).apply()
                                                     Obd2SharedState.clearSpeed(prefs)
                                                     obd2SpeedCalibration.reset()
                                                     obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()

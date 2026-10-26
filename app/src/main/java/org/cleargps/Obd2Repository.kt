@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -12,23 +14,23 @@ import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import java.io.EOFException
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.SocketTimeoutException
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.coroutineContext
 
-data class Obd2Adapter(val name: String, val address: String)
+data class Obd2Adapter(
+    val name: String,
+    val address: String,
+    val transportType: Obd2TransportType = Obd2TransportType.CLASSIC_SPP
+) {
+    val selectionKey: String get() = Obd2AdapterSelection(address, transportType).key
+}
 
 class Obd2Repository(context: Context) {
     private val appContext = context.applicationContext
@@ -38,10 +40,8 @@ class Obd2Repository(context: Context) {
     private var activeSession: Session? = null
 
     private data class Session(
-        val device: BluetoothDevice,
-        val socket: BluetoothSocket,
-        val input: InputStream,
-        val output: OutputStream,
+        val adapter: Obd2Adapter,
+        val transport: Obd2ElmTransport,
         var supportedPids: Set<Int>? = null,
         var supportProbeCompleted: Boolean = false,
         var vinProbeCompleted: Boolean = false,
@@ -64,17 +64,20 @@ class Obd2Repository(context: Context) {
             .map { device ->
                 Obd2Adapter(
                     name = safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" },
-                    address = device.address.orEmpty().uppercase(Locale.ROOT)
+                    address = device.address.orEmpty().uppercase(Locale.ROOT),
+                    transportType = Obd2TransportType.CLASSIC_SPP
                 )
             }
             .filter { it.address.isNotBlank() }
             .sortedWith(compareBy<Obd2Adapter> { it.name.lowercase(Locale.ROOT) }.thenBy { it.address })
     }
 
-    suspend fun connect(address: String): Obd2Adapter {
-        require(address.matches(Regex("(?i)^[0-9A-F]{2}(:[0-9A-F]{2}){5}$"))) {
-            "Некорректный Bluetooth-адрес адаптера."
-        }
+    /**
+     * Connect only to the explicitly selected adapter. A bare MAC keeps meaning Classic SPP
+     * for backwards compatibility; BLE selections use the "ble:" prefix.
+     */
+    suspend fun connect(selectionKey: String): Obd2Adapter {
+        val selection = Obd2AdapterSelection.parse(selectionKey)
         disconnect()
         return withContext(Dispatchers.IO) {
             requireBluetoothPermission()
@@ -82,31 +85,97 @@ class Obd2Repository(context: Context) {
             if (!bluetoothAdapter.isEnabled) {
                 throw IllegalStateException("Bluetooth выключен. Включи его в системных настройках.")
             }
-            val device = bluetoothAdapter.getRemoteDevice(address)
-            val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+            val device = bluetoothAdapter.getRemoteDevice(selection.address)
+            val adapter = Obd2Adapter(
+                name = safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" },
+                address = device.address.orEmpty().uppercase(Locale.ROOT),
+                transportType = selection.transportType
+            )
+            var transport: Obd2ElmTransport? = null
             try {
-                connectSocketCancellable(socket)
-                val newSession = Session(device, socket, socket.inputStream, socket.outputStream)
+                transport = when (selection.transportType) {
+                    Obd2TransportType.CLASSIC_SPP -> {
+                        val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                        try {
+                            connectSocketCancellable(socket)
+                            ClassicObd2Transport(socket)
+                        } catch (error: Exception) {
+                            try { socket.close() } catch (_: Exception) { }
+                            throw error
+                        }
+                    }
+                    Obd2TransportType.BLE_GATT -> BleGattObd2Transport(appContext, device).connect()
+                }
+                val newSession = Session(adapter, transport ?: throw IOException("OBD-транспорт не создан."))
+                // Publish the in-progress session before setup so a user cancellation closes
+                // the active transport instead of leaving the setup exchange running.
                 activeSession = newSession
-
-                // Adapter-local ELM settings: plain text, adaptive timing and automatic
-                // protocol detection. These do not write to the vehicle ECU.
+                // These setup commands configure the ELM-compatible adapter, never the ECU.
                 ADAPTER_OUTPUT_SETUP.forEach { command ->
                     exchange(newSession, command, ADAPTER_COMMAND_TIMEOUT_MS)
                 }
-                Obd2Adapter(safeDeviceName(device).ifBlank { "Bluetooth OBD-II адаптер" }, device.address)
+                adapter
             } catch (cancelled: CancellationException) {
-                if (activeSession?.socket === socket) activeSession = null
-                try { socket.close() } catch (_: Exception) { }
+                if (activeSession?.adapter?.selectionKey == adapter.selectionKey) activeSession = null
+                transport?.close()
                 throw cancelled
             } catch (error: Exception) {
-                if (activeSession?.socket === socket) activeSession = null
-                try { socket.close() } catch (_: Exception) { }
-                if (error is SecurityException || error is IllegalStateException) throw error
-                throw IOException("Не удалось подключиться к адаптеру. Проверь сопряжение и совместимость Bluetooth Classic SPP.", error)
+                if (activeSession?.adapter?.selectionKey == adapter.selectionKey) activeSession = null
+                transport?.close()
+                if (error is SecurityException || error is IllegalStateException || error is IllegalArgumentException) throw error
+                val transportName = if (selection.transportType == Obd2TransportType.BLE_GATT) "BLE GATT" else "Bluetooth Classic SPP"
+                throw IOException("Не удалось подключиться через $transportName. Проверь адаптер и совместимость ELM327.", error)
             }
         }
     }
+
+    /**
+     * BLE scanning starts only after the user explicitly requests it. Only named OBD-like
+     * candidates are returned; advertisements are neither saved nor uploaded.
+     */
+    suspend fun scanBleAdapters(): List<Obd2Adapter> = withContext(Dispatchers.IO) {
+        requireBluetoothScanPermission()
+        val bluetoothAdapter = getBluetoothAdapter()
+        if (!bluetoothAdapter.isEnabled) {
+            throw IllegalStateException("Bluetooth выключен. Включи его в системных настройках.")
+        }
+        val scanner = bluetoothAdapter.bluetoothLeScanner
+            ?: throw IllegalStateException("BLE-сканер недоступен на этом устройстве.")
+        val found = java.util.Collections.synchronizedMap(linkedMapOf<String, Obd2Adapter>())
+        val failureCode = java.util.concurrent.atomic.AtomicInteger(0)
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val device = result.device ?: return
+                val name = result.scanRecord?.deviceName?.takeIf { it.isNotBlank() } ?: safeDeviceName(device)
+                if (!Obd2AdapterNameFilter.looksLikeObdAdapter(name)) return
+                val address = device.address?.uppercase(Locale.ROOT).orEmpty()
+                if (address.isBlank()) return
+                found[address] = Obd2Adapter(name.trim(), address, Obd2TransportType.BLE_GATT)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { onScanResult(0, it) }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                failureCode.set(errorCode)
+            }
+        }
+        try {
+            @Suppress("MissingPermission")
+            scanner.startScan(callback)
+            delay(BLE_SCAN_DURATION_MS)
+            val errorCode = failureCode.get()
+            if (errorCode != 0) throw IOException("BLE-сканирование завершилось с ошибкой $errorCode.")
+            synchronized(found) {
+                found.values.toList()
+                    .sortedWith(compareBy<Obd2Adapter> { it.name.lowercase(Locale.ROOT) }.thenBy { it.address })
+            }
+        } finally {
+            try { scanner.stopScan(callback) } catch (_: Exception) { }
+        }
+    }
+
 
     suspend fun readTelemetry(): Obd2Telemetry = withContext(Dispatchers.IO) {
         ioMutex.withLock {
@@ -191,8 +260,8 @@ class Obd2Repository(context: Context) {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (activeSession?.socket === current.socket) activeSession = null
-                try { current.socket.close() } catch (_: Exception) { }
+                if (activeSession?.transport === current.transport) activeSession = null
+                current.transport.close()
                 throw IOException("Чтение OBD-II прервано; переподключи адаптер.", error)
             }
         }
@@ -201,9 +270,7 @@ class Obd2Repository(context: Context) {
     fun disconnect() {
         val current = activeSession
         activeSession = null
-        if (current != null) {
-            try { current.socket.close() } catch (_: Exception) { }
-        }
+        if (current != null) current.transport.close()
     }
 
     fun close() = disconnect()
@@ -255,32 +322,7 @@ class Obd2Repository(context: Context) {
     private suspend fun exchange(session: Session, command: String, timeoutMs: Long): String {
         // Only adapter setup commands and allowlisted Mode 01/Mode 09 requests can reach this
         // method. The UI cannot issue arbitrary diagnostic or ECU-writing commands.
-        session.output.write((command + "\r").toByteArray(Charsets.US_ASCII))
-        session.output.flush()
-        return readUntilPrompt(session.input, timeoutMs)
-    }
-
-    private suspend fun readUntilPrompt(input: InputStream, timeoutMs: Long): String {
-        val response = StringBuilder()
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
-        val buffer = ByteArray(256)
-        while (SystemClock.elapsedRealtime() < deadline) {
-            coroutineContext.ensureActive()
-            val available = input.available()
-            if (available > 0) {
-                val count = input.read(buffer, 0, minOf(buffer.size, available))
-                if (count < 0) throw EOFException("Bluetooth stream closed.")
-                response.append(String(buffer, 0, count, Charsets.US_ASCII))
-                val promptIndex = response.lastIndexOf(">")
-                if (promptIndex >= 0) return response.toString().substring(0, promptIndex)
-                if (response.length > MAX_RESPONSE_CHARS) {
-                    throw IOException("Слишком длинный ответ адаптера.")
-                }
-            } else {
-                delay(10L)
-            }
-        }
-        throw SocketTimeoutException("Адаптер не вернул ответ вовремя.")
+        return session.transport.exchange(command, timeoutMs)
     }
 
     private suspend fun connectSocketCancellable(socket: BluetoothSocket) =
@@ -325,7 +367,21 @@ class Obd2Repository(context: Context) {
     private fun requireBluetoothPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-            throw SecurityException("Нужно разрешение «Устройства поблизости» для подключения к сопряжённому адаптеру.")
+            throw SecurityException("Нужно разрешение «Устройства поблизости» для подключения к Bluetooth-адаптеру.")
+        }
+    }
+
+    private fun requireBluetoothScanPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                throw SecurityException("Нужно разрешение «Устройства поблизости» для поиска BLE OBD-II адаптеров.")
+            }
+            requireBluetoothPermission()
+        } else if (
+            appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            appContext.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            throw SecurityException("Для BLE-сканирования на этой версии Android нужно разрешение геолокации.")
         }
     }
 
@@ -336,7 +392,7 @@ class Obd2Repository(context: Context) {
         private val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val ADAPTER_COMMAND_TIMEOUT_MS = 1_500L
         private const val PID_RESPONSE_TIMEOUT_MS = 2_200L
-        private const val MAX_RESPONSE_CHARS = 2_048
+        private const val BLE_SCAN_DURATION_MS = 8_000L
 
         // These AT commands configure only the ELM-compatible adapter, not the ECU.
         // ATSP0 improves compatibility across standard vehicle OBD protocols.

@@ -42,6 +42,7 @@ internal fun Obd2Screen(
     selectedAddress: String,
     connected: Boolean,
     connecting: Boolean,
+    scanningBle: Boolean,
     telemetry: Obd2Telemetry,
     calibration: Obd2SpeedCalibrationSnapshot,
     gearLearning: Obd2GearLearningSnapshot,
@@ -49,6 +50,7 @@ internal fun Obd2Screen(
     status: String,
     statusIsError: Boolean,
     onRefresh: () -> Unit,
+    onScanBle: () -> Unit,
     onSelect: (String) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
@@ -64,7 +66,7 @@ internal fun Obd2Screen(
             Column(Modifier.weight(1f)) {
                 Text("OBD-II · только чтение", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Bluetooth Classic SPP · без записи в ЭБУ",
+                    "Bluetooth Classic SPP + BLE GATT · без записи в ЭБУ",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
@@ -82,24 +84,24 @@ internal fun Obd2Screen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Bluetooth, null, tint = colors.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text("Сопряжённые Bluetooth-устройства", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("OBD-II адаптеры Bluetooth", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Сканирования эфира нет. Выбери свой OBD-II/ELM327 из списка ранее сопряжённых Bluetooth-устройств; прочие устройства могут не поддерживать SPP.",
+                    "Classic SPP берётся только из ранее сопряжённых устройств. BLE-поиск запускается отдельно по кнопке ниже; результаты остаются на устройстве.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
                 if (adapters.isEmpty()) {
                     Text(
-                        "Адаптер не найден. Сначала включи Bluetooth и выполни сопряжение с OBD-II адаптером в системных настройках.",
+                        "Пока адаптеров нет. Выполни сопряжение Classic SPP в настройках Bluetooth или нажми кнопку поиска BLE OBD.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 } else {
                     adapters.forEach { adapter ->
-                        val selected = selectedAddress.equals(adapter.address, ignoreCase = true)
+                        val selected = selectedAddress.equals(adapter.selectionKey, ignoreCase = true)
                         Surface(
                             Modifier.fillMaxWidth().clickable(enabled = !connected && !connecting) {
-                                onSelect(adapter.address)
+                                onSelect(adapter.selectionKey)
                             },
                             shape = RoundedCornerShape(13.dp),
                             color = if (selected) colors.secondaryContainer else colors.surfaceContainer
@@ -115,17 +117,28 @@ internal fun Obd2Screen(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    Text(adapter.address, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                    Text(adapter.transportType.displayName + " · " + adapter.address, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                                 }
                                 RadioButton(
                                     selected = selected,
                                     enabled = !connected && !connecting,
-                                    onClick = { onSelect(adapter.address) }
+                                    onClick = { onSelect(adapter.selectionKey) }
                                 )
                             }
                         }
                     }
                 }
+                OutlinedButton(
+                    onClick = onScanBle,
+                    enabled = !connected && !connecting && !scanningBle,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Outlined.Bluetooth, null)
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (scanningBle) "Поиск BLE OBD…" else "Найти BLE OBD (8 секунд)")
+                }
+                if (scanningBle) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = onRefresh,
@@ -158,7 +171,7 @@ internal fun Obd2Screen(
                     FilledTonalButton(
                         onClick = onConnect,
                         enabled = selectedAddress.isNotBlank() && !connecting && adapters.any {
-                            it.address.equals(selectedAddress, ignoreCase = true)
+                            it.selectionKey.equals(selectedAddress, ignoreCase = true)
                         },
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                         shape = RoundedCornerShape(14.dp)
@@ -457,7 +470,7 @@ internal fun Obd2Screen(
                     color = colors.onSurfaceVariant
                 )
                 Text(
-                    "Поддерживаются уже сопряжённые Bluetooth Classic SPP-адаптеры (обычно ELM327-совместимые); BLE и USB пока не поддерживаются. Три подряд завершённых, но некорректных ответа отключают только соответствующий PID до переподключения. Таймаут или потеря Bluetooth-соединения завершают текущую сессию, чтобы не использовать потенциально рассинхронизированный поток. Дополнительные параметры выводятся только на этом экране и не сохраняются в историю; для прогноза координат используется только свежая скорость 0D. Старые данные скорости очищаются, а выбранный GPS/радио источник продолжает работать независимо от OBD-II.",
+                    "Поддерживаются Bluetooth Classic SPP и BLE-кандидаты, найденные явным сканированием; совместимость BLE GATT зависит от схемы характеристик адаптера. USB пока не поддерживается. Три подряд завершённых, но некорректных ответа отключают только соответствующий PID до переподключения. Таймаут или потеря Bluetooth-соединения завершают текущую сессию, чтобы не использовать потенциально рассинхронизированный поток. Дополнительные параметры выводятся только на этом экране и не сохраняются в историю; для прогноза координат используется только свежая скорость 0D. Старые данные скорости очищаются, а выбранный GPS/радио источник продолжает работать независимо от OBD-II.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
