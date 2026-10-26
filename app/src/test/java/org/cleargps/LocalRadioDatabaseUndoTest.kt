@@ -135,17 +135,20 @@ class LocalRadioDatabaseUndoTest {
     }
 
     @Test
-    fun v7DatabaseMigrationAddsUndoTablesWithoutLosingExistingRows() {
+    fun v7DatabaseMigrationAddsUndoTablesAndIndexesWithoutLosingExistingRows() {
         val seed = seedData()
         UNDO_TABLES.forEach { table -> sqlite.execSQL("DROP TABLE $table") }
+        sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_radio_time")
         sqlite.version = 7
         database.close()
 
         database = LocalRadioDatabase(context)
         sqlite = database.writableDatabase
 
-        assertEquals(8, sqlite.version)
+        assertEquals(9, sqlite.version)
         UNDO_TABLES.forEach { table -> assertTrue("missing migrated table $table", tableExists(table)) }
+        assertTrue("missing radio-key/time index", indexExists("radio_obs_radio_time"))
+        assertTrue("write-ahead logging should be enabled", sqlite.isWriteAheadLoggingEnabled)
         assertEquals(1, countRows("radio_observations", "id = ?", seed.observationId.toString()))
         assertEquals(1, countRows("radio_points", "id = ?", seed.pointId.toString()))
         assertEquals(1, countRows("scan_history", "id = ?", seed.historyId.toString()))
@@ -291,6 +294,12 @@ class LocalRadioDatabaseUndoTest {
         sqlite.rawQuery(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
             arrayOf(table)
+        ).use { it.moveToFirst() }
+
+    private fun indexExists(index: String): Boolean =
+        sqlite.rawQuery(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arrayOf(index)
         ).use { it.moveToFirst() }
 
     companion object {

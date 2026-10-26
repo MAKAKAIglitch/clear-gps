@@ -674,6 +674,11 @@ internal fun estimateRadioAnchorPosition(
 class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
     private val appContext = context.applicationContext
 
+    init {
+        // WAL allows readers to keep working while the serialized scan writer commits updates.
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -715,6 +720,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         """.trimIndent())
         db.execSQL("CREATE INDEX radio_obs_time ON radio_observations(observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
+        db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         db.execSQL("""
             CREATE TABLE scan_history (
@@ -785,6 +791,13 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         }
         if (oldVersion < 8) {
             createRadioDeletionUndoTables(db)
+        }
+        if (oldVersion < 9) {
+            // Supports radio-key lookups plus the observation-time window used by fingerprints.
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS radio_obs_radio_time " +
+                    "ON radio_observations(radio_type, identifier, observed_at DESC)"
+            )
         }
     }
 
@@ -3018,7 +3031,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 8
+        private const val DB_VERSION = 9
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0
