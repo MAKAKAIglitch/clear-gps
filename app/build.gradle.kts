@@ -20,6 +20,23 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.jvmArgs(
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.net=ALL-UNNAMED",
+                "--add-opens=java.base/java.security=ALL-UNNAMED",
+                "--add-opens=java.base/java.text=ALL-UNNAMED",
+                "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED"
+            )
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -54,4 +71,5 @@ dependencies {
     implementation("org.maplibre.gl:android-sdk:13.7.1")
     implementation("com.google.android.gms:play-services-location:21.4.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
 }
