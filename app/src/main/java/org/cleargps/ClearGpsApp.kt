@@ -936,6 +936,95 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
+    val exportSettingsZoneBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val snapshot = SettingsZoneBackupSnapshot(
+                    positionMode = positionMode.key,
+                    mapTheme = mapThemeMode.key,
+                    mapSource = mapSourceMode.key,
+                    scanIntervalSeconds = scanIntervalSeconds,
+                    adaptiveScan = adaptiveScan,
+                    useWifi = useWifi,
+                    useCells = useCells,
+                    useBle = useBle,
+                    zones = zones.toList()
+                )
+                val text = withContext(Dispatchers.Default) { SettingsZoneBackupCodec.encode(snapshot) }
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use {
+                        it.write(text)
+                    } ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                }
+                Toast.makeText(
+                    context,
+                    "Настройки и зоны экспортированы в выбранный файл. Отправки в сеть нет.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (error: Exception) {
+                Toast.makeText(
+                    context,
+                    "Ошибка экспорта настроек: " + (error.message ?: error.javaClass.simpleName),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+    val importSettingsZoneBackupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                if (GnssReplayRecorder.isRecording(context)) {
+                    throw IllegalStateException("Сначала останови запись GNSS replay, затем импортируй настройки.")
+                }
+                val text = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть файл.")
+                    SettingsZoneBackupCodec.readBounded(input)
+                }
+                val snapshot = withContext(Dispatchers.Default) { SettingsZoneBackupCodec.decode(text) }
+                val importedMode = PositionMode.values().firstOrNull { it.key == snapshot.positionMode }
+                    ?: throw IllegalArgumentException("Неподдерживаемый режим положения.")
+                withContext(Dispatchers.IO) {
+                    prefs.edit()
+                        .putString(ClearGpsPreferences.KEY_MAP_STYLE, snapshot.mapTheme)
+                        .putString(ClearGpsPreferences.KEY_MAP_SOURCE, snapshot.mapSource)
+                        .putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, snapshot.scanIntervalSeconds)
+                        .putBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, snapshot.adaptiveScan)
+                        .putBoolean(ClearGpsPreferences.KEY_USE_WIFI, snapshot.useWifi)
+                        .putBoolean(ClearGpsPreferences.KEY_USE_CELLS, snapshot.useCells)
+                        .putBoolean(ClearGpsPreferences.KEY_USE_BLE, snapshot.useBle)
+                        .apply()
+                    ZoneStore.saveAll(context, snapshot.zones)
+                }
+                mapThemeMode = MapThemeMode.values().first { it.key == snapshot.mapTheme }
+                mapSourceMode = MapSourceMode.values().first { it.key == snapshot.mapSource }
+                scanIntervalSeconds = snapshot.scanIntervalSeconds
+                adaptiveScan = snapshot.adaptiveScan
+                useWifi = snapshot.useWifi
+                useCells = snapshot.useCells
+                useBle = snapshot.useBle
+                zones = ZoneStore.loadAll(context)
+                mapController.updateZones(zones, draftZone)
+                applyPositionMode(importedMode)
+                Toast.makeText(
+                    context,
+                    "Настройки и зоны восстановлены. База радио, разрешение BeaconDB, мониторинг и mock-флаги не импортировались.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (error: Exception) {
+                Toast.makeText(
+                    context,
+                    "Ошибка импорта настроек: " + (error.message ?: error.javaClass.simpleName),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     suspend fun loadPairedObdAdapters() {
         try {
             val available = obd2Repository.pairedAdapters()
@@ -1891,6 +1980,12 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onClearData = { showDeleteAllDialog = true },
                                     onOpenLocationSettings = {
                                         try { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) { }
+                                    },
+                                    onExportSettingsZoneBackup = {
+                                        exportSettingsZoneBackupLauncher.launch("ClearGPS-settings-zones.cgsettings")
+                                    },
+                                    onImportSettingsZoneBackup = {
+                                        importSettingsZoneBackupLauncher.launch(arrayOf("application/octet-stream", "text/plain", "*/*"))
                                     }
                                 )
                             }
@@ -3320,9 +3415,11 @@ private fun SettingsScreen(
     onAdaptiveScan: (Boolean) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
-    onClearData: () -> Unit, onOpenLocationSettings: () -> Unit
+    onClearData: () -> Unit, onOpenLocationSettings: () -> Unit,
+    onExportSettingsZoneBackup: () -> Unit, onImportSettingsZoneBackup: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    var showSettingsZoneBackupImportConfirm by remember { mutableStateOf(false) }
     var showMapOptions by remember { mutableStateOf(false) }
     var showRadioOptions by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
@@ -3518,6 +3615,25 @@ private fun SettingsScreen(
                         color = colors.onSurfaceVariant
                     )
                     Text(databaseFacts, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                    Divider(color = colors.outlineVariant)
+                    Text("Резервная копия настроек и зон", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Файл включает режим положения, тему и источник карты, интервал, выбранные радио-источники и зоны риска с координатами. Не включает радиобазу, ручной ориентир, лимит истории, разрешение BeaconDB, активность мониторинга или mock.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onExportSettingsZoneBackup,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) { Text("Экспорт") }
+                        OutlinedButton(
+                            onClick = { showSettingsZoneBackupImportConfirm = true },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) { Text("Импорт") }
+                    }
                     OutlinedButton(onClick = onClearData, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
                         Icon(Icons.Outlined.DeleteOutline, null)
                         Spacer(Modifier.width(8.dp))
@@ -3592,6 +3708,26 @@ private fun SettingsScreen(
             }
         }
     }
+    if (showSettingsZoneBackupImportConfirm) AlertDialog(
+        onDismissRequest = { showSettingsZoneBackupImportConfirm = false },
+        title = { Text("Импорт настроек и зон?") },
+        text = {
+            Text(
+                "Импорт заменит настройки режима/карты/частоты/радиоисточников и список зон риска. " +
+                    "Координаты зон попадут в выбранный локальный файл. Радиобаза, ручной ориентир, разрешение BeaconDB, " +
+                    "состояние мониторинга и mock не импортируются. Останови запись GNSS replay перед импортом."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                showSettingsZoneBackupImportConfirm = false
+                onImportSettingsZoneBackup()
+            }) { Text("Выбрать файл") }
+        },
+        dismissButton = {
+            TextButton(onClick = { showSettingsZoneBackupImportConfirm = false }) { Text("Отмена") }
+        }
+    )
 }
 
 @Composable
