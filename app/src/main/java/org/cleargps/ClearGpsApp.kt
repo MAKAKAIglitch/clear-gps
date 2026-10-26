@@ -149,7 +149,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
-private enum class PointsView { POINTS, HISTORY }
+private enum class PointsView { POINTS, HISTORY, SOURCES }
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
     BEACONDB("beacondb", "BeaconDB · вышки")
@@ -284,6 +284,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
+    var radioSources by remember { mutableStateOf(database.listRadioSources()) }
     var pointCount by remember { mutableStateOf(database.pointCount()) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
     var observationRetentionLimit by remember { mutableStateOf(database.observationRetentionLimit()) }
@@ -387,6 +388,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var pointToEdit by remember { mutableStateOf<RadioPointRecord?>(null) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var showExportOptions by remember { mutableStateOf(false) }
+    var pendingSourceExportId by remember { mutableStateOf<Long?>(null) }
     var showZoneNameDialog by remember { mutableStateOf(false) }
     var zoneName by remember { mutableStateOf("") }
     var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
@@ -405,6 +407,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
         mapPointsRevision++
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
+        radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         pointCount = withContext(Dispatchers.IO) { database.pointCount() }
         observationCount = withContext(Dispatchers.IO) { database.observationCount() }
         zones = ZoneStore.loadAll(context)
@@ -902,6 +905,22 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 Toast.makeText(context, "WiGLE CSV сохранён. История наблюдений включена; отправки нет.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val exportSourceCsvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+        val sourceId = pendingSourceExportId
+        pendingSourceExportId = null
+        if (uri != null && sourceId != null) scope.launch {
+            try {
+                val csv = withContext(Dispatchers.IO) { database.exportWigleCsv(sourceId) }
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(csv) }
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                }
+                Toast.makeText(context, "CSV выбранного источника сохранён локально. Отправки нет.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка экспорта источника: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -2054,7 +2073,47 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onOpenZones = { navigateToTab(AppTab.ZONES) }
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
-                                    points = points, history = history, pointCount = pointCount, observationCount = observationCount,
+                                    points = points, history = history, sources = radioSources, pointCount = pointCount, observationCount = observationCount,
+                                    onSetSourceEnabled = { source, enabled ->
+                                        scope.launch {
+                                            try {
+                                                val changed = withContext(Dispatchers.IO) { database.setRadioSourceEnabled(source.id, enabled) }
+                                                refreshLocalUiInCurrentCoroutine()
+                                                if (!changed) Toast.makeText(context, "Этот источник нельзя выключить.", Toast.LENGTH_SHORT).show()
+                                            } catch (error: Exception) {
+                                                Toast.makeText(context, "Не удалось изменить источник: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
+                                    onSetSourceTrustWeight = { source, weight ->
+                                        scope.launch {
+                                            try {
+                                                withContext(Dispatchers.IO) { database.setRadioSourceTrustWeight(source.id, weight) }
+                                                refreshLocalUiInCurrentCoroutine()
+                                            } catch (error: Exception) {
+                                                Toast.makeText(context, "Не удалось изменить доверие: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
+                                    onDeleteSource = { source ->
+                                        scope.launch {
+                                            try {
+                                                val deleted = withContext(Dispatchers.IO) { database.deleteRadioSource(source.id) }
+                                                refreshLocalUiInCurrentCoroutine()
+                                                Toast.makeText(
+                                                    context,
+                                                    if (deleted) "Источник удалён, затронутые координаты пересчитаны." else "Источник не найден или защищён.",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } catch (error: Exception) {
+                                                Toast.makeText(context, "Не удалось удалить источник: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
+                                    onExportSource = { source ->
+                                        pendingSourceExportId = source.id
+                                        exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + ".csv")
+                                    },
                                     observationRetentionLimit = observationRetentionLimit,
                                     retentionLimitUpdating = retentionLimitUpdating,
                                     onObservationRetentionLimit = { requestedLimit ->
@@ -3112,6 +3171,11 @@ private fun DatabaseScreen(
     points: List<RadioPointRecord>, history: List<RadioScanHistoryItem>, pointCount: Int, observationCount: Int,
     observationRetentionLimit: Int, retentionLimitUpdating: Boolean, onObservationRetentionLimit: (Int) -> Unit,
     searchQuery: String, onSearch: (String) -> Unit,
+    sources: List<RadioSourceRecord>,
+    onSetSourceEnabled: (RadioSourceRecord, Boolean) -> Unit,
+    onSetSourceTrustWeight: (RadioSourceRecord, Double) -> Unit,
+    onDeleteSource: (RadioSourceRecord) -> Unit,
+    onExportSource: (RadioSourceRecord) -> Unit,
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
@@ -3121,6 +3185,7 @@ private fun DatabaseScreen(
     onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    var pendingDeleteSource by remember { mutableStateOf<RadioSourceRecord?>(null) }
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
@@ -3186,6 +3251,7 @@ private fun DatabaseScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AssistChip(onClick = { onView(PointsView.POINTS) }, label = { Text("Точки") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
             AssistChip(onClick = { onView(PointsView.HISTORY) }, label = { Text("История") }, leadingIcon = { Icon(Icons.Outlined.History, null) })
+            AssistChip(onClick = { onView(PointsView.SOURCES) }, label = { Text("Источники") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
         }
         if (selectedView == PointsView.POINTS) {
             OutlinedTextField(value = searchQuery, onValueChange = onSearch, singleLine = true,
@@ -3217,10 +3283,11 @@ private fun DatabaseScreen(
             }
             IconButton(onClick = onClear) { Icon(Icons.Outlined.DeleteOutline, "Удалить базу") }
         }
-        Text(if (selectedView == PointsView.POINTS)
-            "SSID и BSSID хранятся только локально. Нажми на точку на карте для просмотра подробностей или редактирования."
-        else "Хранятся последние 500 сканирований. История остаётся на устройстве.",
-            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        Text(when (selectedView) {
+            PointsView.POINTS -> "SSID и BSSID хранятся только локально. Нажми на точку на карте для просмотра подробностей или редактирования."
+            PointsView.HISTORY -> "Хранятся последние 500 сканирований. История остаётся на устройстве."
+            PointsView.SOURCES -> "Импортированные источники можно отключать, изменять доверие, экспортировать или удалять. Всё хранится локально."
+        }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
 
         if (selectedView == PointsView.POINTS) {
             if (filteredPoints.isEmpty()) {
@@ -3231,7 +3298,7 @@ private fun DatabaseScreen(
                     RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
                 }
             }
-        } else {
+        } else if (selectedView == PointsView.HISTORY) {
             if (history.isEmpty()) EmptyState("История пуста", "Первый запуск сканирования добавит сюда запись.")
             else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 items(history, key = { it.id }) { entry ->
@@ -3252,6 +3319,43 @@ private fun DatabaseScreen(
                     }
                 }
             }
+        } else {
+            if (sources.isEmpty()) {
+                EmptyState("Источников пока нет", "Импортируй WiGLE CSV или SQLite — файл появится здесь как отдельный источник.")
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(sources, key = { it.id }) { source ->
+                        RadioSourceRow(
+                            source = source,
+                            onEnabled = { enabled -> onSetSourceEnabled(source, enabled) },
+                            onTrustWeight = { weight -> onSetSourceTrustWeight(source, weight) },
+                            onExport = { onExportSource(source) },
+                            onDelete = { pendingDeleteSource = source }
+                        )
+                    }
+                }
+            }
+        }
+        val sourcePendingDeletion = pendingDeleteSource
+        if (sourcePendingDeletion != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteSource = null },
+                title = { Text("Удалить источник?") },
+                text = {
+                    Text(
+                        "«" + sourcePendingDeletion.name + "»: будут удалены его подробные наблюдения. Координаты радиоточек будут пересчитаны по остальным включённым источникам; если данных не останется, точка станет без координат или исчезнет."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingDeleteSource = null
+                        onDeleteSource(sourcePendingDeletion)
+                    }) { Text("Удалить") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteSource = null }) { Text("Отмена") }
+                }
+            )
         }
         } else {
             BeaconDbDatabaseContent(
@@ -3264,6 +3368,90 @@ private fun DatabaseScreen(
                 onPublishAsMock = onPublishBeaconDbLocation,
                 onOpenSettings = onOpenBeaconDbSettings
             )
+        }
+    }
+}
+
+
+@Composable
+private fun RadioSourceRow(
+    source: RadioSourceRecord,
+    onEnabled: (Boolean) -> Unit,
+    onTrustWeight: (Double) -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    var trustWeight by remember(source.id, source.trustWeight) {
+        mutableStateOf(source.trustWeight.toFloat().coerceIn(0f, 1f))
+    }
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = colors.surfaceContainerHigh
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(source.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Тип: " + when (source.kind) {
+                            "local" -> "локальная запись"
+                            "wigle" -> "WiGLE"
+                            "custom" -> "импорт Clear GPS / SQLite"
+                            "beacondb" -> "BeaconDB"
+                            else -> source.kind
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text(
+                        source.radioCount.toString() + " радиоточек · " + source.observationCount + " наблюдений",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Text(
+                        "Добавлен: " + dateTime(source.createdAt) + " · последний раз: " + dateTime(source.lastSeen),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                Checkbox(checked = source.enabled, onCheckedChange = onEnabled, enabled = source.kind != "local")
+            }
+            Text(
+                if (source.enabled) "Участвует в радиопозиционировании" else "Отключён от радиопозиционирования",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (source.enabled) colors.primary else colors.onSurfaceVariant
+            )
+            if (source.kind == "local") {
+                Text(
+                    "Локальные наблюдения нельзя отключить или удалить. Вес доверия всегда 100%.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "Вес доверия: " + String.format(Locale.ROOT, "%.0f%%", trustWeight * 100f) + ". Ноль полностью исключает источник из оценок.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
+                Slider(
+                    value = trustWeight,
+                    onValueChange = { trustWeight = it.coerceIn(0f, 1f) },
+                    onValueChangeFinished = { onTrustWeight(trustWeight.toDouble()) },
+                    valueRange = 0f..1f,
+                    steps = 9
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onExport,
+                        enabled = source.radioCount > 0,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("Экспорт CSV") }
+                    TextButton(onClick = onDelete) { Text("Удалить источник") }
+                }
+            }
         }
     }
 }
@@ -3693,6 +3881,8 @@ private fun RadioPointObservationRow(observation: RadioPointObservation) {
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
             Text("Источник позиции: " + observation.positionSource,
+                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+            Text("Импортированная база: " + (observation.sourceName?.takeIf { it.isNotBlank() } ?: "не указана"),
                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
         }
     }

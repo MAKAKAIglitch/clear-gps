@@ -928,7 +928,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.longitude?.let { it.isFinite() && it in -180.0..180.0 } == true
             val trustworthySource = !point.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
                 !point.positionSource.equals("radio-estimate", ignoreCase = true)
-            val weight = point.sourceId?.let { sourceTrust(db, it) } ?: 1.0
+            val weight = point.sourceId?.let { sourceTrust(db, it) ?: 0.0 } ?: 1.0
             if (hasCoordinates && trustworthySource && weight > 0.0 && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
                 located++
             }
@@ -996,7 +996,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
                 (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
-                val weight = point.sourceId?.let { sourceTrust(db, it) } ?: 1.0
+                val weight = point.sourceId?.let { sourceTrust(db, it) ?: 0.0 } ?: 1.0
                 if (weight > 0.0) {
                     val rawAccuracy = point.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS
                     matches.add(signal to point.copy(accuracyMeters = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)))
@@ -1172,7 +1172,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         readableDatabase.rawQuery(
             "SELECT s.id, s.kind, s.name, s.created_at, s.last_seen, s.enabled, s.trust_weight, " +
                 "(SELECT COUNT(*) FROM radio_observations o WHERE o.source_id = s.id) AS observations, " +
-                "(SELECT COUNT(DISTINCT o.radio_type || ':' || o.identifier) FROM radio_observations o WHERE o.source_id = s.id) AS radios " +
+                "((SELECT COUNT(DISTINCT o.radio_type || ':' || o.identifier) FROM radio_observations o WHERE o.source_id = s.id) + " +
+                "(SELECT COUNT(*) FROM radio_points p WHERE p.source_id = s.id AND NOT EXISTS " +
+                "(SELECT 1 FROM radio_observations o WHERE o.source_id = s.id AND o.radio_type = p.radio_type AND o.identifier = p.identifier))) AS radios " +
                 "FROM radio_sources s ORDER BY CASE WHEN s.kind = 'local' THEN 0 ELSE 1 END, s.created_at DESC, s.id DESC",
             null
         ).use { cursor ->
