@@ -23,31 +23,37 @@ internal object Obd2Protocol {
     private const val POSITIVE_RESPONSE_MODE_01 = 0x41
     private const val HEX_DIGITS = "0123456789ABCDEF"
 
-    // PID 00 is the standard support bitmap; PID 0D is standard vehicle speed.
-    // Do not query other diagnostic values for a positioning feature.
-    private val readOnlyPids = setOf(0x00, 0x0D)
+    // Capability pages are read-only metadata. Actual vehicle telemetry remains limited to PID 0D.
+    // A page's final bitmap bit advertises the next page (00 -> 20 -> ... -> C0).
+    val supportBitmapBases = listOf(0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0)
+    private val readOnlyRequestPids = supportBitmapBases.toSet() + 0x0D
 
     fun requestFor(pid: Int): String {
-        require(pid in readOnlyPids) { "Only allowlisted positioning-related Mode 01 read PIDs are permitted." }
+        require(pid in readOnlyRequestPids) { "Only allowlisted support bitmaps and vehicle-speed PID 0D are permitted." }
         return "01" + pid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
     }
 
-    fun supportedPids(response: String): Set<Int>? {
+    /**
+     * Parses the capability bitmap requested by [basePid]. The returned range includes its
+     * continuation marker (basePid + 0x20) when the ECU advertises another bitmap page.
+     */
+    fun supportedPids(response: String, basePid: Int = 0x00): Set<Int>? {
+        if (basePid !in supportBitmapBases) return null
+        val marker = "41" + basePid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')
         val compact = response.uppercase(Locale.ROOT).filter { it in HEX_DIGITS }
-        val markerAt = compact.indexOf("4100")
+        val markerAt = compact.indexOf(marker)
         if (markerAt < 0) return null
-        val dataStart = markerAt + 4
+        val dataStart = markerAt + marker.length
         val dataEnd = dataStart + 8
         if (dataEnd > compact.length) return null
         val bitmap = compact.substring(dataStart, dataEnd).toLongOrNull(16) ?: return null
-        return (1..32).filterTo(linkedSetOf<Int>()) { pid ->
-            (bitmap and (1L shl (32 - pid))) != 0L
-        }
+        return (1..32).filterTo(linkedSetOf<Int>()) { offset ->
+            (bitmap and (1L shl (32 - offset))) != 0L
+        }.mapTo(linkedSetOf()) { basePid + it }
     }
 
     fun decode(pid: Int, response: String): Int? {
-        require(pid in readOnlyPids) { "Only allowlisted positioning-related Mode 01 read PIDs can be decoded." }
-        if (pid != 0x0D) return null
+        require(pid == 0x0D) { "Only vehicle-speed PID 0D is decoded as telemetry." }
 
         // ELM-compatible adapters may echo requests or include spaces/CAN headers.
         // Accept only a positive response for PID 0D with a complete data byte.

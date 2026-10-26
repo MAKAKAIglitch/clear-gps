@@ -108,11 +108,11 @@ class Obd2Repository(context: Context) {
         ioMutex.withLock {
             val current = activeSession ?: throw IllegalStateException("OBD-II адаптер не подключён.")
             try {
-                // PID 00 reports the standard per-vehicle support bitmap. If it is missing,
-                // probe only PID 0D (vehicle speed); never query unrelated engine diagnostics.
+                // Walk the SAE J1979 support-bitmap chain only when each page advertises
+                // its continuation. These requests discover capabilities; they do not read
+                // RPM, load, temperature, VIN or other vehicle telemetry.
                 if (!current.supportProbeCompleted) {
-                    val supportResponse = queryPid(current, 0x00)
-                    current.supportedPids = Obd2Protocol.supportedPids(supportResponse)
+                    current.supportedPids = probeSupportedPids(current)
                     current.supportProbeCompleted = true
                 }
                 val speedPidSupported = current.supportedPids?.contains(0x0D)
@@ -146,6 +146,21 @@ class Obd2Repository(context: Context) {
     }
 
     fun close() = disconnect()
+
+    private suspend fun probeSupportedPids(session: Session): Set<Int>? {
+        val combined = linkedSetOf<Int>()
+        for ((index, basePid) in Obd2Protocol.supportBitmapBases.withIndex()) {
+            val response = queryPid(session, basePid)
+            val page = Obd2Protocol.supportedPids(response, basePid)
+                ?: return if (index == 0) null else combined
+
+            // The last bit is the page-continuation flag, not a telemetry PID to query directly.
+            val continuationPid = basePid + 0x20
+            combined += page.filterNot { it == continuationPid }
+            if (continuationPid !in page) break
+        }
+        return combined
+    }
 
     private suspend fun queryPid(session: Session, pid: Int): String {
         val request = Obd2Protocol.requestFor(pid)
