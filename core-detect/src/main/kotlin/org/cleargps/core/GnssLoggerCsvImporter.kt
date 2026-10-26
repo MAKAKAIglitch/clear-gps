@@ -183,7 +183,7 @@ object GnssLoggerCsvImporter {
             if(line.trimStart().startsWith("#")) {
                 val f=csv(line.trimStart().removePrefix("#").trimStart())?:return@forEachIndexed
                 val type=f.firstOrNull()?.trim()
-                if(type in supported&&f.size>1)headers[type!!]=f.mapIndexedNotNull{idx,name->name.trim().takeIf{it.isNotEmpty()}?.let{it to idx}}.toMap()
+                if(type!=null&&type in supported&&f.size>1)headers[type]=f.mapIndexedNotNull{idx,name->name.trim().takeIf{it.isNotEmpty()}?.let{it to idx}}.toMap()
                 return@forEachIndexed
             }
             val f=csv(line)
