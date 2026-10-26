@@ -35,7 +35,8 @@ internal object GnssReplayRecorder {
     private const val EARTH_RADIUS_METERS = 6_371_008.8
     private const val SENSOR_SAMPLE_INTERVAL_NANOS = 200_000_000L // At most 5 samples/second per sensor.
     private const val SENSOR_SAMPLE_PERIOD_MICROS = 200_000
-    private const val RADIO_FRAME_REPEAT_WINDOW_NANOS = 10_000_000_000L
+    private const val RADIO_FRAME_MIN_INTERVAL_NANOS = 15_000_000_000L
+    private const val RADIO_FRAME_REPEAT_WINDOW_NANOS = 30_000_000_000L
     private const val MAX_RADIO_SIGNALS_PER_TYPE = 32
     private const val FLUSH_AFTER_EVENTS = 16
     private const val FLUSH_AFTER_LINES = 512
@@ -178,7 +179,13 @@ internal object GnssReplayRecorder {
 
         synchronized(radioIdentityLock) {
             if (!prefs(context).getBoolean(KEY_ENABLED, false) || startedAtNanos <= 0L) return
-            if (signature == lastRadioSignature && atNanos >= lastRadioFrameAtNanos &&
+            if (atNanos < lastRadioFrameAtNanos) return
+            // Enforce the minimum for every caller, including explicit/manual scans which
+            // share this recorder path instead of the service's periodic capture loop.
+            if (lastRadioFrameAtNanos > 0L &&
+                atNanos - lastRadioFrameAtNanos < RADIO_FRAME_MIN_INTERVAL_NANOS
+            ) return
+            if (signature == lastRadioSignature &&
                 atNanos - lastRadioFrameAtNanos < RADIO_FRAME_REPEAT_WINDOW_NANOS
             ) return
             val observations = selected.mapNotNull { (signal, type) ->
