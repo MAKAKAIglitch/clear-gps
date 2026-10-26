@@ -128,10 +128,13 @@ class Obd2Repository(context: Context) {
                 val issues = linkedMapOf<Int, Obd2PidIssue>()
                 var speedSampleElapsedRealtimeNanos: Long? = null
                 var speedQueryDurationMillis: Long? = null
+                var engineRpmSampleElapsedRealtimeNanos: Long? = null
+                var engineRpmQueryDurationMillis: Long? = null
 
-                // Read less critical values before speed so the freshest speed sample is the
-                // last command in the cycle. Each PID has an independent circuit breaker.
-                val pollOrder = (Obd2Protocol.telemetryPids - 0x0D) + 0x0D
+                // Read less critical values first, then query RPM and speed consecutively.
+                // This keeps their independent sample midpoints close enough for gear learning,
+                // while speed remains the final (freshest) command in the cycle.
+                val pollOrder = (Obd2Protocol.telemetryPids - 0x0C - 0x0D) + listOf(0x0C, 0x0D)
                 for (pid in pollOrder) {
                     if (knownSupportedPids == null && pid != 0x0D) {
                         // No trustworthy capability bitmap: do not probe extra PIDs blindly.
@@ -161,10 +164,14 @@ class Obd2Repository(context: Context) {
                     } else {
                         current.pidCircuitBreaker.recordSuccess(pid)
                         responses[pid] = response
-                        if (pid == 0x0D) {
+                        val queryMidpointNanos =
+                            queryStartedAtNanos + (queryReceivedAtNanos - queryStartedAtNanos) / 2L
+                        if (pid == 0x0C) {
                             // ELM-compatible adapters expose no ECU timestamp; this midpoint is approximate.
-                            speedSampleElapsedRealtimeNanos =
-                                queryStartedAtNanos + (queryReceivedAtNanos - queryStartedAtNanos) / 2L
+                            engineRpmSampleElapsedRealtimeNanos = queryMidpointNanos
+                            engineRpmQueryDurationMillis = queryDurationMillis
+                        } else if (pid == 0x0D) {
+                            speedSampleElapsedRealtimeNanos = queryMidpointNanos
                             speedQueryDurationMillis = queryDurationMillis
                         }
                     }
@@ -177,7 +184,9 @@ class Obd2Repository(context: Context) {
                     vehicleVin = current.vehicleVin,
                     vinIssue = current.vinIssue,
                     speedSampleElapsedRealtimeNanos = speedSampleElapsedRealtimeNanos,
-                    speedQueryDurationMillis = speedQueryDurationMillis
+                    speedQueryDurationMillis = speedQueryDurationMillis,
+                    engineRpmSampleElapsedRealtimeNanos = engineRpmSampleElapsedRealtimeNanos,
+                    engineRpmQueryDurationMillis = engineRpmQueryDurationMillis
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

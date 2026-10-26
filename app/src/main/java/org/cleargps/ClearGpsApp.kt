@@ -267,6 +267,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
     val obd2SpeedCalibration = remember { Obd2SpeedCalibration() }
     var obd2CalibrationSnapshot by remember { mutableStateOf(Obd2SpeedCalibrationSnapshot()) }
+    val obd2GearRatioLearner = remember { Obd2GearRatioLearner() }
+    var obd2GearLearningSnapshot by remember { mutableStateOf(Obd2GearLearningSnapshot()) }
     var obd2Status by remember { mutableStateOf("Не подключено. Выбери сопряжённый Bluetooth OBD-II адаптер.") }
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -1108,6 +1110,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         if (!obd2Connected) {
             obd2SpeedCalibration.reset()
             obd2CalibrationSnapshot = Obd2SpeedCalibrationSnapshot()
+            obd2GearRatioLearner.reset()
+            obd2GearLearningSnapshot = Obd2GearLearningSnapshot()
             Obd2SharedState.setSpeedCorrectionScale(prefs, null)
         }
     }
@@ -1120,7 +1124,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             gps.hasSpeedAccuracy()
         ) gps.speedAccuracyMetersPerSecond.toDouble() else null
-        obd2CalibrationSnapshot = obd2SpeedCalibration.observe(
+        val calibration = obd2SpeedCalibration.observe(
             gnssSpeedKmh = gps?.takeIf { it.hasSpeed() }?.speed?.toDouble()?.times(3.6),
             gnssAccuracyMeters = gps?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
             gnssSpeedAccuracyMetersPerSecond = speedAccuracy,
@@ -1133,7 +1137,24 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             obdQueryDurationMillis = obd2Telemetry.speedQueryDurationMillis,
             nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         )
-        obd2CalibrationSnapshot.activeCorrectionScale?.let { scale ->
+        obd2CalibrationSnapshot = calibration
+        obd2GearLearningSnapshot = obd2GearRatioLearner.observe(
+            engineRpm = obd2Telemetry.engineRpm,
+            vehicleSpeedKmh = obd2Telemetry.vehicleSpeedKmh,
+            engineLoadPercent = obd2Telemetry.engineLoadPercent,
+            throttlePercent = obd2Telemetry.throttlePercent,
+            engineRpmSampleElapsedRealtimeNanos = obd2Telemetry.engineRpmSampleElapsedRealtimeNanos,
+            engineRpmQueryDurationMillis = obd2Telemetry.engineRpmQueryDurationMillis,
+            speedSampleElapsedRealtimeNanos = obd2Telemetry.speedSampleElapsedRealtimeNanos,
+            speedQueryDurationMillis = obd2Telemetry.speedQueryDurationMillis,
+            trustedSpeedPair = calibration.differenceKmh != null &&
+                calibration.status in setOf(
+                    Obd2CalibrationStatus.COLLECTING,
+                    Obd2CalibrationStatus.CALIBRATED
+                ),
+            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        )
+        calibration.activeCorrectionScale?.let { scale ->
             Obd2SharedState.setSpeedCorrectionScale(prefs, scale)
         }
     }
@@ -1916,6 +1937,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     connecting = obd2Connecting,
                                     telemetry = obd2Telemetry,
                                     calibration = obd2CalibrationSnapshot,
+                                    gearLearning = obd2GearLearningSnapshot,
                                     status = obd2Status,
                                     statusIsError = obd2StatusIsError,
                                     onRefresh = { refreshPairedObdAdapters() },

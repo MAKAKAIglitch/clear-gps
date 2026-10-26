@@ -90,7 +90,10 @@ data class Obd2Telemetry(
     val vinIssue: Obd2VinIssue? = null,
     /** Monotonic midpoint of the PID 0D request/response interval, not an ECU timestamp. */
     val speedSampleElapsedRealtimeNanos: Long? = null,
-    val speedQueryDurationMillis: Long? = null
+    val speedQueryDurationMillis: Long? = null,
+    /** Monotonic midpoint of the PID 0C request/response interval, not an ECU timestamp. */
+    val engineRpmSampleElapsedRealtimeNanos: Long? = null,
+    val engineRpmQueryDurationMillis: Long? = null
 )
 
 internal object Obd2Protocol {
@@ -273,7 +276,9 @@ internal object Obd2Protocol {
         vehicleVin: String? = null,
         vinIssue: Obd2VinIssue? = null,
         speedSampleElapsedRealtimeNanos: Long? = null,
-        speedQueryDurationMillis: Long? = null
+        speedQueryDurationMillis: Long? = null,
+        engineRpmSampleElapsedRealtimeNanos: Long? = null,
+        engineRpmQueryDurationMillis: Long? = null
     ): Obd2Telemetry {
         val values = responses.mapNotNull { (pid, response) ->
             if (pid !in telemetryPids) return@mapNotNull null
@@ -299,7 +304,9 @@ internal object Obd2Protocol {
             vehicleVin = vehicleVin,
             vinIssue = vinIssue,
             speedSampleElapsedRealtimeNanos = speedSampleElapsedRealtimeNanos,
-            speedQueryDurationMillis = speedQueryDurationMillis
+            speedQueryDurationMillis = speedQueryDurationMillis,
+            engineRpmSampleElapsedRealtimeNanos = engineRpmSampleElapsedRealtimeNanos,
+            engineRpmQueryDurationMillis = engineRpmQueryDurationMillis
         )
     }
 

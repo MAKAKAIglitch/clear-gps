@@ -44,6 +44,7 @@ internal fun Obd2Screen(
     connecting: Boolean,
     telemetry: Obd2Telemetry,
     calibration: Obd2SpeedCalibrationSnapshot,
+    gearLearning: Obd2GearLearningSnapshot,
     status: String,
     statusIsError: Boolean,
     onRefresh: () -> Unit,
@@ -315,6 +316,54 @@ internal fun Obd2Screen(
                         }
                     }
                 }
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = colors.surfaceContainer
+                ) {
+                    Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Наблюдение передач по RPM/скорости", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when (gearLearning.status) {
+                                Obd2GearLearningStatus.WAITING_FOR_DATA -> "Нужны свежие ответы PID 0C и 0D с измеренными временными интервалами."
+                                Obd2GearLearningStatus.WAITING_FOR_TRUSTED_SPEED_PAIR -> "Учёт разрешён только для согласованной пары при NORMAL и физическом GPS; сейчас новые отношения не добавляются."
+                                Obd2GearLearningStatus.TIME_MISMATCH -> "Временные отметки RPM и скорости не подходят для сравнения; пара пропущена."
+                                Obd2GearLearningStatus.WAITING_FOR_STEADY_DRIVING -> "Ожидаю ровное движение без сильного газа/нагрузки и переключения."
+                                Obd2GearLearningStatus.LEARNING -> "Наблюдаю устойчивые отношения RPM/скорость. Число передачи не угадывается."
+                                Obd2GearLearningStatus.RATIOS_LEARNED -> "Найдено несколько устойчивых диапазонов. Это относительные отношения, а не точные номера передач."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                        gearLearning.currentRatioRpmPerKmh?.let { ratio ->
+                            Text(
+                                "Текущий RPM/скорость: " + String.format(Locale.ROOT, "%.1f об/мин на км/ч", ratio),
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        if (gearLearning.bands.isEmpty()) {
+                            Text(
+                                "Подтверждённых диапазонов пока нет. Нужны минимум ${Obd2GearRatioLearner.MIN_BAND_SAMPLES} согласованных отсчётов на диапазон.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        } else {
+                            gearLearning.bands.forEachIndexed { index, band ->
+                                Text(
+                                    "Диапазон ${index + 1}: " +
+                                        String.format(Locale.ROOT, "%.1f об/мин на км/ч", band.medianRpmPerKmh) +
+                                        " · ${band.samples} отсч.",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        }
+                        Text(
+                            "Отношения остаются в памяти текущего соединения. Без размера шин и главной пары нельзя надёжно назначить реальные номера передач; на риск спуфинга они не влияют.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                }
                 val unavailablePids = telemetry.pidIssues.filterValues {
                     it == Obd2PidIssue.NO_VALID_RESPONSE
                 }.keys
@@ -365,7 +414,7 @@ internal fun Obd2Screen(
                     Text("Гарантии режима чтения", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 }
                 Text(
-                    "Сначала читаются битовые карты поддержки SAE J1979 (00/20/40/60/80/A0/C0), затем только объявленные ЭБУ стандартные PID 04, 05, 0B, 0C, 0D, 11 и 33. Если карта возможностей недоступна, приложение безопасно ограничивается проверкой скорости 0D. VIN, Mode 09 и произвольные команды не запрашиваются.",
+                    "Сначала читаются битовые карты поддержки SAE J1979 (00/20/40/60/80/A0/C0), затем только объявленные ЭБУ стандартные PID 04, 05, 0B, 0C, 0D, 11 и 33. Если карта возможностей недоступна, приложение безопасно ограничивается проверкой скорости 0D. VIN запрашивается только после проверки поддержки Mode 09; произвольные команды не допускаются.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
