@@ -1089,9 +1089,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             val compactMac = if (signal.type == "wifi" || signal.type == "ble")
                 compactRadioMacIdentifier(signal.identifier) else null
             if (compactMac != null) {
-                "(radio_type = ? AND replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ?)"
+                "(o.radio_type = ? AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = ?)"
             } else {
-                "(radio_type = ? AND identifier = ?)"
+                "(o.radio_type = ? AND o.identifier = ?)"
             }
         }
         val timestampArguments = buildList {
@@ -1121,11 +1121,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             WHERE s.enabled = 1 AND s.trust_weight > 0
               AND (sg.enabled IS NULL OR sg.enabled = 1) AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.observed_at >= ? AND o.observed_at <= ?
-              AND latitude IS NOT NULL AND longitude IS NOT NULL
-              AND position_source NOT IN (?, ?, ?)
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.position_source NOT IN (?, ?, ?)
               AND ($keyPredicate)
-            GROUP BY observed_at
-            ORDER BY COUNT(DISTINCT radio_type || ':' || identifier) DESC, observed_at DESC
+            GROUP BY o.observed_at
+            ORDER BY COUNT(DISTINCT o.radio_type || ':' || o.identifier) DESC, o.observed_at DESC
             LIMIT ?
             """.trimIndent(),
             timestampArguments
