@@ -27,11 +27,19 @@ internal class BeaconDbLookupCache(
     )
 
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
+    private var generation = 0L
 
     init {
         require(ttlMillis > 0L) { "TTL must be positive." }
         require(maxEntries > 0) { "Cache capacity must be positive." }
     }
+
+    /** Current generation lets callers reject in-flight responses after an opt-out. */
+    @Synchronized
+    fun generation(): Long = generation
+
+    @Synchronized
+    fun isGenerationCurrent(expectedGeneration: Long): Boolean = generation == expectedGeneration
 
     @Synchronized
     fun get(cells: List<BeaconDbCell>): Hit? {
@@ -51,7 +59,13 @@ internal class BeaconDbLookupCache(
     }
 
     @Synchronized
-    fun put(cells: List<BeaconDbCell>, coordinate: BeaconDbCoordinate, queriedAtMillis: Long) {
+    fun put(
+        cells: List<BeaconDbCell>,
+        coordinate: BeaconDbCoordinate,
+        queriedAtMillis: Long,
+        expectedGeneration: Long? = null
+    ) {
+        if (expectedGeneration != null && expectedGeneration != generation) return
         if (!coordinate.isCacheable() || queriedAtMillis <= 0L) return
         val key = cacheKey(cells) ?: return
         val now = monotonicTimeMillis()
@@ -67,6 +81,7 @@ internal class BeaconDbLookupCache(
 
     @Synchronized
     fun clear() {
+        generation += 1L
         entries.clear()
     }
 

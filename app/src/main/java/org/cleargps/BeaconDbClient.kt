@@ -18,6 +18,9 @@ internal object BeaconDbClient {
     private const val MAX_RESPONSE_CHARS = 16_384
     private val lookupCache = BeaconDbLookupCache()
 
+    /** Clears process-local estimates when the user withdraws BeaconDB consent. */
+    fun clearCache() = lookupCache.clear()
+
     suspend fun lookup(
         cells: List<BeaconDbCell>,
         unsupportedCellCount: Int
@@ -32,6 +35,7 @@ internal object BeaconDbClient {
 
         var connection: HttpsURLConnection? = null
         val requestCells = cells.filter { it.isValid() }.distinctBy { it.identifier }
+        val cacheGeneration = lookupCache.generation()
         lookupCache.get(requestCells)?.let { cached ->
             val ageText = if (cached.ageMillis < 1_000L) {
                 "менее 1 с"
@@ -50,6 +54,13 @@ internal object BeaconDbClient {
             )
         }
         try {
+            if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
+                return@withContext BeaconDbLookupResult(
+                    cells = requestCells,
+                    unsupportedCellCount = unsupportedCellCount,
+                    message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+                )
+            }
             val body = BeaconDbProtocol.buildCellOnlyRequestBody(requestCells)
             val activeConnection = URL(ENDPOINT).openConnection() as? HttpsURLConnection
                 ?: return@withContext BeaconDbLookupResult(
@@ -72,6 +83,13 @@ internal object BeaconDbClient {
                 "ClearGPS/0.4.0 (+https://github.com/MAKAKAIglitch/clear-gps)"
             )
 
+            if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
+                return@withContext BeaconDbLookupResult(
+                    cells = requestCells,
+                    unsupportedCellCount = unsupportedCellCount,
+                    message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+                )
+            }
             val requestBytes = body.toByteArray(Charsets.UTF_8)
             activeConnection.setFixedLengthStreamingMode(requestBytes.size)
             activeConnection.outputStream.use { output ->
@@ -111,7 +129,7 @@ internal object BeaconDbClient {
                     message = "BeaconDB вернула ответ без пригодных координат. Результат не сохранён."
                 )
 
-            lookupCache.put(requestCells, coordinate, queriedAt)
+            lookupCache.put(requestCells, coordinate, queriedAt, expectedGeneration = cacheGeneration)
             BeaconDbLookupResult(
                 cells = requestCells,
                 unsupportedCellCount = unsupportedCellCount,

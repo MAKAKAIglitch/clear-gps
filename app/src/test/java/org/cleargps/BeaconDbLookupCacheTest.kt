@@ -65,6 +65,31 @@ class BeaconDbLookupCacheTest {
     }
 
     @Test
+    fun clearingCacheRemovesEntriesImmediately() {
+        val cache = cache()
+        cache.put(listOf(cellA), coordinate, queriedAtMillis = 1_700L)
+
+        cache.clear()
+
+        assertNull(cache.get(listOf(cellA)))
+    }
+
+    @Test
+    fun inFlightResponseCannotRepublishEntryAfterCacheWasCleared() {
+        val cache = cache()
+        val requestGeneration = cache.generation()
+
+        cache.clear()
+        cache.put(
+            listOf(cellA), coordinate, queriedAtMillis = 1_700L,
+            expectedGeneration = requestGeneration
+        )
+
+        assertNull(cache.get(listOf(cellA)))
+        assertTrue(!cache.isGenerationCurrent(requestGeneration))
+    }
+
+    @Test
     fun invalidCoordinatesAreNeverCached() {
         val cache = cache()
         cache.put(

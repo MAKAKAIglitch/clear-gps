@@ -2403,6 +2403,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     beaconDbEnabled = beaconDbEnabled,
                                     onBeaconDbEnabled = { enabled ->
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, enabled).apply()
+                                        if (!enabled) BeaconDbClient.clearCache()
                                         beaconDbEnabled = enabled
                                         beaconDbRequestToken += 1
                                         beaconDbLookupJob?.cancel()
