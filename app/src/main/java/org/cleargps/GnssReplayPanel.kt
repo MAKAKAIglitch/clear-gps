@@ -43,7 +43,7 @@ internal fun GnssReplayPanel(
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             Text(
-                "v1 записывает GNSS и GPS/network-входы фильтра. IMU и сырые радио-наблюдения пока не входят в формат; SSID/BSSID, сотовые и BLE-идентификаторы не пишутся.",
+                "Можно открыть Clear GPS replay или CSV Google GnssLogger. CSV поддерживает Raw, Fix, Status, Agc и доступные Accel/Gyro/Mag/Orientation. Абсолютные координаты и календарные времена не сохраняются в Clear GPS replay. Nav/NMEA пропускаются. Текущий детектор ещё не использует IMU в оценке риска; импорт не меняет живой мониторинг.",
                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
             )
             val sizeKiB = "%.1f".format(java.util.Locale.ROOT, sizeBytes / 1024.0)

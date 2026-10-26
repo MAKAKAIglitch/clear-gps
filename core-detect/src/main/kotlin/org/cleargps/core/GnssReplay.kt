@@ -45,12 +45,32 @@ data class GnssReplayMeasurement(
     }
 }
 
+enum class GnssReplaySensorType { ACCELEROMETER, GYROSCOPE, MAGNETOMETER, ORIENTATION_DEGREES }
+
 sealed class GnssReplayEvent {
     abstract val offsetNanos: Long
     data class Signal(override val offsetNanos: Long, val snapshot: GnssSignalSnapshot,
                       val satellites: List<GnssReplaySatellite>) : GnssReplayEvent()
     data class Rf(override val offsetNanos: Long, val snapshot: GnssRfSnapshot,
                   val measurements: List<GnssReplayMeasurement>) : GnssReplayEvent()
+    data class Sensor(
+        override val offsetNanos: Long,
+        val type: GnssReplaySensorType,
+        val calibrated: Boolean,
+        val x: Double, val y: Double, val z: Double,
+        val biasX: Double?, val biasY: Double?, val biasZ: Double?
+    ) : GnssReplayEvent() {
+        init {
+            require(offsetNanos in 0L..GnssReplayCodec.MAX_DURATION_NANOS)
+            require(x.isFinite() && y.isFinite() && z.isFinite())
+            if (type == GnssReplaySensorType.ORIENTATION_DEGREES) {
+                require(x in 0.0..360.0 && y in -180.0..180.0 && z in -180.0..180.0)
+            } else require(kotlin.math.abs(x) <= 100_000.0 && kotlin.math.abs(y) <= 100_000.0 && kotlin.math.abs(z) <= 100_000.0)
+            require(biasX == null || biasX.isFinite() && kotlin.math.abs(biasX) <= 100_000.0)
+            require(biasY == null || biasY.isFinite() && kotlin.math.abs(biasY) <= 100_000.0)
+            require(biasZ == null || biasZ.isFinite() && kotlin.math.abs(biasZ) <= 100_000.0)
+        }
+    }
     data class Position(
         override val offsetNanos: Long, val source: GnssReplayPositionSource,
         val eastMeters: Double, val northMeters: Double, val accuracyMeters: Double,
@@ -90,7 +110,7 @@ data class GnssReplaySummary(
     val gpsFixes: Int, val networkFixes: Int, val signalFrames: Int, val rfFrames: Int,
     val rawSatelliteRecords: Int, val rawMeasurementRecords: Int, val evaluatedFixes: Int,
     val peakRiskScore: Int, val confirmedAssessments: Int, val skippedLines: Int,
-    val hasFooter: Boolean, val error: String? = null
+    val hasFooter: Boolean, val error: String? = null, val sensorSamples: Int = 0
 )
 
 object GnssReplayCodec {
@@ -145,6 +165,10 @@ object GnssReplayCodec {
                 ).joinToString("|") }
                 lines
             }
+            is GnssReplayEvent.Sensor -> listOf(listOf(
+                "I", event.offsetNanos, event.type.name, b(event.calibrated), d(event.x), d(event.y), d(event.z),
+                d(event.biasX), d(event.biasY), d(event.biasZ)
+            ).joinToString("|"))
             is GnssReplayEvent.Position -> listOf(listOf(
                 "P", event.offsetNanos, event.source.name, d(event.eastMeters), d(event.northMeters),
                 d(event.accuracyMeters), d(event.speedMetersPerSecond), d(event.speedAccuracyMetersPerSecond),
@@ -254,6 +278,16 @@ object GnssReplayCodec {
                         )
                         events[events.lastIndex] = parent!!.copy(measurements = parent.measurements + m)
                     }
+                    "I" -> {
+                        if (events.size >= MAX_EVENTS) { skipped++; continue }
+                        val offset = fields.at(1).longIn(0L, MAX_DURATION_NANOS)
+                        require(offset >= lastOffset)
+                        events += GnssReplayEvent.Sensor(offset, GnssReplaySensorType.valueOf(fields.at(2)), fields.at(3).boolValue(),
+                            fields.at(4).requiredDouble(-100_000.0, 100_000.0), fields.at(5).requiredDouble(-100_000.0, 100_000.0),
+                            fields.at(6).requiredDouble(-100_000.0, 100_000.0), fields.at(7).doubleOrNull(-100_000.0, 100_000.0),
+                            fields.at(8).doubleOrNull(-100_000.0, 100_000.0), fields.at(9).doubleOrNull(-100_000.0, 100_000.0))
+                        lastOffset = offset
+                    }
                     "P" -> {
                         if (events.size >= MAX_EVENTS) { skipped++; continue }
                         val offset = fields.at(1).longIn(0L, MAX_DURATION_NANOS)
@@ -316,7 +350,7 @@ class GnssReplayRunner {
         var network: PositionFix? = null
         var inZone = false
         var gpsFixes=0; var networkFixes=0; var signals=0; var rf=0
-        var satellites=0; var measurements=0; var evaluated=0; var peak=0; var confirmed=0
+        var satellites=0; var measurements=0; var evaluated=0; var peak=0; var confirmed=0; var sensorSamples=0
         for (event in decoded.events) when (event) {
             is GnssReplayEvent.Signal -> {
                 detector.observeGnssSignal(event.snapshot)
@@ -328,6 +362,7 @@ class GnssReplayRunner {
                 rf++
                 measurements += event.measurements.size
             }
+            is GnssReplayEvent.Sensor -> { sensorSamples++ }
             is GnssReplayEvent.Position -> {
                 val t = event.offsetNanos + 1L
                 val position = PositionFix(
@@ -357,7 +392,7 @@ class GnssReplayRunner {
             }
         }
         return GnssReplaySummary(gpsFixes,networkFixes,signals,rf,satellites,measurements,evaluated,peak,confirmed,
-            decoded.skippedLines,decoded.hasFooter)
+            decoded.skippedLines,decoded.hasFooter,sensorSamples=sensorSamples)
     }
     companion object { private const val METERS_PER_DEGREE_EQUATOR = 111_194.9266 }
 }

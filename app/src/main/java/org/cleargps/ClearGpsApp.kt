@@ -806,19 +806,36 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         out.toByteArray()
                     }
                 }
-                val summary = withContext(Dispatchers.Default) {
-                    val decoded = org.cleargps.core.GnssReplayCodec.decode(String(raw, Charsets.UTF_8))
-                    if (decoded.error != null) throw IllegalArgumentException(decoded.error)
-                    org.cleargps.core.GnssReplayRunner().replay(decoded)
+                val importOutcome = withContext(Dispatchers.Default) {
+                    val sourceText = String(raw, Charsets.UTF_8)
+                    val firstLine = sourceText.removePrefix("\uFEFF").lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+                    if (firstLine == org.cleargps.core.GnssReplayCodec.FORMAT_HEADER) {
+                        val decoded = org.cleargps.core.GnssReplayCodec.decode(sourceText)
+                        if (decoded.error != null) throw IllegalArgumentException(decoded.error)
+                        Triple(org.cleargps.core.GnssReplayRunner().replay(decoded), false, "")
+                    } else {
+                        val imported = org.cleargps.core.GnssLoggerCsvImporter.decode(sourceText)
+                        if (imported.decoded.error != null) throw IllegalArgumentException(imported.decoded.error)
+                        val details = "Google GnssLogger CSV: Raw " + imported.stats.rawRows +
+                            ", Fix " + imported.stats.fixRows + ", Status " + imported.stats.statusRows +
+                            ", Agc " + imported.stats.agcRows + ", датчиков " + imported.stats.sensorSamples + ". "
+                        Triple(org.cleargps.core.GnssReplayRunner().replay(imported.decoded), true, details)
+                    }
                 }
+                val summary = importOutcome.first
                 gnssReplaySummary = if (summary.error != null) {
                     "Реплей не выполнен: " + summary.error
                 } else {
-                    "Реплей завершён: GPS ${summary.gpsFixes}, network ${summary.networkFixes}, " +
-                        "GNSS-кадров ${summary.signalFrames}, raw measurements ${summary.rawMeasurementRecords}; " +
-                        "пиковый пересчитанный риск ${summary.peakRiskScore}/100, подтверждённых состояний ${summary.confirmedAssessments}. " +
-                        "Пропущено строк: ${summary.skippedLines}. " +
-                        (if (summary.hasFooter) "Файл завершён корректно." else "Файл неполный: завершающая запись отсутствует.")
+                    importOutcome.third +
+                        "Реплей завершён: GPS " + summary.gpsFixes + ", network " + summary.networkFixes +
+                        ", GNSS-кадров " + summary.signalFrames + ", raw measurements " + summary.rawMeasurementRecords +
+                        ", отсчётов датчиков " + summary.sensorSamples +
+                        "; пиковый пересчитанный риск " + summary.peakRiskScore +
+                        "/100, подтверждённых состояний " + summary.confirmedAssessments +
+                        ". Пропущено строк: " + summary.skippedLines + ". " +
+                        (if (importOutcome.second) "CSV обработан; завершающая запись Clear GPS не требуется."
+                        else if (summary.hasFooter) "Файл завершён корректно."
+                        else "Файл неполный: завершающая запись отсутствует.")
                 }
             } catch (error: Exception) {
                 gnssReplaySummary = "Не удалось выполнить реплей: " + (error.message ?: error.javaClass.simpleName)

@@ -56,6 +56,54 @@ class GnssReplayTest {
         assertEquals(2,summary.evaluatedFixes); assertTrue(summary.peakRiskScore >= 75)
     }
 
+    @Test fun importedGnssLoggerCsvIsRelativeAndKeepsRawAndSensorRows() {
+        val fixHeader = "# Fix,Provider,LatitudeDegrees,LongitudeDegrees,AltitudeMeters,SpeedMps,AccuracyMeters,BearingDegrees,UnixTimeMillis,SpeedAccuracyMps,BearingAccuracyDegrees,elapsedRealtimeNanos,VerticalAccuracyMeters,MockLocation"
+        val statusHeader = "# Status,UnixTimeMillis,SignalCount,SignalIndex,ConstellationType,Svid,CarrierFrequencyHz,Cn0DbHz,AzimuthDegrees,ElevationDegrees,UsedInFix,HasAlmanacData,HasEphemerisData,BasebandCn0DbHz"
+        val rawHeader = "# Raw,utcTimeMillis,TimeNanos,LeapSecond,TimeUncertaintyNanos,FullBiasNanos,BiasNanos,BiasUncertaintyNanos,DriftNanosPerSecond,DriftUncertaintyNanosPerSecond,HardwareClockDiscontinuityCount,Svid,TimeOffsetNanos,State,ReceivedSvTimeNanos,ReceivedSvTimeUncertaintyNanos,Cn0DbHz,PseudorangeRateMetersPerSecond,PseudorangeRateUncertaintyMetersPerSecond,AccumulatedDeltaRangeState,AccumulatedDeltaRangeMeters,AccumulatedDeltaRangeUncertaintyMeters,CarrierFrequencyHz,CarrierCycles,CarrierPhase,CarrierPhaseUncertainty,MultipathIndicator,SnrInDb,ConstellationType,AgcDb,BasebandCn0DbHz,FullInterSignalBiasNanos,FullInterSignalBiasUncertaintyNanos,SatelliteInterSignalBiasNanos,SatelliteInterSignalBiasUncertaintyNanos,CodeType,ChipsetElapsedRealtimeNanos"
+        val raw = MutableList(37) { "" }
+        raw[0]="Raw";raw[1]="1700000000000";raw[11]="5";raw[13]="35";raw[14]="79120";raw[15]="53"
+        raw[16]="29.6";raw[17]="102.5";raw[18]="2.24";raw[22]="1575420030";raw[28]="1"
+        raw[29]="-12.0";raw[30]="24.6";raw[36]="1000000000"
+        val csv=listOf(
+            fixHeader,
+            "Fix,GPS,55.7558,37.6173,150,0,5,0,1700000000000,0,0,1000000000,3,0",
+            "Fix,NLP,55.7559,37.6174,151,0,20,90,1700000001000,1,2,2000000000,5,0",
+            statusHeader,
+            "Status,1700000000000,2,0,1,5,1575420000,35,180,45,1,1,1,30",
+            "Status,1700000000000,2,1,1,6,1575420000,30,120,60,1,1,1,28",
+            rawHeader,raw.joinToString(","),
+            "# UncalAccel,utcTimeMillis,elapsedRealtimeNanos,UncalAccelXMps2,UncalAccelYMps2,UncalAccelZMps2,BiasXMps2,BiasYMps2,BiasZMps2",
+            "UncalAccel,1700000000000,1000000000,0.1,0.2,9.8,0.01,0.02,0.03",
+            "# Gyro,utcTimeMillis,elapsedRealtimeNanos,GyroXRadPerSec,GyroYRadPerSec,GyroZRadPerSec",
+            "Gyro,1700000000000,1000000000,0.001,0.002,0.003",
+            "# UncalMag,utcTimeMillis,elapsedRealtimeNanos,UncalMagXMicroT,UncalMagYMicroT,UncalMagZMicroT,BiasXMicroT,BiasYMicroT,BiasZMicroT",
+            "UncalMag,1700000000000,1000000000,20,30,40,1,2,3",
+            "# OrientationDeg,utcTimeMillis,elapsedRealtimeNanos,yawDeg,rollDeg,pitchDeg",
+            "OrientationDeg,1700000000000,1000000000,201,-5,-52",
+            "Nav,3,769,1,-1,14,116"
+        ).joinToString("\n")
+        val result=GnssLoggerCsvImporter.decode(csv)
+        assertNull(result.decoded.error)
+        assertEquals(2,result.decoded.events.filterIsInstance<GnssReplayEvent.Position>().size)
+        assertEquals(1,result.decoded.events.filterIsInstance<GnssReplayEvent.Rf>().size)
+        assertEquals(1,result.decoded.events.filterIsInstance<GnssReplayEvent.Signal>().size)
+        assertEquals(4,result.stats.sensorSamples)
+        val gps=result.decoded.events.filterIsInstance<GnssReplayEvent.Position>().first()
+        assertEquals(0.0,gps.eastMeters,0.001);assertEquals(0.0,gps.northMeters,0.001)
+        val summary=GnssReplayRunner().replay(result.decoded)
+        assertEquals(1,summary.gpsFixes);assertEquals(1,summary.networkFixes)
+        assertEquals(1,summary.rawMeasurementRecords);assertEquals(4,summary.sensorSamples)
+        val safe=GnssReplayCodec.encodeDocument(result.decoded.events)
+        assertFalse(safe.contains("55.7558"));assertFalse(safe.contains("37.6173"))
+        assertFalse(safe.contains("1700000000000"))
+        assertTrue(safe.startsWith(GnssReplayCodec.FORMAT_HEADER))
+    }
+
+    @Test fun gnssLoggerImportRejectsUnboundedAndUnsupportedFiles() {
+        assertNotNull(GnssLoggerCsvImporter.decode("x".repeat(GnssLoggerCsvImporter.MAX_IMPORT_BYTES+1)).decoded.error)
+        assertNotNull(GnssLoggerCsvImporter.decode("# only comments\nNav,1,2,3").decoded.error)
+    }
+
     @Test fun outOfOrderEventsAndOversizeInputsAreRejected() {
         var failed=false
         try { GnssReplayCodec.encodeDocument(listOf(fixture()[1],fixture()[0])) }
