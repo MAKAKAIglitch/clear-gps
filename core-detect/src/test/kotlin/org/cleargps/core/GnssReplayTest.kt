@@ -31,6 +31,39 @@ class GnssReplayTest {
         assertEquals(1_000.0,(decoded.events[3] as GnssReplayEvent.Position).eastMeters,0.0)
     }
 
+    @Test fun radioSnapshotsRoundTripWithoutRawRadioIdentifiers() {
+        val first = GnssReplayEvent.RadioSnapshot(1_300_000_000L, listOf(
+            GnssReplayRadioObservation(1, GnssReplayRadioType.WIFI, -52, 2412, 12L),
+            GnssReplayRadioObservation(2, GnssReplayRadioType.CELL, -91, null, 4_500L),
+            GnssReplayRadioObservation(3, GnssReplayRadioType.BLE, -68, null, null)
+        ))
+        val second = GnssReplayEvent.RadioSnapshot(9_300_000_000L, listOf(
+            GnssReplayRadioObservation(1, GnssReplayRadioType.WIFI, -57, 2412, 20L)
+        ))
+        val encoded = GnssReplayCodec.encodeDocument(listOf(first, second))
+        assertTrue(encoded.startsWith(GnssReplayCodec.FORMAT_HEADER))
+        assertFalse(encoded.contains("00:11:22:33:44:55"))
+        assertFalse(encoded.contains("private-network-name"))
+        val decoded = GnssReplayCodec.decode(encoded)
+        assertNull(decoded.error)
+        assertEquals(listOf(first, second), decoded.events)
+        val summary = GnssReplayRunner().replay(decoded)
+        assertEquals(2, summary.radioSnapshots)
+        assertEquals(4, summary.radioObservations)
+        val injected = encoded.replaceFirst("O|1300000000|1|WIFI", "O|1300000000|00:11:22:33:44:55|WIFI")
+        val rejected = GnssReplayCodec.decode(injected)
+        assertFalse(rejected.events.filterIsInstance<GnssReplayEvent.RadioSnapshot>().any { it.offsetNanos == 1_300_000_000L })
+        assertTrue(rejected.skippedLines > 0)
+    }
+
+    @Test fun legacyVersionOneReplayRemainsReadable() {
+        val v2 = GnssReplayCodec.encodeDocument(fixture())
+        val legacy = v2.replaceFirst(GnssReplayCodec.FORMAT_HEADER, GnssReplayCodec.LEGACY_FORMAT_HEADER)
+        val decoded = GnssReplayCodec.decode(legacy)
+        assertNull(decoded.error)
+        assertEquals(fixture().size, decoded.events.size)
+    }
+
     @Test fun sensorSamplesRoundTripWithRelativeMonotonicOffsets() {
         val sensor = GnssReplayEvent.Sensor(
             2_500_000_000L, GnssReplaySensorType.ACCELEROMETER, true,

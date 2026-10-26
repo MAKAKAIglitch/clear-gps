@@ -28,7 +28,9 @@ import kotlin.math.sqrt
 
 data class RadioSignal(
     val type: String, val identifier: String, val rssi: Int,
-    val frequency: Int = 0, val ssid: String = ""
+    val frequency: Int = 0, val ssid: String = "",
+    /** Monotonic measurement timestamp when exposed by Android; never persisted. */
+    val observedAtElapsedRealtimeNanos: Long? = null
 )
 
 data class RadioPointRecord(

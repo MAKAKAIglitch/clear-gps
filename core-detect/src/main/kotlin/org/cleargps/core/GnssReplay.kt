@@ -47,6 +47,20 @@ data class GnssReplayMeasurement(
 
 enum class GnssReplaySensorType { ACCELEROMETER, GYROSCOPE, MAGNETOMETER, ORIENTATION_DEGREES }
 
+enum class GnssReplayRadioType { WIFI, CELL, BLE }
+
+data class GnssReplayRadioObservation(
+    val opaqueId: Int, val type: GnssReplayRadioType, val rssiDbm: Int,
+    val frequencyMhz: Int?, val ageMillis: Long?
+) {
+    init {
+        require(opaqueId in 1..GnssReplayCodec.MAX_RADIO_IDENTITIES)
+        require(rssiDbm in -160..0)
+        require(frequencyMhz == null || frequencyMhz in 1..100_000)
+        require(ageMillis == null || ageMillis in 0L..(GnssReplayCodec.MAX_DURATION_NANOS / 1_000_000L))
+    }
+}
+
 sealed class GnssReplayEvent {
     abstract val offsetNanos: Long
     data class Signal(override val offsetNanos: Long, val snapshot: GnssSignalSnapshot,
@@ -69,6 +83,15 @@ sealed class GnssReplayEvent {
             require(biasX == null || biasX.isFinite() && kotlin.math.abs(biasX) <= 100_000.0)
             require(biasY == null || biasY.isFinite() && kotlin.math.abs(biasY) <= 100_000.0)
             require(biasZ == null || biasZ.isFinite() && kotlin.math.abs(biasZ) <= 100_000.0)
+        }
+    }
+    data class RadioSnapshot(
+        override val offsetNanos: Long, val observations: List<GnssReplayRadioObservation>
+    ) : GnssReplayEvent() {
+        init {
+            require(offsetNanos in 0L..GnssReplayCodec.MAX_DURATION_NANOS)
+            require(observations.size in 0..GnssReplayCodec.MAX_RADIO_OBSERVATIONS_PER_FRAME)
+            require(observations.map { it.opaqueId }.distinct().size == observations.size)
         }
     }
     data class Position(
@@ -110,15 +133,23 @@ data class GnssReplaySummary(
     val gpsFixes: Int, val networkFixes: Int, val signalFrames: Int, val rfFrames: Int,
     val rawSatelliteRecords: Int, val rawMeasurementRecords: Int, val evaluatedFixes: Int,
     val peakRiskScore: Int, val confirmedAssessments: Int, val skippedLines: Int,
-    val hasFooter: Boolean, val error: String? = null, val sensorSamples: Int = 0
+    val hasFooter: Boolean, val error: String? = null, val sensorSamples: Int = 0,
+    val radioSnapshots: Int = 0, val radioObservations: Int = 0
 )
 
 object GnssReplayCodec {
-    const val FORMAT_HEADER = "CLEAR_GPS_REPLAY|1|ENU_RELATIVE|OFFSET_ONLY"
+    const val LEGACY_FORMAT_HEADER = "CLEAR_GPS_REPLAY|1|ENU_RELATIVE|OFFSET_ONLY"
+    const val FORMAT_HEADER = "CLEAR_GPS_REPLAY|2|ENU_RELATIVE|OFFSET_ONLY|RADIO_OPAQUE_IDS"
     const val MAX_BYTES = 2 * 1024 * 1024
     const val MAX_LINES = 50_000
     const val MAX_EVENTS = 25_000
-    const val MAX_DURATION_NANOS = 604_800_000_000_000L // Seven days.
+    const val MAX_DURATION_NANOS = 604_800_000_000_000L
+    const val MAX_RADIO_IDENTITIES = 2_048
+    const val MAX_RADIO_OBSERVATIONS_PER_FRAME = 96
+
+    fun isSupportedHeader(header: String?): Boolean =
+        header?.removePrefix("\uFEFF") == FORMAT_HEADER ||
+            header?.removePrefix("\uFEFF") == LEGACY_FORMAT_HEADER
 
     fun encodeHeader() = FORMAT_HEADER
     fun encodeFooter(offsetNanos: Long, eventCount: Int, reason: String): String {
@@ -169,6 +200,15 @@ object GnssReplayCodec {
                 "I", event.offsetNanos, event.type.name, b(event.calibrated), d(event.x), d(event.y), d(event.z),
                 d(event.biasX), d(event.biasY), d(event.biasZ)
             ).joinToString("|"))
+            is GnssReplayEvent.RadioSnapshot -> {
+                require(event.observations.size in 1..MAX_RADIO_OBSERVATIONS_PER_FRAME)
+                val lines = mutableListOf(listOf("Q", event.offsetNanos, event.observations.size).joinToString("|"))
+                event.observations.forEach { o ->
+                    lines += listOf("O", event.offsetNanos, o.opaqueId, o.type.name, o.rssiDbm,
+                        o.frequencyMhz?.toString() ?: "-", o.ageMillis?.toString() ?: "-").joinToString("|")
+                }
+                lines
+            }
             is GnssReplayEvent.Position -> listOf(listOf(
                 "P", event.offsetNanos, event.source.name, d(event.eastMeters), d(event.northMeters),
                 d(event.accuracyMeters), d(event.speedMetersPerSecond), d(event.speedAccuracyMetersPerSecond),
@@ -199,16 +239,30 @@ object GnssReplayCodec {
             return GnssReplayDecodeResult(emptyList(), 0, false, "Replay exceeds the 2 MiB size limit.")
         val lines = text.lineSequence().map { it.trimEnd('\r') }.filter { it.isNotBlank() }.toList()
         if (lines.size > MAX_LINES) return GnssReplayDecodeResult(emptyList(), 0, false, "Replay has too many lines.")
-        if (lines.firstOrNull()?.removePrefix("\uFEFF") != FORMAT_HEADER)
+        val header = lines.firstOrNull()?.removePrefix("\uFEFF")
+        if (header != FORMAT_HEADER && header != LEGACY_FORMAT_HEADER)
             return GnssReplayDecodeResult(emptyList(), 0, false, "Unsupported or missing replay header.")
+        val isV2 = header == FORMAT_HEADER
         val events = mutableListOf<GnssReplayEvent>()
         var skipped = 0
         var footer = false
         var closed = false
         var lastOffset = -1L
+        var pendingRadioRows = 0
+        var expectedRadioRows = 0
         for (line in lines.drop(1)) {
             if (closed) { skipped++; continue }
             val fields = line.split('|')
+            val rowType = fields.firstOrNull()
+            if (pendingRadioRows > 0 && rowType != "O") {
+                val incomplete = events.lastOrNull() as? GnssReplayEvent.RadioSnapshot
+                if (incomplete != null && incomplete.observations.size < expectedRadioRows) {
+                    skipped += 1 + incomplete.observations.size
+                    events.removeAt(events.lastIndex)
+                }
+                pendingRadioRows = 0
+                expectedRadioRows = 0
+            }
             try {
                 when (fields.firstOrNull()) {
                     "END" -> {
@@ -288,6 +342,31 @@ object GnssReplayCodec {
                             fields.at(8).doubleOrNull(-100_000.0, 100_000.0), fields.at(9).doubleOrNull(-100_000.0, 100_000.0))
                         lastOffset = offset
                     }
+                    "Q" -> {
+                        require(isV2)
+                        if (events.size >= MAX_EVENTS) { skipped++; continue }
+                        val offset = fields.at(1).longIn(0L, MAX_DURATION_NANOS)
+                        require(offset >= lastOffset)
+                        val count = fields.at(2).intIn(1, MAX_RADIO_OBSERVATIONS_PER_FRAME)
+                        events += GnssReplayEvent.RadioSnapshot(offset, emptyList())
+                        pendingRadioRows = count
+                        expectedRadioRows = count
+                        lastOffset = offset
+                    }
+                    "O" -> {
+                        require(isV2)
+                        val parent = events.lastOrNull() as? GnssReplayEvent.RadioSnapshot
+                        val offset = fields.at(1).longIn(0L, MAX_DURATION_NANOS)
+                        require(parent != null && parent.offsetNanos == offset && pendingRadioRows > 0)
+                        require(parent.observations.size < expectedRadioRows)
+                        val observation = GnssReplayRadioObservation(
+                            fields.at(2).intIn(1, MAX_RADIO_IDENTITIES), GnssReplayRadioType.valueOf(fields.at(3)),
+                            fields.at(4).intIn(-160, 0), fields.at(5).takeIf { it != "-" }?.intIn(1, 100_000),
+                            fields.at(6).takeIf { it != "-" }?.longIn(0L, MAX_DURATION_NANOS / 1_000_000L)
+                        )
+                        events[events.lastIndex] = parent!!.copy(observations = parent.observations + observation)
+                        pendingRadioRows--
+                    }
                     "P" -> {
                         if (events.size >= MAX_EVENTS) { skipped++; continue }
                         val offset = fields.at(1).longIn(0L, MAX_DURATION_NANOS)
@@ -314,6 +393,13 @@ object GnssReplayCodec {
                 }
             } catch (_: RuntimeException) {
                 skipped++
+            }
+        }
+        if (pendingRadioRows > 0) {
+            val incomplete = events.lastOrNull() as? GnssReplayEvent.RadioSnapshot
+            if (incomplete != null && incomplete.observations.size < expectedRadioRows) {
+                skipped += 1 + incomplete.observations.size
+                events.removeAt(events.lastIndex)
             }
         }
         return GnssReplayDecodeResult(events, skipped, footer)
@@ -351,6 +437,7 @@ class GnssReplayRunner {
         var inZone = false
         var gpsFixes=0; var networkFixes=0; var signals=0; var rf=0
         var satellites=0; var measurements=0; var evaluated=0; var peak=0; var confirmed=0; var sensorSamples=0
+        var radioSnapshots=0; var radioObservations=0
         for (event in decoded.events) when (event) {
             is GnssReplayEvent.Signal -> {
                 detector.observeGnssSignal(event.snapshot)
@@ -363,6 +450,10 @@ class GnssReplayRunner {
                 measurements += event.measurements.size
             }
             is GnssReplayEvent.Sensor -> { sensorSamples++ }
+            is GnssReplayEvent.RadioSnapshot -> {
+                radioSnapshots++
+                radioObservations += event.observations.size
+            }
             is GnssReplayEvent.Position -> {
                 val t = event.offsetNanos + 1L
                 val position = PositionFix(
@@ -392,7 +483,8 @@ class GnssReplayRunner {
             }
         }
         return GnssReplaySummary(gpsFixes,networkFixes,signals,rf,satellites,measurements,evaluated,peak,confirmed,
-            decoded.skippedLines,decoded.hasFooter,sensorSamples=sensorSamples)
+            decoded.skippedLines,decoded.hasFooter,sensorSamples=sensorSamples,
+            radioSnapshots=radioSnapshots,radioObservations=radioObservations)
     }
     companion object { private const val METERS_PER_DEGREE_EQUATOR = 111_194.9266 }
 }

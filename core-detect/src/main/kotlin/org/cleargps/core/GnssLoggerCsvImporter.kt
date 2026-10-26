@@ -247,6 +247,7 @@ object GnssLoggerCsvImporter {
         is GnssReplayEvent.Signal->e.copy(offsetNanos=t,snapshot=e.snapshot.copy(elapsedRealtimeNanos=t+1L))
         is GnssReplayEvent.Rf->e.copy(offsetNanos=t,snapshot=e.snapshot.copy(elapsedRealtimeNanos=t+1L))
         is GnssReplayEvent.Sensor->e.copy(offsetNanos=t)
+        is GnssReplayEvent.RadioSnapshot->e.copy(offsetNanos=t)
         is GnssReplayEvent.Position->e.copy(offsetNanos=t)
     }
     private fun lonDelta(v:Double):Double {var d=v;while(d>180)d-=360.0;while(d< -180)d+=360.0;return d}

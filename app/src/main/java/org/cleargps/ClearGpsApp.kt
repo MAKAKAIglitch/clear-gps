@@ -809,7 +809,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 val importOutcome = withContext(Dispatchers.Default) {
                     val sourceText = String(raw, Charsets.UTF_8)
                     val firstLine = sourceText.removePrefix("\uFEFF").lineSequence().firstOrNull { it.isNotBlank() }?.trim()
-                    if (firstLine == org.cleargps.core.GnssReplayCodec.FORMAT_HEADER) {
+                    if (org.cleargps.core.GnssReplayCodec.isSupportedHeader(firstLine)) {
                         val decoded = org.cleargps.core.GnssReplayCodec.decode(sourceText)
                         if (decoded.error != null) throw IllegalArgumentException(decoded.error)
                         Triple(org.cleargps.core.GnssReplayRunner().replay(decoded), false, "")
@@ -830,6 +830,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         "Реплей завершён: GPS " + summary.gpsFixes + ", network " + summary.networkFixes +
                         ", GNSS-кадров " + summary.signalFrames + ", raw measurements " + summary.rawMeasurementRecords +
                         ", отсчётов датчиков " + summary.sensorSamples +
+                        ", радиокадров " + summary.radioSnapshots +
+                        ", радионаблюдений " + summary.radioObservations +
                         "; пиковый пересчитанный риск " + summary.peakRiskScore +
                         "/100, подтверждённых состояний " + summary.confirmedAssessments +
                         ". Пропущено строк: " + summary.skippedLines + ". " +

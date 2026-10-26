@@ -43,7 +43,7 @@ internal fun GnssReplayPanel(
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             Text(
-                "Можно открыть Clear GPS replay или CSV Google GnssLogger. CSV поддерживает Raw, Fix, Status, Agc и доступные Accel/Gyro/Mag/Orientation. Абсолютные координаты и календарные времена не сохраняются в Clear GPS replay. Nav/NMEA пропускаются. Текущий детектор ещё не использует IMU в оценке риска; импорт не меняет живой мониторинг.",
+                "Можно открыть Clear GPS replay v1/v2 или CSV Google GnssLogger. В v2 записываются анонимные радионаблюдения с временным порядковым ID на одну сессию; BSSID, SSID, ID сот и BLE-адреса не экспортируются. CSV поддерживает Raw, Fix, Status, Agc и доступные Accel/Gyro/Mag/Orientation. IMU и радио пока не влияют на оценку риска.",
                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
             )
             val sizeKiB = "%.1f".format(java.util.Locale.ROOT, sizeBytes / 1024.0)
@@ -89,7 +89,7 @@ internal fun GnssReplayPanel(
     if (showConsent) AlertDialog(
         onDismissRequest = { showConsent = false },
         title = { Text("Разрешить локальную запись GNSS?") },
-        text = { Text("Будут сохранены доступные спутниковые поля, относительный GPS/network-трек, сводка решения фильтра и показания доступных акселерометра, гироскопа, магнитометра и ориентации до 5 образцов/с на тип. Абсолютные координаты, календарное время и радиоидентификаторы исключены. Данные датчиков и паттерн движения могут быть чувствительными; экспорт остаётся ручным. IMU пока не влияет на оценку риска. Автостоп — 2 МиБ или остановка мониторинга.") },
+        text = { Text("Будут сохранены доступные спутниковые поля, относительный GPS/network-трек, сводка фильтра, доступная IMU до 5 образцов/с на тип и ограниченный набор радионаблюдений. Реальные BSSID, SSID, ID сотовых ячеек и BLE-адреса в файл не входят; вместо них используются временные порядковые ID только внутри записи. Трек, датчики и сочетание радионаблюдений могут быть чувствительными. Экспорт только вручную; IMU и радио пока не влияют на оценку риска. Автостоп — 2 МиБ или остановка мониторинга.") },
         confirmButton = { TextButton(onClick = { showConsent = false; onStart() }) { Text("Начать запись") } },
         dismissButton = { TextButton(onClick = { showConsent = false }) { Text("Отмена") } }
     )

@@ -77,6 +77,12 @@ class RadioGeolocationRepository(private val context: Context) {
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
         }
+        // Independent opt-in: no-op unless a local replay session is active.
+        try {
+            GnssReplayRecorder.recordRadioSnapshot(context, SystemClock.elapsedRealtimeNanos(), snapshot.signals)
+        } catch (_: RuntimeException) {
+            // Recording must not interrupt live radio positioning.
+        }
         val estimate = withContext(Dispatchers.IO) {
             database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
         }?.let { candidate ->
@@ -351,7 +357,12 @@ class RadioGeolocationRepository(private val context: Context) {
                     val ssid = it.SSID.orEmpty().takeUnless { name ->
                         name == WifiManager.UNKNOWN_SSID || name.equals("<unknown ssid>", ignoreCase = true)
                     }.orEmpty().take(100)
-                    RadioSignal("wifi", it.BSSID.lowercase(Locale.ROOT), it.level, it.frequency, ssid)
+                    RadioSignal(
+                        "wifi", it.BSSID.lowercase(Locale.ROOT), it.level, it.frequency, ssid,
+                        observedAtElapsedRealtimeNanos = it.timestamp
+                            .takeIf { timestamp -> timestamp > 0L && timestamp <= Long.MAX_VALUE / 1_000L }
+                            ?.times(1_000L)
+                    )
                 }
                 .toList()
             TimedRadioSignals(signals, ageMillis)
@@ -403,7 +414,9 @@ class RadioGeolocationRepository(private val context: Context) {
                     "используется=${parsed.size}, возраст самого старого=${ageMillis?.div(1_000) ?: "unknown"}s, " +
                     "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}"
             )
-            TimedRadioSignals(parsed.map { (_, observation) -> observation.toSignal() }, ageMillis)
+            TimedRadioSignals(parsed.map { (info, observation) ->
+                observation.toSignal().copy(observedAtElapsedRealtimeNanos = info.timeStamp.takeIf { it > 0L })
+            }, ageMillis)
         } catch (error: SecurityException) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Чтение CellInfo запрещено: ${error.message ?: "SecurityException"}", "ERROR")
             TimedRadioSignals(emptyList(), null)
@@ -547,7 +560,10 @@ class RadioGeolocationRepository(private val context: Context) {
                     if (address.isNullOrBlank() || !address.matches(MAC_REGEX) || result.rssi !in -115..0) return
                     // Do not read or store Bluetooth device names or advertisement payload contents.
                     synchronized(resultLock) {
-                        if (!completed.get()) seen[address] = RadioSignal("ble", address, result.rssi)
+                        if (!completed.get()) seen[address] = RadioSignal(
+                            "ble", address, result.rssi,
+                            observedAtElapsedRealtimeNanos = result.timestampNanos.takeIf { it > 0L }
+                        )
                     }
                 }
                 override fun onBatchScanResults(results: MutableList<ScanResult>) {
