@@ -26,6 +26,19 @@
 
 ---
 
+## 2026-10-27 — Идемпотентность summary-only строк WiGLE SQLite
+
+**Причина:** ревью нативного WiGLE SQLite round-trip выявило, что для radiosummary без геолокированных строк `location` повторный импорт вызывает `upsertImportedPoint` и увеличивает `sightings`, хотя нового детального наблюдения не добавлено. Такой счётчик становится зависимым от числа импортов, а не от данных источника.
+
+**Изменённые файлы:**
+- `app/src/main/java/org/cleargps/LocalRadioDatabase.kt` — `upsertImportedPoint` получил параметр `incrementSightings` (по умолчанию `true`). Для summary-only ветки `importWigleSqlite` используется `false`: обновление доступных полей summary сохраняется, но повторный импорт не увеличивает число наблюдений. При импорте реальной строки `location` прежнее увеличение счётчика не меняется.
+- `app/src/test/java/org/cleargps/LocalRadioDatabaseWigleSqliteRoundTripTest.kt` — тест проверяет, что число `sightings` у summary-only радиоточки не меняется после повторного импорта того же файла.
+- `CHANGELOG.md` — эта запись.
+
+**Проверки:** предыдущий коммит `c8b9959` прошёл [GitHub Actions run 40431278271](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40431278271) целиком. Тест нативного WiGLE SQLite и это исправление запускаются новым полным CI; успех не предполагается до получения результата.
+
+**Ограничения:** WiGLE `network/location` не экспортирует полную историю Clear GPS, source IDs, scan history и настройки доверия. Для полного восстановления остаётся отдельный Clear GPS SQLite backup.
+
 ## 2026-10-27 — CI подтвердил retention/cascade и расширение тестов WiGLE SQLite
 
 **Подтверждённый результат:** [GitHub Actions run 40431278271](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40431278271) завершился успешно для коммита `c8b9959`: `:core-detect:test testDebugUnitTest assembleDebug` и Windows bootstrap smoke-test — `success`. Пройдены проверки лимита хранения, каскадного удаления imported source, пересчёта координаты из оставшегося источника и защиты local source от удаления.

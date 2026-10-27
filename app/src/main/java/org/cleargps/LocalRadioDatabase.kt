@@ -2744,7 +2744,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 if (key in seenKeys) return@forEach
                 if (upsertImportedPoint(
                         target, info.type, info.identifier, info.ssid, info.latitude, info.longitude,
-                        DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import", sourceId
+                        DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import", sourceId,
+                        incrementSightings = false
                     )
                 ) newRadios++
                 touched.add(key)
@@ -2759,7 +2760,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     private fun upsertImportedPoint(
         db: SQLiteDatabase, type: String, identifier: String, label: String,
         latitude: Double?, longitude: Double?, accuracy: Double?,
-        rssi: Int, frequency: Int, observedAt: Long, source: String, sourceId: Long
+        rssi: Int, frequency: Int, observedAt: Long, source: String, sourceId: Long,
+        incrementSightings: Boolean = true
     ): Boolean {
         val validPosition = validCoordinates(latitude, longitude)
         val old = findPoint(db, type, identifier)
@@ -2789,7 +2791,11 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
             if (observedAt >= old.lastSeen && frequency > 0) put("frequency", frequency)
             put("first_seen", minOf(old.firstSeen, observedAt))
             put("last_seen", maxOf(old.lastSeen, observedAt))
-            put("sightings", if (old.sightings == Int.MAX_VALUE) Int.MAX_VALUE else old.sightings + 1)
+            put(
+                "sightings",
+                if (!incrementSightings || old.sightings == Int.MAX_VALUE) old.sightings
+                else old.sightings + 1
+            )
             if (old.ssid.isBlank() && label.isNotBlank()) put("ssid", label.take(100))
             if (old.label.isBlank() && label.isNotBlank()) put("label", label.take(100))
             val oldAccuracy = old.accuracyMeters
