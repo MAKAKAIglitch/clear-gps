@@ -234,7 +234,7 @@ private fun openBatteryOptimizationExemption(context: Context) {
         return
     }
 
-    val packageUri = Uri.parse("package:\${context.packageName}")
+    val packageUri = Uri.parse("package:${context.packageName}")
     try {
         context.startActivity(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(packageUri)
