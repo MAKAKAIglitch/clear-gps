@@ -94,7 +94,7 @@ class LocalRadioDatabaseImportTest {
         assertNotNull(first.sourceId)
         assertNotNull(second.sourceId)
         assertFalse(first.sourceId == second.sourceId)
-        assertEquals(1, countRows(
+        assertEquals(2, countRows(
             "radio_observations", "radio_type = ? AND identifier = ?", "wifi", "aa:bb:cc:dd:ee:21"
         ))
         assertEquals(1, countRows(
