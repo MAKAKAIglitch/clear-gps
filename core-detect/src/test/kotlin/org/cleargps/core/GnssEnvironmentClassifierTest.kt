@@ -88,6 +88,32 @@ class GnssEnvironmentClassifierTest {
     }
 
     @Test
+    fun inconsistentSatelliteCountsAreUnknown() {
+        assertEquals(
+            GnssEnvironmentContext.UNKNOWN,
+            GnssEnvironmentClassifier.classify(
+                snapshot(visible = 5, used = 4, cn0 = 34.0, constellations = 2)
+                    .copy(strongSignalCount = 6),
+                10_500_000_000L
+            ).context
+        )
+        assertEquals(
+            GnssEnvironmentContext.UNKNOWN,
+            GnssEnvironmentClassifier.classify(
+                snapshot(visible = 2, used = 2, cn0 = 34.0, constellations = 3),
+                10_500_000_000L
+            ).context
+        )
+        assertEquals(
+            GnssEnvironmentContext.UNKNOWN,
+            GnssEnvironmentClassifier.classify(
+                snapshot(visible = 0, used = 0, cn0 = 34.0, constellations = 0),
+                10_500_000_000L
+            ).context
+        )
+    }
+
+    @Test
     fun singleConstellationReceptionIsNotAutomaticallyClassifiedAsAnAttackOrBadReception() {
         val result = GnssEnvironmentClassifier.classify(
             snapshot(visible = 8, used = 6, cn0 = 31.0, constellations = 1),

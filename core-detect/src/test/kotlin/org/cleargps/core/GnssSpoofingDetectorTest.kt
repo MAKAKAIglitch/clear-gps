@@ -314,6 +314,26 @@ class GnssSpoofingDetectorTest {
         assertEquals(0, detector.assessSignalOnly(3_200_000_000L).score)
     }
 
+    @Test fun malformedSatelliteSnapshotsCannotBuildASignalWarning() {
+        val detector = GnssSpoofingDetector()
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(1_100_000_000L, 10, 8, 38.0, 5.0, 3, strongSignalCount = 8)
+        )
+        // Each snapshot reports more strong satellites than satellites visible, so neither may
+        // count toward the underused-strong-signal evidence streak.
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(2_100_000_000L, 10, 1, 38.0, 5.0, 3, strongSignalCount = 11)
+        )
+        detector.observeGnssSignal(
+            GnssSignalSnapshot(3_100_000_000L, 10, 1, 38.0, 5.0, 3, strongSignalCount = 12)
+        )
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertEquals(0, result.score)
+        assertFalse(result.confirmed)
+        assertTrue(result.reasons.isEmpty())
+    }
+
     @Test fun signalOnlyWarningExpiresWithoutNewEvidence() {
         val detector = GnssSpoofingDetector()
         detector.observeGnssSignal(

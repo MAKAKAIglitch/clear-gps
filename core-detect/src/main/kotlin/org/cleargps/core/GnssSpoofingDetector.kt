@@ -106,7 +106,9 @@ class GnssSpoofingDetector {
     private val deviceBaseline = GnssDeviceBaseline()
 
     fun observeGnssSignal(snapshot: GnssSignalSnapshot) {
-        if (snapshot.elapsedRealtimeNanos <= 0L) return
+        if (snapshot.elapsedRealtimeNanos <= 0L ||
+            !GnssEnvironmentClassifier.isValidSnapshot(snapshot)
+        ) return
         val old = currentSignal
         if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
         val intervalSeconds = old?.let {

@@ -28,6 +28,33 @@ object GnssEnvironmentClassifier {
     private const val MAX_CN0_DB_HZ = 60.0
 
     /**
+     * Reject internally inconsistent satellite snapshots before they can affect either diagnostics
+     * or the detector. Missing measurements remain valid unknowns; they are never replaced by zero.
+     */
+    internal fun isValidSnapshot(snapshot: GnssSignalSnapshot): Boolean {
+        if (snapshot.satellitesVisible !in 0..MAX_SATELLITES ||
+            snapshot.satellitesUsedInFix !in 0..snapshot.satellitesVisible ||
+            snapshot.constellationCount !in 0..MAX_CONSTELLATIONS ||
+            snapshot.constellationCount > snapshot.satellitesVisible ||
+            snapshot.strongSignalCount !in 0..snapshot.satellitesVisible
+        ) return false
+
+        val cn0 = snapshot.meanCn0DbHz
+        if (cn0 != null && (!cn0.isFinite() || cn0 !in 0.0..MAX_CN0_DB_HZ)) return false
+        val spread = snapshot.cn0SpreadDb
+        if (spread != null && (!spread.isFinite() || spread !in 0.0..MAX_CN0_DB_HZ)) return false
+
+        if (snapshot.satellitesVisible == 0) {
+            return snapshot.satellitesUsedInFix == 0 &&
+                snapshot.constellationCount == 0 &&
+                snapshot.strongSignalCount == 0 &&
+                snapshot.meanCn0DbHz == null &&
+                snapshot.cn0SpreadDb == null
+        }
+        return true
+    }
+
+    /**
      * Classifies only fresh, internally consistent aggregate metrics.
      * Missing C/N0 is unknown evidence, never a fabricated zero.
      */
@@ -38,17 +65,12 @@ object GnssEnvironmentClassifier {
         if (snapshot == null || nowElapsedRealtimeNanos <= 0L ||
             snapshot.elapsedRealtimeNanos <= 0L ||
             snapshot.elapsedRealtimeNanos > nowElapsedRealtimeNanos ||
-            nowElapsedRealtimeNanos - snapshot.elapsedRealtimeNanos > MAX_SNAPSHOT_AGE_NANOS
+            nowElapsedRealtimeNanos - snapshot.elapsedRealtimeNanos > MAX_SNAPSHOT_AGE_NANOS ||
+            !isValidSnapshot(snapshot)
         ) {
             return GnssEnvironmentAssessment(GnssEnvironmentContext.UNKNOWN)
         }
 
-        if (snapshot.satellitesVisible !in 0..MAX_SATELLITES ||
-            snapshot.satellitesUsedInFix !in 0..snapshot.satellitesVisible ||
-            snapshot.constellationCount !in 0..MAX_CONSTELLATIONS
-        ) {
-            return GnssEnvironmentAssessment(GnssEnvironmentContext.UNKNOWN)
-        }
 
         if (snapshot.satellitesVisible == 0) {
             return GnssEnvironmentAssessment(
