@@ -37,7 +37,9 @@ class LocalRadioDatabaseLegacyMigrationTest {
 
     @Test
     fun v4DatabaseMigrationPreservesRowsAndAttributesLegacyWigleProvenance() {
-        val legacyDb = SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(DB_NAME).absolutePath, null)
+        val legacyFile = context.getDatabasePath(DB_NAME)
+        legacyFile.parentFile?.mkdirs()
+        val legacyDb = SQLiteDatabase.openOrCreateDatabase(legacyFile.absolutePath, null)
         val wigleFirstSeen = 1_700_000_000_000L
         val wigleLastSeen = wigleFirstSeen + 2_000L
         val localObservedAt = wigleFirstSeen + 4_000L
@@ -109,6 +111,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
                 }
             )
             legacyDb.version = 4
+            assertEquals(4, legacyDb.version)
         } finally {
             legacyDb.close()
         }
@@ -116,7 +119,6 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(4, 4) // The file was deliberately seeded as a v4 database before opening the helper.
         assertEquals(9, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertEquals(3, database!!.pointCount())
@@ -168,7 +170,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         assertEquals(localSource.id, queryLong(
             "SELECT source_id FROM radio_observations WHERE identifier = ?", LOCAL_ID
         ))
-        assertEquals(1, countRows("radio_source_segment_settings", "1 = 1").let { 0 + it })
+        assertEquals(0, countRows("radio_source_segment_settings", "1 = 1"))
         assertEquals(6, countRows("sqlite_master", "type = ? AND name LIKE 'radio_deletion_undo%'", "table"))
         assertTrue(indexExists("radio_obs_source_time"))
         assertTrue(indexExists("radio_points_source"))
