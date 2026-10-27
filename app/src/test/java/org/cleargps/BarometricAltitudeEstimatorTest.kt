@@ -14,17 +14,6 @@ class BarometricAltitudeEstimatorTest {
 
     @Test
     fun calibrationRequiredAndEstimateCarriesTrustedDatum() {
-        assertNull(
-            BarometricAltitudeEstimator.estimate(
-                calibration = calibration(),
-                pressurePa = 100_000.0,
-                pressureUncertaintyPa = 2.0,
-                meanAirTemperatureKelvin = 288.15,
-                meanAirTemperatureUncertaintyKelvin = 2.0,
-                elapsedRealtimeNanos = seconds(11),
-                config = config
-            ).takeIf { false }
-        )
         val estimate = estimate(pressure = 99_000.0, at = 11)!!
 
         assertTrue(estimate.valueMeters > calibration().trustedAltitudeMeters)
