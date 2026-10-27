@@ -2874,8 +2874,9 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     ): Boolean {
         val exists = db.rawQuery(
             "SELECT 1 FROM radio_observations WHERE source_id = ? AND radio_type = ? AND identifier = ? AND observed_at = ? " +
-                "AND rssi = ? AND frequency = ? AND COALESCE(latitude, 999.0) = COALESCE(?, 999.0) " +
-                "AND COALESCE(longitude, 999.0) = COALESCE(?, 999.0) LIMIT 1",
+                "AND rssi = ? AND frequency = ? " +
+                "AND COALESCE(latitude, 999.0) = COALESCE(CAST(? AS REAL), 999.0) " +
+                "AND COALESCE(longitude, 999.0) = COALESCE(CAST(? AS REAL), 999.0) LIMIT 1",
             arrayOf(sourceId.toString(), type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
                 latitude?.toString(), longitude?.toString())
         ).use { it.moveToFirst() }
