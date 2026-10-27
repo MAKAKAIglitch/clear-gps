@@ -66,6 +66,56 @@ class BeaconDbProtocolTest {
         assertEquals(1, Regex("\"cellId\":30").findAll(body).count())
     }
 
+    @Test
+    fun validCoordinateResponseIsAcceptedWithoutFallback() {
+        val result = BeaconDbProtocol.parseCoordinateResponse(
+            """{"location":{"lat":52.123456,"lng":40.654321},"accuracy":450.0}"""
+        )
+
+        assertEquals(52.123456, result?.latitude ?: Double.NaN, 0.000001)
+        assertEquals(40.654321, result?.longitude ?: Double.NaN, 0.000001)
+        assertEquals(450.0, result?.accuracyMeters ?: Double.NaN, 0.000001)
+    }
+
+    @Test
+    fun serverFallbackResponsesAreRejectedEvenWhenCoordinatesArePresent() {
+        val lacf = """{"location":{"lat":52.1,"lng":40.2},"accuracy":450.0,"fallback":"lacf"}"""
+        val ipf = """{"location":{"lat":52.1,"lng":40.2},"accuracy":450.0,"fallback":"ipf"}"""
+
+        assertNull(BeaconDbProtocol.parseCoordinateResponse(lacf))
+        assertNull(BeaconDbProtocol.parseCoordinateResponse(ipf))
+    }
+
+    @Test
+    fun missingLocationMalformedJsonAndOutOfRangeCoordinatesAreRejected() {
+        assertNull(BeaconDbProtocol.parseCoordinateResponse("""{"accuracy":450.0}"""))
+        assertNull(BeaconDbProtocol.parseCoordinateResponse("""{"location":{"lat":52.1}"""))
+        assertNull(
+            BeaconDbProtocol.parseCoordinateResponse(
+                """{"location":{"lat":91.0,"lng":40.2},"accuracy":450.0}"""
+            )
+        )
+        assertNull(
+            BeaconDbProtocol.parseCoordinateResponse(
+                """{"location":{"lat":52.1,"lng":181.0},"accuracy":450.0}"""
+            )
+        )
+    }
+
+    @Test
+    fun nonPositiveAndExcessiveAccuracyAreRejected() {
+        assertNull(
+            BeaconDbProtocol.parseCoordinateResponse(
+                """{"location":{"lat":52.1,"lng":40.2},"accuracy":0.0}"""
+            )
+        )
+        assertNull(
+            BeaconDbProtocol.parseCoordinateResponse(
+                """{"location":{"lat":52.1,"lng":40.2},"accuracy":10000001.0}"""
+            )
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun emptyOrUnsupportedCellListCannotCreateRequest() {
         BeaconDbProtocol.buildCellOnlyRequestBody(
