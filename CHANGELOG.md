@@ -36,7 +36,7 @@
 - `app/build.gradle.kts` — удалена временная настройка полного вывода/стандартных потоков; постоянные настройки Robolectric и JDK остаются.
 - `CHANGELOG.md` — эта запись.
 
-**Проверки:** следующий GitHub Actions запускает полный набор `:core-detect:test testDebugUnitTest assembleDebug` и Windows bootstrap smoke-test. Предыдущий CI подтвердил точную причину, но завершился ошибкой из-за неё; успех нового коммита пока не предполагается.
+**Проверки:** [GitHub Actions run 40429794771](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40429794771) завершился успешно: `:core-detect:test testDebugUnitTest assembleDebug` и Windows bootstrap smoke-test — `success`. Полный CI подтвердил исправление импорта неизвестных координат; физическое устройство не использовалось.
 
 **Ограничения:** ручная проверка импорта на физическом Android-устройстве не выполнялась.
 
