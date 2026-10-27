@@ -1,0 +1,69 @@
+# Architecture
+
+This document describes the **current implementation** on `dev`. It is intentionally different from a promise that every item in the roadmap is finished. The target contracts and open decisions live in [`docs/spec/`](docs/spec/).
+
+## Gradle modules
+
+The repository currently builds two Gradle modules:
+
+- **`:app`** — Android application, Compose Material 3 UI, MapLibre map, Android services and permissions, local radio database, radio-position estimation, OBD-II transports, mock-location publication, diagnostics, settings and export/import flows.
+- **`:core-detect`** — plain Kotlin/JVM code for GNSS anomaly detection and related data models, baseline/environment diagnostics, risk feedback and replay parsing/encoding. It uses JUnit and has no Android dependency declared in its module build.
+
+The design in `docs/spec/` proposes further boundaries such as `core-fusion`, individual GNSS/radio/OBD/IMU/barometer sources, data, mock, service, UI, car and vehicle profiles. Those are target boundaries, **not** separate Gradle modules today. Do not infer a completed EKF/IMU/OBD/DEM pipeline from the presence of supporting classes or specifications.
+
+## Runtime responsibilities
+
+### Android application (`:app`)
+
+- `ClearGpsApp.kt` wires together the UI and application actions.
+- `LocationMonitorService.kt` owns the location-monitoring foreground service.
+- `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.
+- `RadioGeolocationRepository.kt`, `RadioFixReliability.kt` and `LocationQuality.kt` implement/support local radio estimates and the quality checks around them.
+- The `Obd2*` classes implement the current read-only OBD-II foundation, transports, polling and vehicle metrics. The full planned make-specific CAN profiles and all sensor-fusion features are not implied to be complete.
+- `DiagnosticLogStore.kt`, `GnssReplayRecorder.kt`, `RiskFeedbackStore.kt` and `SettingsZoneBackupCodec.kt` own their corresponding local diagnostic or export data paths.
+
+### Detection core (`:core-detect`)
+
+The JVM module contains GNSS signal/data models and anomaly logic, baseline/environment helpers, and replay codecs. Its tests cover deterministic logic without requiring an Android phone. Device-dependent availability (for example AGC or L5/E5) must be represented as unavailable/neutral rather than fabricated.
+
+## Local radio database and provenance
+
+`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **9**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet. Core tables separate:
+
+- `radio_sources` — local or imported source identity and trust settings;
+- `radio_points` — a normalized radio identifier and its summary/selected position;
+- `radio_observations` — timestamped RSSI/frequency observations with source provenance;
+- `scan_history` — bounded scan history;
+- `radio_source_segment_settings` — per-source/day/type enablement and trust weights;
+- short-lived deletion-undo snapshot tables.
+
+Imports are merged into the existing local database, not used to replace it. The implemented file formats include WiGLE CSV (plain/gzip), WiGLE-shaped SQLite (`network/location`) and a full Clear GPS SQLite backup. A WiGLE-shaped export cannot preserve every Clear GPS-only field: use the full backup to preserve application history and metadata. Settings/zones use a separate `.cgsettings` format.
+
+SSID exclusion is applied on supported recording and matching paths. The radio-position estimate is not meant to become its own ground-truth training coordinate; provenance and quality remain relevant when positions conflict.
+
+## Position, trust and publication
+
+GNSS diagnostics/detection, radio matching and the Android publication layer are distinct responsibilities, although some orchestration currently remains inside the application module. The target contracts specify that the detector must consume raw GNSS callbacks rather than the application's own mock `Location`, and that an unavailable/failed source should not invalidate all other sources.
+
+When no position meets the publication policy, the intended safe behavior is to stop publishing a stale fix rather than label it fresh. This contract and the trust-state semantics are described in [`position-contract.md`](docs/spec/position-contract.md) and [`trust-model.md`](docs/spec/trust-model.md); device-level publication still requires the manual validation checklist.
+
+## Network and privacy boundaries
+
+- Radio observations and the local database stay in app-private storage by default.
+- BeaconDB lookup is disabled by default. If the user enables it and starts a lookup, the current request is **cell-only** (supported cell identifiers and signal strength), not Wi-Fi/BSSID, BLE or GPS coordinates. The remote service also sees the device IP address. No contribution/upload endpoint is used, and the result is not automatically inserted into the local radio database.
+- The default map style is remote; a map provider can observe the IP address and requested map area. Radio identifiers are not attached to map requests.
+- Diagnostic logs redact recognized labelled identifiers and round explicitly recognized coordinate values. Arbitrary unlabelled free text cannot be guaranteed to be sanitized.
+- Replay v2 stores relative time/track coordinates and opaque per-recording radio IDs. It can include available IMU samples and (only in Auto mode while recording) anonymized radio snapshots. These samples do **not** currently contribute to the live risk score. The replay remains a possible source of movement-context information, so it is kept private and exported only by user action.
+- A full SQLite backup can contain exact radio IDs, coordinates and observation history. It is a deliberate user-selected export, not a sanitized diagnostic log.
+
+See [`docs/spec/privacy.md`](docs/spec/privacy.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md) for the privacy and threat boundaries.
+
+## Build and test flow
+
+The Android CI uses JDK 17 and the checked-in Gradle Wrapper:
+
+```sh
+./gradlew --no-daemon --stacktrace :core-detect:test testDebugUnitTest assembleDebug
+```
+
+On Windows, use `gradlew.bat` or the checked-in `windows-build/build-apk.ps1`. CI also validates PowerShell syntax, verifies the Gradle Wrapper JAR checksum, and smoke-tests Gradle argument forwarding on Windows. Automated tests are necessary but do not replace real-device checks listed in [`docs/testing/device-validation.md`](docs/testing/device-validation.md).
