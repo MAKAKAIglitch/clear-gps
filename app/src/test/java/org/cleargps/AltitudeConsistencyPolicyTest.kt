@@ -162,6 +162,6 @@ class AltitudeConsistencyPolicyTest {
         source = source
     )
 
-    private fun now(seconds: Long) = seconds(seconds)
+    private fun now(secondsValue: Long) = seconds(secondsValue)
     private fun seconds(value: Long) = value * 1_000_000_000L
 }
