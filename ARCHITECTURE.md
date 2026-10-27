@@ -60,6 +60,12 @@ GNSS diagnostics/detection, radio matching and the Android publication layer are
 
 When no position meets the publication policy, the intended safe behavior is to stop publishing a stale fix rather than label it fresh. This contract and the trust-state semantics are described in [`position-contract.md`](docs/spec/position-contract.md) and [`trust-model.md`](docs/spec/trust-model.md); device-level publication still requires the manual validation checklist.
 
+## Offline elevation data
+
+- `SrtmHgtElevationStore.kt` reads locally supplied SRTM HGT tiles (1201 × 1201 or 3601 × 3601, signed big-endian samples) and bilinearly interpolates the requested coordinate. Data voids, missing tiles and malformed files return no estimate instead of a zero or guessed height.
+- Each result explicitly identifies the EGM96 geoid vertical datum. It is not interchangeable with GNSS ellipsoid height; no offset is guessed.
+- This is only an offline raster reader. It does not download tiles, manage a DEM pack, read Copernicus GeoTIFF, feed the live TrustEngine/fusion, or publish a height by itself. Storage UI, licensing/attribution for a packaged data set, datum conversion on older Android releases, and real-device validation remain separate work.
+
 ## Network and privacy boundaries
 
 - Radio observations and the local database stay in app-private storage by default.
