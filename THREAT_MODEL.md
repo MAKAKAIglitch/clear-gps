@@ -30,8 +30,8 @@ Loss of GNSS in a tunnel, garage, indoor space or urban canyon is not by itself 
 - Diagnostic logs redact recognized labelled radio/device identifiers and round recognized coordinate values. Arbitrary unlabelled free text cannot be reliably classified.
 - Replay v2 uses relative time/track coordinates and per-recording opaque radio IDs; it can contain IMU and anonymized radio snapshots, but they do not currently affect the live risk score.
 - BeaconDB is disabled by default and the user must start an explicit cell-only lookup. The service receives the supported cell identifiers/signal levels and the device IP. The map provider can see the IP and requested map area.
-- WiGLE file import/export is local; the app does not call the WiGLE API or upload a selected database.
-- Complete SQLite backups are a deliberate export and can contain exact radio IDs, coordinates and history.
+- WiGLE file import/export is local; the app does not call the WiGLE API or upload a selected database. Explicit WiGLE CSV/SQLite exports contain real BSSID/MAC, SSID, available coordinates and observation times; the export UI warns before the user selects a destination.
+- Complete SQLite backups are a separate deliberate export and can contain the full local radio database, exact coordinates, source provenance and detailed history. A third-party destination may synchronize the saved file even though Clear GPS does not upload it.
 
 ## Known limitations and residual risk
 
