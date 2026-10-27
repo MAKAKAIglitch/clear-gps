@@ -318,6 +318,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     }
     var scanIntervalSeconds by remember { mutableStateOf(prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)) }
     var adaptiveScan by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)) }
+    var batteryProfile by remember {
+        mutableStateOf(BatteryProfile.fromKey(prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)))
+    }
     var recording by remember {
         mutableStateOf(!positionMode.gpsOnly && prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false))
     }
@@ -1048,6 +1051,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     mapSource = mapSourceMode.key,
                     scanIntervalSeconds = scanIntervalSeconds,
                     adaptiveScan = adaptiveScan,
+                    batteryProfile = batteryProfile,
                     useWifi = useWifi,
                     useCells = useCells,
                     useBle = useBle,
@@ -1095,6 +1099,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         .putString(ClearGpsPreferences.KEY_MAP_SOURCE, snapshot.mapSource)
                         .putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, snapshot.scanIntervalSeconds)
                         .putBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, snapshot.adaptiveScan)
+                        .putString(ClearGpsPreferences.KEY_BATTERY_PROFILE, snapshot.batteryProfile)
                         .putBoolean(ClearGpsPreferences.KEY_USE_WIFI, snapshot.useWifi)
                         .putBoolean(ClearGpsPreferences.KEY_USE_CELLS, snapshot.useCells)
                         .putBoolean(ClearGpsPreferences.KEY_USE_BLE, snapshot.useBle)
@@ -1105,6 +1110,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 mapSourceMode = MapSourceMode.values().first { it.key == snapshot.mapSource }
                 scanIntervalSeconds = snapshot.scanIntervalSeconds
                 adaptiveScan = snapshot.adaptiveScan
+                batteryProfile = BatteryProfile.fromKey(snapshot.batteryProfile)
                 useWifi = snapshot.useWifi
                 useCells = snapshot.useCells
                 useBle = snapshot.useBle
@@ -1583,7 +1589,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan, monitorEnabled) {
+    LaunchedEffect(recording, appVisible, hasAnyLocationPermission(context), positionMode, scanIntervalSeconds, adaptiveScan, batteryProfile, monitorEnabled) {
         // GPS-only mode never runs the radio collection loop. In radio mode the service
         // performs the scan and honours the recording preference when monitoring is active.
         if (recording && !positionMode.gpsOnly && appVisible && hasAnyLocationPermission(context) &&
@@ -1595,7 +1601,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
                 }?.speed?.times(3.6f)
                 val speedKmh = obdSpeedKmh ?: locationSpeedKmh
-                delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan) * 1_000L)
+                delay(effectiveScanIntervalSeconds(scanIntervalSeconds, speedKmh, adaptiveScan, batteryProfile) * 1_000L)
             }
         }
     }
@@ -2465,6 +2471,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     wifiSsidBlacklist = wifiSsidBlacklist,
                                     manualFallbackEnabled = manualFallbackEnabled,
                                     mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
+                                    batteryProfile = batteryProfile,
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
                                     detailedLogging = detailedLogging,
                                     diagnosticLogMaxKb = diagnosticLogMaxKb,
@@ -2527,6 +2534,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onAdaptiveScan = {
                                         adaptiveScan = it
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, it).apply()
+                                    },
+                                    onBatteryProfile = { selected ->
+                                        batteryProfile = selected
+                                        prefs.edit().putString(ClearGpsPreferences.KEY_BATTERY_PROFILE, selected.key).apply()
+                                        if (monitorEnabled) {
+                                            val intent = Intent(context, LocationMonitorService::class.java)
+                                                .setAction(LocationMonitorService.ACTION_START)
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                                            else context.startService(intent)
+                                        }
                                     },
                                     onWifi = { useWifi = it; saveUseFlags() },
                                     onCells = { useCells = it; saveUseFlags() },
@@ -4439,10 +4456,10 @@ private fun SettingsScreen(
     beaconDbEnabled: Boolean, onBeaconDbEnabled: (Boolean) -> Unit,
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
     onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
-    mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean,
+    mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean, batteryProfile: BatteryProfile,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
     onScanInterval: (Int) -> Unit, onScanIntervalFinished: () -> Unit,
-    onAdaptiveScan: (Boolean) -> Unit,
+    onAdaptiveScan: (Boolean) -> Unit, onBatteryProfile: (BatteryProfile) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit,
@@ -4609,9 +4626,28 @@ private fun SettingsScreen(
                     )
                     SettingSwitch(
                         "Ускорять в движении",
-                        "При скорости выше 25 км/ч интервал уменьшается вдвое. Android может ограничить сканы.",
+                        "При скорости выше 25 км/ч сначала уменьшается заданный интервал. Затем применяется выбранный профиль.",
                         adaptiveScan,
                         onAdaptiveScan
+                    )
+                    Divider(color = colors.outlineVariant)
+                    Text("Профиль энергопотребления", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    BatteryProfile.values().forEach { item ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onBatteryProfile(item) }.padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(item.title, fontWeight = FontWeight.Medium)
+                                Text(item.description, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                            }
+                            RadioButton(selected = batteryProfile == item, onClick = { onBatteryProfile(item) })
+                        }
+                    }
+                    Text(
+                        "Профиль меняет интервал запросов фикса и повторного радиопоиска: Eco ×2, Normal — заданный интервал, Max примерно ÷2. Сырые GNSS callback-и не прореживаются, чтобы не терять данные детектора. Фактические Wi‑Fi/BLE-сканы ограничиваются Android.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant
                     )
                     Divider(color = colors.outlineVariant)
                     SettingSwitch(
@@ -4911,11 +4947,9 @@ private fun MapAttribution(modifier: Modifier = Modifier, dark: Boolean, onClick
     }
 }
 
-private fun effectiveScanIntervalSeconds(configuredSeconds: Int, speedKmh: Float?, adaptive: Boolean): Int {
-    val configured = configuredSeconds.coerceIn(1, 30)
-    val movingFast = speedKmh != null && speedKmh.isFinite() && speedKmh > 25f
-    return if (adaptive && movingFast) (configured / 2).coerceAtLeast(1) else configured
-}
+private fun effectiveScanIntervalSeconds(
+    configuredSeconds: Int, speedKmh: Float?, adaptive: Boolean, profile: BatteryProfile
+): Int = BatteryProfilePolicy.intervalSeconds(configuredSeconds, speedKmh, adaptive, profile)
 
 private fun recommendedMapPointLimit(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager

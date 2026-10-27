@@ -37,6 +37,27 @@ class SettingsZoneBackupCodecTest {
         assertEquals(original, SettingsZoneBackupCodec.decode(SettingsZoneBackupCodec.encode(original)))
     }
 
+    @Test fun v2BackupRoundTripsEcoProfile() {
+        val original = snapshot().copy(batteryProfile = BatteryProfile.ECO.key)
+        assertEquals(original, SettingsZoneBackupCodec.decode(SettingsZoneBackupCodec.encode(original)))
+    }
+
+    @Test fun v1BackupRemainsReadableAndDefaultsToNormalProfile() {
+        val original = snapshot()
+        val v1 = SettingsZoneBackupCodec.encode(original)
+            .lineSequence()
+            .filterNot { it.startsWith("S|batteryProfile|") }
+            .joinToString("\n", postfix = "\n")
+            .replaceFirst(SettingsZoneBackupCodec.HEADER, SettingsZoneBackupCodec.LEGACY_HEADER)
+
+        assertEquals(original.copy(batteryProfile = BatteryProfile.NORMAL.key), SettingsZoneBackupCodec.decode(v1))
+    }
+
+    @Test fun settingsBackupRejectsUnknownBatteryProfile() {
+        val invalid = snapshot().copy(batteryProfile = "turbo")
+        assertNotNull(runCatching { SettingsZoneBackupCodec.encode(invalid) }.exceptionOrNull())
+    }
+
     @Test fun rejectsUnsupportedVersionAndMissingFooter() {
         val encoded = SettingsZoneBackupCodec.encode(snapshot())
         assertNotNull(runCatching { SettingsZoneBackupCodec.decode(encoded.replaceFirst(SettingsZoneBackupCodec.HEADER, "CLEAR_GPS_SETTINGS_ZONES|99")) }.exceptionOrNull())

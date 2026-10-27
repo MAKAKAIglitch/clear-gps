@@ -41,6 +41,10 @@ Imports are merged into the existing local database, not used to replace it. The
 
 SSID exclusion is applied on supported recording and matching paths. The radio-position estimate is not meant to become its own ground-truth training coordinate; provenance and quality remain relevant when positions conflict.
 
+## Battery cadence profile
+
+Settings expose Eco/Normal/Max for scheduled location updates and repeating radio searches. Eco doubles the movement-adjusted interval (up to 60 seconds), Normal preserves it, and Max halves it (minimum one second). The setting is included in settings-zone backup v2; v1 backups decode as Normal. The profile does not throttle raw GNSS callback processing, which remains available to the detector. Battery use in percent/hour and Doze behavior are not yet measured on reference hardware.
+
 ## Position, trust and publication
 
 GNSS diagnostics/detection, radio matching and the Android publication layer are distinct responsibilities, although some orchestration currently remains inside the application module. The target contracts specify that the detector must consume raw GNSS callbacks rather than the application's own mock `Location`, and that an unavailable/failed source should not invalidate all other sources.

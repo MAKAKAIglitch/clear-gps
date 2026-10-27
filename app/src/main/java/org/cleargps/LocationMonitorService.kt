@@ -412,8 +412,11 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
-    private fun configuredUpdateIntervalMillis(): Long =
-        prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30) * 1_000L
+    private fun configuredUpdateIntervalMillis(): Long {
+        val configured = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15)
+        val profile = BatteryProfile.fromKey(prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key))
+        return BatteryProfilePolicy.profiledIntervalSeconds(configured, profile) * 1_000L
+    }
 
     /**
      * Broadcast one explicitly requested BeaconDB cell-only estimate for a short, bounded window.
@@ -906,7 +909,10 @@ class LocationMonitorService : Service(), LocationListener {
                 )) break
                 delay(
                     GnssReplayRadioCapturePolicy.intervalMillis(
-                        prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15)
+                        BatteryProfilePolicy.profiledIntervalSeconds(
+                            prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15),
+                            BatteryProfile.fromKey(prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key))
+                        )
                     )
                 )
             }
@@ -1167,11 +1173,10 @@ class LocationMonitorService : Service(), LocationListener {
                 val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
                 val adaptive = prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)
                 val obdSpeedKmh = if (adaptive) Obd2SharedState.freshSpeedKmh(prefs) else null
-                // Respect the chosen interval; only halve it in faster motion when the user
-                // explicitly keeps adaptive scanning enabled.
-                val nextInterval = if (adaptive && obdSpeedKmh != null && obdSpeedKmh > 25f) {
-                    (baseInterval / 2).coerceAtLeast(1)
-                } else baseInterval
+                val profile = BatteryProfile.fromKey(
+                    prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)
+                )
+                val nextInterval = BatteryProfilePolicy.intervalSeconds(baseInterval, obdSpeedKmh, adaptive, profile)
                 delay(nextInterval * 1_000L)
             }
         }

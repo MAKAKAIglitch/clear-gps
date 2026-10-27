@@ -15,20 +15,23 @@ internal data class SettingsZoneBackupSnapshot(
     val useWifi: Boolean,
     val useCells: Boolean,
     val useBle: Boolean,
-    val zones: List<SavedRiskZone>
+    val zones: List<SavedRiskZone>,
+    val batteryProfile: String = BatteryProfile.NORMAL.key
 )
 
 internal object SettingsZoneBackupCodec {
-    const val HEADER = "CLEAR_GPS_SETTINGS_ZONES|1"
+    const val LEGACY_HEADER = "CLEAR_GPS_SETTINGS_ZONES|1"
+    const val HEADER = "CLEAR_GPS_SETTINGS_ZONES|2"
     const val MAX_BYTES = 2 * 1024 * 1024
     const val MAX_ZONES = 100
     const val MAX_POINTS_PER_ZONE = 1_000
     const val MAX_LINES = 100_000
 
-    private val settingKeys = setOf(
+    private val legacySettingKeys = setOf(
         "positionMode", "mapTheme", "mapSource", "scanIntervalSeconds",
         "adaptiveScan", "useWifi", "useCells", "useBle"
     )
+    private val settingKeys = legacySettingKeys + "batteryProfile"
     private val validPositionModes = setOf("auto", "gps", "radio")
     private val validMapThemes = setOf("system", "light", "dark")
     private val validMapSources = setOf("online", "offline")
@@ -53,6 +56,7 @@ internal object SettingsZoneBackupCodec {
         setting("mapTheme", snapshot.mapTheme)
         setting("mapSource", snapshot.mapSource)
         setting("scanIntervalSeconds", snapshot.scanIntervalSeconds.toString())
+        setting("batteryProfile", snapshot.batteryProfile)
         setting("adaptiveScan", bit(snapshot.adaptiveScan))
         setting("useWifi", bit(snapshot.useWifi))
         setting("useCells", bit(snapshot.useCells))
@@ -83,7 +87,13 @@ internal object SettingsZoneBackupCodec {
         require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "Backup exceeds the 2 MiB limit." }
         val lines = text.lineSequence().map { it.removeSuffix("\r") }.filter { it.isNotBlank() }.toList()
         require(lines.size <= MAX_LINES) { "Backup has too many lines." }
-        require(lines.firstOrNull()?.removePrefix("\uFEFF") == HEADER) { "Unsupported settings backup format." }
+        val header = lines.firstOrNull()?.removePrefix("\uFEFF")
+        val version = when (header) {
+            LEGACY_HEADER -> 1
+            HEADER -> 2
+            else -> throw IllegalArgumentException("Unsupported settings backup format.")
+        }
+        val acceptedSettingKeys = if (version == 1) legacySettingKeys else settingKeys
 
         val settings = linkedMapOf<String, String>()
         val zones = mutableListOf<SavedRiskZone>()
@@ -112,7 +122,7 @@ internal object SettingsZoneBackupCodec {
                     require(current == null) { "Settings must precede risk zones." }
                     require(fields.size == 3) { "Invalid settings row." }
                     val key = fields[1]
-                    require(key in settingKeys && key !in settings) { "Unknown or duplicate setting." }
+                    require(key in acceptedSettingKeys && key !in settings) { "Unknown or duplicate setting." }
                     settings[key] = fields[2]
                 }
                 "Z" -> {
@@ -156,7 +166,7 @@ internal object SettingsZoneBackupCodec {
             }
         }
         require(ended) { "Backup footer is missing." }
-        require(settings.keys == settingKeys) { "Backup is missing required settings." }
+        require(settings.keys == acceptedSettingKeys) { "Backup is missing required settings." }
 
         fun required(key: String) = settings[key] ?: throw IllegalArgumentException("Missing setting.")
         fun int(key: String) = required(key).toIntOrNull() ?: throw IllegalArgumentException("Invalid numeric setting.")
@@ -171,7 +181,8 @@ internal object SettingsZoneBackupCodec {
             useWifi = bool("useWifi"),
             useCells = bool("useCells"),
             useBle = bool("useBle"),
-            zones = zones.toList()
+            zones = zones.toList(),
+            batteryProfile = if (version == 1) BatteryProfile.NORMAL.key else required("batteryProfile")
         )
         validateSnapshot(snapshot)
         return snapshot
@@ -196,6 +207,7 @@ internal object SettingsZoneBackupCodec {
         require(snapshot.mapTheme in validMapThemes) { "Invalid map theme." }
         require(snapshot.mapSource in validMapSources) { "Invalid map source." }
         require(snapshot.scanIntervalSeconds in 1..30) { "Invalid scan interval." }
+        require(BatteryProfile.isKnownKey(snapshot.batteryProfile)) { "Invalid battery profile." }
         require(snapshot.zones.size <= MAX_ZONES) { "Too many risk zones." }
         val ids = mutableSetOf<String>()
         snapshot.zones.forEach {

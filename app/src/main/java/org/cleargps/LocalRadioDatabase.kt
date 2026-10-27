@@ -229,6 +229,7 @@ object ClearGpsPreferences {
     const val PREFS = "clear_gps"
     const val KEY_SCAN_INTERVAL_SECONDS = "scan_interval_seconds"
     const val KEY_ADAPTIVE_SCAN = "adaptive_scan_enabled"
+    const val KEY_BATTERY_PROFILE = "battery_profile"
     const val KEY_MAP_SOURCE = "map_source_mode"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
