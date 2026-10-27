@@ -26,6 +26,7 @@ object GnssEnvironmentClassifier {
     private const val MAX_SATELLITES = 128
     private const val MAX_CONSTELLATIONS = 8
     private const val MAX_CN0_DB_HZ = 60.0
+    private const val MAX_REASONABLE_CN0_DB_HZ = 100.0
 
     /**
      * Reject internally inconsistent satellite snapshots before they can affect either diagnostics
@@ -40,9 +41,16 @@ object GnssEnvironmentClassifier {
         ) return false
 
         val cn0 = snapshot.meanCn0DbHz
-        if (cn0 != null && (!cn0.isFinite() || cn0 !in 0.0..MAX_CN0_DB_HZ)) return false
         val spread = snapshot.cn0SpreadDb
-        if (spread != null && (!spread.isFinite() || spread !in 0.0..MAX_CN0_DB_HZ)) return false
+        if (cn0 == null && (spread != null || snapshot.strongSignalCount != 0)) return false
+        if (cn0 != null && (!cn0.isFinite() || cn0 !in 0.0..MAX_REASONABLE_CN0_DB_HZ)) return false
+        if (spread != null && (
+                cn0 == null ||
+                    snapshot.satellitesVisible < 2 ||
+                    !spread.isFinite() ||
+                    spread !in 0.0..MAX_REASONABLE_CN0_DB_HZ
+                )
+        ) return false
 
         if (snapshot.satellitesVisible == 0) {
             return snapshot.satellitesUsedInFix == 0 &&

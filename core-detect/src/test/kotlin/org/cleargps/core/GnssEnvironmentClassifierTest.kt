@@ -11,13 +11,14 @@ class GnssEnvironmentClassifierTest {
         visible: Int = 10,
         used: Int = 8,
         cn0: Double? = 34.0,
+        spread: Double? = 5.0,
         constellations: Int = 3
     ) = GnssSignalSnapshot(
         elapsedRealtimeNanos = atSeconds * 1_000_000_000L,
         satellitesVisible = visible,
         satellitesUsedInFix = used,
         meanCn0DbHz = cn0,
-        cn0SpreadDb = 5.0,
+        cn0SpreadDb = spread,
         constellationCount = constellations,
         strongSignalCount = used
     )
@@ -51,7 +52,7 @@ class GnssEnvironmentClassifierTest {
     @Test
     fun zeroVisibleSatellitesAreUnavailableNotZeroCn0OrConfirmedJamming() {
         val result = GnssEnvironmentClassifier.classify(
-            snapshot(visible = 0, used = 0, cn0 = null, constellations = 0),
+            snapshot(visible = 0, used = 0, cn0 = null, spread = null, constellations = 0),
             10_500_000_000L
         )
         assertEquals(GnssEnvironmentContext.GNSS_UNAVAILABLE, result.context)
@@ -110,6 +111,23 @@ class GnssEnvironmentClassifierTest {
                 snapshot(visible = 0, used = 0, cn0 = 34.0, constellations = 0),
                 10_500_000_000L
             ).context
+        )
+        assertFalse(
+            GnssEnvironmentClassifier.isValidSnapshot(
+                snapshot(visible = 10, used = 8, cn0 = null, spread = null)
+                    .copy(strongSignalCount = 1)
+            )
+        )
+        assertFalse(
+            GnssEnvironmentClassifier.isValidSnapshot(
+                snapshot(visible = 10, used = 8, cn0 = null, spread = 0.5)
+                    .copy(strongSignalCount = 0)
+            )
+        )
+        assertFalse(
+            GnssEnvironmentClassifier.isValidSnapshot(
+                snapshot(visible = 1, used = 1, cn0 = 30.0, spread = 0.5)
+            )
         )
     }
 
