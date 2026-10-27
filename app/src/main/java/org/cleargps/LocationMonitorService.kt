@@ -447,7 +447,7 @@ class LocationMonitorService : Service(), LocationListener {
         val selectedMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
         beaconDbOutputPositionMode = selectedMode
         val startedAtElapsed = SystemClock.elapsedRealtime()
-        val deadlineElapsed = startedAtElapsed + BEACONDB_OUTPUT_WINDOW_MS
+        val deadlineElapsed = startedAtElapsed + BeaconDbMockPublicationPolicy.OUTPUT_WINDOW_MS
         beaconDbOutputUntilElapsed = deadlineElapsed
         startMockFreshnessWatchdog()
         beaconDbOutputJob = serviceScope.launch {
@@ -458,13 +458,13 @@ class LocationMonitorService : Service(), LocationListener {
                     prefs.getBoolean(KEY_MONITORING, false) &&
                     prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
                     val nowElapsed = SystemClock.elapsedRealtime()
-                    if (nowElapsed >= deadlineElapsed) break
+                    if (BeaconDbMockPublicationPolicy.hasExpired(nowElapsed, deadlineElapsed)) break
 
                     // The queried cell set is a snapshot, not continuous tracking. Grow the
                     // reported uncertainty while the same estimate is held for external apps.
-                    val ageSeconds = (nowElapsed - startedAtElapsed).coerceAtLeast(0L) / 1_000.0
-                    val effectiveAccuracy = (accuracyMeters + ageSeconds * BEACONDB_ACCURACY_GROWTH_METERS_PER_SECOND)
-                        .coerceIn(1.0, 100_000.0)
+                    val effectiveAccuracy = BeaconDbMockPublicationPolicy.effectiveAccuracyMeters(
+                        accuracyMeters, nowElapsed - startedAtElapsed
+                    )
                     val location = Location(LocationManager.GPS_PROVIDER).apply {
                         this.latitude = latitude
                         this.longitude = longitude
@@ -500,8 +500,11 @@ class LocationMonitorService : Service(), LocationListener {
                     saveServiceStatus(status)
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
 
-                    val remainingMs = (deadlineElapsed - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
-                    delay(minOf(BEACONDB_REPUBLISH_INTERVAL_MS, remainingMs))
+                    delay(
+                        BeaconDbMockPublicationPolicy.nextDelayMillis(
+                            SystemClock.elapsedRealtime(), deadlineElapsed
+                        )
+                    )
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -1602,9 +1605,6 @@ class LocationMonitorService : Service(), LocationListener {
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
         private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
-        private const val BEACONDB_OUTPUT_WINDOW_MS = 120_000L
-        private const val BEACONDB_REPUBLISH_INTERVAL_MS = 5_000L
-        private const val BEACONDB_ACCURACY_GROWTH_METERS_PER_SECOND = 15.0
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 2
         private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L
