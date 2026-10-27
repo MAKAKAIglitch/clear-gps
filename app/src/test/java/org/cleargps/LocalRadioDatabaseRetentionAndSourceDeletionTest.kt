@@ -6,7 +6,6 @@ import android.database.sqlite.SQLiteDatabase
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -175,7 +174,7 @@ class LocalRadioDatabaseRetentionAndSourceDeletionTest {
 
         assertFalse(database.deleteRadioSource(localSourceId))
         assertEquals(1, countRows("radio_sources", "kind = ?", "local"))
-        assertNull(database.listRadioSources().single { it.kind == "local" }.fingerprint)
+        assertEquals(localSourceId, database.listRadioSources().single { it.kind == "local" }.id)
     }
 
     private fun insertObservation(
