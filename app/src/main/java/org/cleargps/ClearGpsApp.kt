@@ -4524,6 +4524,7 @@ private fun SettingsScreen(
     var showRadioOptions by remember { mutableStateOf(false) }
     var showAdvancedOptions by remember { mutableStateOf(false) }
     var showDiagnosticOptions by remember { mutableStateOf(false) }
+    var showDeviceCapabilities by remember { mutableStateOf(false) }
     var pendingDiagnosticLogMaxKb by remember(diagnosticLogMaxKb) { mutableStateOf(diagnosticLogMaxKb.toFloat()) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
 
@@ -4711,6 +4712,16 @@ private fun SettingsScreen(
                     )
                 }
             }
+        }
+
+        SettingsSectionToggle(
+            title = "Возможности устройства",
+            summary = "GNSS, AGC, частотные диапазоны, барометр, Wi-Fi RTT и датчики движения",
+            expanded = showDeviceCapabilities,
+            onClick = { showDeviceCapabilities = !showDeviceCapabilities }
+        )
+        if (showDeviceCapabilities) {
+            DeviceCapabilitiesPanel()
         }
 
         SettingsSectionToggle(
