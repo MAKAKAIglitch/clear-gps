@@ -20,7 +20,7 @@ class GnssEnvironmentClassifierTest {
         meanCn0DbHz = cn0,
         cn0SpreadDb = spread,
         constellationCount = constellations,
-        strongSignalCount = used
+        strongSignalCount = if (cn0 == null) 0 else used
     )
 
     @Test
