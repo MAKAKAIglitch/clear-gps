@@ -70,6 +70,7 @@ dependencies {
 
     implementation("org.maplibre.gl:android-sdk:13.7.1")
     implementation("com.google.android.gms:play-services-location:21.4.0")
+    implementation("androidx.work:work-runtime:2.12.0")
     // Debug-only memory leak detector; must never be included in release APKs.
     debugImplementation("com.squareup.leakcanary:leakcanary-android:2.14")
     testImplementation("junit:junit:4.13.2")

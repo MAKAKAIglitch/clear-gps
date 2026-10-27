@@ -21,4 +21,8 @@
     <string name="boot_restore_background_location_required">После перезагрузки мониторинг не запущен. Для автозапуска разреши Clear GPS доступ к геолокации «Всегда», затем запусти мониторинг снова.</string>
     <string name="boot_restore_starting">Восстанавливаю ранее включённый мониторинг после перезагрузки…</string>
     <string name="boot_restore_failed">Не удалось восстановить мониторинг после перезагрузки. Открой Clear GPS и запусти его снова.</string>
+    <string name="service_recovery_permission_required">После сбоя мониторинг остановлен: для фонового восстановления нужно разрешение геолокации «Всегда». Выдай его и запусти мониторинг снова.</string>
+    <string name="service_recovery_location_permission_required">После сбоя мониторинг остановлен: нет разрешения геолокации. Восстанови разрешение и запусти мониторинг снова.</string>
+    <string name="service_recovery_starting">Проверяю, нужно ли восстанавливать мониторинг геолокации…</string>
+    <string name="service_recovery_failed">Android не разрешил восстановление в фоне. Открой Clear GPS и нажми «Включить фикс».</string>
 </resources>

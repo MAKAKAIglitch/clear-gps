@@ -21,4 +21,8 @@
     <string name="boot_restore_background_location_required">Monitoring was not resumed after reboot. To enable automatic recovery, grant Clear GPS &quot;Allow all the time&quot; location access, then start monitoring again.</string>
     <string name="boot_restore_starting">Restoring previously enabled monitoring after reboot…</string>
     <string name="boot_restore_failed">Monitoring could not be restored after reboot. Open Clear GPS and start it again.</string>
+    <string name="service_recovery_permission_required">Monitoring was stopped after a service interruption because background location access is unavailable. Grant &quot;Allow all the time&quot; and start monitoring again.</string>
+    <string name="service_recovery_location_permission_required">Monitoring was stopped after a service interruption because location permission is unavailable. Open Clear GPS, restore permission, and start monitoring again.</string>
+    <string name="service_recovery_starting">Checking whether location monitoring needs to be restored…</string>
+    <string name="service_recovery_failed">Android did not allow background recovery. Open Clear GPS and tap Enable fix to restart monitoring.</string>
 </resources>

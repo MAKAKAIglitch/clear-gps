@@ -61,6 +61,7 @@ class LocationMonitorService : Service(), LocationListener {
     private var activePositionMode: String? = null
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
+    private var serviceHeartbeatJob: Job? = null
 
     // Ephemeral aggregate only; never persisted or exported.
     private var lastStatusMeanCn0DbHz: Double? = null
@@ -327,12 +328,28 @@ class LocationMonitorService : Service(), LocationListener {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(NotificationChannel(CHANNEL, "Clear GPS monitoring", NotificationManager.IMPORTANCE_LOW))
         }
+        startServiceHeartbeatLoop()
+    }
+
+    private fun startServiceHeartbeatLoop() {
+        serviceHeartbeatJob?.cancel()
+        serviceHeartbeatJob = serviceScope.launch {
+            while (isActive) {
+                if (prefs.getBoolean(KEY_MONITORING, false)) {
+                    prefs.edit()
+                        .putLong(ServiceRecoveryWatchdog.KEY_SERVICE_HEARTBEAT_ELAPSED_MS, SystemClock.elapsedRealtime())
+                        .apply()
+                }
+                delay(SERVICE_HEARTBEAT_INTERVAL_MS)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
                 prefs.edit().putBoolean(KEY_MONITORING, false).apply()
+                ServiceRecoveryWatchdog.cancel(this)
                 stopTracking()
                 prefs.edit()
                     .putBoolean(KEY_HAS_OUTPUT, false)
@@ -413,11 +430,32 @@ class LocationMonitorService : Service(), LocationListener {
                 startTracking()
                 return START_STICKY
             }
-            else -> {
+            ACTION_START -> {
                 startForeground(NOTIFICATION_ID, notification("Starting location monitor"))
-                prefs.edit().putBoolean(KEY_MONITORING, true).apply()
+                prefs.edit()
+                    .putBoolean(KEY_MONITORING, true)
+                    .putLong(ServiceRecoveryWatchdog.KEY_SERVICE_HEARTBEAT_ELAPSED_MS, SystemClock.elapsedRealtime())
+                    .apply()
+                ServiceRecoveryWatchdog.ensureScheduled(this)
                 startTracking()
                 return START_STICKY
+            }
+            null -> {
+                // START_STICKY can redeliver a null intent after process death. Restore only
+                // a monitor that was explicitly enabled before the process disappeared.
+                if (!prefs.getBoolean(KEY_MONITORING, false)) {
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                startForeground(NOTIFICATION_ID, notification("Restoring location monitor"))
+                ServiceRecoveryWatchdog.ensureScheduled(this)
+                startTracking()
+                return START_STICKY
+            }
+            else -> {
+                DiagnosticLogStore.log(this, "SERVICE", "Ignored unsupported service action", "WARN")
+                stopSelf(startId)
+                return START_NOT_STICKY
             }
         }
     }
@@ -587,12 +625,17 @@ class LocationMonitorService : Service(), LocationListener {
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            ServiceRecoveryWatchdog.cancel(this)
             mock?.disable()
             saveServiceStatus("Location permission missing")
             DiagnosticLogStore.log(this, "SERVICE", "Мониторинг не запущен: отсутствует разрешение геолокации", "ERROR")
             stopSelf()
             return
         }
+
+        prefs.edit()
+            .putLong(ServiceRecoveryWatchdog.KEY_SERVICE_HEARTBEAT_ELAPSED_MS, SystemClock.elapsedRealtime())
+            .apply()
 
         try {
             manager.removeUpdates(this)
@@ -680,12 +723,14 @@ class LocationMonitorService : Service(), LocationListener {
             saveServiceStatus("Monitoring")
         } catch (error: SecurityException) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            ServiceRecoveryWatchdog.cancel(this)
             mock?.disable()
             saveServiceStatus("Location permission denied")
             DiagnosticLogStore.log(this, "SERVICE", "Android отказал в разрешении геолокации: ${error.message ?: "SecurityException"}", "ERROR")
             stopSelf()
         } catch (error: IllegalArgumentException) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            ServiceRecoveryWatchdog.cancel(this)
             mock?.disable()
             saveServiceStatus("Location provider unavailable: " + (error.message ?: "unknown"))
             DiagnosticLogStore.log(this, "SERVICE", "GPS provider недоступен: ${error.message ?: error.javaClass.simpleName}", "ERROR")
@@ -1452,7 +1497,16 @@ class LocationMonitorService : Service(), LocationListener {
     override fun onProviderDisabled(provider: String) = Unit
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Let a still-running foreground service refresh its heartbeat before recovery.
+        ServiceRecoveryWatchdog.enqueueRecoveryCheck(this)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        if (::prefs.isInitialized && prefs.getBoolean(KEY_MONITORING, false)) {
+            ServiceRecoveryWatchdog.enqueueRecoveryCheck(this)
+        }
         stopTracking()
         mock?.close()
         serviceScope.cancel()
@@ -1628,6 +1682,7 @@ class LocationMonitorService : Service(), LocationListener {
         private const val CHANNEL = "clear_gps_monitor"
         private const val NOTIFICATION_ID = 4101
         private const val MOCK_WATCHDOG_CHECK_INTERVAL_MS = 5_000L
+        private const val SERVICE_HEARTBEAT_INTERVAL_MS = 30_000L
         private const val RADIO_SCAN_INTERVAL_MS = 12_000L
         private const val RADIO_MIN_MATCHES = 2
         private const val RADIO_FALLBACK_MAX_AGE_MS = 60_000L

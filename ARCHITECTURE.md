@@ -20,6 +20,7 @@ The design in `docs/spec/` proposes further boundaries such as `core-fusion`, in
 - `ClearGpsApp.kt` wires together the UI and application actions.
 - `LocationMonitorService.kt` owns the location-monitoring foreground service.
 - LocationMonitorBootReceiver restores previously enabled monitoring only after BOOT_COMPLETED and only with ACCESS_BACKGROUND_LOCATION; otherwise it clears stale mock output and saves a status explaining that manual restart is required.
+- `ServiceRecoveryWatchdog.kt`, `ServiceRecoveryWorker.kt` and `ServiceRecoveryPolicy.kt` add a 30-second monotonic service heartbeat, a WorkManager watchdog with a 15-minute minimum interval, and a delayed task-removal/service-destruction check. Recovery requires previously enabled monitoring and location/background-location permissions; Android can still reject a background FGS start, in which case the status asks the user to open the app.
 - `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.
 - `RadioGeolocationRepository.kt`, `RadioFixReliability.kt` and `LocationQuality.kt` implement/support local radio estimates and the quality checks around them.
 - The `Obd2*` classes implement the current read-only OBD-II foundation, transports, polling and vehicle metrics. The full planned make-specific CAN profiles and all sensor-fusion features are not implied to be complete.
@@ -43,6 +44,10 @@ The JVM module contains GNSS signal/data models and anomaly logic, baseline/envi
 Imports are merged into the existing local database, not used to replace it. The implemented file formats include WiGLE CSV (plain/gzip), WiGLE-shaped SQLite (`network/location`) and a full Clear GPS SQLite backup. A WiGLE-shaped export cannot preserve every Clear GPS-only field: use the full backup to preserve application history and metadata. Settings/zones use a separate `.cgsettings` format.
 
 SSID exclusion is applied on supported recording and matching paths. The radio-position estimate is not meant to become its own ground-truth training coordinate; provenance and quality remain relevant when positions conflict.
+
+## Service recovery and background limits
+
+The foreground monitor updates a monotonic heartbeat while monitoring is enabled. WorkManager checks it periodically (minimum interval 15 minutes), and a one-time check is queued after `onTaskRemoved` or a service-destruction callback. The one-time check waits 45 seconds and recovers only if the service did not write a newer heartbeat. The worker never starts monitoring when the persisted user-enabled flag is false; it requires foreground and background location permissions and clears stale position fields before requesting recovery. Android/OEM restrictions may still block a background start, so this is best-effort rather than a guarantee of uninterrupted location tracking. No permanent wake lock or battery-optimization exemption is introduced. Physical-device/Doze testing remains required.
 
 ## Battery cadence profile
 
