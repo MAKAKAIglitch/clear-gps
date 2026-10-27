@@ -11,7 +11,7 @@ class GnssEnvironmentClassifierTest {
         visible: Int = 10,
         used: Int = 8,
         cn0: Double? = 34.0,
-        spread: Double? = 5.0,
+        spread: Double? = if (cn0 == null) null else 5.0,
         constellations: Int = 3
     ) = GnssSignalSnapshot(
         elapsedRealtimeNanos = atSeconds * 1_000_000_000L,
@@ -61,10 +61,9 @@ class GnssEnvironmentClassifierTest {
 
     @Test
     fun missingCn0WithVisibleSatellitesIsUnknownRatherThanBadReception() {
-        val result = GnssEnvironmentClassifier.classify(
-            snapshot(visible = 10, used = 8, cn0 = null),
-            10_500_000_000L
-        )
+        val sample = snapshot(visible = 10, used = 8, cn0 = null)
+        assertTrue(GnssEnvironmentClassifier.isValidSnapshot(sample))
+        val result = GnssEnvironmentClassifier.classify(sample, 10_500_000_000L)
         assertEquals(GnssEnvironmentContext.UNKNOWN, result.context)
     }
 
