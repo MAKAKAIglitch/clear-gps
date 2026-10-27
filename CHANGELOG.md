@@ -26,6 +26,18 @@
 
 ---
 
+## 2026-10-27 — Исправление импорта assertFalse в тесте очистки логов
+
+**Причина сбоя:** [GitHub Actions run 40443596556](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40443596556) завершился ошибкой компиляции тестов: `DiagnosticLogStoreTest.kt` использовал `assertFalse` без импорта. Сборка debug APK прошла до задачи `:app:compileDebugUnitTestKotlin`; Windows bootstrap smoke-test тоже завершился успешно.
+
+**Изменённый файл:** `app/src/test/java/org/cleargps/DiagnosticLogStoreTest.kt` — добавлен отсутствующий импорт `org.junit.Assert.assertFalse`. Проверки обезличивания cell/BLE ID, имени устройства и координат не изменены.
+
+**Проверки:** текущий коммит запускает полный Android CI и Windows bootstrap smoke-test. Проверки нового sanitizer не считаются подтверждёнными, пока этот запуск не завершится.
+
+**Поведение и приватность:** production-код не меняется; это исправление компиляции unit-теста.
+
+---
+
 ## 2026-10-27 — Расширение очистки журналов на явно помеченные cell/BLE поля
 
 **Предыдущее подтверждённое состояние:** [GitHub Actions run 40443155364](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40443155364) завершился `success`: Android-тесты/сборка APK и Windows bootstrap smoke-test прошли для предыдущего sanitizer и обновлённого README.
