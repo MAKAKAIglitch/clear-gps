@@ -63,7 +63,13 @@ internal object DiagnosticLogStore {
         val file = logFile(context)
         if (!file.isFile) return@synchronized "Журнал пуст. Включи подробное логирование и повтори проблему."
         try {
-            file.readText(Charsets.UTF_8).ifBlank { "Журнал пуст." }
+            val raw = file.readText(Charsets.UTF_8)
+            val sanitized = raw.split('\n').joinToString("\n") { sanitizeMessage(it) }
+            if (sanitized != raw) {
+                // Older app versions may have written an identifier before the privacy guard existed.
+                runCatching { file.writeText(sanitized, Charsets.UTF_8) }
+            }
+            sanitized.ifBlank { "Журнал пуст." }
         } catch (error: Exception) {
             "Не удалось прочитать журнал: ${error.javaClass.simpleName}: ${error.message.orEmpty()}"
         }
@@ -97,7 +103,7 @@ internal object DiagnosticLogStore {
             val file = logFile(context)
             file.parentFile?.mkdirs()
             val safeCategory = category.filter { it.isLetterOrDigit() || it == '_' || it == '-' }.take(24).ifBlank { "APP" }
-            val safeMessage = message.replace('\r', ' ').replace('\n', ' ').take(700)
+            val safeMessage = sanitizeMessage(message).take(700)
             val timestamp = synchronized(timestampFormat) { timestampFormat.format(Date()) }
             val line = "$timestamp [$level] [$safeCategory] $safeMessage\n".toByteArray(Charsets.UTF_8)
             // Append cheaply while there is headroom. Trimming on every line after the cap was
@@ -125,6 +131,33 @@ internal object DiagnosticLogStore {
 
     private fun logFile(context: Context): File =
         File(File(context.filesDir, LOG_DIRECTORY), LOG_FILE)
+
+    /**
+     * Redacts radio identifiers and precise coordinates at the storage boundary.
+     * Callers may include exception messages, so the log sink must enforce the privacy contract
+     * rather than relying on every call site to remember it.
+     */
+    internal fun sanitizeMessage(message: String): String {
+        var safe = message.replace('\r', ' ').replace('\n', ' ')
+        safe = radioLabelRegex.replace(safe) { match ->
+            match.groupValues[1] + match.groupValues[2] + "[REDACTED]"
+        }
+        safe = cellIdentifierRegex.replace(safe, "[CELL-ID REDACTED]")
+        safe = macAddressRegex.replace(safe, "[RADIO-ID REDACTED]")
+        safe = labeledCoordinateRegex.replace(safe) { match ->
+            match.groupValues[1] + match.groupValues[2] + "[COORDINATE REDACTED]"
+        }
+        safe = coordinatePairRegex.replace(safe, "[COORDINATES REDACTED]")
+        return safe
+    }
+
+    private val radioLabelRegex = Regex(
+        """(?i)\b(SSID|BSSID|MAC(?:\s+address)?|device(?:\s+name|\s+address)?)\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;|]+)"""
+    )
+    private val cellIdentifierRegex = Regex("""(?i)\b(?:gsm|wcdma|lte|nr):\d{1,3}:\d{1,3}:\d+:\d+\b""")
+    private val macAddressRegex = Regex("""(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b""")
+    private val labeledCoordinateRegex = Regex("""(?i)\b(lat(?:itude)?|lon(?:gitude)?|lng)\s*([:=])\s*-?\d{1,3}(?:\.\d+)?""")
+    private val coordinatePairRegex = Regex("""(?<![\w.])-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}(?![\w.])""")
 
     /** Keep the newest bytes, advancing to the next complete line where possible. */
     internal fun trimToMaxBytes(content: ByteArray, maxBytes: Int): ByteArray {
