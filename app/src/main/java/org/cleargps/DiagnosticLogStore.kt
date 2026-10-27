@@ -8,8 +8,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Optional, app-private diagnostic log. It deliberately avoids radio identifiers and exact
- * coordinates so that copied logs are useful without needlessly exporting location history.
+ * Optional, app-private diagnostic log. Recognizable radio identifiers are masked and precise
+ * coordinate values are rounded so copied logs remain useful without exporting exact locations.
  */
 internal object DiagnosticLogStore {
     const val KEY_ENABLED = "diagnostic_logging_enabled"
