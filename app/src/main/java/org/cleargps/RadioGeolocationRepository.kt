@@ -220,6 +220,12 @@ class RadioGeolocationRepository(private val context: Context) {
      * LocalRadioDatabase and never submits contribution records.
      */
     suspend fun lookupBeaconDbCellsOnly(): BeaconDbLookupResult {
+        if (CrashLoopGuard.isSafeModeActive(context)) {
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                message = "Безопасный режим после повторных сбоев: запросы BeaconDB заблокированы. Сетевого обращения не было."
+            )
+        }
         if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false)) {
             return BeaconDbLookupResult(
                 cells = emptyList(),
@@ -241,8 +247,14 @@ class RadioGeolocationRepository(private val context: Context) {
             .distinctBy { it.identifier }
         val unsupportedCount = (signals.size - parsedCells.size).coerceAtLeast(0)
 
-        // Recheck immediately before networking in case the user disabled BeaconDB while
-        // Android's telephony snapshot was being collected.
+        // Recheck both the crash-loop guard and consent immediately before networking.
+        if (CrashLoopGuard.isSafeModeActive(context)) {
+            return BeaconDbLookupResult(
+                cells = emptyList(),
+                unsupportedCellCount = unsupportedCount,
+                message = "Безопасный режим после повторных сбоев: запросы BeaconDB заблокированы. Сетевого обращения не было."
+            )
+        }
         if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false)) {
             return BeaconDbLookupResult(
                 cells = emptyList(),

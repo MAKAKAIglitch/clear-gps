@@ -59,6 +59,16 @@ internal object DiagnosticLogStore {
         }
     }
 
+    /**
+     * Write the minimal fatal-crash summary even when verbose diagnostics are disabled.
+     * Callers must not supply exception messages or raw radio identifiers.
+     */
+    internal fun logCrash(context: Context, message: String) {
+        synchronized(lock) {
+            appendLine(context, "ERROR", "CRASH", message, force = true)
+        }
+    }
+
     fun read(context: Context): String = synchronized(lock) {
         val file = logFile(context)
         if (!file.isFile) return@synchronized "Журнал пуст. Включи подробное логирование и повтори проблему."

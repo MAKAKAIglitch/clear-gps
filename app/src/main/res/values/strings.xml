@@ -17,4 +17,5 @@
     <string name="zone_too_small">Add at least 3 points to form a zone.</string>
     <string name="mock_warning">Choose Clear GPS in Developer options → Mock location app. Output stays off until enabled.</string>
     <string name="no_location">No cached location is available yet.</string>
+    <string name="crash_loop_safe_mode_notice">Safe mode is active after repeated crashes. BeaconDB lookups and mock output are blocked for 10 minutes; the network source was switched off.</string>
 </resources>

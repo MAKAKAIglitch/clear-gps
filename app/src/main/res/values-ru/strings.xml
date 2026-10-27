@@ -17,4 +17,5 @@
     <string name="zone_too_small">Добавь минимум 3 точки, чтобы сформировать зону.</string>
     <string name="mock_warning">Выбери Clear GPS в настройках разработчика → Приложение для фиктивных местоположений. Выдача выключена, пока ты её не включишь.</string>
     <string name="no_location">Пока нет сохранённой позиции.</string>
+    <string name="crash_loop_safe_mode_notice">После повторных сбоев включён безопасный режим на 10 минут. Запросы и публикация BeaconDB заблокированы, сетевой источник выключен.</string>
 </resources>

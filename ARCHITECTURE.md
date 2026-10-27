@@ -15,6 +15,7 @@ The design in `docs/spec/` proposes further boundaries such as `core-fusion`, in
 
 ### Android application (`:app`)
 
+- `ClearGpsApplication.kt` installs the process-level uncaught-exception handler; `CrashLoopGuard.kt` stores a rolling crash window and blocks the online BeaconDB source after three uncaught crashes in ten minutes.
 - `ClearGpsApp.kt` wires together the UI and application actions.
 - `LocationMonitorService.kt` owns the location-monitoring foreground service.
 - `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.
@@ -57,6 +58,7 @@ When no position meets the publication policy, the intended safe behavior is to 
 - BeaconDB lookup is disabled by default. If the user enables it and starts a lookup, the current request is **cell-only** (supported cell identifiers and signal strength), not Wi-Fi/BSSID, BLE or GPS coordinates. The remote service also sees the device IP address. No contribution/upload endpoint is used, and the result is not automatically inserted into the local radio database.
 - The default map style is remote; a map provider can observe the IP address and requested map area. Radio identifiers are not attached to map requests.
 - Diagnostic logs redact recognized labelled identifiers and round explicitly recognized coordinate values. Arbitrary unlabelled free text cannot be guaranteed to be sanitized.
+- A minimal `CRASH` entry is forced to the app-private diagnostics log even when verbose logging is off. It contains the exception class, up to eight class/method/line frames, recent crash count and safe-mode flag, but not the exception message. Three uncaught crashes within ten minutes disable BeaconDB lookup and mock output for ten minutes and reset its opt-in preference to off.
 - Replay v2 stores relative time/track coordinates and opaque per-recording radio IDs. It can include available IMU samples and (only in Auto mode while recording) anonymized radio snapshots. These samples do **not** currently contribute to the live risk score. The replay remains a possible source of movement-context information, so it is kept private and exported only by user action.
 - A full SQLite backup can contain exact radio IDs, coordinates and observation history. It is a deliberate user-selected export, not a sanitized diagnostic log.
 

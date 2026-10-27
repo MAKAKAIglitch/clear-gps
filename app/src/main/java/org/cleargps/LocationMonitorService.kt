@@ -356,14 +356,24 @@ class LocationMonitorService : Service(), LocationListener {
                 val latitude = request.getDoubleExtra(EXTRA_BEACONDB_LATITUDE, Double.NaN)
                 val longitude = request.getDoubleExtra(EXTRA_BEACONDB_LONGITUDE, Double.NaN)
                 val accuracy = request.getDoubleExtra(EXTRA_BEACONDB_ACCURACY, Double.NaN)
-                val mayPublish = prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                val safeMode = CrashLoopGuard.isSafeModeActive(this)
+                val mayPublish = !safeMode &&
+                    prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
                     prefs.getBoolean(KEY_MONITORING, false) &&
                     prefs.getBoolean(KEY_MOCK_ENABLED, false)
                 if (!mayPublish) {
-                    saveServiceStatus(
+                    val reason = if (safeMode) {
+                        "BeaconDB mock output blocked by crash-loop safe mode. Re-enable the source explicitly after safe mode expires."
+                    } else {
                         "BeaconDB mock output not started: keep BeaconDB access enabled and turn on «Включить фикс» + Mock GPS."
+                    }
+                    saveServiceStatus(reason)
+                    DiagnosticLogStore.log(
+                        this, "MOCK",
+                        if (safeMode) "BeaconDB output refused by crash-loop safe mode"
+                        else "BeaconDB output refused because its opt-in/monitor/mock switch is off",
+                        "WARN"
                     )
-                    DiagnosticLogStore.log(this, "MOCK", "BeaconDB output refused because its opt-in/monitor/mock switch is off", "WARN")
                     if (prefs.getBoolean(KEY_MONITORING, false)) {
                         startTracking()
                         return START_STICKY
@@ -439,10 +449,18 @@ class LocationMonitorService : Service(), LocationListener {
 
         // stopTracking cancels old output loops and removes previously registered test providers.
         stopTracking()
-        if (!prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) ||
+        val safeMode = CrashLoopGuard.isSafeModeActive(this)
+        if (safeMode ||
+            !prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) ||
             !prefs.getBoolean(KEY_MONITORING, false) ||
             !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
-            saveServiceStatus("BeaconDB mock output cancelled because a required setting was turned off.")
+            val reason = if (safeMode) {
+                "BeaconDB mock output cancelled by crash-loop safe mode."
+            } else {
+                "BeaconDB mock output cancelled because a required setting was turned off."
+            }
+            saveServiceStatus(reason)
+            if (safeMode) DiagnosticLogStore.log(this, "MOCK", reason, "WARN")
             return
         }
 
