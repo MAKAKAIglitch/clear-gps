@@ -26,6 +26,14 @@
 
 ---
 
+## 2026-10-27 — Уточнение формата в тесте SQLite round-trip
+
+**Причина:** новый CI успешно скомпилировал test harness, после чего backup round-trip остановился на первом assertion формата: `importClearGpsSqlite` возвращает `"SQLite Clear GPS"`. Тест ошибочно ожидал обратный порядок слов.
+
+**Изменённый файл:** `app/src/test/java/org/cleargps/LocalRadioDatabaseBackupRoundTripTest.kt` — обе проверки формата приведены к существующему контракту `RadioImportResult.format`; код приложения не изменялся.
+
+**Проверки:** CI `40430493754` выявил только это сравнение формата в backup-тесте; новый коммит повторно запускает полный набор unit-тестов и сборку APK, а также Windows bootstrap smoke-test. Проверка фактического round-trip ещё ожидает результата.
+
 ## 2026-10-27 — Совместимость изолированного SQLite test context
 
 **Причина:** CI выявил ошибку компиляции тестового harness: текущие Android SDK stubs не объявляют переопределяемый `Context.getDatabaseDir()`. Для изолированной базы достаточно переопределить `getDatabasePath()` и указать файл внутри существующего каталога cache.

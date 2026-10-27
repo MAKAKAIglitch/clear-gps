@@ -56,7 +56,7 @@ class LocalRadioDatabaseBackupRoundTripTest {
             target.writableDatabase
             val first = target.importSqliteDatabase(ByteArrayInputStream(backupBytes))
 
-            assertEquals("Clear GPS SQLite", first.format)
+            assertEquals("SQLite Clear GPS", first.format)
             assertNotNull(first.sourceId)
             assertEquals(2, first.observationsImported)
             assertEquals(2, target.observationCount())
@@ -82,7 +82,7 @@ class LocalRadioDatabaseBackupRoundTripTest {
             assertNull(unknown.sourceId)
 
             val second = target.importSqliteDatabase(ByteArrayInputStream(backupBytes))
-            assertEquals("Clear GPS SQLite", second.format)
+            assertEquals("SQLite Clear GPS", second.format)
             assertEquals(first.sourceId, second.sourceId)
             assertEquals(0, second.observationsImported)
             assertEquals(2, target.observationCount())
