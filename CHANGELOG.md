@@ -26,6 +26,18 @@
 
 ---
 
+## 2026-10-27 — Запуск BeaconDB JSON-протокола в среде Android
+
+**Причина:** CI `40438393777` показал, что положительный тест ответа BeaconDB возвращает `null` для корректного JSON. `BeaconDbProtocol` использует Android API `org.json.JSONObject`, но тест запускался обычным JUnit runner без Android-реализации. В таком режиме framework API может вести себя как неподдерживаемая заглушка; парсер специально перехватывает исключения и превращает их в отказ результата, из-за чего ошибка среды маскируется под недопустимый ответ сервера.
+
+**Изменённый файл:** `app/src/test/java/org/cleargps/BeaconDbProtocolTest.kt` — тестовый класс использует уже имеющийся `RobolectricTestRunner` с SDK 35. Это позволяет проверить валидный ответ и отрицательные сценарии на Android-совместимой реализации `JSONObject`; новая production-зависимость не добавляется.
+
+**Предыдущее состояние:** [GitHub Actions run 40438393777](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40438393777) завершился ошибкой: `190 tests completed, 1 failed`, единственный сбой — `validCoordinateResponseIsAcceptedWithoutFallback`. Windows bootstrap smoke-test прошёл.
+
+**Проверки текущего изменения:** после коммита запускается полный `:core-detect:test testDebugUnitTest assembleDebug` и Windows bootstrap smoke-test. Новый результат не считается успешным до завершения CI.
+
+**Поведение/приватность:** production-код и HTTP payload не меняются; тесты используют синтетический JSON и не обращаются к BeaconDB.
+
 ## 2026-10-27 — Явная nullable-проверка в тесте ответа BeaconDB
 
 **Зачем:** сделать диагностику положительного теста ответа независимой от compiler contracts JUnit: `assertNotNull` проверяет значение в runtime, но не обязан для Kotlin compiler сузить nullable-тип локальной переменной.
