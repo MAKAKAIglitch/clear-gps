@@ -199,7 +199,7 @@ class MockLocationOutput(context: Context) {
             accuracy = sourceAccuracy.coerceIn(1f, MAX_ACCURACY_METERS)
             time = System.currentTimeMillis()
             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-            if (source.hasAltitude() && source.altitude.isFinite()) altitude = source.altitude
+            copyAltitudeMetadata(source, this)
             if (source.hasSpeed() && source.speed.isFinite() && source.speed >= 0f) speed = source.speed
             if (source.hasBearing() && source.bearing.isFinite()) bearing = source.bearing
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -209,9 +209,6 @@ class MockLocationOutput(context: Context) {
                 if (source.hasBearingAccuracy() && source.bearingAccuracyDegrees.isFinite() &&
                     source.bearingAccuracyDegrees >= 0f
                 ) bearingAccuracyDegrees = source.bearingAccuracyDegrees
-                if (source.hasVerticalAccuracy() && source.verticalAccuracyMeters.isFinite() &&
-                    source.verticalAccuracyMeters >= 0f
-                ) verticalAccuracyMeters = source.verticalAccuracyMeters
             }
         }
     }
