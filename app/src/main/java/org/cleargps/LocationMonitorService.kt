@@ -1172,7 +1172,7 @@ class LocationMonitorService : Service(), LocationListener {
                 }
                 val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
                 val adaptive = prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)
-                val obdSpeedKmh = if (adaptive) Obd2SharedState.freshSpeedKmh(prefs) else null
+                val obdSpeedKmh = if (adaptive) Obd2SharedState.freshSpeedKmh(prefs)?.toFloat() else null
                 val profile = BatteryProfile.fromKey(
                     prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)
                 )

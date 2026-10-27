@@ -1051,7 +1051,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     mapSource = mapSourceMode.key,
                     scanIntervalSeconds = scanIntervalSeconds,
                     adaptiveScan = adaptiveScan,
-                    batteryProfile = batteryProfile,
+                    batteryProfile = batteryProfile.key,
                     useWifi = useWifi,
                     useCells = useCells,
                     useBle = useBle,

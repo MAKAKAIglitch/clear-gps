@@ -26,6 +26,21 @@
 
 ---
 
+## 2026-10-27 — Исправление двух ошибок компиляции профиля батареи
+
+**Причина сбоя:** [GitHub Actions run 40449896094](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40449896094) остановился на `:app:compileDebugKotlin`. Ошибки: в `ClearGpsApp.kt` в settings-backup snapshot передавался объект `BatteryProfile` вместо строкового ключа, а в `LocationMonitorService.kt` nullable-скорость OBD имела тип `Int?`, хотя политика интервала принимает `Float?`.
+
+**Изменённые файлы:**
+- `app/src/main/java/org/cleargps/ClearGpsApp.kt` — для `SettingsZoneBackupSnapshot` сериализуется `batteryProfile.key`, как требует схема backup.
+- `app/src/main/java/org/cleargps/LocationMonitorService.kt` — скорость OBD преобразуется в `Float?` перед передачей в `BatteryProfilePolicy`; порог движения и политика интервалов не меняются.
+- `CHANGELOG.md` — эта запись.
+
+**Проверки:** предыдущий run `40449896094` подтвердил, что Windows bootstrap smoke-test прошёл, но Android-сборка не скомпилировалась с этими двумя ошибками. Новый коммит запускает полный CI, включая тесты профиля/backup и сборку APK; успех до окончания запуска не предполагается.
+
+**Поведение и совместимость:** это исправления типов в двух местах, а не изменение интервалов. Формат `.cgsettings` v2 и чтение версии v1 с профилем Normal остаются прежними.
+
+---
+
 ## 2026-10-27 — Профили частоты Eco / Normal / Max
 
 **Зачем:** реализовать описанные в `docs/spec/battery-budget.md` профили работы, которых до этого не было в настройках. Цель — управлять частотой запросов фикса и повторного радиопоиска без выдуманных показателей расхода и без прореживания сырых GNSS callback-ов детектора.
