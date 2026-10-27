@@ -3489,26 +3489,22 @@ private fun DatabaseScreen(
                 }
             }
         } else {
-            val dateQuery = sourceDateFilter.trim()
+            val sourceFilterPolicy = RadioSourceFilterPolicy(
+                sourceNameQuery = sourceNameFilter,
+                dateQuery = sourceDateFilter,
+                radioType = sourceTypeFilter,
+                minimumRssi = sourceMinRssi.toInt(),
+                minimumObservations = sourceMinObservations.toInt()
+            )
             val segmentsBySource = sourceSegmentsBySource.mapValues { (_, rows) ->
-                rows.filter { segment ->
-                    (sourceTypeFilter == "all" || segment.radioType == sourceTypeFilter) &&
-                        (dateQuery.isEmpty() || segment.dayKey.contains(dateQuery)) &&
-                        segment.maxRssi >= sourceMinRssi.toInt() &&
-                        segment.observationCount >= sourceMinObservations.toInt()
-                }
+                rows.filter(sourceFilterPolicy::matchesSegment)
             }
-            val dataFiltersActive = dateQuery.isNotEmpty() || sourceTypeFilter != "all" ||
-                sourceMinRssi > -110f || sourceMinObservations > 1f
             val daysBySource = sourceDaysBySource.mapValues { (sourceId, days) ->
-                days.filter { day ->
-                    (dateQuery.isEmpty() || day.dayKey.contains(dateQuery)) &&
-                        (!dataFiltersActive || segmentsBySource[sourceId].orEmpty().any { it.dayKey == day.dayKey })
-                }
+                val matchingSegments = segmentsBySource[sourceId].orEmpty()
+                days.filter { day -> sourceFilterPolicy.matchesDay(day.dayKey, matchingSegments) }
             }
             val visibleSources = sources.filter { source ->
-                source.name.contains(sourceNameFilter.trim(), ignoreCase = true) &&
-                    (!dataFiltersActive || daysBySource[source.id].orEmpty().isNotEmpty())
+                sourceFilterPolicy.matchesSource(source, daysBySource[source.id].orEmpty().isNotEmpty())
             }
             Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
