@@ -18,4 +18,7 @@
     <string name="mock_warning">Choose Clear GPS in Developer options → Mock location app. Output stays off until enabled.</string>
     <string name="no_location">No cached location is available yet.</string>
     <string name="crash_loop_safe_mode_notice">Safe mode is active after repeated crashes. BeaconDB lookups and mock output are blocked for 10 minutes; the network source was switched off.</string>
+    <string name="boot_restore_background_location_required">Monitoring was not resumed after reboot. To enable automatic recovery, grant Clear GPS &quot;Allow all the time&quot; location access, then start monitoring again.</string>
+    <string name="boot_restore_starting">Restoring previously enabled monitoring after reboot…</string>
+    <string name="boot_restore_failed">Monitoring could not be restored after reboot. Open Clear GPS and start it again.</string>
 </resources>

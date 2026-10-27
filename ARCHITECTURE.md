@@ -19,6 +19,7 @@ The design in `docs/spec/` proposes further boundaries such as `core-fusion`, in
 - LeakCanary 2.14 is scoped to the app's `debugImplementation`; it watches retained Android components while debugging and is not part of the release runtime classpath.
 - `ClearGpsApp.kt` wires together the UI and application actions.
 - `LocationMonitorService.kt` owns the location-monitoring foreground service.
+- LocationMonitorBootReceiver restores previously enabled monitoring only after BOOT_COMPLETED and only with ACCESS_BACKGROUND_LOCATION; otherwise it clears stale mock output and saves a status explaining that manual restart is required.
 - `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.
 - `RadioGeolocationRepository.kt`, `RadioFixReliability.kt` and `LocationQuality.kt` implement/support local radio estimates and the quality checks around them.
 - The `Obd2*` classes implement the current read-only OBD-II foundation, transports, polling and vehicle metrics. The full planned make-specific CAN profiles and all sensor-fusion features are not implied to be complete.

@@ -18,4 +18,7 @@
     <string name="mock_warning">Выбери Clear GPS в настройках разработчика → Приложение для фиктивных местоположений. Выдача выключена, пока ты её не включишь.</string>
     <string name="no_location">Пока нет сохранённой позиции.</string>
     <string name="crash_loop_safe_mode_notice">После повторных сбоев включён безопасный режим на 10 минут. Запросы и публикация BeaconDB заблокированы, сетевой источник выключен.</string>
+    <string name="boot_restore_background_location_required">После перезагрузки мониторинг не запущен. Для автозапуска разреши Clear GPS доступ к геолокации «Всегда», затем запусти мониторинг снова.</string>
+    <string name="boot_restore_starting">Восстанавливаю ранее включённый мониторинг после перезагрузки…</string>
+    <string name="boot_restore_failed">Не удалось восстановить мониторинг после перезагрузки. Открой Clear GPS и запусти его снова.</string>
 </resources>
