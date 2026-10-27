@@ -156,7 +156,7 @@ internal object DiagnosticLogStore {
     }
 
     private val radioLabelRegex = Regex(
-        """(?i)\b(SSID|BSSID|MAC(?:\s+address)?|device(?:\s+name|\s+address)?)\s*([:=])\s*("[^"]*"|'[^']*'|[^,;|]+)"""
+        """(?i)\b(SSID|BSSID|MAC(?:[_\s-]+address)?|device(?:[_\s-]+(?:name|address))?|(?:cell|cellular)[_\s-]?(?:id|identifier)|(?:BLE|Bluetooth)[_\s-]?(?:id|address))\s*([:=])\s*("[^"]*"|'[^']*'|[^,;|]+)"""
     )
     private val cellIdentifierRegex = Regex("""(?i)\b(?:gsm|wcdma|lte|nr):\d{1,3}:\d{1,3}:\d+:\d+\b""")
     private val macAddressRegex = Regex("""(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b""")

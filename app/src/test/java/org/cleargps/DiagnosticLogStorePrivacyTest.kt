@@ -43,7 +43,8 @@ class DiagnosticLogStorePrivacyTest {
     @Test
     fun readingLegacyLogSanitizesAndRewritesSensitiveContent() {
         val raw = "Legacy SSID=Home WiFi, BSSID=aa:bb:cc:dd:ee:ff; " +
-            "cell=lte:250:1:123:567890; position=52.123, 40.654\n"
+            "cell=lte:250:1:123:567890; cell_id=subscription-cell-250-1; " +
+            "ble_address=private-ble-device; position=52.123, 40.654\n"
         logFile.writeText(raw, Charsets.UTF_8)
 
         val visible = DiagnosticLogStore.read(context)
@@ -53,6 +54,8 @@ class DiagnosticLogStorePrivacyTest {
         assertFalse(visible.contains("WiFi"))
         assertFalse(visible.contains("aa:bb:cc:dd:ee:ff"))
         assertFalse(visible.contains("lte:250:1:123:567890"))
+        assertFalse(visible.contains("subscription-cell-250-1"))
+        assertFalse(visible.contains("private-ble-device"))
         assertFalse(visible.contains("52.123"))
         assertFalse(visible.contains("40.654"))
         assertTrue(visible.contains("52.12, 40.65"))
@@ -64,7 +67,8 @@ class DiagnosticLogStorePrivacyTest {
         context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(DiagnosticLogStore.KEY_ENABLED, true).commit()
         val message = "SSID=Home WiFi, BSSID=aa:bb:cc:dd:ee:ff; " +
-            "cell=lte:250:1:123:567890; at 52.123, 40.654"
+            "cell=lte:250:1:123:567890; cell_id=subscription-cell-250-1; " +
+            "ble_address=private-ble-device; at 52.123, 40.654"
 
         DiagnosticLogStore.log(context, "PRIVACY_TEST", message)
 
@@ -73,6 +77,8 @@ class DiagnosticLogStorePrivacyTest {
         assertFalse(persisted.contains("WiFi"))
         assertFalse(persisted.contains("aa:bb:cc:dd:ee:ff"))
         assertFalse(persisted.contains("lte:250:1:123:567890"))
+        assertFalse(persisted.contains("subscription-cell-250-1"))
+        assertFalse(persisted.contains("private-ble-device"))
         assertFalse(persisted.contains("52.123"))
         assertFalse(persisted.contains("40.654"))
         assertTrue(persisted.contains("52.12, 40.65"))

@@ -26,6 +26,25 @@
 
 ---
 
+## 2026-10-27 — Расширение очистки журналов на явно помеченные cell/BLE поля
+
+**Предыдущее подтверждённое состояние:** [GitHub Actions run 40443155364](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40443155364) завершился `success`: Android-тесты/сборка APK и Windows bootstrap smoke-test прошли для предыдущего sanitizer и обновлённого README.
+
+**Зачем:** защитная граница должна очищать не только узнаваемые MAC и идентификаторы в формате `lte:...`, но и нестандартные идентификаторы, если они явно помечены вызывающим кодом.
+
+**Изменённые файлы:**
+- `app/src/main/java/org/cleargps/DiagnosticLogStore.kt` — метки `cell_id`, `cell_identifier`, `ble_address`, `ble_id`, `bluetooth_id/address` и `device_name/address` также скрывают значения до явного разделителя.
+- `app/src/test/java/org/cleargps/DiagnosticLogStoreTest.kt` — добавлен unit-тест для нестандартных помеченных ID и имени устройства.
+- `app/src/test/java/org/cleargps/DiagnosticLogStorePrivacyTest.kt` — чтение старого журнала и новая запись дополнительно проверяют обезличивание подписанных cell/BLE значений.
+- `README.md` — перечень очищаемых значений приведён в соответствие с кодом.
+- `CHANGELOG.md` — эта запись.
+
+**Поведение/приватность:** радиоидентификаторы остаются локальными; диагностический журнал их не сохраняет открытым текстом, даже если формат ID не совпадает со стандартной сигнатурой MAC или `lte:...`. Свободные значения без метки по-прежнему невозможно надёжно классифицировать универсальным regex.
+
+**Проверки текущего коммита:** полный CI запускается после push; новые unit/integration assertions пока не объявлены пройденными.
+
+---
+
 ## 2026-10-27 — CI-подтверждение приватности журналов и обновление README
 
 **Подтверждённый результат:** [GitHub Actions run 40442816106](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40442816106) завершился `success` на коммите `3c1d2e0`: Android unit-тесты/сборка debug APK и Windows bootstrap smoke-test прошли.
