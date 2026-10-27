@@ -81,7 +81,7 @@ class AltitudeConsistencyPolicyTest {
         )
         assertEquals(
             AltitudeComparisonReason.INVALID_TIMESTAMP,
-            policy.compare(reference, reference.copy(elapsedRealtimeNanos = 11), now(10)).reason
+            policy.compare(reference, reference.copy(elapsedRealtimeNanos = seconds(11)), now(10)).reason
         )
         assertEquals(
             AltitudeComparisonReason.MISSING_OBSERVATION,
