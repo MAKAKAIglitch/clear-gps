@@ -161,7 +161,7 @@ internal object DiagnosticLogStore {
     private val cellIdentifierRegex = Regex("""(?i)\b(?:gsm|wcdma|lte|nr):\d{1,3}:\d{1,3}:\d+:\d+\b""")
     private val macAddressRegex = Regex("""(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b""")
     private val labeledCoordinateRegex = Regex("""(?i)\b(lat(?:itude)?|lon(?:gitude)?|lng)\s*([:=])\s*(-?\d{1,3}(?:\.\d+)?)""")
-    private val coordinatePairRegex = Regex("""(?<![\w.])(-?\d{1,2}\.\d{4,})\s*,\s*(-?\d{1,3}\.\d{4,})(?![\w.])""")
+    private val coordinatePairRegex = Regex("""(?<![\w.])(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})(?![\w.])""")
 
     private fun roundCoordinateForLog(raw: String): String =
         raw.toDoubleOrNull()?.takeIf { it.isFinite() }

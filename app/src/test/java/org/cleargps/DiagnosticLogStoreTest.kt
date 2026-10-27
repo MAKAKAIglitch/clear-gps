@@ -29,6 +29,12 @@ class DiagnosticLogStoreTest {
         assertTrue(sanitized.contains("lng= 40.65"))
     }
 
+    @Test fun sanitizeRoundsCoordinatePairsWithThreeDecimalPlaces() {
+        val sanitized = DiagnosticLogStore.sanitizeMessage("position 52.123, 40.654")
+
+        assertEquals("position 52.12, 40.65", sanitized)
+    }
+
     @Test fun sanitizePreservesNonSensitiveOperationalDetails() {
         val message = "Wi-Fi results=3; RSSI=-58 dBm; radio-only mode active."
         assertEquals(message, DiagnosticLogStore.sanitizeMessage(message))
