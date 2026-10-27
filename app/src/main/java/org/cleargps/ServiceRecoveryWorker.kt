@@ -63,6 +63,8 @@ class ServiceRecoveryWorker(appContext: Context, workerParams: WorkerParameters)
             )
         ) return Result.success()
 
+        // Avoid overwriting an explicit stop if it happened during permission/policy checks.
+        if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) return Result.success()
         clearStaleOutput(prefs, disableMock = false)
         prefs.edit()
             .putString(LocationMonitorService.KEY_SERVICE_STATUS,
@@ -72,7 +74,7 @@ class ServiceRecoveryWorker(appContext: Context, workerParams: WorkerParameters)
             ContextCompat.startForegroundService(
                 applicationContext,
                 Intent(applicationContext, LocationMonitorService::class.java)
-                    .setAction(LocationMonitorService.ACTION_START)
+                    .setAction(LocationMonitorService.ACTION_RECOVER)
             )
             DiagnosticLogStore.log(applicationContext, "SERVICE",
                 "Watchdog requested foreground-monitor recovery after a stale heartbeat.")

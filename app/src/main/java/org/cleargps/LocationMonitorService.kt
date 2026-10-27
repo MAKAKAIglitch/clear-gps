@@ -430,6 +430,21 @@ class LocationMonitorService : Service(), LocationListener {
                 startTracking()
                 return START_STICKY
             }
+            ACTION_RECOVER -> {
+                // A recovery request may race with the user turning monitoring off.
+                // Re-check the persisted intent when the service receives the request.
+                if (!prefs.getBoolean(KEY_MONITORING, false)) {
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                startForeground(NOTIFICATION_ID, notification("Restoring location monitor"))
+                prefs.edit()
+                    .putLong(ServiceRecoveryWatchdog.KEY_SERVICE_HEARTBEAT_ELAPSED_MS, SystemClock.elapsedRealtime())
+                    .apply()
+                ServiceRecoveryWatchdog.ensureScheduled(this)
+                startTracking()
+                return START_STICKY
+            }
             ACTION_START -> {
                 startForeground(NOTIFICATION_ID, notification("Starting location monitor"))
                 prefs.edit()
@@ -1626,6 +1641,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     companion object {
         const val ACTION_START = "org.cleargps.START"
+        const val ACTION_RECOVER = "org.cleargps.RECOVER"
         const val ACTION_STOP = "org.cleargps.STOP"
         const val ACTION_DISABLE_MOCK = "org.cleargps.DISABLE_MOCK"
         const val ACTION_REPLAY_CAPTURE_CHANGED = "org.cleargps.REPLAY_CAPTURE_CHANGED"

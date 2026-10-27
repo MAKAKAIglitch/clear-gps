@@ -4,9 +4,9 @@
 
 **Изменённые файлы:**
 - `app/src/main/java/org/cleargps/ServiceRecoveryWatchdog.kt` — добавлены уникальные periodic/one-shot задания WorkManager; разовая проверка ставится после `onTaskRemoved` и `onDestroy`, а периодическая — только после явно включённого мониторинга.
-- `app/src/main/java/org/cleargps/ServiceRecoveryWorker.kt` — проверяет heartbeat и разрешения; перед попыткой восстановления убирает старые координатные поля, запускает только ранее включённую службу и сохраняет статус, если Android запрещает запуск из фона.
+- `app/src/main/java/org/cleargps/ServiceRecoveryWorker.kt` — проверяет heartbeat и разрешения; непосредственно перед восстановлением перепроверяет сохранённый флаг, убирает старые координатные поля и использует отдельную guarded-команду. Если Android запрещает запуск из фона, сохраняет понятный статус.
 - `app/src/main/java/org/cleargps/ServiceRecoveryPolicy.kt` и `app/src/test/java/org/cleargps/ServiceRecoveryPolicyTest.kt` — чистая политика с тестами свежего/устаревшего heartbeat, разрешений, тайм-аута после удаления задачи и отсутствия повторного старта после нового heartbeat.
-- `app/src/main/java/org/cleargps/LocationMonitorService.kt` — heartbeat по `elapsedRealtime` раз в 30 секунд, обработка `onTaskRemoved`/уничтожения службы, расписание/cancellation watchdog и безопасная обработка null-intent от `START_STICKY`: не включать мониторинг, если ранее он был выключен.
+- `app/src/main/java/org/cleargps/LocationMonitorService.kt` — heartbeat по `elapsedRealtime` раз в 30 секунд, обработка `onTaskRemoved`/уничтожения службы, расписание/cancellation watchdog и безопасная обработка null-intent от `START_STICKY`. Отдельный `ACTION_RECOVER` перепроверяет сохранённый флаг мониторинга в момент доставки команды, чтобы восстановление не отменяло пользовательскую остановку.
 - `app/build.gradle.kts` — добавлена зависимость WorkManager 2.12.0.
 - `app/src/main/res/values/strings.xml` и `app/src/main/res/values-ru/strings.xml` — локализованы статусы невозможности восстановления.
 - `README.md`, `ARCHITECTURE.md`, `docs/spec/battery-budget.md`, `docs/spec/privacy.md` и `docs/testing/device-validation.md` — описаны границы watchdog и ручные проверки на реальных устройствах.
