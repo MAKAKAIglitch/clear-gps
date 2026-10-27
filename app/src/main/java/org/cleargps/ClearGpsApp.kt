@@ -936,7 +936,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(json) }
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                 }
-                Toast.makeText(context, "Обезличенная разметка риска экспортирована. Отправки в сеть не было.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Обезличенная разметка риска сохранена в выбранное место. Clear GPS не отправляет файл автоматически.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка экспорта разметки: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
             }
@@ -950,7 +950,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(csv) }
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                 }
-                Toast.makeText(context, "WiGLE CSV сохранён. История наблюдений включена; отправки нет.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "WiGLE CSV сохранён в выбранное место. История наблюдений включена; Clear GPS не отправляет файл автоматически.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
@@ -971,7 +971,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     context.contentResolver.openOutputStream(uri, "w")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(csv) }
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                 }
-                Toast.makeText(context, "CSV выбранного источника сохранён локально. Отправки нет.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "CSV выбранного источника сохранён в выбранное место. Clear GPS не отправляет файл автоматически.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка экспорта источника: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
             }
@@ -985,7 +985,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                     output.use { database.exportSqliteBackup(it) }
                 }
-                Toast.makeText(context, "SQLite-резервная копия Clear GPS сохранена.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "SQLite-резервная копия Clear GPS сохранена в выбранное место. Clear GPS не отправляет файл автоматически.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка SQLite-экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
@@ -999,7 +999,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         ?: throw IllegalStateException("Не удалось открыть файл для записи.")
                     output.use { database.exportWigleSqlite(it) }
                 }
-                Toast.makeText(context, "WiGLE SQLite сохранён: сети и геолокированные наблюдения.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "WiGLE SQLite сохранён в выбранное место: сети и геолокированные наблюдения. Clear GPS не отправляет файл автоматически.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка WiGLE SQLite-экспорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
             }
