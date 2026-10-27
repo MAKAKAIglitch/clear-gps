@@ -26,6 +26,14 @@
 
 ---
 
+## 2026-10-27 — Явная nullable-проверка в тесте ответа BeaconDB
+
+**Зачем:** сделать диагностику положительного теста ответа независимой от compiler contracts JUnit: `assertNotNull` проверяет значение в runtime, но не обязан для Kotlin compiler сузить nullable-тип локальной переменной.
+
+**Изменённый файл:** `app/src/test/java/org/cleargps/BeaconDbProtocolTest.kt` — тест получает `coordinate` через явный Elvis с диагностическим `AssertionError`, затем сравнивает поля. Неиспользуемый импорт удалён; production-код не меняется.
+
+**Проверки:** CI для исправления парсера запускается после этой правки. Результат остаётся неподтверждённым до завершения полного Gradle job.
+
 ## 2026-10-27 — Исправление принятия обычного ответа BeaconDB
 
 **Причина:** тестовый ответ по официальному Ichnaea/BeaconDB-совместимому формату (`location.lat`, `location.lng`, корневое `accuracy`, без `fallback`) отклонялся существующим парсером. CI для `47299b4` обнаружил этот сбой в новом тесте `validCoordinateResponseIsAcceptedWithoutFallback`. Формат ответа проверен по документации Ichnaea Geolocate: успешный ответ содержит `location` и корневое `accuracy`; поле `fallback` добавляется, если использована грубая оценка. [Документация API](https://ichnaea.readthedocs.io/en/stable/api/geolocate.html).
