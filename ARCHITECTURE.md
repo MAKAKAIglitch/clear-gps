@@ -60,6 +60,12 @@ GNSS diagnostics/detection, radio matching and the Android publication layer are
 
 When no position meets the publication policy, the intended safe behavior is to stop publishing a stale fix rather than label it fresh. This contract and the trust-state semantics are described in [`position-contract.md`](docs/spec/position-contract.md) and [`trust-model.md`](docs/spec/trust-model.md); device-level publication still requires the manual validation checklist.
 
+## Barometric altitude estimator
+
+- `BarometricAltitudeEstimator.kt` converts pressure to an approximate altitude only after a trusted height and pressure are supplied together as a calibration. The caller must provide pascals, effective mean-column temperature in kelvin, timestamp and uncertainties.
+- The estimate inherits the reference's explicit vertical datum and carries propagated sensor uncertainty plus a configured atmosphere-model allowance. Calibration expires after a caller-selected monotonic interval to avoid treating weather-driven pressure drift as permanent height.
+- This is not yet connected to Android's pressure-sensor listener or TrustEngine. It does not calibrate itself from an untrusted GNSS fix, and it does not turn raw pressure directly into spoofing evidence.
+
 ## Altitude consistency policy
 
 - `AltitudeConsistencyPolicy.kt` compares two fresh altitude observations only when both use the same explicitly supported vertical datum and both provide source-normalized uncertainty estimates. The tolerance is the larger of a caller-selected floor and a configured multiple of the combined uncertainty.
