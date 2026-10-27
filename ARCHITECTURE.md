@@ -99,3 +99,10 @@ The Android CI uses JDK 17 and the checked-in Gradle Wrapper:
 ```
 
 On Windows, use `gradlew.bat` or the checked-in `windows-build/build-apk.ps1`. CI also validates PowerShell syntax, verifies the Gradle Wrapper JAR checksum, and smoke-tests Gradle argument forwarding on Windows. Automated tests are necessary but do not replace real-device checks listed in [`docs/testing/device-validation.md`](docs/testing/device-validation.md).
+
+
+## Android barometer capture
+
+- `AndroidBarometerSensorReader.kt` subscribes to `Sensor.TYPE_PRESSURE` only while the location monitor is active, using a one-second sampling-period hint. Samples use the sensor event's monotonic timestamp and are converted from hPa to Pa.
+- The live store is in-memory only and returns data only while fresh (default five-second age). It does not persist raw pressure or infer an accuracy from sensor resolution.
+- This acquisition path does not yet feed calibrated pressure into the altitude estimator automatically: selecting a trusted GNSS/DEM reference and an effective column temperature remains explicit work. Missing hardware or stale data is neutral.

@@ -62,6 +62,7 @@ class LocationMonitorService : Service(), LocationListener {
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
     private var serviceHeartbeatJob: Job? = null
+    private var barometerReader: AndroidBarometerSensorReader? = null
 
     // Ephemeral aggregate only; never persisted or exported.
     private var lastStatusMeanCn0DbHz: Double? = null
@@ -324,6 +325,7 @@ class LocationMonitorService : Service(), LocationListener {
             if (!engine.restoreDeviceBaseline(savedBaseline)) GnssDeviceBaselineStore.clear(this)
         }
         mock = MockLocationOutput(this)
+        barometerReader = AndroidBarometerSensorReader(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(NotificationChannel(CHANNEL, "Clear GPS monitoring", NotificationManager.IMPORTANCE_LOW))
@@ -682,6 +684,8 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
+            // Pressure is a trust-only auxiliary sensor; it never becomes a coordinate source.
+            barometerReader?.start()
             configureReplayRadioCapture(nextPositionMode)
             lastTrustedGpsFixForObd2 = null
             if (mockFreshnessJob?.isActive != true) startMockFreshnessWatchdog()
@@ -1305,6 +1309,7 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        barometerReader?.stop()
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
         stopReplayRadioCapture()
         cancelBeaconDbMockOutput()

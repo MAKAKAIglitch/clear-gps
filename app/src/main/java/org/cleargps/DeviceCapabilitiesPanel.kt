@@ -110,8 +110,9 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
     val packageManager = context.packageManager
     val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
     val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+    val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
     val gnssSnapshot = runCatching {
-        GnssDiagnosticsLiveStore.snapshot(SystemClock.elapsedRealtimeNanos())
+        GnssDiagnosticsLiveStore.snapshot(nowElapsedRealtimeNanos)
     }.getOrNull()
 
     val hasGpsProvider = runCatching {
@@ -226,6 +227,7 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
     }
 
     val barometer = hasSensor(Sensor.TYPE_PRESSURE)
+    val pressureSample = BarometerPressureLiveStore.snapshot(nowElapsedRealtimeNanos)
     val accelerometer = hasSensor(Sensor.TYPE_ACCELEROMETER)
     val gyroscope = hasSensor(Sensor.TYPE_GYROSCOPE)
     val magnetometer = hasSensor(Sensor.TYPE_MAGNETIC_FIELD)
@@ -249,10 +251,25 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
             multiFrequencyItem,
             DeviceCapabilityItem(
                 "Барометр",
-                if (barometer) "Датчик давления обнаружен" else "Датчик не обнаружен",
-                if (barometer) "Барометр доступен. Слияние высоты с DEM/барометром пока не реализовано в текущем позиционировании."
-                else "Барометрическая часть оценки высоты недоступна; отсутствие датчика не повышает риск GNSS.",
-                barometer
+                when {
+                    !barometer -> "Датчик не обнаружен"
+                    pressureSample != null -> "Датчик обнаружен; показания свежие"
+                    else -> "Датчик обнаружен; свежих показаний сейчас нет"
+                },
+                when {
+                    !barometer -> "Барометрическая часть оценки высоты недоступна; отсутствие датчика не повышает риск GNSS."
+                    pressureSample != null -> "Последнее показание " +
+                        String.format(java.util.Locale.ROOT, "%.2f", pressureSample.pressurePascals / 100.0) +
+                        " hPa, возраст " +
+                        ((nowElapsedRealtimeNanos - pressureSample.elapsedRealtimeNanos) / 1_000_000_000L) +
+                        " с. Считывание запускается только во время мониторинга; высота пока не входит в live TrustEngine."
+                    else -> "Датчик доступен, но свежих измерений нет. Запустите мониторинг, чтобы временно читать давление; данные остаются только в памяти и очищаются при остановке."
+                },
+                when {
+                    !barometer -> false
+                    pressureSample != null -> true
+                    else -> null
+                }
             ),
             rttItem,
             DeviceCapabilityItem(
