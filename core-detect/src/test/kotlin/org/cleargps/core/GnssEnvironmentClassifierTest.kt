@@ -125,7 +125,7 @@ class GnssEnvironmentClassifierTest {
         )
         assertFalse(
             GnssEnvironmentClassifier.isValidSnapshot(
-                snapshot(visible = 1, used = 1, cn0 = 30.0, spread = 0.5)
+                snapshot(visible = 1, used = 1, cn0 = 30.0, spread = 0.5, constellations = 1)
             )
         )
     }
