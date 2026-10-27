@@ -48,12 +48,6 @@ class LocalRadioDatabaseImportTest {
         val first = importCsv(csv)
         val second = importCsv(csv)
 
-        if (second.observationsImported != 0) {
-            System.err.println(
-                "WiGLE duplicate import diagnostic: first=$first second=$second " +
-                    "totalObservations=${database.observationCount()} sourceId=${first.sourceId}"
-            )
-        }
         assertEquals(2, first.observationsImported)
         assertEquals(2, first.uniqueRadios)
         assertNotNull(first.sourceId)
@@ -73,15 +67,7 @@ class LocalRadioDatabaseImportTest {
             "aa:bb:cc:dd:ee:13,Bad,91,40.0,2026-01-02 03:06:05,2412,-65,WIFI"
         )
 
-        val result = try {
-            importCsv(csv)
-        } catch (error: Exception) {
-            System.err.println(
-                "WiGLE mixed-coordinate import diagnostic: " +
-                    "${error.javaClass.name}: ${error.message}; csv=${csv.replace("\\n", "|")}"
-            )
-            throw error
-        }
+        val result = importCsv(csv)
         val sourceId = result.sourceId!!
 
         assertEquals(2, result.observationsImported)
