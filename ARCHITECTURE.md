@@ -15,7 +15,8 @@ The design in `docs/spec/` proposes further boundaries such as `core-fusion`, in
 
 ### Android application (`:app`)
 
-- `ClearGpsApplication.kt` installs the process-level uncaught-exception handler; `CrashLoopGuard.kt` stores a rolling crash window and blocks the online BeaconDB source after three uncaught crashes in ten minutes.
+- `ClearGpsApplication.kt` installs the process-level uncaught-exception handler and enables log-only Android StrictMode policies only in debuggable builds; `CrashLoopGuard.kt` stores a rolling crash window and blocks the online BeaconDB source after three uncaught crashes in ten minutes.
+- LeakCanary 2.14 is scoped to the app's `debugImplementation`; it watches retained Android components while debugging and is not part of the release runtime classpath.
 - `ClearGpsApp.kt` wires together the UI and application actions.
 - `LocationMonitorService.kt` owns the location-monitoring foreground service.
 - `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.

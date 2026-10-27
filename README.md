@@ -22,6 +22,7 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 - **Private map fallback:** a tile-free offline canvas retains local radio markers without requesting map data, but does not display streets or labels.
 - **GNSS diagnostics:** live in-memory sky plot and per-satellite C/N₀, constellation, elevation/azimuth, used-in-fix status and frequency when Android reports it; AGC appears per satellite or per band only when the device/Android API supplies it. Detailed satellite readings are not persisted by default; opt-in replay recording is available with a 2 MiB cap, relative (non-world) track coordinates and manual export. Version 2 also records available phone IMU samples (up to 5 samples/s per type) and anonymized Wi-Fi/cell/BLE observations only while monitoring in Auto mode, no more often than every 15 seconds (or the longer configured interval). Real BSSID, SSID, cell IDs and BLE addresses are replaced with opaque IDs scoped to the recording. The replay viewer reports these samples, but IMU and radio do not currently affect the live risk estimate. Users can label a suspicious event as a false alarm or justified suspicion and optionally export a privacy-minimized JSON dataset; labels never train/change the live detector automatically.
 - **Windows build script** and GitHub Actions workflow for unit tests and debug APK generation.
+- **Debug-only performance diagnostics:** StrictMode logs potential main-thread I/O and VM/resource violations to Logcat without crashing the app. LeakCanary 2.14 watches destroyed Android components in debug builds only; neither the LeakCanary library nor its heap analysis is included in release builds.
 
 ## Radio positioning and WiGLE
 
@@ -95,6 +96,7 @@ This is a research/learning project. The app has automated build and unit-test c
 - **Частота фикса:** интервал 1–30 секунд; при включённой адаптации интервал может уменьшаться в движении. Фактическая частота радиообновлений зависит от системных ограничений Android. Кэшированные сканы не продлевают таймер последнего подтверждённого mock-фикса; если свежая публикация прекратилась, watchdog удаляет устаревший mock-провайдер через ограниченное окно 30–90 секунд. Диагностика отдельно показывает услышанные радиосигналы, найденные в базе идентификаторы и записи с пригодными координатами.
 - **Приватный режим карты:** офлайн-холст не запрашивает тайлы, но показывает локальные радиоточки без улиц и подписей.
 - **Сборка для Windows** и GitHub Actions для тестов и создания debug APK.
+- **Диагностика debug-сборки:** Android StrictMode пишет потенциальные нарушения главного потока и VM/ресурсов в Logcat, не завершая приложение. LeakCanary 2.14 отслеживает удерживаемые после уничтожения Activity/Service только в debug-варианте; библиотека и анализ heap не попадают в release APK.
 
 ## Локальная навигация и WiGLE
 
