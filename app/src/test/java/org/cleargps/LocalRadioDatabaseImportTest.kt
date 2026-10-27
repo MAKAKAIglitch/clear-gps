@@ -16,6 +16,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.ByteArrayInputStream
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -137,6 +138,74 @@ class LocalRadioDatabaseImportTest {
             seed.sourceId.toString(), seed.dayKey, "wifi"))
         assertEquals(1, countRows("radio_sources", "kind = ?", "local"))
         assertEquals(0, countRows("radio_sources", "kind = ?", "wigle"))
+    }
+
+    @Test
+    fun rejectedNonSqliteFileKeepsPendingDeletionUndo() {
+        val seed = seedLocalRows()
+        val deleted = database.deleteRadioSourceSegment(seed.sourceId, seed.dayKey, "wifi")
+        val undoToken = deleted.undoToken
+        assertNotNull(undoToken)
+        assertEquals(0, countRows("radio_observations", "id = ?", seed.observationId.toString()))
+
+        var rejected = false
+        try {
+            database.importSqliteDatabase(ByteArrayInputStream("not a SQLite database".toByteArray(Charsets.UTF_8)))
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+        assertTrue("Non-SQLite input must be rejected", rejected)
+        assertTrue("Rejected SQLite input must preserve prior Undo", database.undoRadioSourceDeletion(undoToken!!))
+        assertEquals(1, countRows("radio_observations", "id = ?", seed.observationId.toString()))
+        assertEquals(1, countRows(
+            "radio_source_segment_settings",
+            "source_id = ? AND day_key = ? AND radio_type = ?",
+            seed.sourceId.toString(), seed.dayKey, "wifi"
+        ))
+        assertEquals(1, countRows("radio_sources", "kind = ?", "local"))
+        assertEquals(0, countRows("radio_sources", "kind = ?", "wigle"))
+        assertEquals(0, countRows("radio_sources", "kind = ?", "custom"))
+    }
+
+    @Test
+    fun unsupportedButValidSqliteSchemaKeepsPendingDeletionUndo() {
+        val seed = seedLocalRows()
+        val deleted = database.deleteRadioSourceSegment(seed.sourceId, seed.dayKey, "wifi")
+        val undoToken = deleted.undoToken
+        assertNotNull(undoToken)
+        assertEquals(0, countRows("radio_observations", "id = ?", seed.observationId.toString()))
+
+        val unsupportedFile = File.createTempFile("clear-gps-unsupported-", ".sqlite", context.cacheDir)
+        try {
+            val unsupportedDb = SQLiteDatabase.openOrCreateDatabase(unsupportedFile.absolutePath, null)
+            try {
+                unsupportedDb.execSQL("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+            } finally {
+                unsupportedDb.close()
+            }
+
+            var rejected = false
+            try {
+                database.importSqliteDatabase(ByteArrayInputStream(unsupportedFile.readBytes()))
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+            assertTrue("Valid SQLite with an unsupported schema must be rejected", rejected)
+            assertTrue("Unsupported schema must preserve prior Undo", database.undoRadioSourceDeletion(undoToken!!))
+            assertEquals(1, countRows("radio_observations", "id = ?", seed.observationId.toString()))
+            assertEquals(1, countRows(
+                "radio_source_segment_settings",
+                "source_id = ? AND day_key = ? AND radio_type = ?",
+                seed.sourceId.toString(), seed.dayKey, "wifi"
+            ))
+            assertEquals(1, countRows("radio_sources", "kind = ?", "local"))
+            assertEquals(0, countRows("radio_sources", "kind = ?", "wigle"))
+            assertEquals(0, countRows("radio_sources", "kind = ?", "custom"))
+        } finally {
+            unsupportedFile.delete()
+            File(unsupportedFile.absolutePath + "-wal").delete()
+            File(unsupportedFile.absolutePath + "-shm").delete()
+        }
     }
 
     private data class Seed(val sourceId: Long, val dayKey: String, val observationId: Long)
