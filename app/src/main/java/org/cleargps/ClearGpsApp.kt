@@ -395,9 +395,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var pointToEdit by remember { mutableStateOf<RadioPointRecord?>(null) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var showExportOptions by remember { mutableStateOf(false) }
+    var showSourceExportWarning by remember { mutableStateOf(false) }
     var pendingSourceExportId by remember { mutableStateOf<Long?>(null) }
     var pendingSourceExportDay by remember { mutableStateOf<String?>(null) }
     var pendingSourceExportType by remember { mutableStateOf<String?>(null) }
+    var pendingSourceExportFileName by remember { mutableStateOf<String?>(null) }
     var showZoneNameDialog by remember { mutableStateOf(false) }
     var zoneName by remember { mutableStateOf("") }
     var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
@@ -961,6 +963,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         pendingSourceExportId = null
         pendingSourceExportDay = null
         pendingSourceExportType = null
+        pendingSourceExportFileName = null
         if (uri != null && sourceId != null) scope.launch {
             try {
                 val csv = withContext(Dispatchers.IO) { database.exportWigleCsv(sourceId, dayKey, radioType) }
@@ -1923,6 +1926,13 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
 
     BackHandler(enabled = true) {
         when {
+            showSourceExportWarning -> {
+                showSourceExportWarning = false
+                pendingSourceExportId = null
+                pendingSourceExportDay = null
+                pendingSourceExportType = null
+                pendingSourceExportFileName = null
+            }
             showExportOptions -> showExportOptions = false
             selectedMapPoint != null -> selectedMapPoint = null
             pointToEdit != null -> pointToEdit = null
@@ -2166,13 +2176,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         pendingSourceExportId = source.id
                                         pendingSourceExportDay = null
                                         pendingSourceExportType = null
-                                        exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + ".csv")
+                                        pendingSourceExportFileName = "ClearGPS-source-" + source.id + ".csv"
+                                        showSourceExportWarning = true
                                     },
                                     onExportSourceDay = { source, day ->
                                         pendingSourceExportId = source.id
                                         pendingSourceExportDay = day.dayKey
                                         pendingSourceExportType = null
-                                        exportSourceCsvLauncher.launch("ClearGPS-source-" + source.id + "-" + day.dayKey + ".csv")
+                                        pendingSourceExportFileName = "ClearGPS-source-" + source.id + "-" + day.dayKey + ".csv"
+                                        showSourceExportWarning = true
                                     },
                                     onDeleteSourceDay = { day ->
                                         snackbarHostState.currentSnackbarData?.dismiss()
@@ -2253,7 +2265,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                         pendingSourceExportId = segment.sourceId
                                         pendingSourceExportDay = segment.dayKey
                                         pendingSourceExportType = segment.radioType
-                                        exportSourceCsvLauncher.launch("ClearGPS-" + segment.sourceId + "-" + segment.dayKey + "-" + segment.radioType + ".csv")
+                                        pendingSourceExportFileName = "ClearGPS-" + segment.sourceId + "-" + segment.dayKey + "-" + segment.radioType + ".csv"
+                                        showSourceExportWarning = true
                                     },
                                     observationRetentionLimit = observationRetentionLimit,
                                     retentionLimitUpdating = retentionLimitUpdating,
@@ -2688,6 +2701,50 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         )
     }
 
+    if (showSourceExportWarning) {
+        AlertDialog(
+            onDismissRequest = {
+                showSourceExportWarning = false
+                pendingSourceExportId = null
+                pendingSourceExportDay = null
+                pendingSourceExportType = null
+                pendingSourceExportFileName = null
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            title = { Text("Экспорт содержит личные радиоданные") },
+            text = {
+                Text(
+                    "WiGLE CSV включает реальные идентификаторы радиосетей (в том числе BSSID/MAC), " +
+                        "SSID, доступные координаты и время наблюдений. Перед сохранением проверь место назначения. " +
+                        "Clear GPS не отправляет файл автоматически, но выбранное хранилище может синхронизировать его."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val fileName = pendingSourceExportFileName
+                    showSourceExportWarning = false
+                    if (pendingSourceExportId != null && fileName != null) {
+                        exportSourceCsvLauncher.launch(fileName)
+                    } else {
+                        pendingSourceExportId = null
+                        pendingSourceExportDay = null
+                        pendingSourceExportType = null
+                        pendingSourceExportFileName = null
+                    }
+                }) { Text("Продолжить") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showSourceExportWarning = false
+                    pendingSourceExportId = null
+                    pendingSourceExportDay = null
+                    pendingSourceExportType = null
+                    pendingSourceExportFileName = null
+                }) { Text("Отмена") }
+            }
+        )
+    }
+
     if (showExportOptions) {
         AlertDialog(
             onDismissRequest = { showExportOptions = false },
@@ -2695,9 +2752,10 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             title = { Text("Экспорт данных") },
             text = {
                 Text(
-                    "CSV — наблюдения для совместимости с WiGLE. " +
-                        "WiGLE SQLite — таблицы network/location для совместимых инструментов. " +
-                        "Clear GPS backup — полная копия со всеми точками, наблюдениями и историей сканирований."
+                    "WiGLE CSV и WiGLE SQLite содержат реальные идентификаторы радио (включая BSSID/MAC), " +
+                        "SSID, доступные координаты и время наблюдений. Clear GPS backup содержит полную локальную " +
+                        "радиобазу и историю. Файл сохраняется в выбранном месте; Clear GPS не отправляет его автоматически, " +
+                        "но стороннее хранилище может синхронизировать содержимое."
                 )
             },
             confirmButton = {
