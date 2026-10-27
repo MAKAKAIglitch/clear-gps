@@ -2,6 +2,7 @@ package org.cleargps
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -72,9 +73,10 @@ class BeaconDbProtocolTest {
             """{"location":{"lat":52.123456,"lng":40.654321},"accuracy":450.0}"""
         )
 
-        assertEquals(52.123456, result?.latitude ?: Double.NaN, 0.000001)
-        assertEquals(40.654321, result?.longitude ?: Double.NaN, 0.000001)
-        assertEquals(450.0, result?.accuracyMeters ?: Double.NaN, 0.000001)
+        assertNotNull("A valid response without fallback must be accepted", result)
+        assertEquals(52.123456, result!!.latitude, 0.000001)
+        assertEquals(40.654321, result.longitude, 0.000001)
+        assertEquals(450.0, result.accuracyMeters, 0.000001)
     }
 
     @Test

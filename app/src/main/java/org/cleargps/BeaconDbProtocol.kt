@@ -93,9 +93,9 @@ internal object BeaconDbProtocol {
             val root = JSONObject(responseBody)
             // The request disables IP and location-area fallbacks. If the server nevertheless
             // labels a fallback result, do not present it as an exact cellular database match.
-            val fallback = root.opt("fallback")
-            if (fallback != null && fallback != JSONObject.NULL && fallback.toString().isNotBlank()) {
-                return null
+            if (root.has("fallback") && !root.isNull("fallback")) {
+                val fallback = root.opt("fallback")?.toString().orEmpty()
+                if (fallback.isNotBlank()) return null
             }
             val location = root.optJSONObject("location") ?: return null
             val latitude = location.optDouble("lat", Double.NaN)
