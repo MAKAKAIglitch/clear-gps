@@ -216,8 +216,6 @@ class LocalRadioDatabaseBackupRoundTripTest {
 
         override fun getDatabasePath(name: String): File = databaseFile
 
-        override fun getDatabaseDir(): File = databaseFile.parentFile ?: baseContext.cacheDir
-
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
             baseContext.getSharedPreferences("$name-$namespace", mode)
     }
