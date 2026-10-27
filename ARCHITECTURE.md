@@ -60,6 +60,12 @@ GNSS diagnostics/detection, radio matching and the Android publication layer are
 
 When no position meets the publication policy, the intended safe behavior is to stop publishing a stale fix rather than label it fresh. This contract and the trust-state semantics are described in [`position-contract.md`](docs/spec/position-contract.md) and [`trust-model.md`](docs/spec/trust-model.md); device-level publication still requires the manual validation checklist.
 
+## Altitude consistency policy
+
+- `AltitudeConsistencyPolicy.kt` compares two fresh altitude observations only when both use the same explicitly supported vertical datum and both provide source-normalized uncertainty estimates. The tolerance is the larger of a caller-selected floor and a configured multiple of the combined uncertainty.
+- `SustainedAltitudeDiscrepancyTracker` requires repeated disagreement without long gaps before reporting a sustained discrepancy; consistent, unavailable, stale, invalid or out-of-order evidence resets the window.
+- This is a typed decision gate, not a calibrated spoofing signal. It does not add to TrustEngine risk, start sensors, calibrate raw pressure or connect the SRTM store to live location processing. Unspecified mean-sea-level heights are deliberately not treated as EGM96.
+
 ## Offline elevation data
 
 - `SrtmHgtElevationStore.kt` reads locally supplied SRTM HGT tiles (1201 × 1201 or 3601 × 3601, signed big-endian samples) and bilinearly interpolates the requested coordinate. Data voids, missing tiles and malformed files return no estimate instead of a zero or guessed height.
