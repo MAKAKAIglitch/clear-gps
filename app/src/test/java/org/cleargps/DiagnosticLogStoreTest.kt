@@ -6,7 +6,7 @@ import org.junit.Test
 
 class DiagnosticLogStoreTest {
     @Test fun sanitizeRemovesRadioIdentifiersAndSsidValues() {
-        val raw = "BSSID=aa:bb:cc:dd:ee:ff SSID=\"Home WiFi\", cell=lte:250:1:123:567890"
+        val raw = "BSSID=aa:bb:cc:dd:ee:ff, SSID=Home WiFi, cell=lte:250:1:123:567890"
         val sanitized = DiagnosticLogStore.sanitizeMessage(raw)
 
         assertTrue(sanitized.contains("BSSID=[REDACTED]"))
@@ -17,15 +17,15 @@ class DiagnosticLogStoreTest {
         assertTrue(!sanitized.contains("lte:250:1:123:567890"))
     }
 
-    @Test fun sanitizeRemovesPreciseCoordinatePairsAndLabeledCoordinates() {
+    @Test fun sanitizeRoundsPreciseCoordinatePairsAndLabeledCoordinates() {
         val raw = "located at 52.123456, 40.654321; lat=52.123456 lng=40.654321"
         val sanitized = DiagnosticLogStore.sanitizeMessage(raw)
 
         assertTrue(!sanitized.contains("52.123456"))
         assertTrue(!sanitized.contains("40.654321"))
-        assertTrue(sanitized.contains("[COORDINATES REDACTED]"))
-        assertTrue(sanitized.contains("lat=[COORDINATE REDACTED]"))
-        assertTrue(sanitized.contains("lng=[COORDINATE REDACTED]"))
+        assertTrue(sanitized.contains("52.12, 40.65"))
+        assertTrue(sanitized.contains("lat= 52.12"))
+        assertTrue(sanitized.contains("lng= 40.65"))
     }
 
     @Test fun sanitizePreservesNonSensitiveOperationalDetails() {

@@ -145,9 +145,13 @@ internal object DiagnosticLogStore {
         safe = cellIdentifierRegex.replace(safe, "[CELL-ID REDACTED]")
         safe = macAddressRegex.replace(safe, "[RADIO-ID REDACTED]")
         safe = labeledCoordinateRegex.replace(safe) { match ->
-            match.groupValues[1] + match.groupValues[2] + "[COORDINATE REDACTED]"
+            match.groupValues[1] + match.groupValues[2] + " " +
+                roundCoordinateForLog(match.groupValues[3])
         }
-        safe = coordinatePairRegex.replace(safe, "[COORDINATES REDACTED]")
+        safe = coordinatePairRegex.replace(safe) { match ->
+            roundCoordinateForLog(match.groupValues[1]) + ", " +
+                roundCoordinateForLog(match.groupValues[2])
+        }
         return safe
     }
 
@@ -156,8 +160,13 @@ internal object DiagnosticLogStore {
     )
     private val cellIdentifierRegex = Regex("""(?i)\b(?:gsm|wcdma|lte|nr):\d{1,3}:\d{1,3}:\d+:\d+\b""")
     private val macAddressRegex = Regex("""(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b""")
-    private val labeledCoordinateRegex = Regex("""(?i)\b(lat(?:itude)?|lon(?:gitude)?|lng)\s*([:=])\s*-?\d{1,3}(?:\.\d+)?""")
-    private val coordinatePairRegex = Regex("""(?<![\w.])-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}(?![\w.])""")
+    private val labeledCoordinateRegex = Regex("""(?i)\b(lat(?:itude)?|lon(?:gitude)?|lng)\s*([:=])\s*(-?\d{1,3}(?:\.\d+)?)""")
+    private val coordinatePairRegex = Regex("""(?<![\w.])(-?\d{1,2}\.\d{4,})\s*,\s*(-?\d{1,3}\.\d{4,})(?![\w.])""")
+
+    private fun roundCoordinateForLog(raw: String): String =
+        raw.toDoubleOrNull()?.takeIf { it.isFinite() }
+            ?.let { String.format(Locale.ROOT, "%.2f", it) }
+            ?: "[COORDINATE REDACTED]"
 
     /** Keep the newest bytes, advancing to the next complete line where possible. */
     internal fun trimToMaxBytes(content: ByteArray, maxBytes: Int): ByteArray {

@@ -1,6 +1,7 @@
 package org.cleargps
 
 import android.location.Location
+import android.location.LocationManager
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
