@@ -2378,8 +2378,12 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
                 throw IllegalArgumentException("Файл не является корректной SQLite-базой.", error)
             }
             try {
-                val integrity = sourceDb.rawQuery("PRAGMA quick_check", null).use {
-                    if (it.moveToFirst()) it.getString(0) else "no result"
+                val integrity = try {
+                    sourceDb.rawQuery("PRAGMA quick_check", null).use {
+                        if (it.moveToFirst()) it.getString(0) else "no result"
+                    }
+                } catch (error: Exception) {
+                    throw IllegalArgumentException("SQLite-база повреждена или не читается.", error)
                 }
                 if (!integrity.equals("ok", ignoreCase = true)) {
                     throw IllegalArgumentException("SQLite-база повреждена: " + integrity)
