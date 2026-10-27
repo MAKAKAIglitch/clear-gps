@@ -2274,7 +2274,6 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
     }
 
     fun importWigleCsv(input: InputStream): RadioImportResult {
-        clearAllRadioDeletionUndo(writableDatabase)
         val raw = input.use { readBounded(it, MAX_IMPORT_BYTES) }
         val decoded = if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
             GZIPInputStream(ByteArrayInputStream(raw)).use { readBounded(it, MAX_IMPORT_BYTES) }
@@ -2303,6 +2302,8 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         var sourceId = 0L
         db.beginTransaction()
         try {
+            // Failed imports roll back this invalidation together with source/row changes.
+            clearAllRadioDeletionUndo(db)
             sourceId = createOrGetImportedSource(db, "wigle", "WiGLE CSV", sourceFingerprint, importTime)
             rows.drop(headerIndex + 1).forEach { row ->
                 val rawIdentifier = field(row, "MAC")
@@ -2362,7 +2363,6 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
      * Source content is only read; importing merges records and never replaces local data.
      */
     fun importSqliteDatabase(input: InputStream): RadioImportResult {
-        clearAllRadioDeletionUndo(writableDatabase)
         val tempFile = File.createTempFile("clear-gps-import-", ".sqlite", appContext.cacheDir)
         try {
             input.use { source ->
@@ -2570,6 +2570,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         var sourceId = 0L
         target.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(target)
             sourceId = createOrGetImportedSource(target, "custom", "Clear GPS SQLite", "clear-gps:" + fingerprint, System.currentTimeMillis())
             sourceDb.rawQuery("SELECT * FROM radio_points", null).use { cursor ->
                 while (cursor.moveToNext()) {
@@ -2703,6 +2704,7 @@ class LocalRadioDatabase(context: Context) : SQLiteOpenHelper(context.applicatio
         val seenKeys = HashSet<String>()
         target.beginTransaction()
         try {
+            clearAllRadioDeletionUndo(target)
             sourceId = createOrGetImportedSource(target, "wigle", "WiGLE SQLite", "wigle-sqlite:" + fingerprint, System.currentTimeMillis())
             sourceDb.rawQuery("SELECT * FROM location ORDER BY time, _id", null).use { cursor ->
                 while (cursor.moveToNext()) {
