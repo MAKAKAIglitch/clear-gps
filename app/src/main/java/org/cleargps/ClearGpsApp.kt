@@ -13,6 +13,7 @@ import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
@@ -211,6 +212,56 @@ private fun readPublishedMockAccuracy(prefs: android.content.SharedPreferences):
         !prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) return null
     return prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
         ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+}
+
+private fun openBatteryOptimizationExemption(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        Toast.makeText(
+            context,
+            "На этой версии Android отдельный список оптимизации батареи недоступен.",
+            Toast.LENGTH_LONG
+        ).show()
+        return
+    }
+
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    if (powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true) {
+        Toast.makeText(
+            context,
+            "Clear GPS уже исключён из оптимизации батареи.",
+            Toast.LENGTH_LONG
+        ).show()
+        return
+    }
+
+    val packageUri = Uri.parse("package:\${context.packageName}")
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(packageUri)
+        )
+        return
+    } catch (_: Exception) {
+        // Some Android builds omit the direct-request screen; fall back to system settings.
+    }
+
+    try {
+        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        return
+    } catch (_: Exception) {
+        // Older or vendor-modified builds may not expose the general battery list.
+    }
+
+    try {
+        context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+        )
+    } catch (_: Exception) {
+        Toast.makeText(
+            context,
+            "Не удалось открыть системные настройки батареи. Найди Clear GPS в настройках приложений.",
+            Toast.LENGTH_LONG
+        ).show()
+    }
 }
 
 @Composable
@@ -2563,6 +2614,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     onOpenLocationSettings = {
                                         try { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) { }
                                     },
+                                    onRequestBatteryOptimizationExemption = { openBatteryOptimizationExemption(context) },
                                     onExportSettingsZoneBackup = {
                                         exportSettingsZoneBackupLauncher.launch("ClearGPS-settings-zones.cgsettings")
                                     },
@@ -4463,6 +4515,7 @@ private fun SettingsScreen(
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit,
+    onRequestBatteryOptimizationExemption: () -> Unit,
     onExportSettingsZoneBackup: () -> Unit, onImportSettingsZoneBackup: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -4684,6 +4737,22 @@ private fun SettingsScreen(
                         Icon(Icons.Outlined.GpsFixed, null)
                         Spacer(Modifier.width(8.dp))
                         Text("Системные настройки геолокации")
+                    }
+                    Divider(color = colors.outlineVariant)
+                    Text("Работа в фоне и батарея", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "При длительном мониторинге с выключенным экраном Android или прошивка могут ограничивать работу службы. Кнопка открывает системный запрос на исключение Clear GPS из оптимизации батареи; это необязательно и может увеличить расход. Запрос появляется только после нажатия, а если прямое окно недоступно — открываются общие системные настройки батареи.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = onRequestBatteryOptimizationExemption,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Outlined.Settings, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Настройки фоновой работы и батареи")
                     }
                     Divider(color = colors.outlineVariant)
                     Text("Приватность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
