@@ -14,6 +14,7 @@ class DiagnosticLogStoreTest {
         assertTrue(sanitized.contains("[CELL-ID REDACTED]"))
         assertTrue(!sanitized.contains("aa:bb:cc:dd:ee:ff"))
         assertTrue(!sanitized.contains("Home WiFi"))
+        assertTrue(!sanitized.contains("WiFi"))
         assertTrue(!sanitized.contains("lte:250:1:123:567890"))
     }
 
