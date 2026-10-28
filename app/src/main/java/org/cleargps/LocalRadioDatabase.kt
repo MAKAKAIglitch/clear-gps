@@ -544,7 +544,9 @@ internal fun lookupRadioFingerprintPosition(
             fallbackUsed = false,
             matchedCount = best.matchedSignals.size,
             matchedRadioTypes = best.matchedSignals.map { it.type }.toSet(),
-            matchedRadioIdentifiers = best.matchedSignals.map { "${it.type}|${it.identifier}" }.toSet()
+            matchedRadioIdentifiers = best.matchedSignals.map {
+                "${it.type}|${canonicalRadioIdentifier(it.identifier)}"
+            }.toSet()
         ),
         ambiguous = ambiguous
     )
@@ -673,7 +675,9 @@ internal fun estimateRadioAnchorPosition(
         fallbackUsed = true,
         matchedCount = inliers.size,
         matchedRadioTypes = inliers.map { it.signal.type }.toSet(),
-        matchedRadioIdentifiers = inliers.map { "${it.signal.type}|${it.signal.identifier}" }.toSet()
+        matchedRadioIdentifiers = inliers.map {
+            "${it.signal.type}|${canonicalRadioIdentifier(it.signal.identifier)}"
+        }.toSet()
     )
 }
 
