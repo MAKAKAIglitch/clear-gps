@@ -23,6 +23,15 @@ internal object RadioFusionZonePolicy {
         ) return false
 
         if (enabledZones.isEmpty()) return true
+        // Do not fail open if a stored zone is malformed: its boundary cannot be used to prove
+        // that a radio uncertainty circle is outside it.
+        if (enabledZones.any { polygon ->
+                polygon.size < 3 || polygon.any {
+                    !it.latitude.isFinite() || it.latitude !in -90.0..90.0 ||
+                        !it.longitude.isFinite() || it.longitude !in -180.0..180.0
+                }
+            }
+        ) return false
         if (measurement.horizontalUncertaintyMeters > MAX_ZONE_CHECK_ACCURACY_METERS) return false
 
         val point = ZonePoint(measurement.latitude, measurement.longitude)
