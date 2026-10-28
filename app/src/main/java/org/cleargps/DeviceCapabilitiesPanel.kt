@@ -256,6 +256,32 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
     val accelerometer = hasSensor(Sensor.TYPE_ACCELEROMETER)
     val gyroscope = hasSensor(Sensor.TYPE_GYROSCOPE)
     val magnetometer = hasSensor(Sensor.TYPE_MAGNETIC_FIELD)
+    val linearAcceleration = hasSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+    val rotationVector = hasSensor(Sensor.TYPE_ROTATION_VECTOR)
+    val imuSample = ImuMotionLiveStore.snapshot(nowElapsedRealtimeNanos)
+    val imuMotionItem = when {
+        !linearAcceleration || !rotationVector -> DeviceCapabilityItem(
+            "Горизонтальное ускорение IMU",
+            "Не хватает датчиков для ориентации",
+            "Для перевода линейного ускорения телефона в горизонтальные оси нужны TYPE_LINEAR_ACCELERATION и TYPE_ROTATION_VECTOR. Отсутствие любого из них нейтрально и не повышает риск GNSS.",
+            false
+        )
+        imuSample == null -> DeviceCapabilityItem(
+            "Горизонтальное ускорение IMU",
+            "Нет свежих измерений",
+            "Включите мониторинг: данные считываются с частотой до 10 Гц, только пока служба активна. Выборка старше 500 мс считается устаревшей; позиция и уровень риска этими значениями пока не изменяются.",
+            null
+        )
+        else -> DeviceCapabilityItem(
+            "Горизонтальное ускорение IMU",
+            "Свежая выборка получена",
+            "Восток " + String.format(java.util.Locale.ROOT, "%.2f", imuSample.eastMetersPerSecondSquared) +
+                " м/с², север " + String.format(java.util.Locale.ROOT, "%.2f", imuSample.northMetersPerSecondSquared) +
+                " м/с² · возраст " + ((nowElapsedRealtimeNanos - imuSample.elapsedRealtimeNanos) / 1_000_000L) +
+                " мс. Это диагностический вход; live fusion и TrustEngine его пока не используют.",
+            true
+        )
+    }
 
     return DeviceCapabilityReport(
         androidVersion = Build.VERSION.RELEASE ?: "неизвестно",
@@ -297,6 +323,7 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
                 }
             ),
             demItem,
+            imuMotionItem,
             rttItem,
             DeviceCapabilityItem(
                 "Акселерометр",

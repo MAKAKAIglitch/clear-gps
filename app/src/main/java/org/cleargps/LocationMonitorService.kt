@@ -68,6 +68,7 @@ class LocationMonitorService : Service(), LocationListener {
     private var gnssMeasurementsRegistered = false
     private var serviceHeartbeatJob: Job? = null
     private var barometerReader: AndroidBarometerSensorReader? = null
+    private var imuMotionReader: AndroidImuMotionReader? = null
     private var demSampleJob: Job? = null
     private var demSampleGeneration = 0L
     private var lastDemSampleRequestElapsedRealtimeNanos = 0L
@@ -334,6 +335,7 @@ class LocationMonitorService : Service(), LocationListener {
         }
         mock = MockLocationOutput(this)
         barometerReader = AndroidBarometerSensorReader(this)
+        imuMotionReader = AndroidImuMotionReader(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(NotificationChannel(CHANNEL, "Clear GPS monitoring", NotificationManager.IMPORTANCE_LOW))
@@ -698,8 +700,9 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
-            // Pressure is a trust-only auxiliary sensor; it never becomes a coordinate source.
+            // Auxiliary sensors are sampled only during monitoring. IMU is diagnostics-only for now.
             barometerReader?.start()
+            imuMotionReader?.start()
             configureReplayRadioCapture(nextPositionMode)
             lastTrustedGpsFixForObd2 = null
             if (mockFreshnessJob?.isActive != true) startMockFreshnessWatchdog()
@@ -1329,6 +1332,7 @@ class LocationMonitorService : Service(), LocationListener {
         lastDemSampleRequestElapsedRealtimeNanos = 0L
         SrtmElevationDiagnosticsLiveStore.clear()
         barometerReader?.stop()
+        imuMotionReader?.stop()
         positionFusionEngine.reset()
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
         stopReplayRadioCapture()
