@@ -38,7 +38,7 @@ import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplaySatellite
-import org.cleargps.fusion.PositionFusionEngine
+import org.cleargps.fusion.PositionFusionTimeline
 
 private data class LastResortFallback(val source: String, val location: Location)
 
@@ -46,12 +46,13 @@ class LocationMonitorService : Service(), LocationListener {
     private lateinit var manager: LocationManager
     private lateinit var prefs: android.content.SharedPreferences
     private val engine = LocationFilterEngine()
-    // Smooth only physical GNSS fixes already accepted by the trust filter.
-    private val positionFusionEngine = PositionFusionEngine()
+    // Admits trusted GNSS and bounded radio measurements into a chronological replay timeline.
+    private val positionFusionEngine = PositionFusionTimeline()
     private val riskZoneMembership = RiskZoneMembershipTracker()
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
+    private var radioFusionJob: Job? = null
     private var replayRadioCaptureJob: Job? = null
     private var obd2FallbackJob: Job? = null
     private var mockFreshnessJob: Job? = null
@@ -669,6 +670,8 @@ class LocationMonitorService : Service(), LocationListener {
             unregisterGnssStatus()
             radioOnlyJob?.cancel()
             radioOnlyJob = null
+            radioFusionJob?.cancel()
+            radioFusionJob = null
             obd2FallbackJob?.cancel()
             obd2FallbackJob = null
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
@@ -756,6 +759,7 @@ class LocationMonitorService : Service(), LocationListener {
                     startObd2FallbackLoop()
                 }
             }
+            startRadioFusionLoop(nextPositionMode)
             saveServiceStatus("Monitoring")
         } catch (error: SecurityException) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
@@ -1285,6 +1289,108 @@ class LocationMonitorService : Service(), LocationListener {
      * A successful setTestProviderLocation call is only a heartbeat, not a permanent lease.
      * If location delivery stops, remove the old mock fix so apps cannot consume it forever.
      */
+    /**
+     * Periodically obtains a local radio estimate in Auto mode. The radio sample enters the
+     * fusion timeline only while the independent trust filter still accepts physical GPS as NORMAL.
+     * Radio scans never run in the explicit GPS-only or Radio-only modes.
+     */
+    private fun startRadioFusionLoop(positionMode: String) {
+        radioFusionJob?.cancel()
+        radioFusionJob = null
+        if (positionMode != "auto") return
+
+        radioFusionJob = serviceScope.launch {
+            val repository = RadioGeolocationRepository(applicationContext)
+            while (isActive &&
+                prefs.getBoolean(KEY_MONITORING, false) &&
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto"
+            ) {
+                // Android throttles Wi-Fi scans. Do not turn the configured fix interval into a
+                // one-second radio scan loop; keep this source deliberately low cadence.
+                delay(maxOf(configuredUpdateIntervalMillis(), RadioFixReliability.WIFI_MIN_REQUEST_INTERVAL_MS))
+                if (!radioFusionCurrentlyAllowed()) continue
+
+                try {
+                    val scan = repository.scan(
+                        record = prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false),
+                        reference = null,
+                        mode = "auto",
+                        useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
+                        useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
+                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                    )
+                    val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    val measurement = scan.estimate?.let {
+                        PositionFusionLocationAdapter.radioMeasurement(it, nowElapsedRealtimeNanos)
+                    }
+                    if (measurement == null || !radioFusionCurrentlyAllowed()) {
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "FUSION",
+                            "Radio measurement skipped: no sufficiently fresh, timestamped local estimate or GPS trust is no longer NORMAL"
+                        )
+                        continue
+                    }
+
+                    val update = positionFusionEngine.update(measurement)
+                    if (update.status == org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED) {
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "FUSION",
+                            "Radio measurement rejected: ${update.rejectionReason ?: "unknown reason"}"
+                        )
+                        continue
+                    }
+
+                    val physicalGpsTemplate = lastTrustedGpsFixForObd2 ?: continue
+                    val publishAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    val fusedEstimate = positionFusionEngine.estimate(publishAtElapsedRealtimeNanos) ?: continue
+                    val fusedLocation = PositionFusionLocationAdapter.toLocation(
+                        estimate = fusedEstimate,
+                        template = physicalGpsTemplate,
+                        wallTimeMillis = System.currentTimeMillis(),
+                        nowElapsedRealtimeNanos = publishAtElapsedRealtimeNanos
+                    ) ?: continue
+
+                    // A radio result is never allowed to resurrect mock output after trust has
+                    // changed. This check is kept immediately before publication.
+                    if (!radioFusionCurrentlyAllowed()) continue
+                    val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
+                    if (mockRequested && mock?.publish(fusedLocation, publishGpsProvider = false) != true) {
+                        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+                        val reason = mock?.lastError ?: "Mock-location output unavailable"
+                        DiagnosticLogStore.log(this@LocationMonitorService, "FUSION",
+                            "Fused radio update was not published: $reason", "WARN")
+                        continue
+                    }
+
+                    prefs.edit()
+                        .putBoolean(KEY_HAS_OUTPUT, true)
+                        .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockRequested)
+                        .putString(KEY_LAT, fusedLocation.latitude.toString())
+                        .putString(KEY_LON, fusedLocation.longitude.toString())
+                        .putFloat(KEY_ACCURACY, fusedLocation.accuracy)
+                        .apply()
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "FUSION",
+                        "Accepted timestamped RADIO measurement into GNSS timeline: status=${update.status}, " +
+                            "sources=${fusedEstimate.sourcesUsed}, accuracy≈${fusedEstimate.horizontalAccuracyMeters.toInt()} m"
+                    )
+                } catch (error: Exception) {
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "FUSION",
+                        "Radio fusion scan failed: ${error.javaClass.simpleName}", "WARN"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun radioFusionCurrentlyAllowed(): Boolean =
+        prefs.getBoolean(KEY_MONITORING, false) &&
+            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto" &&
+            prefs.getString(KEY_STATE, FilterState.WAITING.name) == FilterState.NORMAL.name &&
+            prefs.getString(KEY_SOURCE, "NONE") == "GPS" &&
+            !prefs.getBoolean(KEY_IN_ZONE, false)
+
     private fun startMockFreshnessWatchdog() {
         mockFreshnessJob?.cancel()
         mockFreshnessJob = serviceScope.launch {
@@ -1339,6 +1445,8 @@ class LocationMonitorService : Service(), LocationListener {
         cancelBeaconDbMockOutput()
         radioOnlyJob?.cancel()
         radioOnlyJob = null
+        radioFusionJob?.cancel()
+        radioFusionJob = null
         obd2FallbackJob?.cancel()
         obd2FallbackJob = null
         mockFreshnessJob?.cancel()
