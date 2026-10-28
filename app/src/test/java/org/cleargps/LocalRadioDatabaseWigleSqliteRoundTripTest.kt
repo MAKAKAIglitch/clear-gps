@@ -4,7 +4,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
-import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -54,7 +53,7 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
         assertTrue(bytes.isNotEmpty())
 
         val namespace = "clear-gps-wigle-roundtrip-" + UUID.randomUUID().toString()
-        // SQLiteOpenHelper opens this path directly; ensure its parent exists on Windows/Robolectric too.
+        // Use the regular Android database path/opening flow with a unique name per test.
         val targetDatabaseName = namespace + ".sqlite"
         val targetFile = context.getDatabasePath(targetDatabaseName)
         val databaseDirectory = targetFile.parentFile ?: context.cacheDir
@@ -62,8 +61,8 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
             "Unable to prepare isolated SQLite test directory: $databaseDirectory",
             databaseDirectory.mkdirs() || databaseDirectory.isDirectory
         )
-        val targetContext = IsolatedDatabaseContext(context, targetDatabaseName, namespace)
-        val target = LocalRadioDatabase(targetContext)
+        val targetContext = IsolatedPreferencesContext(context, namespace)
+        val target = LocalRadioDatabase(targetContext, targetDatabaseName)
         try {
             target.writableDatabase
             val first = target.importSqliteDatabase(ByteArrayInputStream(bytes))
@@ -204,45 +203,14 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
             cursor.getInt(0)
         }
 
-    private class IsolatedDatabaseContext(
+    private class IsolatedPreferencesContext(
         base: Context,
-        private val databaseName: String,
         private val namespace: String
     ) : ContextWrapper(base) {
         override fun getApplicationContext(): Context = this
 
-        override fun getDatabasePath(name: String): File =
-            baseContext.getDatabasePath(databaseName)
-
-        override fun openOrCreateDatabase(
-            name: String,
-            mode: Int,
-            factory: SQLiteDatabase.CursorFactory?
-        ): SQLiteDatabase {
-            ensureParentDirectory()
-            return baseContext.openOrCreateDatabase(databaseName, mode, factory)
-        }
-
-        override fun openOrCreateDatabase(
-            name: String,
-            mode: Int,
-            factory: SQLiteDatabase.CursorFactory?,
-            errorHandler: DatabaseErrorHandler?
-        ): SQLiteDatabase {
-            ensureParentDirectory()
-            return baseContext.openOrCreateDatabase(databaseName, mode, factory, errorHandler)
-        }
-
-        private fun ensureParentDirectory() {
-            val parent = baseContext.getDatabasePath(databaseName).parentFile
-                ?: error("Isolated SQLite database has no parent: $databaseName")
-            check(parent.isDirectory || parent.mkdirs()) {
-                "Unable to create isolated SQLite database directory: $parent"
-            }
-        }
-
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
-            baseContext.getSharedPreferences("$name-$namespace", mode)
+            baseContext.getSharedPreferences("$" + "{name}-$" + "{namespace}", mode)
     }
 
     companion object {

@@ -1,3 +1,16 @@
+## 2026-10-28 — Штатное открытие изолированных SQLite-баз в round-trip тестах
+
+**Почему:** предыдущие варианты всё ещё воспроизводили `SQLiteCantOpenDatabaseException` в Windows-сборке. Ручное перенаправление `getDatabasePath()` и `openOrCreateDatabase()` не давало устойчивого результата.
+
+**Изменения:**
+- `LocalRadioDatabase` теперь принимает необязательное имя файла БД; без параметра сохраняется прежнее `clear_gps_radio.sqlite`, поэтому поведение приложения по умолчанию не меняется.
+- Оба round-trip теста используют уникальное имя базы, но открывают её обычным `SQLiteOpenHelper` через стандартные методы Android `Context`.
+- Тестовый `ContextWrapper` больше не переопределяет путь и открытие SQLite; он изолирует только `SharedPreferences`. Проверка и очистка временной базы остаются.
+
+**Проверки:** предыдущий CI [40610808731](https://github.com/MAKAKAIglitch/clear-gps/actions/runs/40610808731) прошёл, но не выполнял локальные Windows unit-тесты; этот коммит требует нового CI и повторной проверки на Windows.
+
+---
+
 ## 2026-10-28 — Изоляция SQLite через штатный Android Context
 
 **Почему понадобилась дополнительная правка:** предыдущая версия открывала файл тестовой базы напрямую через `SQLiteDatabase.openOrCreateDatabase(absolutePath)`. На Windows/Robolectric это по-прежнему давало `SQLiteCantOpenDatabaseException`, хотя Linux CI проходил. Папка и абсолютный путь сами по себе проблему не устранили.
