@@ -179,6 +179,13 @@ class PositionFusionLocationAdapterTest {
         assertEquals(25.0, measurement.horizontalUncertaintyMeters, 0.000001)
         assertEquals(52.1, measurement.latitude, 0.000001)
         assertEquals(5.1, measurement.longitude, 0.000001)
+
+        val unrealisticallyPrecise = PositionFusionLocationAdapter.radioMeasurement(
+            estimate.copy(accuracyMeters = 1.0),
+            nowElapsedRealtimeNanos = measuredAt + 1_000_000_000L
+        )
+        assertNotNull(unrealisticallyPrecise)
+        assertEquals(10.0, unrealisticallyPrecise!!.horizontalUncertaintyMeters, 0.000001)
     }
 
     @Test
