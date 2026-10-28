@@ -19,6 +19,7 @@ import android.os.IBinder
 import java.io.File
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1360,26 +1361,33 @@ class LocationMonitorService : Service(), LocationListener {
                     // changed. This check is kept immediately before publication.
                     if (!radioFusionCurrentlyAllowed()) continue
                     val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
-                    if (mockRequested && mock?.publish(fusedLocation, publishGpsProvider = false) != true) {
-                        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
-                        val reason = mock?.lastError ?: "Mock-location output unavailable"
-                        DiagnosticLogStore.log(this@LocationMonitorService, "FUSION",
-                            "Fused radio update was not published: $reason", "WARN")
-                        continue
-                    }
-
+                    // Persist the current valid estimate even if the optional system mock-provider
+                    // publication fails; otherwise the map would keep exposing an older coordinate.
                     prefs.edit()
                         .putBoolean(KEY_HAS_OUTPUT, true)
-                        .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockRequested)
                         .putString(KEY_LAT, fusedLocation.latitude.toString())
                         .putString(KEY_LON, fusedLocation.longitude.toString())
                         .putFloat(KEY_ACCURACY, fusedLocation.accuracy)
                         .apply()
+                    if (mockRequested && mock?.publish(fusedLocation, publishGpsProvider = false) != true) {
+                        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+                        val reason = mock?.lastError ?: "Mock-location output unavailable"
+                        saveServiceStatus("Fused GPS + local radio estimate available; mock output unavailable")
+                        DiagnosticLogStore.log(this@LocationMonitorService, "FUSION",
+                            "Fused radio update was not published: $reason", "WARN")
+                        continue
+                    }
+                    prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockRequested).apply()
+                    saveServiceStatus(
+                        "Fused GPS + local radio · ±${fusedLocation.accuracy.toInt()} m"
+                    )
                     DiagnosticLogStore.log(
                         this@LocationMonitorService, "FUSION",
                         "Accepted timestamped RADIO measurement into GNSS timeline: status=${update.status}, " +
                             "sources=${fusedEstimate.sourcesUsed}, accuracy≈${fusedEstimate.horizontalAccuracyMeters.toInt()} m"
                     )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (error: Exception) {
                     DiagnosticLogStore.log(
                         this@LocationMonitorService, "FUSION",
