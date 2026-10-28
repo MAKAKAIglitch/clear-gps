@@ -118,7 +118,7 @@ class RadioGeolocationRepository(private val context: Context) {
                 measurementElapsedRealtimeNanos =
                     RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
                         signals = snapshot.signals,
-                        matchedRadioTypes = candidate.matchedRadioTypes,
+                        matchedRadioIdentifiers = candidate.matchedRadioIdentifiers,
                         collectedAtElapsedRealtimeNanos = snapshot.collectedAtElapsedRealtimeNanos
                     )
             )
