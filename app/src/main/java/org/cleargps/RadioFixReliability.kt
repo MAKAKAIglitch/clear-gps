@@ -24,6 +24,22 @@ internal object RadioFixReliability {
         return nowElapsedMillis - timestampElapsedMillis <= CELL_INFO_MAX_AGE_MS
     }
 
+    /**
+     * A radio-derived position is only publishable as a fresh Android Location when it carries
+     * the original monotonic timestamp of its matched observations. Wall-clock time is not a
+     * safe substitute because the wall clock may jump and elapsed realtime resets on reboot.
+     */
+    fun hasUsableRadioMeasurementTimestamp(
+        measurementElapsedRealtimeNanos: Long?,
+        nowElapsedRealtimeNanos: Long
+    ): Boolean {
+        val measuredAt = measurementElapsedRealtimeNanos ?: return false
+        if (measuredAt <= 0L || nowElapsedRealtimeNanos <= 0L ||
+            measuredAt > nowElapsedRealtimeNanos
+        ) return false
+        return nowElapsedRealtimeNanos - measuredAt <= WIFI_MAX_CACHE_AGE_MS * 1_000_000L
+    }
+
     fun cellAgePenaltyMeters(ageMillis: Long?, cellSignalCount: Int, totalSignalCount: Int): Double =
         cachedRadioAgePenaltyMeters(
             ageMillis = ageMillis,

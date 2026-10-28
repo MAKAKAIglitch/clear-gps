@@ -6,6 +6,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RadioFixReliabilityTest {
+    @Test fun radioEstimateNeedsAValidOriginalMonotonicTimestamp() {
+        val now = 100_000_000_000L
+        val maximumAgeNanos = RadioFixReliability.WIFI_MAX_CACHE_AGE_MS * 1_000_000L
+
+        assertTrue(RadioFixReliability.hasUsableRadioMeasurementTimestamp(now, now))
+        assertTrue(
+            RadioFixReliability.hasUsableRadioMeasurementTimestamp(
+                now - maximumAgeNanos, now
+            )
+        )
+        assertFalse(RadioFixReliability.hasUsableRadioMeasurementTimestamp(null, now))
+        assertFalse(RadioFixReliability.hasUsableRadioMeasurementTimestamp(0L, now))
+        assertFalse(RadioFixReliability.hasUsableRadioMeasurementTimestamp(-1L, now))
+        assertFalse(RadioFixReliability.hasUsableRadioMeasurementTimestamp(now + 1L, now))
+        assertFalse(
+            RadioFixReliability.hasUsableRadioMeasurementTimestamp(
+                now - maximumAgeNanos - 1L, now
+            )
+        )
+        assertFalse(RadioFixReliability.hasUsableRadioMeasurementTimestamp(now, 0L))
+    }
+
     @Test fun wifiScanRequestsAreThrottledInsteadOfHammeredEveryFixTick() {
         assertTrue(RadioFixReliability.shouldRequestWifiScan(10_000L, 0L))
         assertFalse(RadioFixReliability.shouldRequestWifiScan(20_000L, 10_000L))

@@ -1058,8 +1058,16 @@ class LocationMonitorService : Service(), LocationListener {
                     val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                     val nowWallMillis = System.currentTimeMillis()
                     val nowElapsedMillis = SystemClock.elapsedRealtime()
+                    val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     val estimateAgeMillis = estimate?.let { nowWallMillis - it.updatedAt } ?: Long.MAX_VALUE
                     val estimateEvidenceRecent = estimateAgeMillis in 0..RadioFixReliability.WIFI_MAX_CACHE_AGE_MS
+                    // Radio-only output must retain the timestamp of the actual matched observations.
+                    // Wall-clock freshness alone cannot reconstruct Android elapsed realtime safely.
+                    val measurementElapsedRealtimeNanos = estimate?.measurementElapsedRealtimeNanos
+                    val measurementTimestampUsable = RadioFixReliability.hasUsableRadioMeasurementTimestamp(
+                        measurementElapsedRealtimeNanos = measurementElapsedRealtimeNanos,
+                        nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+                    )
                     val cachedEstimateAllowed = estimate != null && RadioFixReliability.canPublishRadioEstimate(
                         estimateUpdatedAtMillis = estimate.updatedAt,
                         nowWallMillis = nowWallMillis,
@@ -1069,6 +1077,7 @@ class LocationMonitorService : Service(), LocationListener {
                         updateIntervalMillis = configuredUpdateIntervalMillis()
                     )
                     val estimateAllowedForOutput = estimateEvidenceRecent &&
+                        measurementTimestampUsable &&
                         (!mockRequested || cachedEstimateAllowed)
                     val rejectionReason = when {
                         estimate == null && currentSignalCount < 2 ->
@@ -1077,6 +1086,10 @@ class LocationMonitorService : Service(), LocationListener {
                             "Текущий скан увидел $currentSignalCount радиосигналов; совпадений идентификаторов в базе: ${result.knownRadioCount}, пригодных координатных записей: ${result.coordinateRadioCount}. Однозначная координата не построена."
                         !estimateEvidenceRecent ->
                             "Оценка отклонена: возраст радиоданных ${(estimateAgeMillis.coerceAtLeast(0L) / 1_000L)} с превышает допустимый предел ${RadioFixReliability.WIFI_MAX_CACHE_AGE_MS / 1_000L} с."
+                        measurementElapsedRealtimeNanos == null ->
+                            "Оценка отклонена: у совпавших радионаблюдений нет исходной монотонной метки времени."
+                        !measurementTimestampUsable ->
+                            "Оценка отклонена: исходная монотонная метка находится в будущем или старше ${RadioFixReliability.WIFI_MAX_CACHE_AGE_MS / 1_000L} с."
                         mockRequested && !cachedEstimateAllowed ->
                             "Кэш радиосигналов больше не продлевает mock GPS: ожидаю новый подтверждённый скан или истечение ограниченного резерва."
                         estimate.matchedCount < RADIO_MIN_MATCHES ->
@@ -1101,7 +1114,8 @@ class LocationMonitorService : Service(), LocationListener {
                             longitude = estimate.longitude
                             accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
                             time = System.currentTimeMillis()
-                            elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                            // Preserve the source measurement time; never freshen cached radio evidence.
+                            elapsedRealtimeNanos = requireNotNull(measurementElapsedRealtimeNanos)
                         }
                         val mockPublished = !mockRequested || mock?.publish(
                             output, alsoPublishNetworkProvider = true, publishGpsProvider = true
