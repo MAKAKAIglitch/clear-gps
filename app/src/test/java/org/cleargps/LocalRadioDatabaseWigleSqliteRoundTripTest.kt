@@ -55,13 +55,14 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
 
         val namespace = "clear-gps-wigle-roundtrip-" + UUID.randomUUID().toString()
         // SQLiteOpenHelper opens this path directly; ensure its parent exists on Windows/Robolectric too.
-        val databaseDirectory = context.getDatabasePath(DB_NAME).parentFile ?: context.cacheDir
+        val targetDatabaseName = namespace + ".sqlite"
+        val targetFile = context.getDatabasePath(targetDatabaseName)
+        val databaseDirectory = targetFile.parentFile ?: context.cacheDir
         assertTrue(
             "Unable to prepare isolated SQLite test directory: $databaseDirectory",
             databaseDirectory.mkdirs() || databaseDirectory.isDirectory
         )
-        val targetFile = File(databaseDirectory, namespace + ".sqlite")
-        val targetContext = IsolatedDatabaseContext(context, targetFile, namespace)
+        val targetContext = IsolatedDatabaseContext(context, targetDatabaseName, namespace)
         val target = LocalRadioDatabase(targetContext)
         try {
             target.writableDatabase
@@ -110,6 +111,7 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
             )
         } finally {
             target.close()
+            context.deleteDatabase(targetDatabaseName)
             targetFile.delete()
             File(targetFile.absolutePath + "-wal").delete()
             File(targetFile.absolutePath + "-shm").delete()
@@ -204,12 +206,13 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
 
     private class IsolatedDatabaseContext(
         base: Context,
-        private val databaseFile: File,
+        private val databaseName: String,
         private val namespace: String
     ) : ContextWrapper(base) {
         override fun getApplicationContext(): Context = this
 
-        override fun getDatabasePath(name: String): File = databaseFile
+        override fun getDatabasePath(name: String): File =
+            baseContext.getDatabasePath(databaseName)
 
         override fun openOrCreateDatabase(
             name: String,
@@ -217,7 +220,7 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
             factory: SQLiteDatabase.CursorFactory?
         ): SQLiteDatabase {
             ensureParentDirectory()
-            return SQLiteDatabase.openOrCreateDatabase(databaseFile.absolutePath, factory)
+            return baseContext.openOrCreateDatabase(databaseName, mode, factory)
         }
 
         override fun openOrCreateDatabase(
@@ -227,11 +230,12 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
             errorHandler: DatabaseErrorHandler?
         ): SQLiteDatabase {
             ensureParentDirectory()
-            return SQLiteDatabase.openOrCreateDatabase(databaseFile.absolutePath, factory, errorHandler)
+            return baseContext.openOrCreateDatabase(databaseName, mode, factory, errorHandler)
         }
 
         private fun ensureParentDirectory() {
-            val parent = databaseFile.parentFile ?: error("Isolated SQLite database has no parent: $databaseFile")
+            val parent = baseContext.getDatabasePath(databaseName).parentFile
+                ?: error("Isolated SQLite database has no parent: $databaseName")
             check(parent.isDirectory || parent.mkdirs()) {
                 "Unable to create isolated SQLite database directory: $parent"
             }
