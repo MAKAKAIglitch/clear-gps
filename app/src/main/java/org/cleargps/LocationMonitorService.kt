@@ -33,6 +33,7 @@ import org.cleargps.core.FilterState
 import org.cleargps.core.GnssRfSnapshot
 import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.RiskZoneMembershipTracker
+import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
@@ -1286,10 +1287,6 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     /**
-     * A successful setTestProviderLocation call is only a heartbeat, not a permanent lease.
-     * If location delivery stops, remove the old mock fix so apps cannot consume it forever.
-     */
-    /**
      * Periodically obtains a local radio estimate in Auto mode. The radio sample enters the
      * fusion timeline only while the independent trust filter still accepts physical GPS as NORMAL.
      * Radio scans never run in the explicit GPS-only or Radio-only modes.
@@ -1327,6 +1324,27 @@ class LocationMonitorService : Service(), LocationListener {
                         DiagnosticLogStore.log(
                             this@LocationMonitorService, "FUSION",
                             "Radio measurement skipped: no sufficiently fresh, timestamped local estimate or GPS trust is no longer NORMAL"
+                        )
+                        continue
+                    }
+                    val activeZones = ZoneStore.loadAll(this@LocationMonitorService)
+                        .filter { it.enabled }
+                        .map { it.points }
+                    val radioPoint = ZonePoint(measurement.latitude, measurement.longitude)
+                    val radioCouldIntersectZone = activeZones.isNotEmpty() && (
+                        measurement.horizontalUncertaintyMeters > MAX_ZONE_CHECK_ACCURACY_METERS ||
+                            activeZones.any { zone ->
+                                ZoneGeometry.contains(
+                                    radioPoint,
+                                    zone,
+                                    measurement.horizontalUncertaintyMeters
+                                )
+                            }
+                    )
+                    if (radioCouldIntersectZone) {
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "FUSION",
+                            "Radio measurement skipped because its point/uncertainty intersects an enabled risk zone or is too coarse to rule that out"
                         )
                         continue
                     }
@@ -1384,6 +1402,10 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    private companion object {
+        const val MAX_ZONE_CHECK_ACCURACY_METERS = 500.0
+    }
+
     private fun radioFusionCurrentlyAllowed(): Boolean =
         prefs.getBoolean(KEY_MONITORING, false) &&
             prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto" &&
@@ -1391,6 +1413,10 @@ class LocationMonitorService : Service(), LocationListener {
             prefs.getString(KEY_SOURCE, "NONE") == "GPS" &&
             !prefs.getBoolean(KEY_IN_ZONE, false)
 
+    /**
+     * A successful setTestProviderLocation call is only a heartbeat, not a permanent lease.
+     * If location delivery stops, remove the old mock fix so apps cannot consume it forever.
+     */
     private fun startMockFreshnessWatchdog() {
         mockFreshnessJob?.cancel()
         mockFreshnessJob = serviceScope.launch {
