@@ -103,6 +103,7 @@ internal fun DeviceCapabilitiesPanel() {
             style = MaterialTheme.typography.labelSmall,
             color = colors.onSurfaceVariant
         )
+        OfflineDemPanel()
     }
 }
 

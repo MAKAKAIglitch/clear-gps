@@ -106,3 +106,10 @@ On Windows, use `gradlew.bat` or the checked-in `windows-build/build-apk.ps1`. C
 - `AndroidBarometerSensorReader.kt` subscribes to `Sensor.TYPE_PRESSURE` only while the location monitor is active, using a one-second sampling-period hint. Samples use the sensor event's monotonic timestamp and are converted from hPa to Pa.
 - The live store is in-memory only and returns data only while fresh (default five-second age). It does not persist raw pressure or infer an accuracy from sensor resolution.
 - This acquisition path does not yet feed calibrated pressure into the altitude estimator automatically: selecting a trusted GNSS/DEM reference and an effective column temperature remains explicit work. Missing hardware or stale data is neutral.
+
+
+## Local SRTM tile packs
+
+- `SrtmHgtTilePackStore.kt` imports user-selected ZIP archives into the app-private `filesDir/dem/srtm` directory. It validates canonical one-degree tile names and supported 1201/3601 square grids, stages an archive before committing, and limits each import to 512 MiB of uncompressed data / 50 HGT tiles.
+- Archive paths are never used as filesystem destinations; only a validated basename is written. Non-HGT metadata files are ignored, invalid HGT entries reject the staged import, and no network request is made.
+- Settings displays tile count and total size and launches the Android document picker. Import prepares data only; tiles are not yet connected to live location fusion or TrustEngine.
