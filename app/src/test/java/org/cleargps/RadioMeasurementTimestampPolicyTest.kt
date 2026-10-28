@@ -15,6 +15,9 @@ class RadioMeasurementTimestampPolicyTest {
                 observedAtElapsedRealtimeNanos = 7_000_000_000L),
             RadioSignal("cell", "matched-cell", -91,
                 observedAtElapsedRealtimeNanos = 8_000_000_000L),
+            // An unrelated old signal of a matched radio type must not make this fix look older.
+            RadioSignal("wifi", "unmatched-wifi-stale", -88,
+                observedAtElapsedRealtimeNanos = 1_000_000_000L),
             RadioSignal("ble", "unmatched-ble", -55,
                 observedAtElapsedRealtimeNanos = 1_000_000_000L),
             RadioSignal("wifi", "future-wifi", -40,
@@ -26,7 +29,9 @@ class RadioMeasurementTimestampPolicyTest {
             7_000_000_000L,
             RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
                 signals = signals,
-                matchedRadioTypes = setOf("wifi", "cell"),
+                matchedRadioIdentifiers = setOf(
+                    "matched-wifi-newer", "matched-wifi-older", "matched-cell"
+                ),
                 collectedAtElapsedRealtimeNanos = collectedAt
             )
         )
@@ -43,13 +48,13 @@ class RadioMeasurementTimestampPolicyTest {
             signals, emptySet(), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("wifi"), 10L
+            signals, setOf("unknown-id"), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("ble"), 10L
+            signals, setOf("future-time"), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("wifi"), 0L
+            signals, setOf("unknown-id"), 0L
         ))
     }
 }
