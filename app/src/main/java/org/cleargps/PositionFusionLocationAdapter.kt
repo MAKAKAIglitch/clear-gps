@@ -24,13 +24,26 @@ internal object PositionFusionLocationAdapter {
     private const val MAX_OUTPUT_ACCURACY_METERS = 50_000.0
     private const val MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 100.0
 
+    fun isTrustedGpsDecision(
+        trustState: FilterState,
+        decisionSource: String,
+        inRiskZone: Boolean
+    ): Boolean = trustState == FilterState.NORMAL && decisionSource == "GPS" && !inRiskZone
+
+    /** A GPS-labelled candidate is unsafe to publish unless its trust decision is NORMAL and outside zones. */
+    fun shouldSuppressGpsOutput(
+        trustState: FilterState,
+        decisionSource: String,
+        inRiskZone: Boolean
+    ): Boolean = decisionSource == "GPS" && !isTrustedGpsDecision(trustState, decisionSource, inRiskZone)
+
     fun trustedGnssMeasurement(
         location: Location,
         trustState: FilterState,
         decisionSource: String,
         inRiskZone: Boolean
     ): PositionMeasurement? {
-        if (trustState != FilterState.NORMAL || decisionSource != "GPS" || inRiskZone) return null
+        if (!isTrustedGpsDecision(trustState, decisionSource, inRiskZone)) return null
         if (!location.provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true)) return null
         if (LocationFilterEngine.isMockLocation(location)) return null
         if (!location.latitude.isFinite() || location.latitude !in -90.0..90.0 ||

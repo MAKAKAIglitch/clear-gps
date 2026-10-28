@@ -6,6 +6,7 @@ import org.cleargps.core.FilterState
 import org.cleargps.fusion.FusedPosition
 import org.cleargps.fusion.PositionMeasurementSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -32,6 +33,25 @@ class PositionFusionLocationAdapterTest {
         assertEquals(PositionMeasurementSource.GNSS, measurement!!.source)
         assertEquals(input.elapsedRealtimeNanos, measurement.elapsedRealtimeNanos)
         assertEquals(10.0, measurement.horizontalUncertaintyMeters, 0.000001)
+    }
+
+    @Test
+    fun nonNormalGpsCandidatesAreSuppressedButIndependentFallbacksRemainEligible() {
+        assertTrue(PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+            FilterState.SUSPECT, "GPS", false
+        ))
+        assertTrue(PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+            FilterState.NORMAL, "GPS", true
+        ))
+        assertTrue(PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+            FilterState.CORRECTING, "GPS", false
+        ))
+        assertFalse(PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+            FilterState.CORRECTING, "LOCAL_RADIO", false
+        ))
+        assertFalse(PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+            FilterState.NORMAL, "GPS", false
+        ))
     }
 
     @Test

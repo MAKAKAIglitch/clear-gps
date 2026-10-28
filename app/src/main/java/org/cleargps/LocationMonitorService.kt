@@ -1482,11 +1482,23 @@ class LocationMonitorService : Service(), LocationListener {
         var fusionAcceptedCurrentFix = false
         // The Kalman core is an output smoother, not a trust detector. Feed it only a physical,
         // in-zone-free GPS fix that the existing trust engine has explicitly classified NORMAL.
+        val trustedGpsDecision = PositionFusionLocationAdapter.isTrustedGpsDecision(
+            trustState = result.state,
+            decisionSource = result.source,
+            inRiskZone = result.inRiskZone
+        )
         if (gpsFix) {
-            val trustedGpsDecision = result.state == FilterState.NORMAL &&
-                result.source == "GPS" && !result.inRiskZone
             if (!trustedGpsDecision) {
                 positionFusionEngine.reset()
+                if (PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+                        result.state, result.source, result.inRiskZone
+                    )
+                ) {
+                    result = result.copy(
+                        outputLocation = null,
+                        reasons = (result.reasons + "GPS-кандидат не опубликован: состояние доверия или зона не допускают прямую публикацию.").distinct()
+                    )
+                }
             } else {
                 val fusionInput = PositionFusionLocationAdapter.trustedGnssMeasurement(
                     location = location,
@@ -1532,6 +1544,38 @@ class LocationMonitorService : Service(), LocationListener {
                         )
                     }
                 }
+            }
+        } else if (PositionFusionLocationAdapter.shouldSuppressGpsOutput(
+                result.state, result.source, result.inRiskZone
+            )
+        ) {
+            // A NETWORK callback can cause the trust engine to return its cached GPS candidate.
+            // Do not let that raw cached position bypass the current trust decision.
+            result = result.copy(
+                outputLocation = null,
+                reasons = (result.reasons + "GPS-кандидат не опубликован: состояние доверия или зона не допускают прямую публикацию.").distinct()
+            )
+        } else if (trustedGpsDecision) {
+            // NETWORK callbacks may refresh the service decision, but must reuse a fresh fused
+            // estimate rather than republishing the cached raw GPS Location.
+            val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            val fusedEstimate = positionFusionEngine.estimate(nowElapsedRealtimeNanos)
+            val template = result.outputLocation ?: location
+            val fusedLocation = fusedEstimate?.let {
+                PositionFusionLocationAdapter.toLocation(
+                    estimate = it,
+                    template = template,
+                    wallTimeMillis = System.currentTimeMillis(),
+                    nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+                )
+            }
+            if (fusedLocation != null) {
+                result = result.copy(outputLocation = fusedLocation)
+            } else {
+                result = result.copy(
+                    outputLocation = null,
+                    reasons = (result.reasons + "Нет свежей оценки позиционного фильтра; кэшированный GPS-кандидат не опубликован.").distinct()
+                )
             }
         }
         try { GnssReplayRecorder.recordPosition(this, location, inZone, result) }
