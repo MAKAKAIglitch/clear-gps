@@ -165,6 +165,7 @@ class PositionFusionLocationAdapterTest {
             fingerprint = "radio-fixture",
             matchedCount = 3,
             matchedRadioTypes = setOf("wifi", "cell"),
+            matchedRadioIdentifiers = setOf("ap-one", "ap-two", "cell-one"),
             measurementElapsedRealtimeNanos = measuredAt
         )
 
@@ -200,6 +201,7 @@ class PositionFusionLocationAdapterTest {
             fingerprint = "radio-fixture",
             matchedCount = 3,
             matchedRadioTypes = setOf("wifi"),
+            matchedRadioIdentifiers = setOf("ap-one", "ap-two", "ap-three"),
             measurementElapsedRealtimeNanos = measuredAt
         )
 
@@ -212,7 +214,10 @@ class PositionFusionLocationAdapterTest {
             measurementElapsedRealtimeNanos = now + 1L
         ), now))
         assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(matchedCount = 1), now))
-        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(matchedRadioTypes = emptySet()), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(matchedRadioIdentifiers = emptySet()), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(
+            matchedRadioIdentifiers = setOf("only-one-identifier")
+        ), now))
         assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(accuracyMeters = Double.NaN), now))
         assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(accuracyMeters = 5_001.0), now))
         assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(latitude = 91.0), now))
