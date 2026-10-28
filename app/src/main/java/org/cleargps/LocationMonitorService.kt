@@ -38,6 +38,7 @@ import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplaySatellite
+import org.cleargps.fusion.PositionFusionEngine
 
 private data class LastResortFallback(val source: String, val location: Location)
 
@@ -45,6 +46,8 @@ class LocationMonitorService : Service(), LocationListener {
     private lateinit var manager: LocationManager
     private lateinit var prefs: android.content.SharedPreferences
     private val engine = LocationFilterEngine()
+    // Smooth only physical GNSS fixes already accepted by the trust filter.
+    private val positionFusionEngine = PositionFusionEngine()
     private val riskZoneMembership = RiskZoneMembershipTracker()
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -680,6 +683,7 @@ class LocationMonitorService : Service(), LocationListener {
                 lastRadioMockFixAtElapsedMs = 0L
             }
             if (modeChanged) {
+                positionFusionEngine.reset()
                 demSampleGeneration += 1L
                 demSampleJob?.cancel()
                 demSampleJob = null
@@ -1325,6 +1329,7 @@ class LocationMonitorService : Service(), LocationListener {
         lastDemSampleRequestElapsedRealtimeNanos = 0L
         SrtmElevationDiagnosticsLiveStore.clear()
         barometerReader?.stop()
+        positionFusionEngine.reset()
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
         stopReplayRadioCapture()
         cancelBeaconDbMockOutput()
@@ -1470,9 +1475,65 @@ class LocationMonitorService : Service(), LocationListener {
             GnssDeviceBaselineStore.saveIfChanged(this, engine.deviceBaselineSnapshot())
         }
         val fallback = createLastResortFallback(observedDecision)
-        val result = if (fallback != null) {
+        var result = if (fallback != null) {
             observedDecision.copy(state = FilterState.CORRECTING, source = fallback.source, outputLocation = fallback.location)
         } else observedDecision
+
+        var fusionAcceptedCurrentFix = false
+        // The Kalman core is an output smoother, not a trust detector. Feed it only a physical,
+        // in-zone-free GPS fix that the existing trust engine has explicitly classified NORMAL.
+        if (gpsFix) {
+            val trustedGpsDecision = result.state == FilterState.NORMAL &&
+                result.source == "GPS" && !result.inRiskZone
+            if (!trustedGpsDecision) {
+                positionFusionEngine.reset()
+            } else {
+                val fusionInput = PositionFusionLocationAdapter.trustedGnssMeasurement(
+                    location = location,
+                    trustState = result.state,
+                    decisionSource = result.source,
+                    inRiskZone = result.inRiskZone
+                )
+                if (fusionInput == null) {
+                    // A fix that cannot be normalized conservatively is not allowed to bypass fusion.
+                    positionFusionEngine.reset()
+                    result = result.copy(
+                        outputLocation = null,
+                        reasons = (result.reasons + "Точность/время GPS не подходят для позиционного фильтра; публикация приостановлена.").distinct()
+                    )
+                } else {
+                    val fusionUpdate = positionFusionEngine.update(fusionInput)
+                    val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    val fusedEstimate = positionFusionEngine.estimate(nowElapsedRealtimeNanos)
+                    val fusedLocation = fusedEstimate?.let {
+                        PositionFusionLocationAdapter.toLocation(
+                            estimate = it,
+                            template = location,
+                            wallTimeMillis = System.currentTimeMillis(),
+                            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+                        )
+                    }
+                    if (fusedLocation != null) {
+                        result = result.copy(outputLocation = fusedLocation)
+                        fusionAcceptedCurrentFix = fusionUpdate.status !=
+                            org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED
+                    } else {
+                        // Do not fall back to the same raw candidate rejected or aged out by fusion.
+                        positionFusionEngine.reset()
+                        result = result.copy(
+                            outputLocation = null,
+                            reasons = (result.reasons + "Нет свежей оценки позиционного фильтра; публикация координаты приостановлена.").distinct()
+                        )
+                        DiagnosticLogStore.log(
+                            this, "FUSION",
+                            "Оценка физического GPS не прошла временные/статистические ограничения; кандидат не опубликован. " +
+                                "update=${fusionUpdate.status}, reason=${fusionUpdate.rejectionReason ?: "none"}",
+                            "WARN"
+                        )
+                    }
+                }
+            }
+        }
         try { GnssReplayRecorder.recordPosition(this, location, inZone, result) }
         catch (_: RuntimeException) { /* Replay capture never changes live filter behavior. */ }
         persistDecision(result)
@@ -1481,7 +1542,7 @@ class LocationMonitorService : Service(), LocationListener {
             "Позиция от Android: provider=${location.provider ?: "unknown"}, filter=${result.state}, source=${result.source}, " +
                 "risk=${result.riskScore}, hasOutput=${result.outputLocation != null}"
         )
-        if (gpsFix && result.state == FilterState.NORMAL && result.source == "GPS" && !inZone) {
+        if (gpsFix && result.state == FilterState.NORMAL && result.source == "GPS" && !inZone && fusionAcceptedCurrentFix) {
             lastTrustedGpsFixForObd2 = Location(location)
             scheduleSrtmDiagnosticSample(location)
             // A fresh physical GPS fix supersedes the synthetic prediction.
@@ -1627,6 +1688,9 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun publishSignalDecision(result: FilterDecision) {
+        if (result.state != FilterState.NORMAL || result.source == "GNSS_SIGNAL_ONLY") {
+            positionFusionEngine.reset()
+        }
         persistDecision(result)
         // A signal-only GNSS warning has no safe replacement coordinate. Stop mock publication
         // immediately instead of leaving the last test-provider position looking current.
