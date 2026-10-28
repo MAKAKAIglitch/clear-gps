@@ -900,12 +900,23 @@ class LocationMonitorService : Service(), LocationListener {
      * Re-publish only a still-credible, very recent radio estimate during that first scan.
      * Its age continues from the original evidence timestamp; publishing it does not make it fresh.
      */
+    /**
+     * A persisted radio estimate has a wall-clock timestamp but deliberately no monotonic source
+     * timestamp. Do not reconstruct elapsed realtime from wall time across service/process restarts:
+     * a stored estimate without that timestamp cannot safely seed mock GPS.
+     */
     private fun restoreRecentRadioMockFixWhileScanning() {
         if (!prefs.getBoolean(KEY_MOCK_ENABLED, false) || lastRadioMockFix != null) return
 
         val estimate = RadioGeolocationRepository.loadLastEstimate(applicationContext) ?: return
+        val measurementElapsedRealtimeNanos = estimate.measurementElapsedRealtimeNanos ?: return
+        val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        if (!RadioFixReliability.hasUsableRadioMeasurementTimestamp(
+                measurementElapsedRealtimeNanos, nowElapsedRealtimeNanos
+            )) return
+
         val nowWall = System.currentTimeMillis()
-        val ageMs = nowWall - estimate.updatedAt
+        val ageMs = (nowElapsedRealtimeNanos - measurementElapsedRealtimeNanos) / 1_000_000L
         val intervalMs = configuredUpdateIntervalMillis()
         if (!RadioFixReliability.canRetainLastEstimate(
                 estimate.updatedAt, nowWall, estimate.matchedCount, estimate.accuracyMeters
@@ -913,17 +924,16 @@ class LocationMonitorService : Service(), LocationListener {
             return
         }
 
-        val nowElapsed = SystemClock.elapsedRealtime()
-        if (ageMs < 0L || ageMs >= nowElapsed) return
-        val confirmedAt = nowElapsed - ageMs
-        if (!RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsed, intervalMs)) return
+        val nowElapsedMillis = nowElapsedRealtimeNanos / 1_000_000L
+        val confirmedAt = measurementElapsedRealtimeNanos / 1_000_000L
+        if (!RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMillis, intervalMs)) return
 
         val confirmed = Location(LocationManager.NETWORK_PROVIDER).apply {
             latitude = estimate.latitude
             longitude = estimate.longitude
             accuracy = estimate.accuracyMeters.toFloat().coerceIn(1f, 100_000f)
-            time = estimate.updatedAt
-            elapsedRealtimeNanos = (nowElapsed - ageMs).coerceAtLeast(1L) * 1_000_000L
+            time = nowWall - ageMs
+            elapsedRealtimeNanos = measurementElapsedRealtimeNanos
         }
         val held = Location(confirmed).apply {
             accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
@@ -1126,11 +1136,10 @@ class LocationMonitorService : Service(), LocationListener {
                             if (mockRequested) {
                                 // Anchor the hold timer to the oldest contributing evidence, not
                                 // to the moment we read the Android cache or finished calculation.
-                                val evidenceAge = (System.currentTimeMillis() - estimate.updatedAt)
-                                    .coerceIn(0L, RadioFixReliability.WIFI_MAX_CACHE_AGE_MS)
                                 lastRadioMockFix = Location(output)
+                                // Hold-window age is measured on the same monotonic clock as the evidence.
                                 lastRadioMockFixAtElapsedMs =
-                                    (SystemClock.elapsedRealtime() - evidenceAge).coerceAtLeast(1L)
+                                    requireNotNull(measurementElapsedRealtimeNanos) / 1_000_000L
                             } else {
                                 lastRadioMockFix = null
                                 lastRadioMockFixAtElapsedMs = 0L
@@ -1625,19 +1634,31 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun createLastResortFallback(decision: FilterDecision): LastResortFallback? {
         if (decision.state != FilterState.NO_FALLBACK || decision.outputLocation != null) return null
+        val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         val now = System.currentTimeMillis()
         val estimate = RadioGeolocationRepository.loadLastEstimate(this)
         if (estimate != null) {
-            val age = now - estimate.updatedAt
-            if (estimate.matchedCount >= RADIO_MIN_MATCHES &&
-                age in 0..RADIO_FALLBACK_MAX_AGE_MS &&
+            // A preference-backed estimate has no trustworthy elapsed-realtime timestamp.
+            // Never turn its wall-clock age into a new mock-location measurement.
+            val measurementElapsedRealtimeNanos = estimate.measurementElapsedRealtimeNanos
+            val measurementTimestampUsable = RadioFixReliability.hasUsableRadioMeasurementTimestamp(
+                measurementElapsedRealtimeNanos, nowElapsedRealtimeNanos
+            )
+            val wallAge = now - estimate.updatedAt
+            val measurementAgeMs = measurementElapsedRealtimeNanos?.let {
+                (nowElapsedRealtimeNanos - it) / 1_000_000L
+            } ?: Long.MAX_VALUE
+            if (measurementTimestampUsable &&
+                estimate.matchedCount >= RADIO_MIN_MATCHES &&
+                wallAge in 0..RADIO_FALLBACK_MAX_AGE_MS &&
+                measurementAgeMs in 0..RADIO_FALLBACK_MAX_AGE_MS &&
                 estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
                 val location = Location(LocationManager.NETWORK_PROVIDER).apply {
                     latitude = estimate.latitude
                     longitude = estimate.longitude
                     accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
-                    time = now
-                    elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+                    time = now - measurementAgeMs
+                    elapsedRealtimeNanos = requireNotNull(measurementElapsedRealtimeNanos)
                 }
                 return LastResortFallback("LOCAL_RADIO", location)
             }
@@ -1652,16 +1673,11 @@ class LocationMonitorService : Service(), LocationListener {
             longitude = anchor.longitude
             accuracy = MANUAL_FALLBACK_ACCURACY_METERS
             time = now
-            elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         }
         return LastResortFallback("MANUAL_ANCHOR", location)
     }
 
-
-    /**
-     * Never feed mock coordinates into the GNSS filter. If Clear GPS's own mock output is off,
-     * a mock GPS/network callback is instead recorded as a strong external-mock warning.
-     */
     private fun handleExternalMockLocation(location: Location) {
         val provider = location.provider?.takeIf { it.isNotBlank() } ?: "unknown"
         val reason = "Обнаружена фиктивная геопозиция стороннего приложения через провайдер $provider; координата не использована."
