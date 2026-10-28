@@ -937,8 +937,7 @@ class LocationMonitorService : Service(), LocationListener {
         }
         val held = Location(confirmed).apply {
             accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
-            time = nowWall
-            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            // Preserve measurement timestamps; only the uncertainty radius grows while holding.
         }
 
         if (mock?.publish(
@@ -1187,8 +1186,7 @@ class LocationMonitorService : Service(), LocationListener {
                             // radius, but never extend the hold based on another failed scan.
                             val held = Location(confirmed).apply {
                                 accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
-                                time = System.currentTimeMillis()
-                                elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                                // A repeated publication doesn't create a new radio measurement.
                             }
                             if (mock?.publish(
                                     held, alsoPublishNetworkProvider = true, publishGpsProvider = true
@@ -1261,8 +1259,7 @@ class LocationMonitorService : Service(), LocationListener {
                     if (canHold && confirmed != null) {
                         val held = Location(confirmed).apply {
                             accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
-                            time = System.currentTimeMillis()
-                            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                            // A repeated publication doesn't create a new radio measurement.
                         }
                         if (mock?.publish(
                                 held, alsoPublishNetworkProvider = true, publishGpsProvider = true
