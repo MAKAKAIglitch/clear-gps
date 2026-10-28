@@ -30,7 +30,7 @@ class RadioMeasurementTimestampPolicyTest {
             RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
                 signals = signals,
                 matchedRadioIdentifiers = setOf(
-                    "matched-wifi-newer", "matched-wifi-older", "matched-cell"
+                    "wifi|matched-wifi-newer", "wifi|matched-wifi-older", "cell|matched-cell"
                 ),
                 collectedAtElapsedRealtimeNanos = collectedAt
             )
@@ -48,7 +48,7 @@ class RadioMeasurementTimestampPolicyTest {
                     observedAtElapsedRealtimeNanos = 6_000_000_000L
                 )
             ),
-            matchedRadioIdentifiers = setOf("aa:bb:cc:dd:ee:ff"),
+            matchedRadioIdentifiers = setOf("wifi|aa:bb:cc:dd:ee:ff"),
             collectedAtElapsedRealtimeNanos = 10_000_000_000L
         )
 
@@ -66,13 +66,28 @@ class RadioMeasurementTimestampPolicyTest {
             signals, emptySet(), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("unknown-id"), 10L
+            signals, setOf("wifi|unknown-id"), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("future-time"), 10L
+            signals, setOf("ble|future-time"), 10L
         ))
         assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
-            signals, setOf("unknown-id"), 0L
+            signals, setOf("wifi|unknown-id"), 0L
+        ))
+    }
+
+    @Test
+    fun rejectsEstimateWhenAnyMatchedSignalHasNoUsableTimestamp() {
+        val signals = listOf(
+            RadioSignal("wifi", "timed-ap", -58,
+                observedAtElapsedRealtimeNanos = 9_000_000_000L),
+            RadioSignal("cell", "untimed-cell", -90)
+        )
+
+        assertNull(RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
+            signals = signals,
+            matchedRadioIdentifiers = setOf("wifi|timed-ap", "cell|untimed-cell"),
+            collectedAtElapsedRealtimeNanos = 10_000_000_000L
         ))
     }
 }
