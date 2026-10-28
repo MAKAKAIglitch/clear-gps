@@ -434,6 +434,14 @@ class RadioGeolocationRepository(private val context: Context) {
             fun timestampMillis(info: CellInfo): Long =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) info.timestampMillis
                 else info.timeStamp / 1_000_000L
+            fun timestampNanos(info: CellInfo): Long =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    info.timestampMillis.takeIf {
+                        it > 0L && it <= Long.MAX_VALUE / 1_000_000L
+                    }?.times(1_000_000L) ?: 0L
+                } else {
+                    info.timeStamp.takeIf { it > 0L } ?: 0L
+                }
 
             val freshCellInfo = allCellInfo.filter { info ->
                 RadioFixReliability.isCellInfoFresh(timestampMillis(info), nowElapsedMs)
@@ -456,7 +464,9 @@ class RadioGeolocationRepository(private val context: Context) {
                     "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}"
             )
             TimedRadioSignals(parsed.map { (info, observation) ->
-                observation.toSignal().copy(observedAtElapsedRealtimeNanos = info.timeStamp.takeIf { it > 0L })
+                observation.toSignal().copy(
+                    observedAtElapsedRealtimeNanos = timestampNanos(info).takeIf { it > 0L }
+                )
             }, ageMillis)
         } catch (error: SecurityException) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Чтение CellInfo запрещено: ${error.message ?: "SecurityException"}", "ERROR")
