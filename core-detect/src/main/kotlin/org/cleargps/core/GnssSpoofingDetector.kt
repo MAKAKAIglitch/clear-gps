@@ -531,8 +531,8 @@ class GnssSpoofingDetector {
                 OBD_SPEED_MIN_DISAGREEMENT_KMH,
                 highestSpeedKmh * OBD_SPEED_RELATIVE_DISAGREEMENT
             )
-            val disagrees = highestSpeedKmh >= OBD_SPEED_MIN_COMPARABLE_KMH &&
-                differenceKmh > disagreementLimitKmh
+            val comparableSpeed = highestSpeedKmh >= OBD_SPEED_MIN_COMPARABLE_KMH
+            val disagrees = comparableSpeed && differenceKmh > disagreementLimitKmh
             val newObdSample = obdSpeed.elapsedRealtimeNanos > lastObdSpeedAssessedAtNanos
             if (newObdSample) {
                 if (disagrees) {
@@ -546,12 +546,12 @@ class GnssSpoofingDetector {
                         1
                     }
                     lastObdSpeedDisagreementAtNanos = obdSpeed.elapsedRealtimeNanos
-                } else {
+                } else if (comparableSpeed) {
                     obdSpeedDisagreementStreak = 0
                     lastObdSpeedDisagreementAtNanos = 0L
                 }
                 lastObdSpeedAssessedAtNanos = obdSpeed.elapsedRealtimeNanos
-            } else if (!disagrees) {
+            } else if (comparableSpeed && !disagrees) {
                 // One OBD observation cannot increase the streak, but a newer consistent
                 // physical-GNSS pair must still clear the preceding disagreement.
                 obdSpeedDisagreementStreak = 0
@@ -570,7 +570,11 @@ class GnssSpoofingDetector {
                 }
                 evidence[obdSpeedReason!!] = obdSpeedScore
             } else {
-                obdSpeedReason = "Скорости физического GNSS и OBD-II согласуются в пределах допуска"
+                obdSpeedReason = if (!comparableSpeed) {
+                    "Скорость ниже порога надёжного сравнения; вклад нейтрален"
+                } else {
+                    "Скорости физического GNSS и OBD-II согласуются в пределах допуска"
+                }
             }
         }
 

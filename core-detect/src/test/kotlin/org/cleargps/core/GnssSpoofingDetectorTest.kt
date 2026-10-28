@@ -111,6 +111,21 @@ class GnssSpoofingDetectorTest {
         assertEquals(15, nextMismatch.breakdown.obdSpeedScore)
     }
 
+    @Test
+    fun speedBelowComparableThresholdIsNeutralRatherThanReportedAsAgreement() {
+        val detector = GnssSpoofingDetector()
+        detector.observeObdVehicleSpeed(obdSpeed(0, 2))
+        val result = detector.assess(
+            fix(55.0, 37.0, 3, speed = 1.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true
+        )
+
+        assertTrue(result.breakdown.obdSpeedEvaluated)
+        assertEquals(0, result.breakdown.obdSpeedScore)
+        assertTrue(result.breakdown.obdSpeedReason!!.contains("вклад нейтрален"))
+        assertFalse(result.confirmed)
+    }
+
     @Test fun staleFutureOrLowQualityObdGnssPairsAreNeutral() {
         val stale = GnssSpoofingDetector()
         stale.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
