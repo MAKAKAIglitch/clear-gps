@@ -15,6 +15,9 @@ class RadioMeasurementTimestampPolicyTest {
                 observedAtElapsedRealtimeNanos = 7_000_000_000L),
             RadioSignal("cell", "matched-cell", -91,
                 observedAtElapsedRealtimeNanos = 8_000_000_000L),
+            // Same identifier text in another radio technology is a different key.
+            RadioSignal("ble", "matched-wifi-newer", -55,
+                observedAtElapsedRealtimeNanos = 1_000_000_000L),
             // An unrelated old signal of a matched radio type must not make this fix look older.
             RadioSignal("wifi", "unmatched-wifi-stale", -88,
                 observedAtElapsedRealtimeNanos = 1_000_000_000L),
