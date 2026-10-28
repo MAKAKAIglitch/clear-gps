@@ -1408,14 +1408,12 @@ class LocationMonitorService : Service(), LocationListener {
             decision.inRiskZone || prefs.getBoolean(KEY_IN_ZONE, false)
         ) return false
 
-        // Preferences can retain the last NORMAL decision after callbacks stop. Require a recent
-        // accepted physical fix as well, allowing the selected update interval plus scan jitter.
+        // Preferences can retain the last NORMAL decision after callbacks stop. Require a fresh
+        // physical fix within the fusion publisher's short prediction horizon before admitting new
+        // radio data; otherwise the update could mutate fusion state but be too old to publish.
         val lastGps = lastTrustedGpsFixForObd2 ?: return false
-        val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-        val gpsAgeNanos = nowElapsedRealtimeNanos - lastGps.elapsedRealtimeNanos
-        val maxAgeMillis = maxOf(configuredUpdateIntervalMillis() + 5_000L, 10_000L)
-            .coerceAtMost(60_000L)
-        return gpsAgeNanos in 0L..(maxAgeMillis * 1_000_000L)
+        val gpsAgeNanos = SystemClock.elapsedRealtimeNanos() - lastGps.elapsedRealtimeNanos
+        return gpsAgeNanos in 0L..PositionFusionLocationAdapter.MAX_OUTPUT_AGE_NANOS
     }
 
     /**
