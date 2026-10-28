@@ -1113,8 +1113,10 @@ class LocationMonitorService : Service(), LocationListener {
                             latitude = estimate.latitude
                             longitude = estimate.longitude
                             accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
-                            time = System.currentTimeMillis()
-                            // Preserve the source measurement time; never freshen cached radio evidence.
+                            // Map the same elapsed-realtime measurement instant onto wall time.
+                            // Do not pair an old monotonic timestamp with the publication's wall clock.
+                            time = nowWallMillis -
+                                ((nowElapsedRealtimeNanos - requireNotNull(measurementElapsedRealtimeNanos)) / 1_000_000L)
                             elapsedRealtimeNanos = requireNotNull(measurementElapsedRealtimeNanos)
                         }
                         val mockPublished = !mockRequested || mock?.publish(

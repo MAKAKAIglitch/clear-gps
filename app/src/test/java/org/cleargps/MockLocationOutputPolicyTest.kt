@@ -75,6 +75,18 @@ class MockLocationOutputPolicyTest {
     }
 
     @Test
+    fun mockLocationTimestampsMustBePresentAndNotFromTheFuture() {
+        assertTrue(isValidMockLocationTimestamp(1_798_000_000_000L, 10L, 10L))
+        assertTrue(isValidMockLocationTimestamp(1_798_000_000_000L, 9L, 10L))
+
+        assertFalse(isValidMockLocationTimestamp(0L, 10L, 10L))
+        assertFalse(isValidMockLocationTimestamp(1_798_000_000_000L, 0L, 10L))
+        assertFalse(isValidMockLocationTimestamp(1_798_000_000_000L, -1L, 10L))
+        assertFalse(isValidMockLocationTimestamp(1_798_000_000_000L, 11L, 10L))
+        assertFalse(isValidMockLocationTimestamp(1_798_000_000_000L, 10L, 0L))
+    }
+
+    @Test
     fun validCoordinatesIncludeLegalEdges() {
         assertTrue(isValidMockCoordinate(0.0, 0.0))
         assertTrue(isValidMockCoordinate(55.0, 37.0))

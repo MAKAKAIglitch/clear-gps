@@ -22,7 +22,8 @@ class MockLocationOutputPublishTest {
             latitude = expectedLatitude
             longitude = expectedLongitude
             accuracy = 18f
-            time = 1_798_000_000_000L
+            time = System.currentTimeMillis()
+            elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos()
         }
 
         try {

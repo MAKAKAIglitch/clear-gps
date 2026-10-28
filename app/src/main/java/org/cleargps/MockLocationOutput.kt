@@ -23,6 +23,19 @@ internal fun isValidMockCoordinate(latitude: Double, longitude: Double): Boolean
         longitude.isFinite() && longitude in -180.0..180.0
 
 /**
+ * Validates timestamps carried by a calculated position before it reaches Android providers.
+ * Do not infer a fresh measurement timestamp when the source omitted it.
+ */
+internal fun isValidMockLocationTimestamp(
+    wallTimeMillis: Long,
+    elapsedRealtimeNanos: Long,
+    nowElapsedRealtimeNanos: Long
+): Boolean = wallTimeMillis > 0L &&
+    elapsedRealtimeNanos > 0L &&
+    nowElapsedRealtimeNanos > 0L &&
+    elapsedRealtimeNanos <= nowElapsedRealtimeNanos
+
+/**
  * Determines which Android providers may be replaced without disrupting Clear GPS's physical
  * inputs. The direct GPS provider is intentionally omitted in GPS/Auto modes.
  */
@@ -92,6 +105,17 @@ class MockLocationOutput(context: Context) {
             return fail(
                 "Отвергнуты некорректные координаты источника",
                 IllegalArgumentException("Latitude/longitude out of range or not finite")
+            )
+        }
+
+        if (!isValidMockLocationTimestamp(
+                wallTimeMillis = source.time,
+                elapsedRealtimeNanos = source.elapsedRealtimeNanos,
+                nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            )) {
+            return fail(
+                "Отвергнута позиция с отсутствующей или будущей меткой исходного измерения",
+                IllegalArgumentException("Wall-clock or elapsed-realtime timestamp is missing or invalid")
             )
         }
 
@@ -197,8 +221,10 @@ class MockLocationOutput(context: Context) {
             latitude = source.latitude
             longitude = source.longitude
             accuracy = sourceAccuracy.coerceIn(1f, MAX_ACCURACY_METERS)
-            time = System.currentTimeMillis()
-            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            // The service supplies the timestamp of its measured or predicted estimate.
+            // Re-stamping here would turn stale radio evidence into a falsely fresh location.
+            time = source.time
+            elapsedRealtimeNanos = source.elapsedRealtimeNanos
             copyAltitudeMetadata(source, this)
             if (source.hasSpeed() && source.speed.isFinite() && source.speed >= 0f) speed = source.speed
             if (source.hasBearing() && source.bearing.isFinite()) bearing = source.bearing
