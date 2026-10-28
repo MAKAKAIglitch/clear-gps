@@ -18,9 +18,11 @@ import kotlin.math.max
 internal object PositionFusionLocationAdapter {
     const val MAX_MEASUREMENT_UNCERTAINTY_METERS = 5_000.0
     const val MAX_OUTPUT_AGE_NANOS = 2_000_000_000L
+    const val MAX_RADIO_EVIDENCE_AGE_NANOS = 45_000_000_000L
 
     private const val GNSS_UNCERTAINTY_MULTIPLIER = 2.0
     private const val MINIMUM_GNSS_UNCERTAINTY_METERS = 3.0
+    private const val MINIMUM_RADIO_UNCERTAINTY_METERS = 10.0
     private const val MAX_OUTPUT_ACCURACY_METERS = 50_000.0
     private const val MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 100.0
 
@@ -64,6 +66,40 @@ internal object PositionFusionLocationAdapter {
             longitude = location.longitude,
             horizontalUncertaintyMeters = uncertainty,
             elapsedRealtimeNanos = location.elapsedRealtimeNanos
+        )
+    }
+
+    /**
+     * Converts only a radio estimate that retains timestamps from its actual observations.
+     * The wall-clock [RadioEstimate.updatedAt] is deliberately not used to manufacture monotonic
+     * time; estimates restored from preferences therefore cannot enter live fusion.
+     */
+    fun radioMeasurement(
+        estimate: RadioEstimate,
+        nowElapsedRealtimeNanos: Long
+    ): PositionMeasurement? {
+        val measurementTime = estimate.measurementElapsedRealtimeNanos ?: return null
+        if (nowElapsedRealtimeNanos <= 0L || measurementTime <= 0L ||
+            measurementTime > nowElapsedRealtimeNanos ||
+            nowElapsedRealtimeNanos - measurementTime > MAX_RADIO_EVIDENCE_AGE_NANOS
+        ) return null
+
+        if (!estimate.latitude.isFinite() || estimate.latitude !in -90.0..90.0 ||
+            !estimate.longitude.isFinite() || estimate.longitude !in -180.0..180.0
+        ) return null
+
+        val uncertainty = estimate.accuracyMeters
+        if (!uncertainty.isFinite() || uncertainty <= 0.0 ||
+            uncertainty > MAX_MEASUREMENT_UNCERTAINTY_METERS ||
+            estimate.matchedCount < 2 || estimate.matchedRadioTypes.isEmpty()
+        ) return null
+
+        return PositionMeasurement(
+            source = PositionMeasurementSource.RADIO,
+            latitude = estimate.latitude,
+            longitude = estimate.longitude,
+            horizontalUncertaintyMeters = max(MINIMUM_RADIO_UNCERTAINTY_METERS, uncertainty),
+            elapsedRealtimeNanos = measurementTime
         )
     }
 
