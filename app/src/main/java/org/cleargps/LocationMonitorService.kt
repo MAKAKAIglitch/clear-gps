@@ -1390,12 +1390,25 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
-    private fun radioFusionCurrentlyAllowed(): Boolean =
-        prefs.getBoolean(KEY_MONITORING, false) &&
-            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto" &&
-            prefs.getString(KEY_STATE, FilterState.WAITING.name) == FilterState.NORMAL.name &&
-            prefs.getString(KEY_SOURCE, "NONE") == "GPS" &&
-            !prefs.getBoolean(KEY_IN_ZONE, false)
+    private fun radioFusionCurrentlyAllowed(): Boolean {
+        if (!prefs.getBoolean(KEY_MONITORING, false) ||
+            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto"
+        ) return false
+
+        val decision = engine.currentDecision()
+        if (decision.state != FilterState.NORMAL || decision.source != "GPS" ||
+            decision.inRiskZone || prefs.getBoolean(KEY_IN_ZONE, false)
+        ) return false
+
+        // Preferences can retain the last NORMAL decision after callbacks stop. Require a recent
+        // accepted physical fix as well, allowing the selected update interval plus scan jitter.
+        val lastGps = lastTrustedGpsFixForObd2 ?: return false
+        val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        val gpsAgeNanos = nowElapsedRealtimeNanos - lastGps.elapsedRealtimeNanos
+        val maxAgeMillis = maxOf(configuredUpdateIntervalMillis() + 5_000L, 10_000L)
+            .coerceAtMost(60_000L)
+        return gpsAgeNanos in 0L..(maxAgeMillis * 1_000_000L)
+    }
 
     /**
      * A successful setTestProviderLocation call is only a heartbeat, not a permanent lease.
