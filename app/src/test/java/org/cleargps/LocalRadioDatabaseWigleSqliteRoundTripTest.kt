@@ -53,7 +53,13 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
         assertTrue(bytes.isNotEmpty())
 
         val namespace = "clear-gps-wigle-roundtrip-" + UUID.randomUUID().toString()
-        val targetFile = File(context.cacheDir, namespace + ".sqlite")
+        // SQLiteOpenHelper opens this path directly; ensure its parent exists on Windows/Robolectric too.
+        val databaseDirectory = context.getDatabasePath(DB_NAME).parentFile ?: context.cacheDir
+        assertTrue(
+            "Unable to prepare isolated SQLite test directory: $databaseDirectory",
+            databaseDirectory.mkdirs() || databaseDirectory.isDirectory
+        )
+        val targetFile = File(databaseDirectory, namespace + ".sqlite")
         val targetContext = IsolatedDatabaseContext(context, targetFile, namespace)
         val target = LocalRadioDatabase(targetContext)
         try {
