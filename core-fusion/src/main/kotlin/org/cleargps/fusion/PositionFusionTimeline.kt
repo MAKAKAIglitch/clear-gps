@@ -83,6 +83,20 @@ class PositionFusionTimeline(
             return incomingResult
         }
 
+        // A late lower-priority source must not make an already accepted later measurement vanish
+        // during replay. In particular, radio data must not displace previously accepted physical
+        // GNSS merely because the filter processes the older timestamp first.
+        val previousRetainedIds = bounded.asSequence()
+            .filter { it.id != candidateId }
+            .map { it.id }
+            .toSet()
+        val acceptedIds = accepted.map { it.id }.toSet()
+        if (newestRetainedTimestamp > measurement.elapsedRealtimeNanos &&
+            !acceptedIds.containsAll(previousRetainedIds)
+        ) {
+            return rejected(PositionFusionRejectionReason.STATISTICAL_OUTLIER)
+        }
+
         history = accepted
         engine = rebuiltEngine
         val latestAcceptedTimestamp = history.lastOrNull()?.measurement?.elapsedRealtimeNanos
