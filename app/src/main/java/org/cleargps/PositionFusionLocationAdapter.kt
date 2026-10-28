@@ -91,7 +91,7 @@ internal object PositionFusionLocationAdapter {
         val uncertainty = estimate.accuracyMeters
         if (!uncertainty.isFinite() || uncertainty <= 0.0 ||
             uncertainty > MAX_MEASUREMENT_UNCERTAINTY_METERS ||
-            estimate.matchedCount < 2 || estimate.matchedRadioTypes.isEmpty()
+            estimate.matchedCount < 2 || estimate.matchedRadioIdentifiers.size < 2
         ) return null
 
         return PositionMeasurement(
