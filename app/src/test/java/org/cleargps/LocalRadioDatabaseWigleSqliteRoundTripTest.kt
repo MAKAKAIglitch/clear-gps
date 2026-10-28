@@ -53,14 +53,12 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
         assertTrue(bytes.isNotEmpty())
 
         val namespace = "clear-gps-wigle-roundtrip-" + UUID.randomUUID().toString()
-        // Use the regular Android database path/opening flow with a unique name per test.
-        val targetDatabaseName = namespace + ".sqlite"
+        // On Windows/Robolectric, opening a second WAL database fails with SQLITE_CANTOPEN.
+        // Close the source first and restore to the standard path already opened by this test.
+        database.close()
+        assertTrue("Unable to clear source database before round-trip restore", context.deleteDatabase(DB_NAME))
+        val targetDatabaseName = DB_NAME
         val targetFile = context.getDatabasePath(targetDatabaseName)
-        val databaseDirectory = targetFile.parentFile ?: context.cacheDir
-        assertTrue(
-            "Unable to prepare isolated SQLite test directory: $databaseDirectory",
-            databaseDirectory.mkdirs() || databaseDirectory.isDirectory
-        )
         val targetContext = IsolatedPreferencesContext(context, namespace)
         val target = LocalRadioDatabase(targetContext, targetDatabaseName)
         try {
