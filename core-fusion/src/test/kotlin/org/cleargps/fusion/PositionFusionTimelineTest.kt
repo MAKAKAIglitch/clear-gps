@@ -78,7 +78,7 @@ class PositionFusionTimelineTest {
             source = PositionMeasurementSource.RADIO,
             latitude = 52.0,
             longitude = eastwardLongitude(38.0),
-            horizontalUncertaintyMeters = 3.0,
+            horizontalUncertaintyMeters = 4.0,
             elapsedRealtimeNanos = 1_500_000_000L
         )
         val result = timeline.update(lateRadio)
