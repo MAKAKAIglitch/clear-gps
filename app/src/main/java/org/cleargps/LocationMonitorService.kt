@@ -1402,10 +1402,6 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
-    private companion object {
-        const val MAX_ZONE_CHECK_ACCURACY_METERS = 500.0
-    }
-
     private fun radioFusionCurrentlyAllowed(): Boolean =
         prefs.getBoolean(KEY_MONITORING, false) &&
             prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto" &&
@@ -1949,6 +1945,7 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     companion object {
+        const val MAX_ZONE_CHECK_ACCURACY_METERS = 500.0
         const val ACTION_START = "org.cleargps.START"
         const val ACTION_RECOVER = "org.cleargps.RECOVER"
         const val ACTION_STOP = "org.cleargps.STOP"
