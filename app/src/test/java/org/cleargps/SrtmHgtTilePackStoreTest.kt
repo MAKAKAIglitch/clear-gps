@@ -93,7 +93,7 @@ class SrtmHgtTilePackStoreTest {
         assertEquals(0, store.inventory().tileCount)
     }
 
-    private fun archive(vararg entries: Pair<String, ByteArray>): ByteArray {
+    private fun archive(vararg entries: Pair<String, ByteArray>): ByteArrayInputStream {
         val bytes = ByteArrayOutputStream()
         ZipOutputStream(bytes).use { zip ->
             entries.forEach { (name, content) ->
@@ -102,6 +102,6 @@ class SrtmHgtTilePackStoreTest {
                 zip.closeEntry()
             }
         }
-        return bytes.toByteArray()
+        return ByteArrayInputStream(bytes.toByteArray())
     }
 }
