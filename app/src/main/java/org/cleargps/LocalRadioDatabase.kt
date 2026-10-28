@@ -61,7 +61,12 @@ data class RadioEstimate(
     val latitude: Double, val longitude: Double, val accuracyMeters: Double, val updatedAt: Long,
     val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0,
     /** Radio types that actually contributed matched identifiers to this estimate. */
-    val matchedRadioTypes: Set<String> = emptySet()
+    val matchedRadioTypes: Set<String> = emptySet(),
+    /**
+     * Monotonic timestamp of the oldest matched live radio observation, when available.
+     * This is process/boot-local evidence only: it is never persisted or reconstructed from wall time.
+     */
+    val measurementElapsedRealtimeNanos: Long? = null
 )
 
 data class RadioPointObservation(
