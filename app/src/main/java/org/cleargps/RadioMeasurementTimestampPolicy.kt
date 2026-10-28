@@ -15,7 +15,7 @@ internal object RadioMeasurementTimestampPolicy {
         if (collectedAtElapsedRealtimeNanos <= 0L || matchedRadioIdentifiers.isEmpty()) return null
 
         return signals.asSequence()
-            .filter { it.identifier in matchedRadioIdentifiers }
+            .filter { canonicalRadioIdentifier(it.identifier) in matchedRadioIdentifiers }
             .mapNotNull { it.observedAtElapsedRealtimeNanos }
             .filter { timestamp -> timestamp > 0L && timestamp <= collectedAtElapsedRealtimeNanos }
             .minOrNull()
