@@ -804,28 +804,29 @@ class LocationMonitorService : Service(), LocationListener {
                     !prefs.getBoolean(KEY_IN_ZONE, false)
                 val lastFix = lastTrustedGpsFixForObd2
                 val now = System.currentTimeMillis()
-                val speedKmh = Obd2SharedState.freshSpeedKmh(prefs, now)
-                val speedAt = prefs.getLong(Obd2SharedState.KEY_SPEED_AT, 0L)
+                val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                val speedSamples = lastFix?.let {
+                    Obd2SharedState.speedSamplesSince(it.elapsedRealtimeNanos, nowElapsedRealtimeNanos)
+                }.orEmpty()
                 val prediction = if (filterAllowsFallback && lastFix != null && lastFix.hasBearing()) {
                     Obd2LocationFusion.predictFromGps(
                         lastFix = MapCoordinate(lastFix.latitude, lastFix.longitude),
                         baseAccuracyMeters = lastFix.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
                         bearingDegrees = lastFix.bearing.toDouble(),
-                        fixTimeMillis = lastFix.time,
-                        speedKmh = speedKmh,
-                        speedUpdatedAtMillis = speedAt,
-                        nowMillis = now
+                        fixElapsedRealtimeNanos = lastFix.elapsedRealtimeNanos,
+                        speedSamples = speedSamples,
+                        nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
                     )
                 } else null
 
-                if (prediction != null && speedKmh != null && lastFix != null) {
+                if (prediction != null && speedSamples.isNotEmpty() && lastFix != null) {
                     val projected = Location(LocationManager.GPS_PROVIDER).apply {
                         latitude = prediction.coordinate.latitude
                         longitude = prediction.coordinate.longitude
                         accuracy = prediction.accuracyMeters.toFloat().coerceAtLeast(1f)
                         time = now
-                        elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-                        speed = speedKmh / 3.6f
+                        elapsedRealtimeNanos = nowElapsedRealtimeNanos
+                        speed = speedSamples.last().speedKmh / 3.6f
                         bearing = lastFix.bearing
                     }
                     val mockEnabled = prefs.getBoolean(KEY_MOCK_ENABLED, false)
@@ -862,7 +863,7 @@ class LocationMonitorService : Service(), LocationListener {
                     val reason = when {
                         !filterAllowsFallback -> "OBD-II fallback stopped by GNSS filter state"
                         lastFix == null -> "OBD-II fallback stopped; waiting for an accepted GPS fix"
-                        speedKmh == null -> "OBD-II fallback expired; waiting for fresh vehicle speed"
+                        speedSamples.isEmpty() -> "OBD-II fallback expired; waiting for fresh vehicle speed"
                         else -> "OBD-II fallback reached its time/distance limit; waiting for GPS"
                     }
                     clearObd2FallbackOutput(reason)

@@ -1756,7 +1756,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         }
     }
 
-    val freshObdSpeedKmh = Obd2SharedState.freshSpeedKmh(prefs, fusionNowMillis)
+    val fusionNowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+    val freshObdSpeedSample = Obd2SharedState.freshSpeedSample(prefs, fusionNowElapsedRealtimeNanos)
+    val freshObdSpeedKmh = freshObdSpeedSample?.speedKmh
     val maxLiveAgeMillis = if (freshObdSpeedKmh != null) 30_000L else 15 * 60 * 1_000L
     val validLive = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..maxLiveAgeMillis }
     val activeLocation = when (positionMode) {
@@ -1779,7 +1781,11 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     } else {
         currentRadioEstimate?.accuracyMeters
     }
-    val obdSpeedUpdatedAt = prefs.getLong(Obd2SharedState.KEY_SPEED_AT, 0L)
+    val speedHistoryForMap = activeLocation?.takeIf {
+        it.provider.equals(LocationManager.GPS_PROVIDER, true)
+    }?.let {
+        Obd2SharedState.speedSamplesSince(it.elapsedRealtimeNanos, fusionNowElapsedRealtimeNanos)
+    }.orEmpty()
     val predictedGpsPosition = if (
         activeLocation != null &&
         activeLocation.provider.equals(LocationManager.GPS_PROVIDER, true) &&
@@ -1789,10 +1795,9 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             lastFix = MapCoordinate(activeLocation.latitude, activeLocation.longitude),
             baseAccuracyMeters = activeLocation.takeIf { it.hasAccuracy() }?.accuracy?.toDouble(),
             bearingDegrees = activeLocation.takeIf { it.hasBearing() }?.bearing?.toDouble(),
-            fixTimeMillis = activeLocation.time,
-            speedKmh = freshObdSpeedKmh,
-            speedUpdatedAtMillis = obdSpeedUpdatedAt,
-            nowMillis = fusionNowMillis
+            fixElapsedRealtimeNanos = activeLocation.elapsedRealtimeNanos,
+            speedSamples = speedHistoryForMap,
+            nowElapsedRealtimeNanos = fusionNowElapsedRealtimeNanos
         )
     } else null
     val primaryCoordinate = when (positionMode) {
