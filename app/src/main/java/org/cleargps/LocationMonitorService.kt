@@ -40,6 +40,7 @@ import org.cleargps.core.GnssDeviceBaselineSnapshot
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplaySatellite
 import org.cleargps.core.RadioPositionSnapshot
+import org.cleargps.core.ObdVehicleSpeedSnapshot
 import org.cleargps.fusion.HorizontalAccelerationSample
 import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
@@ -1742,6 +1743,23 @@ class LocationMonitorService : Service(), LocationListener {
                 accuracyMeters = accuracyMeters
             )
         } else engine.currentDecision().inRiskZone
+
+        if (gpsFix) {
+            val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            val speedSample = Obd2SharedState.freshSpeedSample(prefs, nowElapsedRealtimeNanos)
+            if (speedSample == null) {
+                // Missing, disconnected or stale OBD is neutral and clears the previous streak.
+                engine.clearObdSpeedEvidence()
+            } else {
+                engine.observeObdVehicleSpeed(
+                    ObdVehicleSpeedSnapshot(
+                        speedKmh = speedSample.speedKmh,
+                        elapsedRealtimeNanos = speedSample.elapsedRealtimeNanos,
+                        queryDurationMillis = speedSample.queryDurationMillis
+                    )
+                )
+            }
+        }
 
         val observedDecision = engine.observe(location, inZone)
         if (gpsFix) {

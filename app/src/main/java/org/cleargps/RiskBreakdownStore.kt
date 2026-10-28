@@ -18,6 +18,10 @@ internal object RiskBreakdownStore {
     private const val KEY_RADIO_SCORE = "risk_radio_position_score"
     private const val KEY_RADIO_REASON = "risk_radio_position_reason"
     private const val KEY_RADIO_BONUS = "risk_radio_corroboration_bonus"
+    private const val KEY_OBD_SPEED_EVALUATED = "risk_obd_speed_evaluated"
+    private const val KEY_OBD_SPEED_SCORE = "risk_obd_speed_score"
+    private const val KEY_OBD_SPEED_REASON = "risk_obd_speed_reason"
+    private const val KEY_OBD_SPEED_BONUS = "risk_obd_speed_corroboration_bonus"
     private const val KEY_SIGNAL_EVALUATED = "risk_gnss_signal_evaluated"
     private const val KEY_SIGNAL_SCORE = "risk_gnss_signal_score"
     private const val KEY_SIGNAL_REASON = "risk_gnss_signal_reason"
@@ -45,6 +49,10 @@ internal object RiskBreakdownStore {
             .putInt(KEY_RADIO_SCORE, value?.radioPositionScore ?: 0)
             .putString(KEY_RADIO_REASON, value?.radioPositionReason.orEmpty())
             .putInt(KEY_RADIO_BONUS, value?.radioCorroborationBonus ?: 0)
+            .putBoolean(KEY_OBD_SPEED_EVALUATED, value?.obdSpeedEvaluated == true)
+            .putInt(KEY_OBD_SPEED_SCORE, value?.obdSpeedScore ?: 0)
+            .putString(KEY_OBD_SPEED_REASON, value?.obdSpeedReason.orEmpty())
+            .putInt(KEY_OBD_SPEED_BONUS, value?.obdSpeedCorroborationBonus ?: 0)
             .putBoolean(KEY_SIGNAL_EVALUATED, value?.gnssSignalEvaluated == true)
             .putInt(KEY_SIGNAL_SCORE, value?.gnssSignalScore ?: 0)
             .putString(KEY_SIGNAL_REASON, value?.gnssSignalReason.orEmpty())
@@ -77,6 +85,8 @@ internal object RiskBreakdownStore {
         val crossScore = prefs.getInt(KEY_CROSS_SCORE, -1)
         val radioScore = prefs.getInt(KEY_RADIO_SCORE, 0)
         val radioBonus = prefs.getInt(KEY_RADIO_BONUS, 0)
+        val obdSpeedScore = prefs.getInt(KEY_OBD_SPEED_SCORE, 0)
+        val obdSpeedBonus = prefs.getInt(KEY_OBD_SPEED_BONUS, 0)
         val signalScore = prefs.getInt(KEY_SIGNAL_SCORE, -1)
         val motionBonus = prefs.getInt(KEY_MOTION_CROSS_BONUS, -1)
         val signalBonus = prefs.getInt(KEY_SIGNAL_BONUS, -1)
@@ -84,8 +94,9 @@ internal object RiskBreakdownStore {
         val rawScore = prefs.getInt(KEY_RAW_SCORE, -1)
         val finalScore = prefs.getInt(KEY_FINAL_SCORE, -1)
         if (motionScore !in 0..100 || crossScore !in 0..100 || radioScore !in 0..50 ||
-            radioBonus !in 0..15 || signalScore !in 0..100 ||
-            motionBonus !in 0..20 || signalBonus !in 0..15 || combinedBeforeZone !in 0..150 ||
+            radioBonus !in 0..15 || obdSpeedScore !in 0..35 || obdSpeedBonus !in 0..10 ||
+            signalScore !in 0..100 || motionBonus !in 0..20 || signalBonus !in 0..15 ||
+            combinedBeforeZone !in 0..170 ||
             rawScore !in 0..100 || finalScore !in 0..100
         ) return null
 
@@ -100,11 +111,15 @@ internal object RiskBreakdownStore {
             radioPositionEvaluated = prefs.getBoolean(KEY_RADIO_EVALUATED, false),
             radioPositionScore = radioScore,
             radioPositionReason = prefs.getString(KEY_RADIO_REASON, null)?.takeIf { it.isNotBlank() },
+            obdSpeedEvaluated = prefs.getBoolean(KEY_OBD_SPEED_EVALUATED, false),
+            obdSpeedScore = obdSpeedScore,
+            obdSpeedReason = prefs.getString(KEY_OBD_SPEED_REASON, null)?.takeIf { it.isNotBlank() },
             gnssSignalEvaluated = prefs.getBoolean(KEY_SIGNAL_EVALUATED, false),
             gnssSignalScore = signalScore,
             gnssSignalReason = prefs.getString(KEY_SIGNAL_REASON, null)?.takeIf { it.isNotBlank() },
             motionCrossSourceBonus = motionBonus,
             radioCorroborationBonus = radioBonus,
+            obdSpeedCorroborationBonus = obdSpeedBonus,
             gnssCorroborationBonus = signalBonus,
             combinedBeforeZone = combinedBeforeZone,
             zoneFloorActive = prefs.getBoolean(KEY_ZONE_FLOOR_ACTIVE, false),

@@ -39,6 +39,16 @@ data class RadioPositionSnapshot(
     val elapsedRealtimeNanos: Long
 )
 
+/**
+ * A read-only OBD-II vehicle-speed sample paired with a physical GNSS fix.
+ * Timestamps use elapsed realtime; query duration rejects delayed responses.
+ */
+data class ObdVehicleSpeedSnapshot(
+    val speedKmh: Int,
+    val elapsedRealtimeNanos: Long,
+    val queryDurationMillis: Long
+)
+
 /** Aggregate RF metrics only; no location, wall-clock timestamp, or raw measurement payload. */
 data class GnssRfSnapshot(
     val elapsedRealtimeNanos: Long,
@@ -65,11 +75,15 @@ data class RiskBreakdown(
     val radioPositionEvaluated: Boolean = false,
     val radioPositionScore: Int = 0,
     val radioPositionReason: String? = null,
+    val obdSpeedEvaluated: Boolean = false,
+    val obdSpeedScore: Int = 0,
+    val obdSpeedReason: String? = null,
     val gnssSignalEvaluated: Boolean = false,
     val gnssSignalScore: Int = 0,
     val gnssSignalReason: String? = null,
     val motionCrossSourceBonus: Int = 0,
     val radioCorroborationBonus: Int = 0,
+    val obdSpeedCorroborationBonus: Int = 0,
     val gnssCorroborationBonus: Int = 0,
     val combinedBeforeZone: Int = 0,
     val zoneFloorActive: Boolean = false,
@@ -83,9 +97,11 @@ data class RiskBreakdown(
         require(motionScore in 0..100)
         require(crossSourceScore in 0..100)
         require(radioPositionScore in 0..50)
+        require(obdSpeedScore in 0..35)
         require(gnssSignalScore in 0..100)
         require(motionCrossSourceBonus in 0..20)
         require(radioCorroborationBonus in 0..15)
+        require(obdSpeedCorroborationBonus in 0..10)
         require(gnssCorroborationBonus in 0..15)
         require(combinedBeforeZone >= 0)
         require(rawCombinedScore in 0..100)
@@ -110,6 +126,10 @@ class GnssSpoofingDetector {
     private var lastRadioPositionAssessedAtNanos = 0L
     private var lastRadioPositionDisagreementAtNanos = 0L
     private var radioPositionDisagreementStreak = 0
+    private var currentObdSpeed: ObdVehicleSpeedSnapshot? = null
+    private var lastObdSpeedAssessedAtNanos = 0L
+    private var lastObdSpeedDisagreementAtNanos = 0L
+    private var obdSpeedDisagreementStreak = 0
     private var currentSignal: GnssSignalSnapshot? = null
     private var recentSignalAlertUntilNanos = 0L
     private var recentSignalAlertAtNanos = 0L
@@ -136,6 +156,25 @@ class GnssSpoofingDetector {
         val old = currentRadioPosition
         if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
         currentRadioPosition = snapshot
+    }
+
+    /** New read-only standard PID 0D sample; duplicates never add evidence. */
+    fun observeObdVehicleSpeed(snapshot: ObdVehicleSpeedSnapshot) {
+        if (snapshot.speedKmh !in 0..MAX_PLAUSIBLE_OBD_SPEED_KMH ||
+            snapshot.elapsedRealtimeNanos <= 0L ||
+            snapshot.queryDurationMillis !in 0L..OBD_SPEED_MAX_QUERY_DURATION_MILLIS
+        ) return
+        val old = currentObdSpeed
+        if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
+        currentObdSpeed = snapshot
+    }
+
+    /** Clears ephemeral OBD evidence after a stale sample or disconnect. */
+    fun clearObdSpeedEvidence() {
+        currentObdSpeed = null
+        lastObdSpeedAssessedAtNanos = 0L
+        lastObdSpeedDisagreementAtNanos = 0L
+        obdSpeedDisagreementStreak = 0
     }
 
     fun observeGnssSignal(snapshot: GnssSignalSnapshot) {
@@ -316,6 +355,9 @@ class GnssSpoofingDetector {
         var radioPositionScore = 0
         var radioPositionReason: String? = null
         var radioPositionEvaluated = false
+        var obdSpeedScore = 0
+        var obdSpeedReason: String? = null
+        var obdSpeedEvaluated = false
         var signalScore = 0
         var signalReason: String? = null
         var signalEvaluated = false
@@ -469,6 +511,63 @@ class GnssSpoofingDetector {
             }
         }
 
+        val obdSpeed = currentObdSpeed
+        if (obdSpeed != null &&
+            isObdVehicleSpeedFresh(obdSpeed, nowElapsedRealtimeNanos) &&
+            gps.provider.equals("gps", ignoreCase = true) &&
+            goodAccuracy(gps, OBD_GNSS_MAX_POSITION_ACCURACY_METERS) &&
+            gps.speedMetersPerSecond?.let { it.isFinite() && it in 0.0..MAX_PLAUSIBLE_GNSS_SPEED_MPS } == true &&
+            gps.speedAccuracyMetersPerSecond?.let {
+                it.isFinite() && it in 0.0..OBD_GNSS_MAX_SPEED_ACCURACY_MPS
+            } == true &&
+            gps.elapsedRealtimeNanos >= obdSpeed.elapsedRealtimeNanos &&
+            gps.elapsedRealtimeNanos - obdSpeed.elapsedRealtimeNanos <= OBD_GNSS_PAIRING_WINDOW_NANOS
+        ) {
+            obdSpeedEvaluated = true
+            val gnssSpeedKmh = gps.speedMetersPerSecond!! * 3.6
+            val highestSpeedKmh = max(obdSpeed.speedKmh.toDouble(), gnssSpeedKmh)
+            val differenceKmh = abs(obdSpeed.speedKmh - gnssSpeedKmh)
+            val disagreementLimitKmh = max(
+                OBD_SPEED_MIN_DISAGREEMENT_KMH,
+                highestSpeedKmh * OBD_SPEED_RELATIVE_DISAGREEMENT
+            )
+            val disagrees = highestSpeedKmh >= OBD_SPEED_MIN_COMPARABLE_KMH &&
+                differenceKmh > disagreementLimitKmh
+            if (obdSpeed.elapsedRealtimeNanos > lastObdSpeedAssessedAtNanos) {
+                if (disagrees) {
+                    val interval = obdSpeed.elapsedRealtimeNanos - lastObdSpeedDisagreementAtNanos
+                    obdSpeedDisagreementStreak = if (
+                        obdSpeedDisagreementStreak > 0 &&
+                        interval in OBD_SPEED_MIN_SAMPLE_INTERVAL_NANOS..OBD_SPEED_MAX_SAMPLE_INTERVAL_NANOS
+                    ) {
+                        (obdSpeedDisagreementStreak + 1).coerceAtMost(3)
+                    } else {
+                        1
+                    }
+                    lastObdSpeedDisagreementAtNanos = obdSpeed.elapsedRealtimeNanos
+                } else {
+                    obdSpeedDisagreementStreak = 0
+                    lastObdSpeedDisagreementAtNanos = 0L
+                }
+                lastObdSpeedAssessedAtNanos = obdSpeed.elapsedRealtimeNanos
+            }
+            if (disagrees) {
+                obdSpeedScore = when (obdSpeedDisagreementStreak) {
+                    0, 1 -> 15
+                    2 -> 25
+                    else -> 35
+                }
+                obdSpeedReason = if (obdSpeedDisagreementStreak >= 3) {
+                    "Повторяется крупное расхождение скорости физического GNSS и OBD-II"
+                } else {
+                    "Скорости физического GNSS и OBD-II заметно расходятся"
+                }
+                evidence[obdSpeedReason!!] = obdSpeedScore
+            } else {
+                obdSpeedReason = "Скорости физического GNSS и OBD-II согласуются в пределах допуска"
+            }
+        }
+
         val signal = currentSignal
         if (signal != null && isSignalFresh(signal, nowElapsedRealtimeNanos)) {
             signalEvaluated = true
@@ -488,17 +587,22 @@ class GnssSpoofingDetector {
         signalScore = signalScore.coerceAtMost(35)
         if (signalScore > 0 && signalReason != null) evidence[signalReason] = signalScore
 
-        var rawScore = max(max(motionScore, crossSourceScore), radioPositionScore)
+        var rawScore = max(max(max(motionScore, crossSourceScore), radioPositionScore), obdSpeedScore)
         val motionCrossSourceBonus = if (motionScore > 0 && crossSourceScore > 0) 20 else 0
         rawScore += motionCrossSourceBonus
         val radioCorroborationBonus =
             if (radioPositionScore > 0 &&
-                (motionScore > 0 || crossSourceScore > 0 || signalScore >= 10)
+                (motionScore > 0 || crossSourceScore > 0 || signalScore >= 10 || obdSpeedScore >= 15)
             ) min(15, radioPositionScore / 3) else 0
         if (radioCorroborationBonus > 0) rawScore += radioCorroborationBonus
+        val obdSpeedCorroborationBonus =
+            if (obdSpeedScore > 0 &&
+                (motionScore > 0 || crossSourceScore > 0 || radioPositionScore > 0 || signalScore >= 10)
+            ) min(10, obdSpeedScore / 4) else 0
+        if (obdSpeedCorroborationBonus > 0) rawScore += obdSpeedCorroborationBonus
         val gnssCorroborationBonus =
             if (signalScore > 0 &&
-                (motionScore > 0 || crossSourceScore > 0 || radioPositionScore > 0)
+                (motionScore > 0 || crossSourceScore > 0 || radioPositionScore > 0 || obdSpeedScore > 0)
             ) min(15, signalScore) else 0
         if (gnssCorroborationBonus > 0) rawScore += gnssCorroborationBonus
         else if (signalScore > 0) rawScore = max(rawScore, signalScore)
@@ -516,7 +620,9 @@ class GnssSpoofingDetector {
             (crossSourceScore > 0 && signalScore >= 10) ||
             (motionScore >= 55 && signalScore >= 10) ||
             (radioPositionScore >= 35 &&
-                (motionScore >= 55 || crossSourceScore > 0 || signalScore >= 10))
+                (motionScore >= 55 || crossSourceScore > 0 || signalScore >= 10 || obdSpeedScore >= 25)) ||
+            (obdSpeedScore >= 25 &&
+                (motionScore >= 55 || crossSourceScore > 0 || radioPositionScore >= 25 || signalScore >= 10))
 
         if (inRiskZone) {
             active = true
@@ -583,11 +689,15 @@ class GnssSpoofingDetector {
             radioPositionEvaluated = radioPositionEvaluated,
             radioPositionScore = radioPositionScore,
             radioPositionReason = radioPositionReason,
+            obdSpeedEvaluated = obdSpeedEvaluated,
+            obdSpeedScore = obdSpeedScore,
+            obdSpeedReason = obdSpeedReason,
             gnssSignalEvaluated = signalEvaluated,
             gnssSignalScore = signalScore,
             gnssSignalReason = signalReason,
             motionCrossSourceBonus = motionCrossSourceBonus,
             radioCorroborationBonus = radioCorroborationBonus,
+            obdSpeedCorroborationBonus = obdSpeedCorroborationBonus,
             gnssCorroborationBonus = gnssCorroborationBonus,
             combinedBeforeZone = combinedBeforeZone,
             zoneFloorActive = inRiskZone,
@@ -617,12 +727,30 @@ class GnssSpoofingDetector {
         snapshot.elapsedRealtimeNanos > 0L && now >= snapshot.elapsedRealtimeNanos &&
             now - snapshot.elapsedRealtimeNanos <= RADIO_POSITION_MAX_AGE_NANOS
 
+    private fun isObdVehicleSpeedFresh(snapshot: ObdVehicleSpeedSnapshot, now: Long): Boolean =
+        snapshot.elapsedRealtimeNanos > 0L && now >= snapshot.elapsedRealtimeNanos &&
+            now - snapshot.elapsedRealtimeNanos <= OBD_SPEED_MAX_AGE_NANOS &&
+            snapshot.speedKmh in 0..MAX_PLAUSIBLE_OBD_SPEED_KMH &&
+            snapshot.queryDurationMillis in 0L..OBD_SPEED_MAX_QUERY_DURATION_MILLIS
+
     companion object {
         private const val EARTH_RADIUS_METERS = 6_371_000.0
         private const val RADIO_POSITION_MAX_AGE_NANOS = 45_000_000_000L
         private const val RADIO_GNSS_PAIRING_WINDOW_NANOS = 45_000_000_000L
         private const val RADIO_OBSERVATION_MIN_INTERVAL_NANOS = 5_000_000_000L
         private const val RADIO_OBSERVATION_MAX_INTERVAL_NANOS = 90_000_000_000L
+        private const val MAX_PLAUSIBLE_OBD_SPEED_KMH = 250
+        private const val MAX_PLAUSIBLE_GNSS_SPEED_MPS = 80.0
+        private const val OBD_SPEED_MAX_QUERY_DURATION_MILLIS = 1_500L
+        private const val OBD_SPEED_MAX_AGE_NANOS = 5_000_000_000L
+        private const val OBD_GNSS_PAIRING_WINDOW_NANOS = 2_500_000_000L
+        private const val OBD_GNSS_MAX_POSITION_ACCURACY_METERS = 100.0
+        private const val OBD_GNSS_MAX_SPEED_ACCURACY_MPS = 2.5
+        private const val OBD_SPEED_MIN_COMPARABLE_KMH = 20.0
+        private const val OBD_SPEED_MIN_DISAGREEMENT_KMH = 15.0
+        private const val OBD_SPEED_RELATIVE_DISAGREEMENT = 0.35
+        private const val OBD_SPEED_MIN_SAMPLE_INTERVAL_NANOS = 250_000_000L
+        private const val OBD_SPEED_MAX_SAMPLE_INTERVAL_NANOS = 5_000_000_000L
 
         internal fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
             val p1 = Math.toRadians(lat1)

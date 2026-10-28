@@ -24,6 +24,100 @@ class GnssSpoofingDetectorTest {
         speedAccuracyMetersPerSecond = speedAccuracy
     )
 
+    private fun obdSpeed(speedKmh: Int, atSeconds: Long, queryDurationMillis: Long = 500L) =
+        ObdVehicleSpeedSnapshot(speedKmh, atSeconds * 1_000_000_000L, queryDurationMillis)
+
+    @Test fun singleObdGnssSpeedDisagreementIsWeakAndCannotConfirmSpoofing() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        detector.observeObdVehicleSpeed(obdSpeed(30, 2))
+        val result = detector.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true)
+        assertEquals(15, result.breakdown.obdSpeedScore)
+        assertTrue(result.breakdown.obdSpeedEvaluated)
+        assertFalse(result.confirmed)
+        assertTrue(result.score < 60)
+    }
+
+    @Test fun distinctObdSpeedSamplesIncreaseOnlyCappedSupportingEvidence() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        val results = listOf(2L, 4L, 6L).map { sampleSecond ->
+            detector.observeObdVehicleSpeed(obdSpeed(30, sampleSecond))
+            detector.assess(fix(55.0, 37.0, sampleSecond + 1, speed = 20.0, speedAccuracy = 0.5),
+                null, false, (sampleSecond + 1) * 1_000_000_000L + 200_000_000L, true)
+        }
+        assertEquals(listOf(15, 25, 35), results.map { it.breakdown.obdSpeedScore })
+        assertFalse(results.last().confirmed)
+        assertTrue(results.last().score < 60)
+    }
+
+    @Test fun repeatedGpsFixesCannotCountTheSameObdSampleMoreThanOnce() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        val sample = obdSpeed(30, 2)
+        detector.observeObdVehicleSpeed(sample)
+        val first = detector.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true)
+        detector.observeObdVehicleSpeed(sample)
+        val second = detector.assess(fix(55.0, 37.0, 4, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 4_200_000_000L, true)
+        assertEquals(15, first.breakdown.obdSpeedScore)
+        assertEquals(15, second.breakdown.obdSpeedScore)
+        assertFalse(second.confirmed)
+    }
+
+    @Test fun aNewConsistentObdSampleResetsTheDisagreementStreak() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        detector.observeObdVehicleSpeed(obdSpeed(30, 2))
+        val mismatch = detector.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true)
+        detector.observeObdVehicleSpeed(obdSpeed(72, 4))
+        val agreement = detector.assess(fix(55.0, 37.0, 5, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 5_200_000_000L, true)
+        detector.observeObdVehicleSpeed(obdSpeed(30, 6))
+        val nextMismatch = detector.assess(fix(55.0, 37.0, 7, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 7_200_000_000L, true)
+        assertEquals(15, mismatch.breakdown.obdSpeedScore)
+        assertEquals(0, agreement.breakdown.obdSpeedScore)
+        assertTrue(agreement.breakdown.obdSpeedEvaluated)
+        assertEquals(15, nextMismatch.breakdown.obdSpeedScore)
+    }
+
+    @Test fun staleFutureOrLowQualityObdGnssPairsAreNeutral() {
+        val stale = GnssSpoofingDetector()
+        stale.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        stale.observeObdVehicleSpeed(obdSpeed(30, 2))
+        val staleResult = stale.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 9_200_000_000L, true)
+        assertEquals(0, staleResult.breakdown.obdSpeedScore)
+        assertFalse(staleResult.breakdown.obdSpeedEvaluated)
+
+        val future = GnssSpoofingDetector()
+        future.observeObdVehicleSpeed(obdSpeed(30, 4))
+        val futureResult = future.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 4_200_000_000L, true)
+        assertEquals(0, futureResult.breakdown.obdSpeedScore)
+        assertFalse(futureResult.breakdown.obdSpeedEvaluated)
+
+        val lowQuality = GnssSpoofingDetector()
+        lowQuality.observeObdVehicleSpeed(obdSpeed(30, 2))
+        val lowQualityResult = lowQuality.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = null),
+            null, false, 3_200_000_000L, true)
+        assertEquals(0, lowQualityResult.breakdown.obdSpeedScore)
+        assertFalse(lowQualityResult.breakdown.obdSpeedEvaluated)
+    }
+
+    @Test fun obdProbeWithExcessiveDurationIsRejected() {
+        val detector = GnssSpoofingDetector()
+        detector.observeObdVehicleSpeed(obdSpeed(30, 2, 1_501L))
+        val result = detector.assess(fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true)
+        assertEquals(0, result.breakdown.obdSpeedScore)
+        assertFalse(result.breakdown.obdSpeedEvaluated)
+    }
+
     @Test fun singleRadioDisagreementIsWeakSupportingEvidenceAndCannotConfirmSpoofing() {
         val detector = GnssSpoofingDetector()
         detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)

@@ -52,6 +52,14 @@ class LocationFilterEngine {
     fun restoreDeviceBaseline(snapshot: GnssDeviceBaselineSnapshot): Boolean =
         detector.restoreDeviceBaseline(snapshot)
 
+    internal fun observeObdVehicleSpeed(snapshot: ObdVehicleSpeedSnapshot) {
+        detector.observeObdVehicleSpeed(snapshot)
+    }
+
+    internal fun clearObdSpeedEvidence() {
+        detector.clearObdSpeedEvidence()
+    }
+
     internal fun observeRadioPosition(snapshot: RadioPositionSnapshot): FilterDecision {
         detector.observeRadioPosition(snapshot)
         if (signalOnlyWarningActive) return currentDecision()

@@ -39,6 +39,8 @@ internal fun RiskBreakdownPanel(
                 breakdown.crossSourceReason, "Сетевая позиция отсутствует, устарела или её точности недостаточно для сравнения.")
             BreakdownRow("GPS ↔ локальная радио-оценка", breakdown.radioPositionEvaluated, breakdown.radioPositionScore,
                 breakdown.radioPositionReason, "Нет достаточно свежей радио-оценки с приемлемой точностью для сравнения.")
+            BreakdownRow("Физический GNSS ↔ скорость OBD-II", breakdown.obdSpeedEvaluated, breakdown.obdSpeedScore,
+                breakdown.obdSpeedReason, "Нет свежей скорости OBD-II либо качество/время пары GNSS–OBD недостаточно.")
             BreakdownRow("Сырые GNSS/RF-признаки", breakdown.gnssSignalEvaluated, breakdown.gnssSignalScore,
                 breakdown.gnssSignalReason, "Нет свежих пригодных сигнальных метрик GNSS.")
 
@@ -48,6 +50,10 @@ internal fun RiskBreakdownPanel(
             )
             if (breakdown.radioCorroborationBonus > 0) Text(
                 "Поддержка локальной радио-оценки: +${breakdown.radioCorroborationBonus} внутренних баллов; радио не подтверждает подмену самостоятельно.",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+            )
+            if (breakdown.obdSpeedCorroborationBonus > 0) Text(
+                "Поддержка расхождения OBD-II/GNSS: +${breakdown.obdSpeedCorroborationBonus} внутренних баллов; OBD-II не подтверждает подмену самостоятельно.",
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             if (breakdown.gnssCorroborationBonus > 0) Text(
