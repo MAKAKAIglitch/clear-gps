@@ -32,6 +32,8 @@ enum class PositionFusionUpdateStatus {
     UPDATED,
     REINITIALIZED_AFTER_GAP,
     REANCHORED,
+    /** An older measurement was inserted into the retained timeline and the filter replayed. */
+    REPLAYED_OUT_OF_ORDER,
     REJECTED
 }
 
