@@ -76,8 +76,10 @@ When no position meets the publication policy, the intended safe behavior is to 
 
 - `SrtmHgtElevationStore.kt` reads locally supplied SRTM HGT tiles (1201 × 1201 or 3601 × 3601, signed big-endian samples) and bilinearly interpolates the requested coordinate. Data voids, missing tiles and malformed files return no estimate instead of a zero or guessed height.
 - Each result explicitly identifies the EGM96 geoid vertical datum. It is not interchangeable with GNSS ellipsoid height; no offset is guessed.
-- This is only an offline raster reader. It does not download tiles, manage a DEM pack, read Copernicus GeoTIFF, feed the live TrustEngine/fusion, or publish a height by itself. Storage UI, licensing/attribution for a packaged data set, datum conversion on older Android releases, and real-device validation remain separate work.
-
+- `SrtmHgtTilePackStore.kt` imports user-selected ZIP archives into the app-private `filesDir/dem/srtm` directory. Only validated tile basenames are written; each archive is staged first and is bounded by entry, tile and decompressed-size limits.
+- After a normal, trusted physical GPS fix, the service may sample the local DEM no more than once every 15 seconds on an IO dispatcher. The diagnostics panel reports the sampled elevation/datum or an unavailable result. Missing tiles and voids remain unavailable.
+- The diagnostic live store keeps only elevation, vertical datum and monotonic sample time in memory; it does not retain the query coordinate or write data to disk/logs. Data expires after two minutes and is cleared when monitoring stops or the position mode changes.
+- This is **diagnostics only**. DEM is not directly compared with GNSS ellipsoid altitude or raw barometric pressure, and it does not yet feed the live TrustEngine/fusion. Copernicus GeoTIFF, automatic downloads, datum conversion, calibrated vertical uncertainty and real-device validation remain separate work.
 ## Network and privacy boundaries
 
 - Radio observations and the local database stay in app-private storage by default.

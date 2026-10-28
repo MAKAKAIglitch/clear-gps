@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.os.IBinder
+import java.io.File
 import android.os.Handler
 import android.os.Looper
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.cleargps.core.FilterDecision
 import org.cleargps.core.FilterState
 import org.cleargps.core.GnssRfSnapshot
@@ -63,6 +65,9 @@ class LocationMonitorService : Service(), LocationListener {
     private var gnssMeasurementsRegistered = false
     private var serviceHeartbeatJob: Job? = null
     private var barometerReader: AndroidBarometerSensorReader? = null
+    private var demSampleJob: Job? = null
+    private var demSampleGeneration = 0L
+    private var lastDemSampleRequestElapsedRealtimeNanos = 0L
 
     // Ephemeral aggregate only; never persisted or exported.
     private var lastStatusMeanCn0DbHz: Double? = null
@@ -675,6 +680,11 @@ class LocationMonitorService : Service(), LocationListener {
                 lastRadioMockFixAtElapsedMs = 0L
             }
             if (modeChanged) {
+                demSampleGeneration += 1L
+                demSampleJob?.cancel()
+                demSampleJob = null
+                lastDemSampleRequestElapsedRealtimeNanos = 0L
+                SrtmElevationDiagnosticsLiveStore.clear()
                 prefs.edit()
                     .putBoolean(KEY_HAS_OUTPUT, false)
                     .putString(KEY_SOURCE, "NONE")
@@ -1309,6 +1319,11 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        demSampleGeneration += 1L
+        demSampleJob?.cancel()
+        demSampleJob = null
+        lastDemSampleRequestElapsedRealtimeNanos = 0L
+        SrtmElevationDiagnosticsLiveStore.clear()
         barometerReader?.stop()
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
         stopReplayRadioCapture()
@@ -1468,6 +1483,7 @@ class LocationMonitorService : Service(), LocationListener {
         )
         if (gpsFix && result.state == FilterState.NORMAL && result.source == "GPS" && !inZone) {
             lastTrustedGpsFixForObd2 = Location(location)
+            scheduleSrtmDiagnosticSample(location)
             // A fresh physical GPS fix supersedes the synthetic prediction.
             obd2FallbackPublished = false
         }
@@ -1531,6 +1547,48 @@ class LocationMonitorService : Service(), LocationListener {
         mock?.close()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+
+    /**
+     * Diagnostics-only DEM lookup. It accepts only the already-trusted physical GPS path above,
+     * runs raster I/O off the main thread, and keeps elevation/time only in process memory.
+     * It deliberately does not compare vertical datums or contribute to the live risk score.
+     */
+    private fun scheduleSrtmDiagnosticSample(location: Location) {
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        if (demSampleJob?.isActive == true) return
+        if (!SrtmElevationDiagnosticSamplingPolicy.shouldSample(
+                lastAttemptElapsedRealtimeNanos = lastDemSampleRequestElapsedRealtimeNanos,
+                nowElapsedRealtimeNanos = nowNanos
+            )
+        ) return
+
+        lastDemSampleRequestElapsedRealtimeNanos = nowNanos
+        val latitude = location.latitude
+        val longitude = location.longitude
+        val generation = ++demSampleGeneration
+        demSampleJob = serviceScope.launch {
+            try {
+                val sample = withContext(Dispatchers.IO) {
+                    runCatching {
+                        SrtmHgtElevationStore(File(filesDir, "dem/srtm"))
+                            .elevationAt(latitude, longitude)
+                    }.getOrNull()
+                }
+                if (isActive &&
+                    generation == demSampleGeneration &&
+                    prefs.getBoolean(KEY_MONITORING, false)
+                ) {
+                    SrtmElevationDiagnosticsLiveStore.update(
+                        sample = sample,
+                        sampledAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    )
+                }
+            } finally {
+                if (generation == demSampleGeneration) demSampleJob = null
+            }
+        }
     }
 
     private fun persistGnssReceptionDiagnostics() {

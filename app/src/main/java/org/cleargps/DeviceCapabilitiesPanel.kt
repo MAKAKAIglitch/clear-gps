@@ -229,6 +229,30 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
 
     val barometer = hasSensor(Sensor.TYPE_PRESSURE)
     val pressureSample = BarometerPressureLiveStore.snapshot(nowElapsedRealtimeNanos)
+    val demSample = SrtmElevationDiagnosticsLiveStore.snapshot(nowElapsedRealtimeNanos)
+    val demItem = when {
+        demSample == null -> DeviceCapabilityItem(
+            "Офлайн-рельеф (SRTM)",
+            "Нет свежей выборки",
+            "Импортируйте нужный SRTM HGT-тайл, включите мониторинг и дождитесь доверенного GPS-фикса. Чтение выполняется не чаще раза в 15 секунд; высота не влияет на уровень риска.",
+            null
+        )
+        demSample.elevationMeters == null || demSample.verticalDatum == null -> DeviceCapabilityItem(
+            "Офлайн-рельеф (SRTM)",
+            "Высота не извлечена",
+            "Для последнего доверенного GPS-фикса нет пригодной высоты: нужный тайл может отсутствовать, быть повреждённым или содержать void. Это не считается ошибкой GNSS и не повышает риск.",
+            null
+        )
+        else -> DeviceCapabilityItem(
+            "Офлайн-рельеф (SRTM)",
+            "Выборка доступна",
+            "Рельеф: " + String.format(java.util.Locale.ROOT, "%.1f", demSample.elevationMeters) +
+                " м над геоидом EGM96 · возраст " +
+                ((nowElapsedRealtimeNanos - demSample.sampledAtElapsedRealtimeNanos) / 1_000_000_000L) +
+                " с. Это отдельная DEM-выборка: высота GNSS/барометра не сравнивается с ней, и TrustEngine её пока не использует.",
+            true
+        )
+    }
     val accelerometer = hasSensor(Sensor.TYPE_ACCELEROMETER)
     val gyroscope = hasSensor(Sensor.TYPE_GYROSCOPE)
     val magnetometer = hasSensor(Sensor.TYPE_MAGNETIC_FIELD)
@@ -272,6 +296,7 @@ private fun readDeviceCapabilityReport(context: Context): DeviceCapabilityReport
                     else -> null
                 }
             ),
+            demItem,
             rttItem,
             DeviceCapabilityItem(
                 "Акселерометр",
