@@ -9,13 +9,13 @@ package org.cleargps
 internal object RadioMeasurementTimestampPolicy {
     fun oldestMatchingEvidenceTimestampNanos(
         signals: List<RadioSignal>,
-        matchedRadioTypes: Set<String>,
+        matchedRadioIdentifiers: Set<String>,
         collectedAtElapsedRealtimeNanos: Long
     ): Long? {
-        if (collectedAtElapsedRealtimeNanos <= 0L || matchedRadioTypes.isEmpty()) return null
+        if (collectedAtElapsedRealtimeNanos <= 0L || matchedRadioIdentifiers.isEmpty()) return null
 
         return signals.asSequence()
-            .filter { it.type in matchedRadioTypes }
+            .filter { it.identifier in matchedRadioIdentifiers }
             .mapNotNull { it.observedAtElapsedRealtimeNanos }
             .filter { timestamp -> timestamp > 0L && timestamp <= collectedAtElapsedRealtimeNanos }
             .minOrNull()
