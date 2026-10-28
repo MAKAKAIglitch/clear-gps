@@ -31,6 +31,16 @@ class LocationFilterEngine {
         reasons = decision.reasons.toList()
     )
 
+    /** Fresh physical GPS input, regardless of whether its trust assessment is currently NORMAL. */
+    internal fun hasRecentPhysicalGpsReference(nowElapsedRealtimeNanos: Long): Boolean {
+        val fix = gps ?: return false
+        if (!fix.provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) ||
+            nowElapsedRealtimeNanos <= 0L || fix.elapsedRealtimeNanos <= 0L
+        ) return false
+        val ageNanos = nowElapsedRealtimeNanos - fix.elapsedRealtimeNanos
+        return ageNanos in 0L..GPS_MAX_AGE_MS * 1_000_000L
+    }
+
     fun deviceBaselineSnapshot(): GnssDeviceBaselineSnapshot = detector.deviceBaselineSnapshot()
 
     /**
@@ -41,6 +51,19 @@ class LocationFilterEngine {
 
     fun restoreDeviceBaseline(snapshot: GnssDeviceBaselineSnapshot): Boolean =
         detector.restoreDeviceBaseline(snapshot)
+
+    internal fun observeRadioPosition(snapshot: RadioPositionSnapshot): FilterDecision {
+        detector.observeRadioPosition(snapshot)
+        if (signalOnlyWarningActive) return currentDecision()
+
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        decision = evaluate(nowNanos, false)
+        // A corroborated concern must never leave the cached physical GPS candidate publishable.
+        if (decision.source.equals("GPS", ignoreCase = true) && decision.state != FilterState.NORMAL) {
+            decision = decision.copy(outputLocation = null)
+        }
+        return currentDecision()
+    }
 
     internal fun observeGnssSignal(snapshot: GnssSignalSnapshot): FilterDecision? {
         detector.observeGnssSignal(snapshot)

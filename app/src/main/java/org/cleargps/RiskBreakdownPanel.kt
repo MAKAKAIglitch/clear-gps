@@ -37,11 +37,17 @@ internal fun RiskBreakdownPanel(
                 breakdown.motionReason, "Недостаточно свежих последовательных GPS-фиксов или корректных данных скорости.")
             BreakdownRow("GPS ↔ независимая сетевая позиция", breakdown.crossSourceEvaluated, breakdown.crossSourceScore,
                 breakdown.crossSourceReason, "Сетевая позиция отсутствует, устарела или её точности недостаточно для сравнения.")
+            BreakdownRow("GPS ↔ локальная радио-оценка", breakdown.radioPositionEvaluated, breakdown.radioPositionScore,
+                breakdown.radioPositionReason, "Нет достаточно свежей радио-оценки с приемлемой точностью для сравнения.")
             BreakdownRow("Сырые GNSS/RF-признаки", breakdown.gnssSignalEvaluated, breakdown.gnssSignalScore,
                 breakdown.gnssSignalReason, "Нет свежих пригодных сигнальных метрик GNSS.")
 
             if (breakdown.motionCrossSourceBonus > 0) Text(
                 "Подтверждение независимым источником: +${breakdown.motionCrossSourceBonus} внутренних баллов за совместное срабатывание траектории и расхождения источников.",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+            )
+            if (breakdown.radioCorroborationBonus > 0) Text(
+                "Поддержка локальной радио-оценки: +${breakdown.radioCorroborationBonus} внутренних баллов; радио не подтверждает подмену самостоятельно.",
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
             if (breakdown.gnssCorroborationBonus > 0) Text(

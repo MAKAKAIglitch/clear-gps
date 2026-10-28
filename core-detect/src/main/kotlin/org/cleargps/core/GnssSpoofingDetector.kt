@@ -31,6 +31,14 @@ data class GnssSignalSnapshot(
     val strongSignalCount: Int = 0
 )
 
+/** Ephemeral local radio-position reference; it is never persisted by the detector. */
+data class RadioPositionSnapshot(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val elapsedRealtimeNanos: Long
+)
+
 /** Aggregate RF metrics only; no location, wall-clock timestamp, or raw measurement payload. */
 data class GnssRfSnapshot(
     val elapsedRealtimeNanos: Long,
@@ -54,10 +62,14 @@ data class RiskBreakdown(
     val crossSourceEvaluated: Boolean = false,
     val crossSourceScore: Int = 0,
     val crossSourceReason: String? = null,
+    val radioPositionEvaluated: Boolean = false,
+    val radioPositionScore: Int = 0,
+    val radioPositionReason: String? = null,
     val gnssSignalEvaluated: Boolean = false,
     val gnssSignalScore: Int = 0,
     val gnssSignalReason: String? = null,
     val motionCrossSourceBonus: Int = 0,
+    val radioCorroborationBonus: Int = 0,
     val gnssCorroborationBonus: Int = 0,
     val combinedBeforeZone: Int = 0,
     val zoneFloorActive: Boolean = false,
@@ -70,8 +82,10 @@ data class RiskBreakdown(
     init {
         require(motionScore in 0..100)
         require(crossSourceScore in 0..100)
+        require(radioPositionScore in 0..50)
         require(gnssSignalScore in 0..100)
         require(motionCrossSourceBonus in 0..20)
+        require(radioCorroborationBonus in 0..15)
         require(gnssCorroborationBonus in 0..15)
         require(combinedBeforeZone >= 0)
         require(rawCombinedScore in 0..100)
@@ -92,6 +106,10 @@ data class SpoofingAssessment(
  */
 class GnssSpoofingDetector {
     private var previousGps: PositionFix? = null
+    private var currentRadioPosition: RadioPositionSnapshot? = null
+    private var lastRadioPositionAssessedAtNanos = 0L
+    private var lastRadioPositionDisagreementAtNanos = 0L
+    private var radioPositionDisagreementStreak = 0
     private var currentSignal: GnssSignalSnapshot? = null
     private var recentSignalAlertUntilNanos = 0L
     private var recentSignalAlertAtNanos = 0L
@@ -104,6 +122,21 @@ class GnssSpoofingDetector {
     private var highRiskStreak = 0
     private var cleanStreak = 0
     private val deviceBaseline = GnssDeviceBaseline()
+
+    /**
+     * Accepts only a newer, validated local radio fix. Its disagreement is supporting evidence:
+     * this source is deliberately capped below the detector's standalone confirmation threshold.
+     */
+    fun observeRadioPosition(snapshot: RadioPositionSnapshot) {
+        if (snapshot.elapsedRealtimeNanos <= 0L ||
+            !snapshot.latitude.isFinite() || snapshot.latitude !in -90.0..90.0 ||
+            !snapshot.longitude.isFinite() || snapshot.longitude !in -180.0..180.0 ||
+            !snapshot.accuracyMeters.isFinite() || snapshot.accuracyMeters !in 1.0..250.0
+        ) return
+        val old = currentRadioPosition
+        if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
+        currentRadioPosition = snapshot
+    }
 
     fun observeGnssSignal(snapshot: GnssSignalSnapshot) {
         if (snapshot.elapsedRealtimeNanos <= 0L ||
@@ -280,6 +313,9 @@ class GnssSpoofingDetector {
         var crossSourceScore = 0
         var crossSourceReason: String? = null
         var crossSourceEvaluated = false
+        var radioPositionScore = 0
+        var radioPositionReason: String? = null
+        var radioPositionEvaluated = false
         var signalScore = 0
         var signalReason: String? = null
         var signalEvaluated = false
@@ -382,6 +418,57 @@ class GnssSpoofingDetector {
             }
         }
 
+        val radioPosition = currentRadioPosition
+        if (radioPosition != null &&
+            isRadioPositionFresh(radioPosition, nowElapsedRealtimeNanos) &&
+            goodAccuracy(gps, 150.0) &&
+            abs(gps.elapsedRealtimeNanos - radioPosition.elapsedRealtimeNanos) <= RADIO_GNSS_PAIRING_WINDOW_NANOS
+        ) {
+            radioPositionEvaluated = true
+            val separation = distanceMeters(
+                gps.latitude, gps.longitude, radioPosition.latitude, radioPosition.longitude
+            )
+            val gpsAccuracy = gps.accuracyMeters ?: Double.MAX_VALUE
+            val radioAccuracy = radioPosition.accuracyMeters
+            val allowedSeparation = max(150.0, 3.0 * sqrt(
+                gpsAccuracy * gpsAccuracy + radioAccuracy * radioAccuracy
+            ))
+            if (radioPosition.elapsedRealtimeNanos > lastRadioPositionAssessedAtNanos) {
+                if (separation > allowedSeparation) {
+                    val interval = radioPosition.elapsedRealtimeNanos - lastRadioPositionDisagreementAtNanos
+                    radioPositionDisagreementStreak = if (
+                        radioPositionDisagreementStreak > 0 &&
+                        interval in RADIO_OBSERVATION_MIN_INTERVAL_NANOS..RADIO_OBSERVATION_MAX_INTERVAL_NANOS
+                    ) {
+                        (radioPositionDisagreementStreak + 1).coerceAtMost(3)
+                    } else {
+                        1
+                    }
+                    lastRadioPositionDisagreementAtNanos = radioPosition.elapsedRealtimeNanos
+                } else {
+                    radioPositionDisagreementStreak = 0
+                    lastRadioPositionDisagreementAtNanos = 0L
+                }
+                lastRadioPositionAssessedAtNanos = radioPosition.elapsedRealtimeNanos
+            }
+            if (separation > allowedSeparation) {
+                radioPositionScore = when (radioPositionDisagreementStreak) {
+                    0, 1 -> 25
+                    2 -> 35
+                    else -> 45
+                }
+                val reason = if (radioPositionDisagreementStreak >= 3) {
+                    "Повторяются расхождения физического GPS и локальной радио-оценки"
+                } else {
+                    "GPS расходится с локальной радио-оценкой сильнее совокупной погрешности"
+                }
+                radioPositionReason = reason
+                evidence[reason] = radioPositionScore
+            } else {
+                radioPositionReason = "GPS и локальная радио-оценка согласуются в пределах погрешности"
+            }
+        }
+
         val signal = currentSignal
         if (signal != null && isSignalFresh(signal, nowElapsedRealtimeNanos)) {
             signalEvaluated = true
@@ -401,11 +488,18 @@ class GnssSpoofingDetector {
         signalScore = signalScore.coerceAtMost(35)
         if (signalScore > 0 && signalReason != null) evidence[signalReason] = signalScore
 
-        var rawScore = max(motionScore, crossSourceScore)
+        var rawScore = max(max(motionScore, crossSourceScore), radioPositionScore)
         val motionCrossSourceBonus = if (motionScore > 0 && crossSourceScore > 0) 20 else 0
         rawScore += motionCrossSourceBonus
+        val radioCorroborationBonus =
+            if (radioPositionScore > 0 &&
+                (motionScore > 0 || crossSourceScore > 0 || signalScore >= 10)
+            ) min(15, radioPositionScore / 3) else 0
+        if (radioCorroborationBonus > 0) rawScore += radioCorroborationBonus
         val gnssCorroborationBonus =
-            if (signalScore > 0 && (motionScore > 0 || crossSourceScore > 0)) min(15, signalScore) else 0
+            if (signalScore > 0 &&
+                (motionScore > 0 || crossSourceScore > 0 || radioPositionScore > 0)
+            ) min(15, signalScore) else 0
         if (gnssCorroborationBonus > 0) rawScore += gnssCorroborationBonus
         else if (signalScore > 0) rawScore = max(rawScore, signalScore)
         val combinedBeforeZone = rawScore
@@ -420,7 +514,9 @@ class GnssSpoofingDetector {
         // confirmed alert. Require a physically extreme trajectory or independent signal evidence.
         val corroborated = (motionScore >= 76 && crossSourceScore > 0) ||
             (crossSourceScore > 0 && signalScore >= 10) ||
-            (motionScore >= 55 && signalScore >= 10)
+            (motionScore >= 55 && signalScore >= 10) ||
+            (radioPositionScore >= 35 &&
+                (motionScore >= 55 || crossSourceScore > 0 || signalScore >= 10))
 
         if (inRiskZone) {
             active = true
@@ -484,10 +580,14 @@ class GnssSpoofingDetector {
             crossSourceEvaluated = crossSourceEvaluated,
             crossSourceScore = crossSourceScore,
             crossSourceReason = crossSourceReason,
+            radioPositionEvaluated = radioPositionEvaluated,
+            radioPositionScore = radioPositionScore,
+            radioPositionReason = radioPositionReason,
             gnssSignalEvaluated = signalEvaluated,
             gnssSignalScore = signalScore,
             gnssSignalReason = signalReason,
             motionCrossSourceBonus = motionCrossSourceBonus,
+            radioCorroborationBonus = radioCorroborationBonus,
             gnssCorroborationBonus = gnssCorroborationBonus,
             combinedBeforeZone = combinedBeforeZone,
             zoneFloorActive = inRiskZone,
@@ -513,8 +613,16 @@ class GnssSpoofingDetector {
         signal.elapsedRealtimeNanos > 0L && now >= signal.elapsedRealtimeNanos &&
             now - signal.elapsedRealtimeNanos <= 10_000_000_000L
 
+    private fun isRadioPositionFresh(snapshot: RadioPositionSnapshot, now: Long): Boolean =
+        snapshot.elapsedRealtimeNanos > 0L && now >= snapshot.elapsedRealtimeNanos &&
+            now - snapshot.elapsedRealtimeNanos <= RADIO_POSITION_MAX_AGE_NANOS
+
     companion object {
         private const val EARTH_RADIUS_METERS = 6_371_000.0
+        private const val RADIO_POSITION_MAX_AGE_NANOS = 45_000_000_000L
+        private const val RADIO_GNSS_PAIRING_WINDOW_NANOS = 45_000_000_000L
+        private const val RADIO_OBSERVATION_MIN_INTERVAL_NANOS = 5_000_000_000L
+        private const val RADIO_OBSERVATION_MAX_INTERVAL_NANOS = 90_000_000_000L
 
         internal fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
             val p1 = Math.toRadians(lat1)

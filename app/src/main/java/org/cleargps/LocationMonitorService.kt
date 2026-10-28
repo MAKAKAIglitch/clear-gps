@@ -39,6 +39,7 @@ import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplaySatellite
+import org.cleargps.core.RadioPositionSnapshot
 import org.cleargps.fusion.HorizontalAccelerationSample
 import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
@@ -1307,7 +1308,7 @@ class LocationMonitorService : Service(), LocationListener {
                 // Android throttles Wi-Fi scans. Do not turn the configured fix interval into a
                 // one-second radio scan loop; keep this source deliberately low cadence.
                 delay(maxOf(configuredUpdateIntervalMillis(), RadioFixReliability.WIFI_MIN_REQUEST_INTERVAL_MS))
-                if (!radioFusionCurrentlyAllowed()) continue
+                if (!radioScanEvidenceCurrentlyAllowed()) continue
 
                 try {
                     val scan = repository.scan(
@@ -1319,13 +1320,14 @@ class LocationMonitorService : Service(), LocationListener {
                         useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
                     )
                     val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-                    val measurement = scan.estimate?.let {
+                    val radioEstimate = scan.estimate
+                    val measurement = radioEstimate?.let {
                         PositionFusionLocationAdapter.radioMeasurement(it, nowElapsedRealtimeNanos)
                     }
-                    if (measurement == null || !radioFusionCurrentlyAllowed()) {
+                    if (measurement == null || radioEstimate == null) {
                         DiagnosticLogStore.log(
                             this@LocationMonitorService, "FUSION",
-                            "Radio measurement skipped: no sufficiently fresh, timestamped local estimate or GPS trust is no longer NORMAL"
+                            "Radio measurement skipped: no sufficiently fresh, timestamped local estimate"
                         )
                         continue
                     }
@@ -1339,6 +1341,38 @@ class LocationMonitorService : Service(), LocationListener {
                         )
                         continue
                     }
+
+                    // This is a separate supporting input. It does not initialize position fusion.
+                    val radioDecision = engine.observeRadioPosition(
+                        RadioPositionSnapshot(
+                            latitude = measurement.latitude,
+                            longitude = measurement.longitude,
+                            accuracyMeters = measurement.horizontalUncertaintyMeters,
+                            elapsedRealtimeNanos = measurement.elapsedRealtimeNanos
+                        )
+                    )
+                    persistRadioEvidenceDecision(radioDecision)
+                    if (radioDecision.state != FilterState.NORMAL) {
+                        positionFusionEngine.reset()
+                        val mockWasActive = prefs.getBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+                        mock?.disable()
+                        prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+                        saveServiceStatus("GPS/radio disagreement: location output paused while trust is re-evaluated")
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "FUSION",
+                            "Radio disagreement contributed to the trust decision: state=${radioDecision.state}, " +
+                                "risk=${radioDecision.riskScore}; position fusion and mock output paused",
+                            "WARN"
+                        )
+                        if (mockWasActive) {
+                            getSystemService(NotificationManager::class.java).notify(
+                                NOTIFICATION_ID,
+                                notification("GNSS / radio disagreement · risk ${radioDecision.riskScore}")
+                            )
+                        }
+                        continue
+                    }
+                    if (!radioFusionCurrentlyAllowed()) continue
 
                     val update = positionFusionEngine.update(measurement)
                     if (update.status == org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED) {
@@ -1427,6 +1461,38 @@ class LocationMonitorService : Service(), LocationListener {
             samples = samples,
             nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
         ) ?: estimate
+    }
+
+    /**
+     * Radio scans may still supply independent diagnostics while GPS trust is being re-evaluated,
+     * but only when Auto mode and a recent physical GPS anchor are present.
+     */
+    private fun radioScanEvidenceCurrentlyAllowed(): Boolean {
+        if (!prefs.getBoolean(KEY_MONITORING, false) ||
+            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto"
+        ) return false
+        val current = engine.currentDecision()
+        if (current.inRiskZone || prefs.getBoolean(KEY_IN_ZONE, false)) return false
+        // Use the latest physical receiver callback, not only the last trusted fix: the latter
+        // stops refreshing precisely when GNSS becomes suspicious, but fresh evidence is still
+        // needed to compare successive radio scans during re-evaluation.
+        return engine.hasRecentPhysicalGpsReference(SystemClock.elapsedRealtimeNanos())
+    }
+
+    private fun persistRadioEvidenceDecision(result: FilterDecision) {
+        if (result.state != FilterState.NORMAL || result.source == "GNSS_SIGNAL_ONLY") {
+            persistDecision(result)
+            return
+        }
+        // Refresh trust metadata without replacing a newer fused map coordinate with the raw GPS fix.
+        prefs.edit()
+            .putString(KEY_STATE, result.state.name)
+            .putInt(KEY_SCORE, result.riskScore)
+            .putBoolean(KEY_IN_ZONE, result.inRiskZone)
+            .putString(KEY_SOURCE, result.source)
+            .putString(KEY_REASONS, result.reasons.joinToString("\n"))
+            .apply()
+        RiskBreakdownStore.write(prefs, result.riskBreakdown, SystemClock.elapsedRealtimeNanos())
     }
 
     private fun radioFusionCurrentlyAllowed(): Boolean {

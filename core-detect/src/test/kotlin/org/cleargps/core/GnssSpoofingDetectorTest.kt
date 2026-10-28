@@ -24,6 +24,83 @@ class GnssSpoofingDetectorTest {
         speedAccuracyMetersPerSecond = speedAccuracy
     )
 
+    @Test fun singleRadioDisagreementIsWeakSupportingEvidenceAndCannotConfirmSpoofing() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        detector.observeRadioPosition(
+            RadioPositionSnapshot(55.0, 37.01, 30.0, 2_000_000_000L)
+        )
+
+        val result = detector.assess(
+            fix(55.0, 37.00001, 2), null, false, 2_200_000_000L, true
+        )
+
+        assertFalse(result.confirmed)
+        assertTrue(result.score in 1..59)
+        assertEquals(25, result.breakdown.radioPositionScore)
+        assertTrue(result.breakdown.radioPositionEvaluated)
+    }
+
+    @Test fun theSameRadioTimestampCannotArtificiallyIncreaseTheDisagreementStreak() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        val oneScan = RadioPositionSnapshot(55.0, 37.01, 30.0, 2_000_000_000L)
+        detector.observeRadioPosition(oneScan)
+        val first = detector.assess(
+            fix(55.0, 37.00001, 2), null, false, 2_200_000_000L, true
+        )
+        detector.observeRadioPosition(oneScan)
+        val laterGps = detector.assess(
+            fix(55.0, 37.00002, 3), null, false, 3_200_000_000L, true
+        )
+
+        assertEquals(25, first.breakdown.radioPositionScore)
+        assertEquals(25, laterGps.breakdown.radioPositionScore)
+        assertFalse(laterGps.confirmed)
+    }
+
+    @Test fun repeatedDistinctRadioDisagreementsIncreaseOnlyCappedSupportingScore() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+
+        val expectedScores = listOf(25, 35, 45)
+        val sampleTimes = listOf(2L, 32L, 62L)
+        val results = sampleTimes.map { seconds ->
+            detector.observeRadioPosition(
+                RadioPositionSnapshot(55.0, 37.01, 30.0, seconds * 1_000_000_000L)
+            )
+            detector.assess(
+                fix(55.0, 37.00001, seconds), null, false,
+                seconds * 1_000_000_000L + 200_000_000L, true
+            )
+        }
+
+        assertEquals(expectedScores, results.map { it.breakdown.radioPositionScore })
+        assertFalse(results.last().confirmed)
+        assertTrue(results.last().score <= 50)
+    }
+
+    @Test fun staleOrUnreliableRadioPositionIsIgnored() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        detector.observeRadioPosition(
+            RadioPositionSnapshot(55.0, 37.01, 500.0, 2_000_000_000L)
+        )
+        val coarse = detector.assess(
+            fix(55.0, 37.00001, 2), null, false, 2_200_000_000L, true
+        )
+        assertEquals(0, coarse.breakdown.radioPositionScore)
+
+        detector.observeRadioPosition(
+            RadioPositionSnapshot(55.0, 37.01, 30.0, 3_000_000_000L)
+        )
+        val stale = detector.assess(
+            fix(55.0, 37.00001, 3), null, false, 50_000_000_001L, true
+        )
+        assertEquals(0, stale.breakdown.radioPositionScore)
+        assertFalse(stale.confirmed)
+    }
+
     @Test fun plausibleWalkingOrDrivingTrackDoesNotTrigger() {
         val detector = GnssSpoofingDetector()
         detector.assess(fix(55.0, 37.0, 1, speed = 10.0),
