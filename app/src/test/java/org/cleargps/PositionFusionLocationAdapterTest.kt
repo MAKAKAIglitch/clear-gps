@@ -154,6 +154,63 @@ class PositionFusionLocationAdapterTest {
         ))
     }
 
+    @Test
+    fun freshRadioEstimateUsesItsOriginalMonotonicEvidenceTimestamp() {
+        val measuredAt = 10_000_000_000L
+        val estimate = RadioEstimate(
+            latitude = 52.1,
+            longitude = 5.1,
+            accuracyMeters = 25.0,
+            updatedAt = 1_000L,
+            fingerprint = "radio-fixture",
+            matchedCount = 3,
+            matchedRadioTypes = setOf("wifi", "cell"),
+            measurementElapsedRealtimeNanos = measuredAt
+        )
+
+        val measurement = PositionFusionLocationAdapter.radioMeasurement(
+            estimate = estimate,
+            nowElapsedRealtimeNanos = measuredAt + 1_000_000_000L
+        )
+
+        assertNotNull(measurement)
+        assertEquals(PositionMeasurementSource.RADIO, measurement!!.source)
+        assertEquals(measuredAt, measurement.elapsedRealtimeNanos)
+        assertEquals(25.0, measurement.horizontalUncertaintyMeters, 0.000001)
+        assertEquals(52.1, measurement.latitude, 0.000001)
+        assertEquals(5.1, measurement.longitude, 0.000001)
+    }
+
+    @Test
+    fun radioFusionRejectsMissingStaleFutureOrInsufficientEvidence() {
+        val measuredAt = 10_000_000_000L
+        val now = measuredAt + 1_000_000_000L
+        val estimate = RadioEstimate(
+            latitude = 52.1,
+            longitude = 5.1,
+            accuracyMeters = 25.0,
+            updatedAt = 1_000L,
+            fingerprint = "radio-fixture",
+            matchedCount = 3,
+            matchedRadioTypes = setOf("wifi"),
+            measurementElapsedRealtimeNanos = measuredAt
+        )
+
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(
+            measurementElapsedRealtimeNanos = null
+        ), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate, measuredAt +
+            PositionFusionLocationAdapter.MAX_RADIO_EVIDENCE_AGE_NANOS + 1L))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(
+            measurementElapsedRealtimeNanos = now + 1L
+        ), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(matchedCount = 1), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(matchedRadioTypes = emptySet()), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(accuracyMeters = Double.NaN), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(accuracyMeters = 5_001.0), now))
+        assertNull(PositionFusionLocationAdapter.radioMeasurement(estimate.copy(latitude = 91.0), now))
+    }
+
     private fun gpsLocation(accuracyMeters: Float) = Location(LocationManager.GPS_PROVIDER).apply {
         latitude = 52.0
         longitude = 5.0
