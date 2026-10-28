@@ -38,6 +38,24 @@ class RadioMeasurementTimestampPolicyTest {
     }
 
     @Test
+    fun canonicalizesMacIdentifiersBeforeSelectingEvidenceTimestamp() {
+        val result = RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
+            signals = listOf(
+                RadioSignal(
+                    "wifi",
+                    "AA-BB-CC-DD-EE-FF",
+                    -58,
+                    observedAtElapsedRealtimeNanos = 6_000_000_000L
+                )
+            ),
+            matchedRadioIdentifiers = setOf("aa:bb:cc:dd:ee:ff"),
+            collectedAtElapsedRealtimeNanos = 10_000_000_000L
+        )
+
+        assertEquals(6_000_000_000L, result)
+    }
+
+    @Test
     fun returnsNoTimestampWhenEvidenceOrClockIsUnavailable() {
         val signals = listOf(
             RadioSignal("wifi", "unknown-time", -60),
