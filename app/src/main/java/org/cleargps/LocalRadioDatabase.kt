@@ -62,6 +62,8 @@ data class RadioEstimate(
     val fingerprint: String, val fallbackUsed: Boolean = false, val matchedCount: Int = 0,
     /** Radio types that actually contributed matched identifiers to this estimate. */
     val matchedRadioTypes: Set<String> = emptySet(),
+    /** Ephemeral identifiers matched by the current scan; intentionally not persisted. */
+    val matchedRadioIdentifiers: Set<String> = emptySet(),
     /**
      * Monotonic timestamp of the oldest matched live radio observation, when available.
      * This is process/boot-local evidence only: it is never persisted or reconstructed from wall time.
@@ -541,7 +543,8 @@ internal fun lookupRadioFingerprintPosition(
             fingerprint = radioSignalHash(best.matchedSignals),
             fallbackUsed = false,
             matchedCount = best.matchedSignals.size,
-            matchedRadioTypes = best.matchedSignals.map { it.type }.toSet()
+            matchedRadioTypes = best.matchedSignals.map { it.type }.toSet(),
+            matchedRadioIdentifiers = best.matchedSignals.map { it.identifier }.toSet()
         ),
         ambiguous = ambiguous
     )
@@ -669,7 +672,8 @@ internal fun estimateRadioAnchorPosition(
         fingerprint = radioSignalHash(inliers.map { it.signal }),
         fallbackUsed = true,
         matchedCount = inliers.size,
-        matchedRadioTypes = inliers.map { it.signal.type }.toSet()
+        matchedRadioTypes = inliers.map { it.signal.type }.toSet(),
+        matchedRadioIdentifiers = inliers.map { it.signal.identifier }.toSet()
     )
 }
 
