@@ -6,7 +6,7 @@ import org.junit.Test
 
 class RadioMeasurementTimestampPolicyTest {
     @Test
-    fun selectsOldestRealTimestampOnlyFromMatchedRadioTypes() {
+    fun selectsOldestRealTimestampOnlyFromExactMatchedIdentifiers() {
         val collectedAt = 10_000_000_000L
         val signals = listOf(
             RadioSignal("wifi", "matched-wifi-newer", -50,
