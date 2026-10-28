@@ -45,6 +45,22 @@ class RadioFusionZonePolicyTest {
     }
 
     @Test
+    fun failsClosedWhenAnEnabledRiskZoneIsMalformed() {
+        assertFalse(RadioFusionZonePolicy.allowsFusion(
+            measurement(latitude = 52.01, longitude = 5.01, accuracy = 20.0),
+            listOf(listOf(
+                ZonePoint(52.0, 5.0),
+                ZonePoint(52.001, 5.001),
+                ZonePoint(Double.NaN, 5.0)
+            ))
+        ))
+        assertFalse(RadioFusionZonePolicy.allowsFusion(
+            measurement(latitude = 52.01, longitude = 5.01, accuracy = 20.0),
+            listOf(listOf(ZonePoint(52.0, 5.0), ZonePoint(52.001, 5.001)))
+        ))
+    }
+
+    @Test
     fun rejectsInvalidCoordinatesOrUncertainty() {
         assertFalse(RadioFusionZonePolicy.allowsFusion(
             measurement(latitude = 91.0, longitude = 5.0, accuracy = 20.0),
