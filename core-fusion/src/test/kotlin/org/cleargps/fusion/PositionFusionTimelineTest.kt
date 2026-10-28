@@ -43,7 +43,15 @@ class PositionFusionTimelineTest {
 
         val before = timeline.estimate(seconds(3))
         val duplicate = timeline.update(measurement(0.0, 3, PositionMeasurementSource.RADIO))
-        val tooOld = timeline.update(measurement(eastwardLongitude(4.0), 1, PositionMeasurementSource.RADIO))
+        val tooOld = timeline.update(
+            PositionMeasurement(
+                source = PositionMeasurementSource.RADIO,
+                latitude = 52.0,
+                longitude = eastwardLongitude(4.0),
+                horizontalUncertaintyMeters = 10.0,
+                elapsedRealtimeNanos = 1L
+            )
+        )
         val after = timeline.estimate(seconds(3))
 
         assertEquals(PositionFusionUpdateStatus.REJECTED, duplicate.status)
