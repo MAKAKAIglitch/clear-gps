@@ -85,6 +85,38 @@ class ImuMotionSamplePolicyTest {
         assertTrue(ImuMotionLiveStore.snapshot(0L) == null)
     }
 
+    @Test
+    fun sampleHistoryReturnsOnlyChronologicalSamplesInTheRequestedTimeRange() {
+        ImuMotionLiveStore.publish(sample(100L))
+        ImuMotionLiveStore.publish(sample(200L))
+        ImuMotionLiveStore.publish(sample(300L))
+
+        val result = ImuMotionLiveStore.samplesSince(
+            afterElapsedRealtimeNanos = 150L,
+            nowElapsedRealtimeNanos = 300L,
+            maximumAgeNanos = 150L
+        )
+
+        assertEquals(listOf(200L, 300L), result.map { it.elapsedRealtimeNanos })
+    }
+
+    @Test
+    fun sampleHistoryStaysBoundedAndDropsOldestEntries() {
+        for (timestamp in 1L..140L) {
+            ImuMotionLiveStore.publish(sample(timestamp))
+        }
+
+        val result = ImuMotionLiveStore.samplesSince(
+            afterElapsedRealtimeNanos = 1L,
+            nowElapsedRealtimeNanos = 140L,
+            maximumAgeNanos = 1_000L
+        )
+
+        assertEquals(128, result.size)
+        assertEquals(13L, result.first().elapsedRealtimeNanos)
+        assertEquals(140L, result.last().elapsedRealtimeNanos)
+    }
+
     private fun sample(timestampNanos: Long) = ImuMotionSamplePolicy.fromHorizontalAcceleration(
         eastMetersPerSecondSquared = 0.25,
         northMetersPerSecondSquared = -0.5,

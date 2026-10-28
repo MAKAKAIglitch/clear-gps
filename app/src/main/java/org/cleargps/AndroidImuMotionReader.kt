@@ -78,17 +78,34 @@ internal object ImuMotionSamplePolicy {
     private const val MAXIMUM_ROTATION_ACCURACY = 3
 }
 
-/** Process-memory-only, single-sample store. It intentionally has no history or persistence. */
+/** Bounded, process-memory-only IMU history. Samples are never written to disk or exported. */
 internal object ImuMotionLiveStore {
+    private const val MAX_HISTORY_SAMPLES = 128
+    private const val HISTORY_RETENTION_NANOS = 5_000_000_000L
+    const val DEFAULT_HISTORY_SAMPLE_MAXIMUM_AGE_NANOS = 2_250_000_000L
+
     @Volatile
     private var latest: ImuHorizontalAccelerationSample? = null
+    private val history = mutableListOf<ImuHorizontalAccelerationSample>()
 
     @Synchronized
     fun publish(sample: ImuHorizontalAccelerationSample) {
-        val previous = latest
-        if (previous == null || sample.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
-            latest = sample
+        if (ImuMotionSamplePolicy.freshSample(
+                sample,
+                nowElapsedRealtimeNanos = sample.elapsedRealtimeNanos,
+                maximumAgeNanos = 0L
+            ) == null
+        ) return
+        val previous = history.lastOrNull()
+        if (previous != null && sample.elapsedRealtimeNanos <= previous.elapsedRealtimeNanos) return
+        history += sample
+        while (history.size > MAX_HISTORY_SAMPLES ||
+            (history.size > 1 &&
+                history.last().elapsedRealtimeNanos - history.first().elapsedRealtimeNanos > HISTORY_RETENTION_NANOS)
+        ) {
+            history.removeAt(0)
         }
+        latest = history.lastOrNull()
     }
 
     fun snapshot(
@@ -97,16 +114,41 @@ internal object ImuMotionLiveStore {
     ): ImuHorizontalAccelerationSample? =
         ImuMotionSamplePolicy.freshSample(latest, nowElapsedRealtimeNanos, maximumAgeNanos)
 
+    /**
+     * Returns a chronological slice for bounded dead reckoning. Every sample is revalidated against
+     * the current monotonic clock. Caller-side logic must still reject gaps and excessive motion.
+     */
+    fun samplesSince(
+        afterElapsedRealtimeNanos: Long,
+        nowElapsedRealtimeNanos: Long,
+        maximumAgeNanos: Long = DEFAULT_HISTORY_SAMPLE_MAXIMUM_AGE_NANOS
+    ): List<ImuHorizontalAccelerationSample> {
+        if (afterElapsedRealtimeNanos <= 0L || nowElapsedRealtimeNanos <= 0L ||
+            afterElapsedRealtimeNanos > nowElapsedRealtimeNanos || maximumAgeNanos < 0L
+        ) return emptyList()
+        val retained = synchronized(this) { history.toList() }
+        return retained.asSequence()
+            .filter {
+                it.elapsedRealtimeNanos >= afterElapsedRealtimeNanos &&
+                    it.elapsedRealtimeNanos <= nowElapsedRealtimeNanos
+            }
+            .mapNotNull {
+                ImuMotionSamplePolicy.freshSample(it, nowElapsedRealtimeNanos, maximumAgeNanos)
+            }
+            .toList()
+    }
+
     @Synchronized
     fun clear() {
+        history.clear()
         latest = null
     }
 }
 
 /**
- * Low-rate diagnostic-only IMU reader. The rotation vector maps device-frame linear acceleration
- * into Android's east/north/up frame. It runs only while monitoring is active; it never estimates
- * coordinates or changes the GNSS trust score.
+ * Low-rate IMU reader. The rotation vector maps device-frame linear acceleration into Android's
+ * east/north/up frame. Samples stay in bounded process memory and may support a short position
+ * prediction; they never create an absolute anchor or change the GNSS trust score.
  */
 internal class AndroidImuMotionReader(context: Context) : SensorEventListener {
     private val sensorManager =

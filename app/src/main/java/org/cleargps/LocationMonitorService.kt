@@ -39,6 +39,8 @@ import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
 import org.cleargps.core.GnssReplayMeasurement
 import org.cleargps.core.GnssReplaySatellite
+import org.cleargps.fusion.HorizontalAccelerationSample
+import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
 
 private data class LastResortFallback(val source: String, val location: Location)
@@ -704,7 +706,7 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
-            // Auxiliary sensors are sampled only during monitoring. IMU is diagnostics-only for now.
+            // IMU may adjust a short prediction, but never creates a position anchor or trust signal.
             barometerReader?.start()
             imuMotionReader?.start()
             configureReplayRadioCapture(nextPositionMode)
@@ -1349,7 +1351,8 @@ class LocationMonitorService : Service(), LocationListener {
 
                     val physicalGpsTemplate = lastTrustedGpsFixForObd2 ?: continue
                     val publishAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-                    val fusedEstimate = positionFusionEngine.estimate(publishAtElapsedRealtimeNanos) ?: continue
+                    val fusedEstimate = positionFusionEngine.estimate(publishAtElapsedRealtimeNanos)
+                        ?.let { motionCompensatedEstimate(it, publishAtElapsedRealtimeNanos) } ?: continue
                     val fusedLocation = PositionFusionLocationAdapter.toLocation(
                         estimate = fusedEstimate,
                         template = physicalGpsTemplate,
@@ -1396,6 +1399,34 @@ class LocationMonitorService : Service(), LocationListener {
                 }
             }
         }
+    }
+
+    /**
+     * Corrects only the already time-bounded constant-velocity prediction with fresh world-frame
+     * IMU samples. Missing, stale, gapped or implausible IMU data leaves the base estimate intact.
+     * IMU never becomes an absolute measurement and never changes TrustEngine state.
+     */
+    private fun motionCompensatedEstimate(
+        estimate: org.cleargps.fusion.FusedPosition,
+        nowElapsedRealtimeNanos: Long
+    ): org.cleargps.fusion.FusedPosition {
+        val samples = ImuMotionLiveStore.samplesSince(
+            afterElapsedRealtimeNanos = estimate.lastMeasurementElapsedRealtimeNanos,
+            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
+            maximumAgeNanos = PositionFusionMotionModel.MAXIMUM_PREDICTION_AGE_NANOS +
+                PositionFusionMotionModel.MAXIMUM_SAMPLE_GAP_NANOS
+        ).map {
+            HorizontalAccelerationSample(
+                eastMetersPerSecondSquared = it.eastMetersPerSecondSquared,
+                northMetersPerSecondSquared = it.northMetersPerSecondSquared,
+                elapsedRealtimeNanos = it.elapsedRealtimeNanos
+            )
+        }
+        return PositionFusionMotionModel.compensate(
+            estimate = estimate,
+            samples = samples,
+            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+        ) ?: estimate
     }
 
     private fun radioFusionCurrentlyAllowed(): Boolean {
@@ -1658,6 +1689,7 @@ class LocationMonitorService : Service(), LocationListener {
                     val fusionUpdate = positionFusionEngine.update(fusionInput)
                     val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     val fusedEstimate = positionFusionEngine.estimate(nowElapsedRealtimeNanos)
+                ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) }
                     val fusedLocation = fusedEstimate?.let {
                         PositionFusionLocationAdapter.toLocation(
                             estimate = it,
@@ -1701,6 +1733,7 @@ class LocationMonitorService : Service(), LocationListener {
             // estimate rather than republishing the cached raw GPS Location.
             val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             val fusedEstimate = positionFusionEngine.estimate(nowElapsedRealtimeNanos)
+                ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) }
             val template = result.outputLocation ?: location
             val fusedLocation = fusedEstimate?.let {
                 PositionFusionLocationAdapter.toLocation(
