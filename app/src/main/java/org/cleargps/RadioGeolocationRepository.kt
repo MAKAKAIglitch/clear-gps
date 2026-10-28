@@ -46,7 +46,8 @@ private data class ScanSnapshot(
     val bleCount: Int,
     val wifiAgeMillis: Long?,
     val cellAgeMillis: Long?,
-    val bleAgeMillis: Long?
+    val bleAgeMillis: Long?,
+    val collectedAtElapsedRealtimeNanos: Long
 )
 
 class RadioGeolocationRepository(private val context: Context) {
@@ -113,7 +114,13 @@ class RadioGeolocationRepository(private val context: Context) {
             val evidenceTimestamp = (System.currentTimeMillis() - oldestEvidenceAgeMillis).coerceAtLeast(0L)
             candidate.copy(
                 updatedAt = evidenceTimestamp,
-                accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0)
+                accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0),
+                measurementElapsedRealtimeNanos =
+                    RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
+                        signals = snapshot.signals,
+                        matchedRadioTypes = candidate.matchedRadioTypes,
+                        collectedAtElapsedRealtimeNanos = snapshot.collectedAtElapsedRealtimeNanos
+                    )
             )
         }
         val matchCounts = withContext(Dispatchers.IO) {
@@ -301,7 +308,8 @@ class RadioGeolocationRepository(private val context: Context) {
             bleCount = ble.signals.size,
             wifiAgeMillis = wifi.ageMillis,
             cellAgeMillis = cells.ageMillis,
-            bleAgeMillis = ble.ageMillis
+            bleAgeMillis = ble.ageMillis,
+            collectedAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         )
     }
 
