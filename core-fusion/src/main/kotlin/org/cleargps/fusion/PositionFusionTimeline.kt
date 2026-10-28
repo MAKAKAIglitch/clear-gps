@@ -45,7 +45,7 @@ class PositionFusionTimeline(
 
         val newestRetainedTimestamp = history.lastOrNull()?.measurement?.elapsedRealtimeNanos ?: 0L
         if (newestRetainedTimestamp > 0L &&
-            measurement.elapsedRealtimeNanos <= newestRetainedTimestamp - historyWindowNanos
+            measurement.elapsedRealtimeNanos < newestRetainedTimestamp - historyWindowNanos
         ) {
             return rejected(PositionFusionRejectionReason.OUT_OF_ORDER_TIMESTAMP)
         }
