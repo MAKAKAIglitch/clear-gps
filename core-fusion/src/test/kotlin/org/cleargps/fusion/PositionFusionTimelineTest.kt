@@ -66,6 +66,32 @@ class PositionFusionTimelineTest {
     }
 
     @Test
+    fun lateRadioMeasurementCannotDisplaceAnAlreadyAcceptedLaterGpsFix() {
+        val timeline = PositionFusionTimeline()
+        timeline.update(measurement(0.0, 1, PositionMeasurementSource.GNSS))
+        timeline.update(measurement(0.0, 2, PositionMeasurementSource.GNSS))
+        val before = timeline.estimate(seconds(2))!!
+
+        // This is within the first fix's statistical gate, but replaying it would make the already
+        // accepted later GPS measurement look like an outlier. The late lower-priority sample loses.
+        val lateRadio = PositionMeasurement(
+            source = PositionMeasurementSource.RADIO,
+            latitude = 52.0,
+            longitude = eastwardLongitude(38.0),
+            horizontalUncertaintyMeters = 3.0,
+            elapsedRealtimeNanos = 1_500_000_000L
+        )
+        val result = timeline.update(lateRadio)
+        val after = timeline.estimate(seconds(2))!!
+
+        assertEquals(PositionFusionUpdateStatus.REJECTED, result.status)
+        assertEquals(PositionFusionRejectionReason.STATISTICAL_OUTLIER, result.rejectionReason)
+        assertEquals(2, timeline.retainedMeasurementCount())
+        assertEquals(before.latitude, after.latitude, 0.000000001)
+        assertEquals(before.longitude, after.longitude, 0.000000001)
+    }
+
+    @Test
     fun invalidLateMeasurementDoesNotMutateRetainedState() {
         val timeline = PositionFusionTimeline()
         timeline.update(measurement(0.0, 1, PositionMeasurementSource.GNSS))
