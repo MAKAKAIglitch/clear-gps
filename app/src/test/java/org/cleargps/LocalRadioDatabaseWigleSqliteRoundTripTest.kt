@@ -210,7 +210,7 @@ class LocalRadioDatabaseWigleSqliteRoundTripTest {
         override fun getApplicationContext(): Context = this
 
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
-            baseContext.getSharedPreferences("$" + "{name}-$" + "{namespace}", mode)
+            baseContext.getSharedPreferences(name + "-" + namespace, mode)
     }
 
     companion object {
