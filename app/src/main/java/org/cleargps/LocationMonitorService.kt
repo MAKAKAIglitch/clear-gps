@@ -77,6 +77,7 @@ class LocationMonitorService : Service(), LocationListener {
     private var demSampleJob: Job? = null
     private var demSampleGeneration = 0L
     private var lastDemSampleRequestElapsedRealtimeNanos = 0L
+    private var lastAltitudeDiagnosticKey: String? = null
 
     // Ephemeral aggregate only; never persisted or exported.
     private var lastStatusMeanCn0DbHz: Double? = null
@@ -698,6 +699,8 @@ class LocationMonitorService : Service(), LocationListener {
                 demSampleJob = null
                 lastDemSampleRequestElapsedRealtimeNanos = 0L
                 SrtmElevationDiagnosticsLiveStore.clear()
+                AltitudeDiagnosticsLiveStore.clear()
+                lastAltitudeDiagnosticKey = null
                 prefs.edit()
                     .putBoolean(KEY_HAS_OUTPUT, false)
                     .putString(KEY_SOURCE, "NONE")
@@ -1564,6 +1567,8 @@ class LocationMonitorService : Service(), LocationListener {
         demSampleJob = null
         lastDemSampleRequestElapsedRealtimeNanos = 0L
         SrtmElevationDiagnosticsLiveStore.clear()
+        AltitudeDiagnosticsLiveStore.clear()
+        lastAltitudeDiagnosticKey = null
         barometerReader?.stop()
         imuMotionReader?.stop()
         positionFusionEngine.reset()
@@ -1926,10 +1931,38 @@ class LocationMonitorService : Service(), LocationListener {
                     generation == demSampleGeneration &&
                     prefs.getBoolean(KEY_MONITORING, false)
                 ) {
+                    val sampledAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     SrtmElevationDiagnosticsLiveStore.update(
                         sample = sample,
-                        sampledAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                        sampledAtElapsedRealtimeNanos = sampledAtElapsedRealtimeNanos
                     )
+                    val altitudeDiagnostics = AltitudeDiagnosticsReadinessPolicy.assess(
+                        gnssObservation = AltitudeDiagnosticsReadinessPolicy.gnssObservation(location),
+                        demObservation = AltitudeDiagnosticsReadinessPolicy.demObservation(
+                            sample = sample,
+                            fixElapsedRealtimeNanos = location.elapsedRealtimeNanos
+                        ),
+                        barometerPressureSample = BarometerPressureLiveStore.snapshot(
+                            sampledAtElapsedRealtimeNanos
+                        ),
+                        nowElapsedRealtimeNanos = sampledAtElapsedRealtimeNanos
+                    )
+                    AltitudeDiagnosticsLiveStore.update(altitudeDiagnostics)
+                    val diagnosticKey = listOf(
+                        altitudeDiagnostics.comparisonReadiness.name,
+                        altitudeDiagnostics.gnssDatum?.name ?: "none",
+                        altitudeDiagnostics.demDatum?.name ?: "none",
+                        altitudeDiagnostics.barometerReadiness.name
+                    ).joinToString(":")
+                    if (diagnosticKey != lastAltitudeDiagnosticKey) {
+                        lastAltitudeDiagnosticKey = diagnosticKey
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService,
+                            "ALTITUDE",
+                            AltitudeDiagnosticsReadinessPolicy.description(altitudeDiagnostics),
+                            "INFO"
+                        )
+                    }
                 }
             } finally {
                 if (generation == demSampleGeneration) demSampleJob = null

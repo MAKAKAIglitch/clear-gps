@@ -83,7 +83,8 @@ When no position meets the publication policy, the intended safe behavior is to 
 - `SrtmHgtTilePackStore.kt` imports user-selected ZIP archives into the app-private `filesDir/dem/srtm` directory. Only validated tile basenames are written; each archive is staged first and is bounded by entry, tile and decompressed-size limits.
 - After a normal, trusted physical GPS fix, the service may sample the local DEM no more than once every 15 seconds on an IO dispatcher. The diagnostics panel reports the sampled elevation/datum or an unavailable result. Missing tiles and voids remain unavailable.
 - The diagnostic live store keeps only elevation, vertical datum and monotonic sample time in memory; it does not retain the query coordinate or write data to disk/logs. Data expires after two minutes and is cleared when monitoring stops or the position mode changes.
-- This is **diagnostics only**. DEM is not directly compared with GNSS ellipsoid altitude or raw barometric pressure, and it does not yet feed the live TrustEngine/fusion. Copernicus GeoTIFF, automatic downloads, datum conversion, calibrated vertical uncertainty and real-device validation remain separate work.
+- The foreground service now assesses readiness after each successful local SRTM lookup made from a trusted physical GPS fix. It keeps only an in-memory readiness snapshot and emits a diagnostic-journal entry when readiness changes; coordinates, height values and raw pressure are not added to this snapshot or log. The readiness gate rejects unknown MSL realization, ellipsoid/EGM96 mismatch, stale or invalid monotonic timestamps, and missing uncertainty. It does not compute a discrepancy or affect TrustEngine risk.
+- The existing SRTM HGT reader does not attach source uncertainty metadata, so even a same-datum observation remains unavailable for comparison until the imported product's uncertainty is described. Copernicus GeoTIFF, datum conversion, calibration from logs and real-device validation remain separate work.
 ## Network and privacy boundaries
 
 - Radio observations and the local database stay in app-private storage by default.
@@ -111,7 +112,7 @@ On Windows, use `gradlew.bat` or the checked-in `windows-build/build-apk.ps1`. C
 
 - `AndroidBarometerSensorReader.kt` subscribes to `Sensor.TYPE_PRESSURE` only while the location monitor is active, using a one-second sampling-period hint. Samples use the sensor event's monotonic timestamp and are converted from hPa to Pa.
 - The live store is in-memory only and returns data only while fresh (default five-second age). It does not persist raw pressure or infer an accuracy from sensor resolution.
-- This acquisition path does not yet feed calibrated pressure into the altitude estimator automatically: selecting a trusted GNSS/DEM reference and an effective column temperature remains explicit work. Missing hardware or stale data is neutral.
+- The altitude readiness diagnostic checks whether a fresh pressure sample exists at the time of the DEM assessment, but labels it raw-only. It does not convert pressure into height, because reference calibration, pressure uncertainty and effective mean-column temperature are not yet supplied. Missing hardware or stale data is neutral.
 
 
 ## Local SRTM tile packs
