@@ -10,4 +10,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "ClearGPS"
-include(":app", ":core-detect")
+include(":app", ":core-detect", ":core-fusion")

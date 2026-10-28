@@ -4,12 +4,13 @@ This document describes the **current implementation** on `dev`. It is intention
 
 ## Gradle modules
 
-The repository currently builds two Gradle modules:
+The repository currently builds three Gradle modules:
 
 - **`:app`** — Android application, Compose Material 3 UI, MapLibre map, Android services and permissions, local radio database, radio-position estimation, OBD-II transports, mock-location publication, diagnostics, settings and export/import flows.
 - **`:core-detect`** — plain Kotlin/JVM code for GNSS anomaly detection and related data models, baseline/environment diagnostics, risk feedback and replay parsing/encoding. It uses JUnit and has no Android dependency declared in its module build.
+- **`:core-fusion`** — plain Kotlin/JVM foundation for a 2D local-frame constant-velocity Kalman filter that accepts timestamped GNSS/radio position measurements, rejects invalid/stale/outlier inputs, and stops returning estimates after its short prediction horizon. It has unit tests and no Android dependency.
 
-The design in `docs/spec/` proposes further boundaries such as `core-fusion`, individual GNSS/radio/OBD/IMU/barometer sources, data, mock, service, UI, car and vehicle profiles. Those are target boundaries, **not** separate Gradle modules today. Do not infer a completed EKF/IMU/OBD/DEM pipeline from the presence of supporting classes or specifications.
+`:core-fusion` is **not yet wired into the live service or mock publisher**. It does not consume raw IMU/OBD data and does not influence TrustEngine risk; process noise is only a motion model, not a replacement for measured acceleration. The remaining source adapters, IMU integration, and field calibration must be added separately. Do not infer a completed EKF/IMU/OBD/DEM pipeline from the presence of supporting classes or specifications.
 
 ## Runtime responsibilities
 

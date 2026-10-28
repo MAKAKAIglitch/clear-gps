@@ -41,7 +41,7 @@ jobs:
           fi
           echo 'Gradle Wrapper JAR SHA-256 verified.'
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
-        run: ./gradlew --no-daemon --stacktrace :core-detect:test testDebugUnitTest assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: ClearGPS-debug
