@@ -67,6 +67,32 @@ class GnssSpoofingDetectorTest {
         assertFalse(second.confirmed)
     }
 
+    @Test
+    fun aConsistentGpsPairWithTheSameObdSampleClearsPreviousDisagreement() {
+        val detector = GnssSpoofingDetector()
+        detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)
+        val sameSample = obdSpeed(30, 2)
+        detector.observeObdVehicleSpeed(sameSample)
+        val mismatch = detector.assess(
+            fix(55.0, 37.0, 3, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 3_200_000_000L, true
+        )
+        detector.observeObdVehicleSpeed(sameSample)
+        val agreement = detector.assess(
+            fix(55.0, 37.0, 4, speed = 8.0, speedAccuracy = 0.5),
+            null, false, 4_200_000_000L, true
+        )
+        detector.observeObdVehicleSpeed(obdSpeed(30, 5))
+        val nextMismatch = detector.assess(
+            fix(55.0, 37.0, 6, speed = 20.0, speedAccuracy = 0.5),
+            null, false, 6_200_000_000L, true
+        )
+
+        assertEquals(15, mismatch.breakdown.obdSpeedScore)
+        assertEquals(0, agreement.breakdown.obdSpeedScore)
+        assertEquals(15, nextMismatch.breakdown.obdSpeedScore)
+    }
+
     @Test fun aNewConsistentObdSampleResetsTheDisagreementStreak() {
         val detector = GnssSpoofingDetector()
         detector.assess(fix(55.0, 37.0, 1), null, false, 1_200_000_000L, true)

@@ -533,7 +533,8 @@ class GnssSpoofingDetector {
             )
             val disagrees = highestSpeedKmh >= OBD_SPEED_MIN_COMPARABLE_KMH &&
                 differenceKmh > disagreementLimitKmh
-            if (obdSpeed.elapsedRealtimeNanos > lastObdSpeedAssessedAtNanos) {
+            val newObdSample = obdSpeed.elapsedRealtimeNanos > lastObdSpeedAssessedAtNanos
+            if (newObdSample) {
                 if (disagrees) {
                     val interval = obdSpeed.elapsedRealtimeNanos - lastObdSpeedDisagreementAtNanos
                     obdSpeedDisagreementStreak = if (
@@ -550,6 +551,11 @@ class GnssSpoofingDetector {
                     lastObdSpeedDisagreementAtNanos = 0L
                 }
                 lastObdSpeedAssessedAtNanos = obdSpeed.elapsedRealtimeNanos
+            } else if (!disagrees) {
+                // One OBD observation cannot increase the streak, but a newer consistent
+                // physical-GNSS pair must still clear the preceding disagreement.
+                obdSpeedDisagreementStreak = 0
+                lastObdSpeedDisagreementAtNanos = 0L
             }
             if (disagrees) {
                 obdSpeedScore = when (obdSpeedDisagreementStreak) {
