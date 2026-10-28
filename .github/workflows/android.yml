@@ -48,10 +48,21 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-  windows-bootstrap-smoke:
+  windows-test-and-build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: 15859902
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
       - name: Smoke-test Gradle argument forwarding with spaced JVM settings
         shell: pwsh
         run: |
@@ -59,3 +70,10 @@ jobs:
           $env:CLEARGPS_GRADLE_JVM_ARGS = '-Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8'
           & .\gradlew.bat --version
           if ($LASTEXITCODE -ne 0) { throw "Gradle argument-forwarding smoke test failed with exit code $LASTEXITCODE." }
+          Remove-Item Env:CLEARGPS_GRADLE_JVM_ARGS -ErrorAction SilentlyContinue
+      - name: Run unit tests and build debug APK on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test testDebugUnitTest assembleDebug
+          if ($LASTEXITCODE -ne 0) { throw "Windows tests/build failed with exit code $LASTEXITCODE." }
