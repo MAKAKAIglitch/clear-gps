@@ -33,7 +33,6 @@ import org.cleargps.core.FilterState
 import org.cleargps.core.GnssRfSnapshot
 import org.cleargps.core.LocationFilterEngine
 import org.cleargps.core.RiskZoneMembershipTracker
-import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneStore
 import org.cleargps.core.GnssDeviceBaselineSnapshot
@@ -1330,18 +1329,7 @@ class LocationMonitorService : Service(), LocationListener {
                     val activeZones = ZoneStore.loadAll(this@LocationMonitorService)
                         .filter { it.enabled }
                         .map { it.points }
-                    val radioPoint = ZonePoint(measurement.latitude, measurement.longitude)
-                    val radioCouldIntersectZone = activeZones.isNotEmpty() && (
-                        measurement.horizontalUncertaintyMeters > MAX_ZONE_CHECK_ACCURACY_METERS ||
-                            activeZones.any { zone ->
-                                ZoneGeometry.contains(
-                                    radioPoint,
-                                    zone,
-                                    measurement.horizontalUncertaintyMeters
-                                )
-                            }
-                    )
-                    if (radioCouldIntersectZone) {
+                    if (!RadioFusionZonePolicy.allowsFusion(measurement, activeZones)) {
                         DiagnosticLogStore.log(
                             this@LocationMonitorService, "FUSION",
                             "Radio measurement skipped because its point/uncertainty intersects an enabled risk zone or is too coarse to rule that out"
@@ -1945,7 +1933,6 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     companion object {
-        const val MAX_ZONE_CHECK_ACCURACY_METERS = 500.0
         const val ACTION_START = "org.cleargps.START"
         const val ACTION_RECOVER = "org.cleargps.RECOVER"
         const val ACTION_STOP = "org.cleargps.STOP"
