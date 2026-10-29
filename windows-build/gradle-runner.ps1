@@ -1,13 +1,15 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $GradleArguments = @($args)
+$PowerShellExecutable = (Get-Process -Id $PID).Path
 
 function Invoke-PathHelper {
     param([string]$ScriptPath)
 
     $ResultFile = Join-Path $env:TEMP ("cleargps-gradle-setup-" + [guid]::NewGuid().ToString('N') + '.txt')
+    $PowerShellExecutable = (Get-Process -Id $PID).Path
     try {
-        & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -ResultFile $ResultFile | Out-Host
+        & $PowerShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -ResultFile $ResultFile | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "Setup helper failed: $([IO.Path]::GetFileName($ScriptPath)) (exit code $LASTEXITCODE)."
         }
@@ -31,7 +33,7 @@ try {
     $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 
     $GradleBootstrap = Join-Path $PSScriptRoot 'ensure-gradle.ps1'
-    & (Join-Path $PSHOME 'powershell.exe') -NoLogo -NoProfile -ExecutionPolicy Bypass -File $GradleBootstrap | Out-Host
+    & $PowerShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $GradleBootstrap | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Gradle bootstrap failed with exit code $LASTEXITCODE."
     }

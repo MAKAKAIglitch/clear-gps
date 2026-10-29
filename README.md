@@ -125,6 +125,13 @@ OBD-II запускается только по действию пользов�
 
 Это исследовательский проект. Сборка и unit-тесты автоматизированы, но полный сценарий сканирования/записи/редактирования/радионавигации ещё нужно проверять на реальных телефонах Android разных производителей. Указанный радиус точности локальной оценки — эвристика, а не измеренная гарантия.
 
+
+## Architecture, specifications and testing
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for current module boundaries and [docs/spec/](docs/spec/README.md) for review-draft technical contracts and open decisions. Build and contribution details are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), [docs/TESTING.md](docs/TESTING.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The pure Kotlin/JVM core-detect module provides a testable trust-state foundation and cautious context hint, but it is not wired into the live Android runtime yet. The existing app detector remains the runtime implementation until integration is separately reviewed. Its weights are provisional and the risk index is not a probability. Local risk-zone geometry now includes antimeridian regression tests.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
