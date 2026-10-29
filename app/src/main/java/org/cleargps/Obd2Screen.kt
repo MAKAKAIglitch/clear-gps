@@ -491,9 +491,9 @@ internal fun Obd2Screen(
                 }
                 if (suppressedZeroPids.isNotEmpty()) {
                     Text(
-                        "Одиночный нулевой ответ пропущен до подтверждения: " +
+                        "Нулевые ответы временно скрыты до трёх последовательных подтверждений: " +
                             suppressedZeroPids.sorted().joinToString { Obd2Protocol.pidLabel(it) } +
-                            ". Если следующий ответ снова равен нулю, он будет принят как реальное значение.",
+                            ". Подтверждённый ноль появится в данных; неподтверждённый не передаётся как скорость/обороты.",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.tertiary
                     )
@@ -536,7 +536,7 @@ internal fun Obd2Screen(
                         color = if (externalBroadcastEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant
                     )
                     Text(
-                        "Формат: ${Obd2ExternalTelemetryBroadcast.ACTION_TELEMETRY}. Получатель должен поддерживать этот интерфейс; VIN и адрес адаптера не передаются.",
+                        "Формат: ${Obd2ExternalTelemetryBroadcast.ACTION_TELEMETRY}. Получатель должен подписаться на этот action (динамический exported BroadcastReceiver). Неподтверждённые нули и устаревшие поля не передаются; VIN и адрес адаптера не передаются.",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (externalBroadcastEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant
                     )

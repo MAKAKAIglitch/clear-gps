@@ -20,6 +20,8 @@ internal object Obd2ExternalTelemetryBroadcast {
     const val EXTRA_CONNECTED = "connected"
     const val EXTRA_STATUS = "status"
     const val EXTRA_UPDATED_AT_EPOCH_MILLIS = "updated_at_epoch_millis"
+    const val EXTRA_SPEED_ISSUE = "speed_issue"
+    const val EXTRA_RPM_ISSUE = "rpm_issue"
     const val EXTRA_VEHICLE_SPEED_KMH = "vehicle_speed_kmh"
     const val EXTRA_SPEED_SAMPLE_ELAPSED_REALTIME_NANOS = "speed_sample_elapsed_realtime_nanos"
     const val EXTRA_ENGINE_RPM = "engine_rpm"
@@ -59,6 +61,14 @@ internal object Obd2ExternalTelemetryBroadcast {
         }
 
         intent.putExtra(EXTRA_UPDATED_AT_EPOCH_MILLIS, telemetry.updatedAt)
+        intent.putExtra(
+            EXTRA_SPEED_ISSUE,
+            telemetry.speedIssue?.name ?: if (telemetry.vehicleSpeedKmh == null) "NO_VALID_RESPONSE" else "NONE"
+        )
+        intent.putExtra(
+            EXTRA_RPM_ISSUE,
+            telemetry.pidIssues[0x0C]?.name ?: if (telemetry.engineRpm == null) "NO_VALID_RESPONSE" else "NONE"
+        )
         var fieldCount = 0
         val speedAt = telemetry.speedSampleElapsedRealtimeNanos
         val speedIsFresh = telemetry.vehicleSpeedKmh?.let { it in 0..Obd2SharedState.MAX_PLAUSIBLE_SPEED_KMH } == true &&

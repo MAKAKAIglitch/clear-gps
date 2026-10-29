@@ -1,11 +1,11 @@
 package org.cleargps
 
 /**
- * Filters a single zero response that interrupts a recently positive OBD PID sample.
+ * Filters brief zero glitches after a recently positive OBD PID sample.
  *
- * Zero is a legitimate reading (stationary vehicle or stopped engine), so it is never removed
- * permanently: after two consecutive zero replies it is accepted. A rejected zero is exposed as
- * missing data, and its original timestamp is removed so downstream positioning cannot reuse it.
+ * Zero is a legitimate reading, so it is accepted after three consecutive replies or when there
+ * is no recent positive sample. The first two zeros after recent nonzero values are exposed as
+ * missing data, with their timestamps removed so downstream positioning cannot reuse them.
  */
 internal class Obd2TelemetryStabilityFilter {
     private var lastNonZeroSpeedAtNanos = 0L
@@ -71,9 +71,10 @@ internal class Obd2TelemetryStabilityFilter {
             lastNonZeroAtNanos > 0L &&
             sampleAtNanos > lastNonZeroAtNanos &&
             sampleAtNanos - lastNonZeroAtNanos <= ZERO_CONFIRMATION_WINDOW_NANOS &&
-            zeroStreak == 1
+            zeroStreak < ZERO_CONFIRMATION_READINGS
 
     private companion object {
-        const val ZERO_CONFIRMATION_WINDOW_NANOS = 5_000_000_000L
+        const val ZERO_CONFIRMATION_WINDOW_NANOS = 12_000_000_000L
+        const val ZERO_CONFIRMATION_READINGS = 3
     }
 }

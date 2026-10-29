@@ -39,6 +39,8 @@ class Obd2ExternalTelemetryBroadcastTest {
         assertEquals(42, intent.getIntExtra(Obd2ExternalTelemetryBroadcast.EXTRA_VEHICLE_SPEED_KMH, -1))
         assertEquals(1_850, intent.getIntExtra(Obd2ExternalTelemetryBroadcast.EXTRA_ENGINE_RPM, -1))
         assertEquals(36, intent.getIntExtra(Obd2ExternalTelemetryBroadcast.EXTRA_ENGINE_LOAD_PERCENT, -1))
+        assertEquals("NONE", intent.getStringExtra(Obd2ExternalTelemetryBroadcast.EXTRA_SPEED_ISSUE))
+        assertEquals("NONE", intent.getStringExtra(Obd2ExternalTelemetryBroadcast.EXTRA_RPM_ISSUE))
         assertFalse(intent.hasExtra("vehicle_vin"))
         assertFalse(intent.hasExtra("adapter_address"))
     }
@@ -65,6 +67,39 @@ class Obd2ExternalTelemetryBroadcastTest {
         )
         assertFalse(intent.hasExtra(Obd2ExternalTelemetryBroadcast.EXTRA_VEHICLE_SPEED_KMH))
         assertFalse(intent.hasExtra(Obd2ExternalTelemetryBroadcast.EXTRA_ENGINE_RPM))
+    }
+
+    @Test
+    fun suppressedTransientZerosAreOmittedAndTheirReasonIsBroadcast() {
+        val nowEpoch = 100_000L
+        val nowNanos = 20_000_000_000L
+        val telemetry = Obd2Telemetry(
+            vehicleSpeedKmh = null,
+            engineRpm = null,
+            updatedAt = nowEpoch,
+            speedIssue = Obd2SpeedIssue.TRANSIENT_ZERO_SUPPRESSED,
+            pidIssues = mapOf(
+                0x0D to Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED,
+                0x0C to Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED
+            )
+        )
+        val intent = Obd2ExternalTelemetryBroadcast.buildIntent(
+            connected = true,
+            telemetry = telemetry,
+            nowEpochMillis = nowEpoch,
+            nowElapsedRealtimeNanos = nowNanos
+        )
+        assertFalse(intent.hasExtra(Obd2ExternalTelemetryBroadcast.EXTRA_VEHICLE_SPEED_KMH))
+        assertFalse(intent.hasExtra(Obd2ExternalTelemetryBroadcast.EXTRA_ENGINE_RPM))
+        assertEquals(
+            Obd2SpeedIssue.TRANSIENT_ZERO_SUPPRESSED.name,
+            intent.getStringExtra(Obd2ExternalTelemetryBroadcast.EXTRA_SPEED_ISSUE)
+        )
+        assertEquals(
+            Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED.name,
+            intent.getStringExtra(Obd2ExternalTelemetryBroadcast.EXTRA_RPM_ISSUE)
+        )
+        assertEquals("connected_no_fresh_values", intent.getStringExtra(Obd2ExternalTelemetryBroadcast.EXTRA_STATUS))
     }
 
     @Test
