@@ -2040,7 +2040,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             "SELECT o.id, o.observed_at, o.latitude, o.longitude, o.accuracy, o.rssi, o.frequency, o.position_source, o.source_id, s.name AS source_name " +
                 "FROM radio_observations o LEFT JOIN radio_sources s ON s.id = o.source_id " +
                 "WHERE o.radio_type = ? AND o.identifier = ? " +
-                "ORDER BY observed_at DESC, id DESC LIMIT ?",
+                "ORDER BY o.observed_at DESC, o.id DESC LIMIT ?",
             arrayOf(point.type, point.identifier, limit.coerceIn(1, 20_000).toString())
         ).use { cursor ->
             while (cursor.moveToNext()) {

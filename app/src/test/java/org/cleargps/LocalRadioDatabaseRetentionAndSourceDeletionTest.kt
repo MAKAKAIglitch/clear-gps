@@ -169,6 +169,45 @@ class LocalRadioDatabaseRetentionAndSourceDeletionTest {
     }
 
     @Test
+    fun listingMapPointObservationsWithSourceJoinUsesUnambiguousOrder() {
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val firstObservedAt = 1_700_000_000_000L
+        val pointId = sqlite.insertOrThrow(
+            "radio_points",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", SHARED_RADIO_ID)
+                put("label", "Map point query fixture")
+                put("ssid", "test-network")
+                put("notes", "")
+                put("latitude", 52.274)
+                put("longitude", 40.452)
+                put("accuracy", 25.0)
+                put("last_rssi", -60)
+                put("peak_rssi", -55)
+                put("frequency", 2412)
+                put("first_seen", firstObservedAt)
+                put("last_seen", firstObservedAt + 1_000L)
+                put("sightings", 2)
+                put("position_source", "local-test")
+                put("source_id", localSourceId)
+                put("position_observed_at", firstObservedAt + 1_000L)
+            }
+        )
+
+        insertObservation(localSourceId, firstObservedAt, 52.274, 40.452, 25.0, -70, "local-test")
+        insertObservation(localSourceId, firstObservedAt + 1_000L, 52.275, 40.453, 20.0, -55, "local-test")
+
+        val point = database.findPoint(pointId) ?: throw AssertionError("Seeded map point was not found")
+        val observations = database.listObservations(point)
+
+        assertEquals(2, observations.size)
+        assertEquals(firstObservedAt + 1_000L, observations[0].observedAt)
+        assertEquals(firstObservedAt, observations[1].observedAt)
+    }
+
+    @Test
     fun localSourceCannotBeDeleted() {
         val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
 

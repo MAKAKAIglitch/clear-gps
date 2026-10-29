@@ -542,9 +542,20 @@ fun ClearGpsApp(
             selectedMapPoint = null
             selectedPointObservations = emptyList()
             selectedPointCenter = null
-            val loaded = withContext(Dispatchers.IO) {
-                val point = database.findPoint(pointId) ?: return@withContext null
-                point to database.listObservations(point)
+            val loaded = try {
+                withContext(Dispatchers.IO) {
+                    val point = database.findPoint(pointId) ?: return@withContext null
+                    point to database.listObservations(point)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: android.database.sqlite.SQLiteException) {
+                Toast.makeText(
+                    context,
+                    "Не удалось открыть точку: ошибка локальной базы данных.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
             }
             val data = loaded ?: return@launch
             val point = data.first
@@ -3663,7 +3674,15 @@ private fun DatabaseScreen(
     var sourceMinRssi by remember { mutableStateOf(-110f) }
     var sourceMinObservations by remember { mutableStateOf(1f) }
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        Modifier.fillMaxSize()
+            .then(
+                if (dataSource == DatabaseDataSource.LOCAL) Modifier.verticalScroll(rememberScrollState())
+                else Modifier
+            )
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(7.dp)
@@ -3769,15 +3788,15 @@ private fun DatabaseScreen(
             if (filteredPoints.isEmpty()) {
                 if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
                 else EmptyState("Нет точек этого типа", "Выбери «Все» или другой тип: Wi‑Fi, вышки либо Bluetooth.")
-            } else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                items(filteredPoints, key = { it.id }) { point ->
+            } else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                filteredPoints.forEach { point ->
                     RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
                 }
             }
         } else if (selectedView == PointsView.HISTORY) {
             if (history.isEmpty()) EmptyState("История пуста", "Первый запуск сканирования добавит сюда запись.")
-            else LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                items(history, key = { it.id }) { entry ->
+            else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                history.forEach { entry ->
                     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
                         Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3813,7 +3832,7 @@ private fun DatabaseScreen(
             val visibleSources = sources.filter { source ->
                 sourceFilterPolicy.matchesSource(source, daysBySource[source.id].orEmpty().isNotEmpty())
             }
-            Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = sourceNameFilter,
@@ -3855,8 +3874,8 @@ private fun DatabaseScreen(
                 if (visibleSources.isEmpty()) {
                     EmptyState("Нет совпадений", "Измени название источника, дату, тип радио, RSSI или число наблюдений.")
                 } else {
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(visibleSources, key = { it.id }) { source ->
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        visibleSources.forEach { source ->
                             RadioSourceRow(
                                 source = source,
                                 days = daysBySource[source.id].orEmpty(),
