@@ -461,7 +461,7 @@ class GnssSpoofingDetectorTest {
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, Double.NaN, -66.0, 10), 2_100_000_000L))
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, Double.POSITIVE_INFINITY, 10), 2_100_000_000L))
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 9, 43.0, -66.0, 10), 2_100_000_000L))
-        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 43.0, -66.0, 10), 12_000_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(11_000_000_000L, 10, 3, 43.0, -66.0, 10), 22_000_000_000L))
 
         assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10), 2_100_000_000L))
         assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10), 3_100_000_000L))
