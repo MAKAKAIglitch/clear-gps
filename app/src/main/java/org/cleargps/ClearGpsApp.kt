@@ -270,7 +270,10 @@ private fun openBatteryOptimizationExemption(context: Context) {
 }
 
 @Composable
-fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
+fun ClearGpsApp(
+    onMapViewCreated: (MapView) -> Unit,
+    onMapViewDisposed: (MapView) -> Unit
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -1917,8 +1920,8 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     LaunchedEffect(pointsToRender) {
         mapController.updateRadioPoints(pointsToRender)
     }
-    LaunchedEffect(mapTapMode) {
-        mapController.setTapMode(mapTapMode)
+    LaunchedEffect(selectedTab, mapTapMode) {
+        if (selectedTab == AppTab.MAP) mapController.setTapMode(mapTapMode)
     }
     // Lightweight callback assignments keep handlers fresh without triggering map rendering.
     SideEffect {
@@ -2024,15 +2027,28 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
         BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
             // Keep the target height available during the exit animation; the visibility
             // transition itself slides the panel off-screen rather than removing it abruptly.
-            val panelMaxHeight = maxHeight * panelFraction.value
-            val panelBottomOffset = if (panelVisible) panelMaxHeight else 0.dp
+            val panelMaxHeight = if (selectedTab == AppTab.MAP) {
+                maxHeight * panelFraction.value
+            } else {
+                (maxHeight - WindowInsets.statusBars.asPaddingValues().calculateTopPadding() - 75.dp).coerceAtLeast(0.dp)
+            }
+            val panelBottomOffset = if (panelVisible && selectedTab == AppTab.MAP) panelMaxHeight else 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-            AndroidView(factory = { viewContext ->
-                MapView(viewContext).also { view ->
-                    onMapViewCreated(view)
-                    mapController.attach(view, viewContext, mapIsDark, mapSourceMode == MapSourceMode.OFFLINE)
-                }
-            }, modifier = Modifier.fillMaxSize())
+            if (selectedTab == AppTab.MAP) {
+                AndroidView(
+                    factory = { viewContext ->
+                        MapView(viewContext).also { view ->
+                            onMapViewCreated(view)
+                            mapController.attach(view, viewContext, mapIsDark, mapSourceMode == MapSourceMode.OFFLINE)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    onRelease = { view ->
+                        mapController.detach(view)
+                        onMapViewDisposed(view)
+                    }
+                )
+            }
 
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
                 Column(
@@ -2050,7 +2066,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         onCenter = { mapController.focusPrimary() },
                         onSettings = { navigateToTab(AppTab.SETTINGS) }
                     )
-                    if (mapTapMode != MapTapMode.NONE) {
+                    if (selectedTab == AppTab.MAP && mapTapMode != MapTapMode.NONE) {
                         ModeBanner(
                             text = if (mapTapMode == MapTapMode.PLACE_ANCHOR) "Нажми карту, чтобы поставить ориентир"
                                 else "Нажимай карту, чтобы добавить вершины зоны",
@@ -2064,7 +2080,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
 
                 AnimatedVisibility(
-                    visible = panelVisible,
+                    visible = panelVisible || selectedTab != AppTab.MAP,
                     modifier = Modifier.fillMaxWidth(),
                     enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(190)) +
                         fadeIn(animationSpec = tween(140)),
@@ -2073,10 +2089,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 ) {
                 Surface(
                     Modifier.fillMaxWidth().height(panelMaxHeight),
-                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                    shape = if (selectedTab == AppTab.MAP) {
+                        RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+                    } else {
+                        RoundedCornerShape(0.dp)
+                    },
                     color = colors.surfaceContainer, tonalElevation = 4.dp, shadowElevation = 12.dp
                 ) {
                     Column(Modifier.fillMaxSize()) {
+                        if (selectedTab == AppTab.MAP) {
                         Box(
                             Modifier.fillMaxWidth().height(28.dp)
                                 .pointerInput(panelHeightPx) {
@@ -2107,6 +2128,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
+                        }
                         }
                         Box(Modifier.fillMaxWidth().weight(1f)) {
                             when (selectedTab) {
@@ -2666,7 +2688,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             }
 
             AnimatedVisibility(
-                visible = !panelVisible,
+                visible = selectedTab == AppTab.MAP && !panelVisible,
                 modifier = Modifier.align(Alignment.BottomCenter)
                     .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
                 enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(220)) +
@@ -2691,6 +2713,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                 }
             }
 
+            if (selectedTab == AppTab.MAP) {
             Surface(
                 Modifier.align(Alignment.BottomEnd).padding(end = 16.dp,
                     bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
@@ -2733,6 +2756,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         Text("Легенда", style = MaterialTheme.typography.labelLarge)
                     }
                 }
+            }
             }
             SnackbarHost(
                 hostState = snackbarHostState,
@@ -5075,10 +5099,12 @@ private fun HeaderCard(
                         AppTab.SETTINGS -> "Источники и приватность"
                     }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                 }
-                if (tab != AppTab.OBD2) {
+                if (tab == AppTab.MAP) {
                     IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
                 }
-                IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
+                if (tab != AppTab.SETTINGS) {
+                    IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
+                }
             }
             if (tab == AppTab.MAP) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

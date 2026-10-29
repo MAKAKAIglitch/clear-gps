@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
 
         MapLibre.getInstance(this)
         setContent {
-            ClearGpsApp(onMapViewCreated = ::attachMapView)
+            ClearGpsApp(onMapViewCreated = ::attachMapView, onMapViewDisposed = ::detachMapView)
         }
     }
 
@@ -35,6 +35,14 @@ class MainActivity : ComponentActivity() {
         view.onCreate(null)
         if (mapStarted) view.onStart()
         if (mapResumed) view.onResume()
+    }
+
+    private fun detachMapView(view: MapView) {
+        if (mapView !== view) return
+        if (mapResumed) view.onPause()
+        if (mapStarted) view.onStop()
+        view.onDestroy()
+        mapView = null
     }
 
     override fun onStart() {

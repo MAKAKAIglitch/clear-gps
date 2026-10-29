@@ -31,7 +31,9 @@ data class MapCoordinate(val latitude: Double, val longitude: Double)
 enum class MapTapMode { NONE, PLACE_ANCHOR, DRAW_ZONE }
 
 class ClearGpsMapController {
+    private var attachedMapView: MapView? = null
     private var map: MapLibreMap? = null
+    private var mapClickListener: MapLibreMap.OnMapClickListener? = null
     private var locationSource: GeoJsonSource? = null
     private var calculatedLocationSource: GeoJsonSource? = null
     private var calculatedAccuracySource: GeoJsonSource? = null
@@ -73,15 +75,18 @@ class ClearGpsMapController {
         mapView: MapView, context: Context,
         initialDarkMode: Boolean = false, initialOfflineMode: Boolean = false
     ) {
+        attachedMapView = mapView
+        mapReady = false
         darkMode = initialDarkMode
         offlineMode = initialOfflineMode
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         maxRadioPoints = if (activityManager?.isLowRamDevice == true ||
             Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 400 else MAX_MAP_RADIO_POINTS
         mapView.getMapAsync { mapObject ->
+            if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
             applyStyle()
-            mapObject.addOnMapClickListener { point ->
+            val clickListener = MapLibreMap.OnMapClickListener { point ->
                 if (tapMode != MapTapMode.NONE) {
                     onMapTap?.invoke(point.latitude, point.longitude) ?: false
                 } else {
@@ -97,7 +102,43 @@ class ClearGpsMapController {
                     } else false
                 }
             }
+            mapClickListener = clickListener
+            mapObject.addOnMapClickListener(clickListener)
         }
+    }
+
+    fun detach(mapView: MapView) {
+        if (attachedMapView !== mapView) return
+        cancelCalculatedLocationAnimation()
+        cancelAccuracyAnimation()
+        val mapObject = map
+        val clickListener = mapClickListener
+        if (mapObject != null && clickListener != null) {
+            try {
+                mapObject.removeOnMapClickListener(clickListener)
+            } catch (_: RuntimeException) {
+                // The MapView may already be in its platform teardown path.
+            }
+        }
+        mapClickListener = null
+        map = null
+        attachedMapView = null
+        mapReady = false
+        cameraInitialized = false
+        tapMode = MapTapMode.NONE
+        onMapTap = null
+        onRadioPointTap = null
+        locationSource = null
+        calculatedLocationSource = null
+        calculatedAccuracySource = null
+        accuracySource = null
+        anchorSource = null
+        polygonSource = null
+        lineSource = null
+        zonePointsSource = null
+        wifiPointsSource = null
+        cellPointsSource = null
+        blePointsSource = null
     }
 
     fun setDarkMode(dark: Boolean) {
@@ -126,6 +167,7 @@ class ClearGpsMapController {
         val builder = if (offlineMode) Style.Builder().fromJson(offlineStyle) else
             Style.Builder().fromUri(if (darkMode) DARK_STYLE_URI else LIGHT_STYLE_URI)
         mapObject.setStyle(builder) { style ->
+            if (map !== mapObject) return@setStyle
             installLayers(style)
             mapReady = true
             renderAll()
@@ -164,7 +206,13 @@ class ClearGpsMapController {
         } else null
         primaryAccuracyMeters = targetAccuracy
 
-        if (!cameraInitialized && mapReady && coordinate != null) {
+        if (!mapReady) {
+            cancelAccuracyAnimation()
+            displayedAccuracyMeters = targetAccuracy
+            return
+        }
+
+        if (!cameraInitialized && coordinate != null) {
             map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), 14.0))
             cameraInitialized = true
         }
@@ -267,7 +315,13 @@ class ClearGpsMapController {
             renderCalculatedLocation()
             return
         }
-        if (!cameraInitialized && mapReady) {
+        if (!mapReady) {
+            cancelCalculatedLocationAnimation()
+            displayedCalculatedLocation = location
+            displayedCalculatedAccuracyMeters = targetAccuracy
+            return
+        }
+        if (!cameraInitialized) {
             map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 14.0))
             cameraInitialized = true
         }
