@@ -1585,7 +1585,7 @@ fun ClearGpsApp(
                     when {
                         latest.speedIssue == Obd2SpeedIssue.TRANSIENT_ZERO_SUPPRESSED -> {
                             obd2StatusIsError = false
-                            obd2Status = "Одиночный нулевой ответ PID 0D пропущен. Жду подтверждения следующим ответом; если ноль повторится, он будет принят как реальная скорость."
+                            obd2Status = "Нулевой ответ PID 0D пока не подтверждён. Ноль появится в данных после трёх последовательных нулевых измерений; GPS/радио продолжают работать независимо."
                         }
                         latest.vehicleSpeedKmh != null -> {
                             obd2StatusIsError = false
@@ -1839,11 +1839,26 @@ fun ClearGpsApp(
     val freshObdSpeedSample = Obd2SharedState.freshSpeedSample(prefs, fusionNowElapsedRealtimeNanos)
     val freshObdSpeedKmh = freshObdSpeedSample?.speedKmh
     val maxLiveAgeMillis = if (freshObdSpeedKmh != null) 30_000L else 15 * 60 * 1_000L
+    val currentFilterState = FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING
+    val currentRiskZone = prefs.getBoolean(LocationMonitorService.KEY_IN_ZONE, false)
+    val gpsCoordinateHeld = PositionPublicationPolicy.shouldHideLiveGpsCoordinate(
+        state = currentFilterState,
+        riskScore = riskScore,
+        inRiskZone = currentRiskZone
+    )
+    val mockCoordinateHeld = PositionPublicationPolicy.shouldHoldGpsBackedOutput(
+        state = currentFilterState,
+        riskScore = riskScore,
+        inRiskZone = currentRiskZone,
+        source = riskEventSource
+    )
     val validLive = liveLocation?.takeIf { System.currentTimeMillis() - it.time in 0..maxLiveAgeMillis }
     val activeLocation = when (positionMode) {
         PositionMode.GPS_ONLY ->
-            validLive?.takeIf { it.provider.equals(LocationManager.GPS_PROVIDER, true) }
-        PositionMode.AUTO -> validLive
+            validLive?.takeIf { it.provider.equals(LocationManager.GPS_PROVIDER, true) && !gpsCoordinateHeld }
+        PositionMode.AUTO -> validLive?.takeIf {
+            !it.provider.equals(LocationManager.GPS_PROVIDER, true) || !gpsCoordinateHeld
+        }
         PositionMode.RADIO_ONLY -> null
     }
     val measuredCoordinate = activeLocation?.let { MapCoordinate(it.latitude, it.longitude) }
@@ -1892,12 +1907,12 @@ fun ClearGpsApp(
         else -> null
     }
     val displayCoordinate = when {
-        mockOutputActive && publishedMockCoordinate != null -> publishedMockCoordinate
+        mockOutputActive && publishedMockCoordinate != null && !mockCoordinateHeld -> publishedMockCoordinate
         positionMode.usesRadio -> radioCoordinate
         else -> primaryCoordinate ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
     }
     val displayAccuracy = when {
-        mockOutputActive && publishedMockCoordinate != null -> publishedMockAccuracy ?: primaryAccuracy
+        mockOutputActive && publishedMockCoordinate != null && !mockCoordinateHeld -> publishedMockAccuracy ?: primaryAccuracy
         positionMode.usesRadio -> radioAccuracy
         else -> primaryAccuracy
     }
@@ -1906,11 +1921,13 @@ fun ClearGpsApp(
         radioEstimateAgeMillis > maxOf(15_000L, scanIntervalSeconds * 2_000L)
 
     val primarySource = when {
-        mockOutputActive && publishedMockCoordinate != null &&
+        mockOutputActive && publishedMockCoordinate != null && !mockCoordinateHeld &&
             serviceStatus.contains("BeaconDB", ignoreCase = true) ->
             "BeaconDB · временная публикация mock GPS"
-        positionMode.usesRadio && publishedMockCoordinate != null ->
+        positionMode.usesRadio && publishedMockCoordinate != null && !mockCoordinateHeld ->
             "Mock GPS · опубликованная радиопозиция"
+        gpsCoordinateHeld && activeLocation == null && !positionMode.usesRadio ->
+            "GNSS-координата удерживается фильтром доверия"
         predictedGpsPosition != null ->
             "GPS + OBD-II · расчёт по скорости (" + predictedGpsPosition.travelledMeters.toInt() + " м)"
         positionMode == PositionMode.RADIO_ONLY && currentRadioEstimate != null && radioEstimateStale ->
@@ -1932,11 +1949,11 @@ fun ClearGpsApp(
     }
     val mapPrimaryCoordinate = when {
         positionMode.usesRadio -> null
-        mockOutputActive && publishedMockCoordinate != null -> publishedMockCoordinate
+        mockOutputActive && publishedMockCoordinate != null && !mockCoordinateHeld -> publishedMockCoordinate
         else -> predictedGpsPosition?.coordinate ?: measuredCoordinate
     }
     val mapPrimaryAccuracy = when {
-        mockOutputActive && publishedMockCoordinate != null -> publishedMockAccuracy ?: primaryAccuracy
+        mockOutputActive && publishedMockCoordinate != null && !mockCoordinateHeld -> publishedMockAccuracy ?: primaryAccuracy
         predictedGpsPosition != null -> predictedGpsPosition.accuracyMeters
         activeLocation?.hasAccuracy() == true -> activeLocation.accuracy.toDouble()
         else -> null
@@ -3254,8 +3271,16 @@ private fun MapHomeScreen(
                     Text(
                         when (mode) {
                             PositionMode.RADIO_ONLY -> "Нет совпадений в локальной базе"
-                            PositionMode.GPS_ONLY -> "Ожидание GPS-фикса"
-                            PositionMode.AUTO -> "Пока нет координат"
+                            PositionMode.GPS_ONLY -> PositionPublicationPolicy.gpsCoordinateHoldReason(
+                                FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING,
+                                riskScore,
+                                filterState == FilterState.ZONE_RISK.name
+                            ) ?: "Ожидание GPS-фикса"
+                            PositionMode.AUTO -> PositionPublicationPolicy.gpsCoordinateHoldReason(
+                                FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING,
+                                riskScore,
+                                filterState == FilterState.ZONE_RISK.name
+                            ) ?: "Пока нет координат"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Medium
@@ -3267,18 +3292,31 @@ private fun MapHomeScreen(
                             mode.usesRadio ->
                                 "Сначала запиши радиоточки в известных местах или импортируй локальный CSV с координатами."
                             else -> if (mode.gpsOnly) {
-                                gpsWaitHint ?: "Разреши точную геолокацию и включи фикс. Радиосканирование в режиме GPS отключено."
+                                PositionPublicationPolicy.gpsCoordinateHoldReason(
+                                    FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING,
+                                    riskScore,
+                                    filterState == FilterState.ZONE_RISK.name
+                                ) ?: gpsWaitHint ?: "Разреши точную геолокацию и включи фикс. Радиосканирование в режиме GPS отключено."
                             } else {
-                                "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
+                                PositionPublicationPolicy.gpsCoordinateHoldReason(
+                                    FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING,
+                                    riskScore,
+                                    filterState == FilterState.ZONE_RISK.name
+                                ) ?: "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
                             }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
                 }
-                if (coordinate != null && gpsWaitHint != null) {
+                val gpsPositionNotice = PositionPublicationPolicy.gpsCoordinateHoldReason(
+                    FilterState.values().firstOrNull { it.name == filterState } ?: FilterState.WAITING,
+                    riskScore,
+                    filterState == FilterState.ZONE_RISK.name
+                ) ?: gpsWaitHint
+                if (coordinate != null && gpsPositionNotice != null) {
                     Text(
-                        gpsWaitHint,
+                        gpsPositionNotice,
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )

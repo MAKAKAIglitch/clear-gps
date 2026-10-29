@@ -1940,6 +1940,29 @@ class LocationMonitorService : Service(), LocationListener {
                 )
             }
         }
+        val gpsHoldReason = PositionPublicationPolicy.gpsCoordinateHoldReason(
+            state = result.state,
+            riskScore = result.riskScore,
+            inRiskZone = inZone || result.inRiskZone
+        )
+        val holdGpsBackedOutput = PositionPublicationPolicy.shouldHoldGpsBackedOutput(
+            state = result.state,
+            riskScore = result.riskScore,
+            inRiskZone = inZone || result.inRiskZone,
+            source = result.source
+        )
+        if (holdGpsBackedOutput) {
+            result = result.copy(
+                outputLocation = null,
+                reasons = (result.reasons + listOfNotNull(gpsHoldReason)).distinct()
+            )
+            positionFusionEngine.reset()
+            DiagnosticLogStore.log(
+                this, "MOCK",
+                "GPS-backed output held by publication guard: state=${result.state}, risk=${result.riskScore}, inZone=${result.inRiskZone}.",
+                "WARN"
+            )
+        }
         try { GnssReplayRecorder.recordPosition(this, location, inZone, result) }
         catch (_: RuntimeException) { /* Replay capture never changes live filter behavior. */ }
         persistDecision(result)
@@ -1984,6 +2007,16 @@ class LocationMonitorService : Service(), LocationListener {
             mock?.disable()
             prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             saveServiceStatus("Mock GPS paused: no safe location candidate")
+        }
+        if (gpsHoldReason != null && result.outputLocation == null) {
+            saveServiceStatus(gpsHoldReason)
+        } else if (
+            gpsHoldReason == null && gpsFix &&
+            result.state == FilterState.NORMAL && result.riskScore < PositionPublicationPolicy.GPS_PUBLICATION_HOLD_SCORE &&
+            !result.inRiskZone
+        ) {
+            val currentStatus = prefs.getString(KEY_SERVICE_STATUS, "") ?: ""
+            if (currentStatus.startsWith("GPS-координата удерживается")) saveServiceStatus("Monitoring")
         }
         val sourceHint = when (result.source) {
             "LOCAL_RADIO" -> " · local radio fallback"
