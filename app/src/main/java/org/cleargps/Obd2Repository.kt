@@ -55,7 +55,8 @@ class Obd2Repository(context: Context) {
         var vinProbeCompleted: Boolean = false,
         var vehicleVin: String? = null,
         var vinIssue: Obd2VinIssue? = null,
-        val pidCircuitBreaker: Obd2PidCircuitBreaker = Obd2PidCircuitBreaker()
+        val pidCircuitBreaker: Obd2PidCircuitBreaker = Obd2PidCircuitBreaker(),
+        val telemetryStabilityFilter: Obd2TelemetryStabilityFilter = Obd2TelemetryStabilityFilter()
     )
 
     /**
@@ -297,7 +298,7 @@ class Obd2Repository(context: Context) {
                     }
                 }
 
-                Obd2Protocol.telemetry(
+                val decodedTelemetry = Obd2Protocol.telemetry(
                     responses = responses,
                     pidIssues = issues,
                     now = System.currentTimeMillis(),
@@ -308,6 +309,7 @@ class Obd2Repository(context: Context) {
                     engineRpmSampleElapsedRealtimeNanos = engineRpmSampleElapsedRealtimeNanos,
                     engineRpmQueryDurationMillis = engineRpmQueryDurationMillis
                 )
+                current.telemetryStabilityFilter.filter(decodedTelemetry)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

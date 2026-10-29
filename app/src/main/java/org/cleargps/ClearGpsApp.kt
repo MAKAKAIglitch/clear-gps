@@ -337,6 +337,9 @@ fun ClearGpsApp(
     var obd2ConnectJob by remember { mutableStateOf<Job?>(null) }
     var obd2ReconnectJob by remember { mutableStateOf<Job?>(null) }
     var obd2Telemetry by remember { mutableStateOf(Obd2Telemetry()) }
+    var obd2ExternalBroadcastEnabled by remember {
+        mutableStateOf(prefs.getBoolean(Obd2ExternalTelemetryBroadcast.KEY_ENABLED, false))
+    }
     val obd2SpeedCalibration = remember { Obd2SpeedCalibration() }
     var obd2CalibrationSnapshot by remember { mutableStateOf(Obd2SpeedCalibrationSnapshot()) }
     val obd2GearRatioLearner = remember { Obd2GearRatioLearner() }
@@ -1494,6 +1497,16 @@ fun ClearGpsApp(
         }
     }
 
+    LaunchedEffect(obd2Connected, obd2Telemetry, obd2ExternalBroadcastEnabled) {
+        if (obd2ExternalBroadcastEnabled) {
+            Obd2ExternalTelemetryBroadcast.publish(
+                context = context,
+                connected = obd2Connected,
+                telemetry = obd2Telemetry.takeIf { it.updatedAt > 0L }
+            )
+        }
+    }
+
     LaunchedEffect(obd2Connected) {
         if (!obd2Connected) {
             obd2SpeedCalibration.reset()
@@ -1570,6 +1583,10 @@ fun ClearGpsApp(
                     obd2Telemetry = latest
                     Obd2SharedState.storeTelemetry(prefs, latest)
                     when {
+                        latest.speedIssue == Obd2SpeedIssue.TRANSIENT_ZERO_SUPPRESSED -> {
+                            obd2StatusIsError = false
+                            obd2Status = "Одиночный нулевой ответ PID 0D пропущен. Жду подтверждения следующим ответом; если ноль повторится, он будет принят как реальная скорость."
+                        }
                         latest.vehicleSpeedKmh != null -> {
                             obd2StatusIsError = false
                             obd2Status = "Скорость получена по стандартному PID 0D. OBD-II используется только как вспомогательный источник; GPS/радио сохраняет приоритет выбранного режима."
@@ -2532,6 +2549,16 @@ fun ClearGpsApp(
                                     driveMetrics = obd2DriveMetricsSnapshot,
                                     status = obd2Status,
                                     statusIsError = obd2StatusIsError,
+                                    externalBroadcastEnabled = obd2ExternalBroadcastEnabled,
+                                    onExternalBroadcastEnabledChange = { enabled ->
+                                        if (!enabled && obd2ExternalBroadcastEnabled) {
+                                            Obd2ExternalTelemetryBroadcast.publishDisabled(context)
+                                        }
+                                        prefs.edit()
+                                            .putBoolean(Obd2ExternalTelemetryBroadcast.KEY_ENABLED, enabled)
+                                            .apply()
+                                        obd2ExternalBroadcastEnabled = enabled
+                                    },
                                     onRefresh = { refreshPairedObdAdapters() },
                                     onScanBle = { scanBleObdAdapters() },
                                     onAddWifi = { host, port -> addWifiObdAdapter(host, port) },

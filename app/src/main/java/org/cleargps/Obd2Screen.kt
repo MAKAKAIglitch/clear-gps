@@ -29,6 +29,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,6 +57,8 @@ internal fun Obd2Screen(
     driveMetrics: Obd2DriveMetricsSnapshot,
     status: String,
     statusIsError: Boolean,
+    externalBroadcastEnabled: Boolean,
+    onExternalBroadcastEnabledChange: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onScanBle: () -> Unit,
     onAddWifi: (String, String) -> Unit,
@@ -456,6 +459,9 @@ internal fun Obd2Screen(
                 val unavailablePids = telemetry.pidIssues.filterValues {
                     it == Obd2PidIssue.NO_VALID_RESPONSE
                 }.keys
+                val suppressedZeroPids = telemetry.pidIssues.filterValues {
+                    it == Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED
+                }.keys
                 val unsupportedPids = telemetry.pidIssues.filterValues {
                     it == Obd2PidIssue.PID_UNSUPPORTED
                 }.keys
@@ -483,6 +489,15 @@ internal fun Obd2Screen(
                         color = colors.error
                     )
                 }
+                if (suppressedZeroPids.isNotEmpty()) {
+                    Text(
+                        "Одиночный нулевой ответ пропущен до подтверждения: " +
+                            suppressedZeroPids.sorted().joinToString { Obd2Protocol.pidLabel(it) } +
+                            ". Если следующий ответ снова равен нулю, он будет принят как реальное значение.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.tertiary
+                    )
+                }
                 if (telemetry.updatedAt > 0L) {
                     Text(
                         "Последняя попытка: " +
@@ -492,6 +507,44 @@ internal fun Obd2Screen(
                         color = colors.onSurfaceVariant
                     )
                 }
+            }
+        }
+
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = if (externalBroadcastEnabled) colors.primaryContainer else colors.surfaceContainer
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(13.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(
+                        "Передача OBD-II в другие приложения",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (externalBroadcastEnabled) colors.onPrimaryContainer else colors.onSurface
+                    )
+                    Text(
+                        if (externalBroadcastEnabled) {
+                            "Включена. Доступные свежие PID отправляются через Android broadcast."
+                        } else {
+                            "Выключена по умолчанию. Включи её, чтобы разрешить другим приложениям получать свежие значения."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (externalBroadcastEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant
+                    )
+                    Text(
+                        "Формат: ${Obd2ExternalTelemetryBroadcast.ACTION_TELEMETRY}. Получатель должен поддерживать этот интерфейс; VIN и адрес адаптера не передаются.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (externalBroadcastEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = externalBroadcastEnabled,
+                    onCheckedChange = onExternalBroadcastEnabledChange
+                )
             }
         }
 

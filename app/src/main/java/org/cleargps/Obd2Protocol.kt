@@ -6,14 +6,16 @@ import java.util.Locale
 enum class Obd2SpeedIssue {
     PID_UNSUPPORTED,
     NO_VALID_RESPONSE,
-    PID_DISABLED_FOR_SESSION
+    PID_DISABLED_FOR_SESSION,
+    TRANSIENT_ZERO_SUPPRESSED
 }
 
 /** Why a supported/allowlisted PID did not produce a current value. */
 enum class Obd2PidIssue {
     PID_UNSUPPORTED,
     NO_VALID_RESPONSE,
-    PID_DISABLED_FOR_SESSION
+    PID_DISABLED_FOR_SESSION,
+    TRANSIENT_ZERO_SUPPRESSED
 }
 
 /** VIN lookup outcome; the VIN itself is deliberately not persisted. */
@@ -288,6 +290,7 @@ internal object Obd2Protocol {
             Obd2PidIssue.PID_UNSUPPORTED -> Obd2SpeedIssue.PID_UNSUPPORTED
             Obd2PidIssue.PID_DISABLED_FOR_SESSION -> Obd2SpeedIssue.PID_DISABLED_FOR_SESSION
             Obd2PidIssue.NO_VALID_RESPONSE -> Obd2SpeedIssue.NO_VALID_RESPONSE
+            Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED -> Obd2SpeedIssue.TRANSIENT_ZERO_SUPPRESSED
             null -> if (values[0x0D] == null) Obd2SpeedIssue.NO_VALID_RESPONSE else null
         }
         return Obd2Telemetry(
