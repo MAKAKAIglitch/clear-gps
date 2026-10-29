@@ -87,6 +87,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -2213,6 +2215,8 @@ fun ClearGpsApp(
                                     gnssDiagnosticsAtNanos = gnssDiagnosticsAtNanos, gnssDiagnosticsNowNanos = gnssDiagnosticsNowNanos,
                                     gnssLiveSnapshot = gnssLiveSnapshot,
                                     onMode = { applyPositionMode(it) },
+                                    obd2Connected = obd2Connected,
+                                    onOpenObd2 = { navigateToTab(AppTab.OBD2) },
                                     onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
                                     onScan = { startScan(recording) },
                                     onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
@@ -3043,10 +3047,20 @@ private fun MapHomeScreen(
     gnssLiveSnapshot: GnssDiagnosticsLiveSnapshot?,
     onMode: (PositionMode) -> Unit, onFixToggle: () -> Unit, onScan: () -> Unit, onManualAnchor: () -> Unit,
     onRemoveManualAnchor: () -> Unit,
+    obd2Connected: Boolean,
+    onOpenObd2: () -> Unit,
     onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     var showDetails by remember { mutableStateOf(false) }
+    var sourceMenuExpanded by remember { mutableStateOf(false) }
+    var pendingUseGps by remember { mutableStateOf(true) }
+    var pendingUseRadio by remember { mutableStateOf(true) }
+    val sourceLabel = when (mode) {
+        PositionMode.AUTO -> "GPS + радио"
+        PositionMode.GPS_ONLY -> "Только GPS"
+        PositionMode.RADIO_ONLY -> "Только радио"
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -3130,21 +3144,115 @@ private fun MapHomeScreen(
             }
         }
 
-        Text("Источник положения", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-            PositionMode.values().forEach { item ->
-                AssistChip(
-                    onClick = { if (mode != item) onMode(item) },
-                    label = { Text(item.title) },
-                    leadingIcon = {
-                        if (mode == item) Icon(Icons.Outlined.CheckCircle, null, modifier = Modifier.size(16.dp))
+        Text("Источники положения", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = {
+                    pendingUseGps = mode != PositionMode.RADIO_ONLY
+                    pendingUseRadio = mode != PositionMode.GPS_ONLY
+                    sourceMenuExpanded = true
+                },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Outlined.GpsFixed, null)
+                Spacer(Modifier.width(8.dp))
+                Text(sourceLabel, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(if (sourceMenuExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null)
+            }
+            DropdownMenu(
+                expanded = sourceMenuExpanded,
+                onDismissRequest = { sourceMenuExpanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Включить всё", fontWeight = FontWeight.SemiBold) },
+                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, null) },
+                    onClick = {
+                        pendingUseGps = true
+                        pendingUseRadio = true
+                    }
+                )
+                Divider(color = colors.outlineVariant)
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = pendingUseGps, onCheckedChange = null)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("GPS", fontWeight = FontWeight.Medium)
+                                Text("Системная координата GNSS/GPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                            }
+                        }
+                    },
+                    onClick = { pendingUseGps = !pendingUseGps }
+                )
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = pendingUseRadio, onCheckedChange = null)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Радио", fontWeight = FontWeight.Medium)
+                                Text("Совпадения с локальной радиобазой", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                            }
+                        }
+                    },
+                    onClick = { pendingUseRadio = !pendingUseRadio }
+                )
+                Divider(color = colors.outlineVariant)
+                DropdownMenuItem(
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = obd2Connected, onCheckedChange = null)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("OBD-II", fontWeight = FontWeight.Medium)
+                                Text(
+                                    if (obd2Connected) "Подключён · вспомогательный сигнал" else "Не подключён · открыть экран подключения",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                        }
+                    },
+                    onClick = {
+                        sourceMenuExpanded = false
+                        onOpenObd2()
+                    }
+                )
+                DropdownMenuItem(
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("IMU и барометр", fontWeight = FontWeight.Medium)
+                            Text(
+                                "Дополнительные датчики доверия, не самостоятельные источники координат.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        }
+                    },
+                    onClick = { sourceMenuExpanded = false }
+                )
+                Divider(color = colors.outlineVariant)
+                DropdownMenuItem(
+                    text = { Text("Принять", fontWeight = FontWeight.SemiBold) },
+                    leadingIcon = { Icon(Icons.Outlined.CheckCircle, null) },
+                    enabled = pendingUseGps || pendingUseRadio,
+                    onClick = {
+                        val selectedMode = when {
+                            pendingUseGps && pendingUseRadio -> PositionMode.AUTO
+                            pendingUseGps -> PositionMode.GPS_ONLY
+                            pendingUseRadio -> PositionMode.RADIO_ONLY
+                            else -> null
+                        }
+                        if (selectedMode != null && selectedMode != mode) onMode(selectedMode)
+                        sourceMenuExpanded = false
                     }
                 )
             }
         }
+        Text(
+            "GPS и радио определяют координату. OBD-II, IMU и барометр — вспомогательные сигналы доверия.",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onSurfaceVariant
+        )
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(
