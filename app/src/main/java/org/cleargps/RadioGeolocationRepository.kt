@@ -221,12 +221,10 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     /**
-     * Requests one cell-only estimate from BeaconDB. The preference is checked here as well as
-     * in the UI so no caller can accidentally contact the service when permission is off.
-     * This path reads Android's current cellular snapshot only; it does not use or modify
-     * LocalRadioDatabase and never submits contribution records.
+     * Requests one read-only estimate using the available Wi-Fi, BLE and supported cell signals.
+     * Explicit consent is checked here and again immediately before networking.
      */
-    suspend fun lookupBeaconDbCellsOnly(): BeaconDbLookupResult {
+    suspend fun lookupBeaconDbAllRadios(): BeaconDbLookupResult {
         if (CrashLoopGuard.isSafeModeActive(context)) {
             return BeaconDbLookupResult(
                 cells = emptyList(),
@@ -249,10 +247,19 @@ class RadioGeolocationRepository(private val context: Context) {
             )
         }
 
-        val signals = withContext(Dispatchers.Main.immediate) { collectCells().signals }
-        val parsedCells = signals.mapNotNull { signal -> BeaconDbProtocol.cellFromSignal(signal) }
-            .distinctBy { it.identifier }
-        val unsupportedCount = (signals.size - parsedCells.size).coerceAtLeast(0)
+        val snapshot = scanMutex.withLock {
+            withContext(Dispatchers.Main.immediate) {
+                collectSnapshot(useWifi = true, useCells = true, useBle = true)
+            }
+        }
+        val nowNanos = snapshot.collectedAtElapsedRealtimeNanos
+        val cellSignals = snapshot.signals.filter { it.type == "cell" }
+        val request = BeaconDbRequest(
+            cells = cellSignals.mapNotNull { BeaconDbProtocol.cellFromSignal(it, nowNanos) },
+            wifiAccessPoints = snapshot.signals.mapNotNull { BeaconDbProtocol.wifiFromSignal(it, nowNanos) },
+            bluetoothBeacons = snapshot.signals.mapNotNull { BeaconDbProtocol.bluetoothFromSignal(it, nowNanos) }
+        ).normalized()
+        val unsupportedCount = (cellSignals.size - request.cells.size).coerceAtLeast(0)
 
         // Recheck both the crash-loop guard and consent immediately before networking.
         if (CrashLoopGuard.isSafeModeActive(context)) {
@@ -269,21 +276,21 @@ class RadioGeolocationRepository(private val context: Context) {
                 message = "Запросы BeaconDB были выключены до отправки. Сетевого обращения не было."
             )
         }
-        if (parsedCells.isEmpty()) {
-            val detail = if (unsupportedCount > 0) {
-                " Android сообщил только неподдерживаемые типы ячеек; сетевой запрос не выполнялся."
-            } else {
-                " Android не предоставил актуальных сотовых ячеек; сетевой запрос не выполнялся."
-            }
+        if (!request.canLookup()) {
             return BeaconDbLookupResult(
-                cells = emptyList(),
+                cells = request.cells,
                 unsupportedCellCount = unsupportedCount,
-                message = "Нет подходящих данных сотовой сети." + detail
+                wifiAccessPoints = request.wifiAccessPoints,
+                bluetoothBeacons = request.bluetoothBeacons,
+                message = "Недостаточно поддерживаемых сигналов. BeaconDB нужна поддерживаемая сота либо минимум два допустимых Wi-Fi/BLE-идентификатора. Запрос не отправлялся."
             )
         }
 
-        return BeaconDbClient.lookup(parsedCells, unsupportedCount)
+        return BeaconDbClient.lookup(request, unsupportedCount)
     }
+
+    @Deprecated("Use lookupBeaconDbAllRadios(); all supported radio types are included.")
+    suspend fun lookupBeaconDbCellsOnly(): BeaconDbLookupResult = lookupBeaconDbAllRadios()
 
     private suspend fun collectSnapshot(
         useWifi: Boolean,

@@ -7,150 +7,157 @@ import java.io.InputStream
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
-/**
- * Performs a single, explicit, cell-only BeaconDB geolocation lookup.
- * This client never calls BeaconDB's data-submission endpoint.
- */
+/** Explicit read-only multi-radio BeaconDB lookup. Never calls the data-submission endpoint. */
 internal object BeaconDbClient {
     private const val ENDPOINT = "https://api.beacondb.net/v1/geolocate"
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 12_000
     private const val MAX_RESPONSE_CHARS = 16_384
+    private const val MAX_REQUEST_CHARS = 64 * 1_024
     private val lookupCache = BeaconDbLookupCache()
 
-    /** Clears process-local estimates when the user withdraws BeaconDB consent. */
     fun clearCache() = lookupCache.clear()
 
-    suspend fun lookup(
-        cells: List<BeaconDbCell>,
-        unsupportedCellCount: Int
-    ): BeaconDbLookupResult = withContext(Dispatchers.IO) {
-        if (cells.none { it.isValid() }) {
-            return@withContext BeaconDbLookupResult(
-                cells = emptyList(),
-                unsupportedCellCount = unsupportedCellCount,
-                message = "Нет поддерживаемых сотовых ячеек. Запрос в BeaconDB не отправлялся."
-            )
-        }
-
-        var connection: HttpsURLConnection? = null
-        val requestCells = cells.filter { it.isValid() }.distinctBy { it.identifier }
-        val cacheGeneration = lookupCache.generation()
-        lookupCache.get(requestCells)?.let { cached ->
-            val ageText = if (cached.ageMillis < 1_000L) {
-                "менее 1 с"
-            } else {
-                (cached.ageMillis / 1_000L).toString() + " с"
-            }
-            return@withContext BeaconDbLookupResult(
-                cells = requestCells,
-                unsupportedCellCount = unsupportedCellCount,
-                coordinate = cached.coordinate,
-                queriedAtMillis = cached.queriedAtMillis,
-                message = "Использован временный кэш BeaconDB (возраст при повторном поиске: " +
-                    ageText + "). Сетевой запрос не отправлялся; результат не сохранён в SQLite.",
-                fromCache = true,
-                cacheAgeMillis = cached.ageMillis
-            )
-        }
-        try {
-            if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
-                return@withContext BeaconDbLookupResult(
-                    cells = requestCells,
-                    unsupportedCellCount = unsupportedCellCount,
-                    message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+    suspend fun lookup(request: BeaconDbRequest, unsupportedCellCount: Int): BeaconDbLookupResult =
+        withContext(Dispatchers.IO) {
+            val normalized = request.normalized()
+            if (!normalized.canLookup()) {
+                return@withContext normalized.toResult(
+                    unsupportedCellCount,
+                    message = "BeaconDB нужны поддерживаемая сотовая ячейка или минимум два Wi-Fi/BLE-идентификатора. Запрос не отправлялся."
                 )
             }
-            val body = BeaconDbProtocol.buildCellOnlyRequestBody(requestCells)
-            val activeConnection = URL(ENDPOINT).openConnection() as? HttpsURLConnection
-                ?: return@withContext BeaconDbLookupResult(
-                    cells = requestCells,
-                    unsupportedCellCount = unsupportedCellCount,
-                    message = "Не удалось открыть защищённое HTTPS-соединение с BeaconDB."
-                )
-            connection = activeConnection
-            activeConnection.connectTimeout = CONNECT_TIMEOUT_MS
-            activeConnection.readTimeout = READ_TIMEOUT_MS
-            activeConnection.requestMethod = "POST"
-            activeConnection.instanceFollowRedirects = false
-            activeConnection.useCaches = false
-            activeConnection.doInput = true
-            activeConnection.doOutput = true
-            activeConnection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            activeConnection.setRequestProperty("Accept", "application/json")
-            activeConnection.setRequestProperty(
-                "User-Agent",
-                "ClearGPS/0.4.0 (+https://github.com/MAKAKAIglitch/clear-gps)"
-            )
-
-            if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
-                return@withContext BeaconDbLookupResult(
-                    cells = requestCells,
-                    unsupportedCellCount = unsupportedCellCount,
-                    message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+            val body = try {
+                BeaconDbProtocol.buildRequestBody(normalized)
+            } catch (_: IllegalArgumentException) {
+                return@withContext normalized.toResult(
+                    unsupportedCellCount,
+                    message = "Не удалось подготовить поддерживаемые радиосигналы. Запрос не отправлялся."
                 )
             }
-            val requestBytes = body.toByteArray(Charsets.UTF_8)
-            activeConnection.setFixedLengthStreamingMode(requestBytes.size)
-            activeConnection.outputStream.use { output ->
-                output.write(requestBytes)
-                output.flush()
+            if (body.length > MAX_REQUEST_CHARS) {
+                return@withContext normalized.toResult(
+                    unsupportedCellCount,
+                    message = "Слишком много радиосигналов для одного запроса BeaconDB; запрос не отправлялся."
+                )
             }
 
-            val statusCode = activeConnection.responseCode
-            val responseStream = if (statusCode in 200..299) {
-                activeConnection.inputStream
-            } else {
-                activeConnection.errorStream
+            var connection: HttpsURLConnection? = null
+            val fingerprint = BeaconDbProtocol.cacheFingerprint(normalized)
+            val cacheGeneration = lookupCache.generation()
+            lookupCache.getRequest(fingerprint)?.let { cached ->
+                val ageText = if (cached.ageMillis < 1_000L) "менее 1 с"
+                    else (cached.ageMillis / 1_000L).toString() + " с"
+                return@withContext normalized.toResult(
+                    unsupportedCellCount,
+                    coordinate = cached.coordinate,
+                    queriedAtMillis = cached.queriedAtMillis,
+                    message = "Использован временный кэш BeaconDB (возраст: $ageText). Сетевой запрос не отправлялся; результат не сохранён в SQLite.",
+                    fromCache = true,
+                    cacheAgeMillis = cached.ageMillis
+                )
             }
-            val responseBody = responseStream?.use(::readBounded).orEmpty()
-            val queriedAt = System.currentTimeMillis()
-
-            if (statusCode !in 200..299) {
-                val statusMessage = when (statusCode) {
-                    404 -> "BeaconDB не смогла оценить положение по этим ячейкам."
-                    429 -> "BeaconDB временно ограничила частоту запросов. Попробуй позже."
-                    in 500..599 -> "Сервис BeaconDB временно недоступен (HTTP " + statusCode + ")."
-                    else -> "BeaconDB отклонила запрос (HTTP " + statusCode + ")."
+            try {
+                if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
+                    return@withContext normalized.toResult(
+                        unsupportedCellCount,
+                        message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+                    )
                 }
-                return@withContext BeaconDbLookupResult(
-                    cells = requestCells,
-                    unsupportedCellCount = unsupportedCellCount,
-                    queriedAtMillis = queriedAt,
-                    message = statusMessage + " В локальную базу ничего не записано."
+                val activeConnection = URL(ENDPOINT).openConnection() as? HttpsURLConnection
+                    ?: return@withContext normalized.toResult(
+                        unsupportedCellCount,
+                        message = "Не удалось открыть защищённое HTTPS-соединение с BeaconDB."
+                    )
+                connection = activeConnection
+                activeConnection.connectTimeout = CONNECT_TIMEOUT_MS
+                activeConnection.readTimeout = READ_TIMEOUT_MS
+                activeConnection.requestMethod = "POST"
+                activeConnection.instanceFollowRedirects = false
+                activeConnection.useCaches = false
+                activeConnection.doInput = true
+                activeConnection.doOutput = true
+                activeConnection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                activeConnection.setRequestProperty("Accept", "application/json")
+                activeConnection.setRequestProperty(
+                    "User-Agent",
+                    "ClearGPS/0.4.0 (+https://github.com/MAKAKAIglitch/clear-gps)"
                 )
+                if (!lookupCache.isGenerationCurrent(cacheGeneration)) {
+                    return@withContext normalized.toResult(
+                        unsupportedCellCount,
+                        message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
+                    )
+                }
+
+                val requestBytes = body.toByteArray(Charsets.UTF_8)
+                activeConnection.setFixedLengthStreamingMode(requestBytes.size)
+                activeConnection.outputStream.use { output ->
+                    output.write(requestBytes)
+                    output.flush()
+                }
+                val statusCode = activeConnection.responseCode
+                val responseStream = if (statusCode in 200..299) activeConnection.inputStream
+                    else activeConnection.errorStream
+                val responseBody = responseStream?.use(::readBounded).orEmpty()
+                val queriedAt = System.currentTimeMillis()
+                if (statusCode !in 200..299) {
+                    val statusMessage = when (statusCode) {
+                        404 -> "BeaconDB не смогла оценить положение по этим сигналам."
+                        429 -> "BeaconDB временно ограничила частоту запросов. Попробуй позже."
+                        in 500..599 -> "Сервис BeaconDB временно недоступен (HTTP $statusCode)."
+                        else -> "BeaconDB отклонила запрос (HTTP $statusCode)."
+                    }
+                    return@withContext normalized.toResult(
+                        unsupportedCellCount,
+                        queriedAtMillis = queriedAt,
+                        message = "$statusMessage В локальную базу ничего не записано."
+                    )
+                }
+                val coordinate = BeaconDbProtocol.parseCoordinateResponse(responseBody)
+                    ?: return@withContext normalized.toResult(
+                        unsupportedCellCount,
+                        queriedAtMillis = queriedAt,
+                        message = "BeaconDB вернула ответ без пригодных координат. Результат не сохранён."
+                    )
+                lookupCache.putRequest(fingerprint, coordinate, queriedAt, expectedGeneration = cacheGeneration)
+                normalized.toResult(
+                    unsupportedCellCount,
+                    coordinate = coordinate,
+                    queriedAtMillis = queriedAt,
+                    message = "Получена оценка BeaconDB по текущим Wi-Fi/BLE-сигналам и поддерживаемым сотовым ячейкам. Результат остался в памяти экрана; локальная база не изменена."
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                normalized.toResult(
+                    unsupportedCellCount,
+                    queriedAtMillis = System.currentTimeMillis(),
+                    message = "Не удалось выполнить запрос BeaconDB: " + error.javaClass.simpleName + ". Проверь интернет и попробуй ещё раз."
+                )
+            } finally {
+                connection?.disconnect()
             }
-
-            val coordinate = BeaconDbProtocol.parseCoordinateResponse(responseBody)
-                ?: return@withContext BeaconDbLookupResult(
-                    cells = requestCells,
-                    unsupportedCellCount = unsupportedCellCount,
-                    queriedAtMillis = queriedAt,
-                    message = "BeaconDB вернула ответ без пригодных координат. Результат не сохранён."
-                )
-
-            lookupCache.put(requestCells, coordinate, queriedAt, expectedGeneration = cacheGeneration)
-            BeaconDbLookupResult(
-                cells = requestCells,
-                unsupportedCellCount = unsupportedCellCount,
-                coordinate = coordinate,
-                queriedAtMillis = queriedAt,
-                message = "Получена оценка BeaconDB только по сотовым ячейкам. Результат хранится в памяти экрана, локальная база не изменена."
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            BeaconDbLookupResult(
-                cells = requestCells,
-                unsupportedCellCount = unsupportedCellCount,
-                queriedAtMillis = System.currentTimeMillis(),
-                message = "Не удалось выполнить запрос BeaconDB: " + error.javaClass.simpleName +
-                    ". Проверь интернет и попробуй ещё раз."
-            )
-        } finally {
-            connection?.disconnect()
         }
-    }
+
+    private fun BeaconDbRequest.toResult(
+        unsupportedCellCount: Int,
+        coordinate: BeaconDbCoordinate? = null,
+        queriedAtMillis: Long = 0L,
+        message: String,
+        fromCache: Boolean = false,
+        cacheAgeMillis: Long = 0L
+    ) = BeaconDbLookupResult(
+        cells = cells,
+        unsupportedCellCount = unsupportedCellCount,
+        coordinate = coordinate,
+        queriedAtMillis = queriedAtMillis,
+        message = message,
+        fromCache = fromCache,
+        cacheAgeMillis = cacheAgeMillis,
+        wifiAccessPoints = wifiAccessPoints,
+        bluetoothBeacons = bluetoothBeacons
+    )
 
     private fun readBounded(stream: InputStream): String {
         stream.bufferedReader(Charsets.UTF_8).use { reader ->

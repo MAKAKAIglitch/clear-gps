@@ -42,21 +42,11 @@ internal class BeaconDbLookupCache(
     fun isGenerationCurrent(expectedGeneration: Long): Boolean = generation == expectedGeneration
 
     @Synchronized
-    fun get(cells: List<BeaconDbCell>): Hit? {
-        val key = cacheKey(cells) ?: return null
-        val now = monotonicTimeMillis()
-        val entry = entries[key] ?: return null
-        val age = now - entry.storedAtMonotonicMillis
-        if (age < 0L || age >= ttlMillis) {
-            entries.remove(key)
-            return null
-        }
-        return Hit(
-            coordinate = entry.coordinate,
-            queriedAtMillis = entry.queriedAtMillis,
-            ageMillis = age
-        )
-    }
+    fun get(cells: List<BeaconDbCell>): Hit? = getByKey(cacheKey(cells))
+
+    @Synchronized
+    fun getRequest(fingerprint: String): Hit? =
+        getByKey(digest("beacondb-multiradio-cache-v2\n" + fingerprint))
 
     @Synchronized
     fun put(
@@ -64,10 +54,36 @@ internal class BeaconDbLookupCache(
         coordinate: BeaconDbCoordinate,
         queriedAtMillis: Long,
         expectedGeneration: Long? = null
+    ) = putByKey(cacheKey(cells), coordinate, queriedAtMillis, expectedGeneration)
+
+    @Synchronized
+    fun putRequest(
+        fingerprint: String,
+        coordinate: BeaconDbCoordinate,
+        queriedAtMillis: Long,
+        expectedGeneration: Long? = null
+    ) = putByKey(digest("beacondb-multiradio-cache-v2\n" + fingerprint), coordinate, queriedAtMillis, expectedGeneration)
+
+    private fun getByKey(key: String?): Hit? {
+        if (key == null) return null
+        val now = monotonicTimeMillis()
+        val entry = entries[key] ?: return null
+        val age = now - entry.storedAtMonotonicMillis
+        if (age < 0L || age >= ttlMillis) {
+            entries.remove(key)
+            return null
+        }
+        return Hit(entry.coordinate, entry.queriedAtMillis, age)
+    }
+
+    private fun putByKey(
+        key: String?,
+        coordinate: BeaconDbCoordinate,
+        queriedAtMillis: Long,
+        expectedGeneration: Long?
     ) {
         if (expectedGeneration != null && expectedGeneration != generation) return
-        if (!coordinate.isCacheable() || queriedAtMillis <= 0L) return
-        val key = cacheKey(cells) ?: return
+        if (key == null || !coordinate.isCacheable() || queriedAtMillis <= 0L) return
         val now = monotonicTimeMillis()
         removeExpired(now)
         entries[key] = Entry(coordinate, queriedAtMillis, now)
@@ -112,10 +128,13 @@ internal class BeaconDbLookupCache(
                 cell.signalStrength.toString()
             ).joinToString(":")
         }
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(canonical.toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        return digest(canonical)
     }
+
+    private fun digest(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
     private fun BeaconDbCoordinate.isCacheable(): Boolean =
         latitude.isFinite() && latitude in -90.0..90.0 &&

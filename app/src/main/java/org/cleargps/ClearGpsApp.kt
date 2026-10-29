@@ -904,10 +904,10 @@ fun ClearGpsApp(
         val requestToken = beaconDbRequestToken + 1
         beaconDbRequestToken = requestToken
         beaconDbLoading = true
-        beaconDbMessage = "Читаю только текущие сотовые ячейки; запрос ещё не отправлен…"
+        beaconDbMessage = "Сканирую доступные Wi-Fi, BLE-маяки и соты; запрос ещё не отправлен…"
         val queryJob = scope.launch {
             try {
-                val result = repository.lookupBeaconDbCellsOnly()
+                val result = repository.lookupBeaconDbAllRadios()
                 if (requestToken == beaconDbRequestToken && beaconDbEnabled) {
                     beaconDbLookupResult = result
                     beaconDbMessage = result.message
@@ -4462,10 +4462,10 @@ private fun BeaconDbDatabaseContent(
     Column(modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("BeaconDB · только сотовые вышки", fontWeight = FontWeight.SemiBold,
+                Text("BeaconDB · Wi-Fi, BLE и сотовые вышки", fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Это не полный каталог всех вышек. Публичного дампа BeaconDB сейчас нет; её API возвращает оценку местоположения по текущим сотовым ячейкам. Данные не импортируются в локальную SQLite-базу.",
+                    "Это не выгрузка всей базы: публичного дампа BeaconDB нет. Ручной запрос оценивает положение по видимым Wi-Fi BSSID, стабильным BLE-маякам и поддерживаемым сотовым ячейкам. SSID, имена Bluetooth и рекламные payload не отправляются; локальная SQLite-база не меняется.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
@@ -4476,7 +4476,7 @@ private fun BeaconDbDatabaseContent(
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Сетевые запросы выключены", fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Пока выключено, Clear GPS ничего не отправляет в BeaconDB. Чтобы выполнить поиск, сначала явно разреши cell-only запросы в настройках.",
+                        "Пока выключено, Clear GPS ничего не отправляет в BeaconDB. Чтобы выполнить поиск, явно разреши запросы по Wi-Fi/BLE/сотам в настройках.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -4497,7 +4497,7 @@ private fun BeaconDbDatabaseContent(
             ) {
                 Icon(Icons.Outlined.Refresh, null)
                 Spacer(Modifier.width(7.dp))
-                Text(if (loading) "Запрашиваю BeaconDB…" else "Получить оценку по текущим сотам")
+                Text(if (loading) "Запрашиваю BeaconDB…" else "Оценить положение по Wi-Fi, Bluetooth и сотам")
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(
@@ -4558,8 +4558,10 @@ private fun BeaconDbDatabaseContent(
                                 color = colors.onSurfaceVariant)
                         }
                         Text(
-                            "Сотовых ячеек в запросе: " + result.cells.size +
-                                if (result.unsupportedCellCount > 0) " · неподдерживаемых пропущено: " +
+                            "В запросе: Wi-Fi " + result.wifiAccessPoints.size +
+                                " · BLE " + result.bluetoothBeacons.size +
+                                " · соты " + result.cells.size +
+                                if (result.unsupportedCellCount > 0) " · неподдерживаемых ячеек пропущено: " +
                                     result.unsupportedCellCount else "",
                             style = MaterialTheme.typography.labelMedium,
                             color = colors.onSurfaceVariant
@@ -4571,30 +4573,70 @@ private fun BeaconDbDatabaseContent(
                         }
                     }
                 }
-                if (result.cells.isNotEmpty()) {
-                    Text("Сотовые ячейки, включённые в этот запрос",
+                if (result.cells.isNotEmpty() || result.wifiAccessPoints.isNotEmpty() ||
+                    result.bluetoothBeacons.isNotEmpty()
+                ) {
+                    Text("Радиосигналы, включённые в запрос",
                         style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Text("Это список сигналов, полученных от Android, а не выгрузка записей BeaconDB.",
+                    Text("Это временный снимок Android для запроса, а не выгрузка каталога BeaconDB. SSID и имена Bluetooth не отправляются.",
                         style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                     LazyColumn(
-                        Modifier.weight(1f).fillMaxWidth(),
+                        Modifier.fillMaxWidth().heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(result.cells, key = { it.identifier }) { cell ->
-                            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp),
-                                color = colors.surfaceContainerHigh) {
-                                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Outlined.SignalCellularAlt, null, tint = colors.primary)
-                                    Spacer(Modifier.width(8.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(cell.radioType.uppercase() + " · " + cell.mobileCountryCode +
-                                            "/" + cell.mobileNetworkCode, fontWeight = FontWeight.SemiBold)
-                                        Text("Зона " + cell.locationAreaCode + " · ID соты " + cell.cellId,
-                                            style = MaterialTheme.typography.bodySmall)
+                        if (result.wifiAccessPoints.isNotEmpty()) {
+                            item { Text("Wi-Fi · ${result.wifiAccessPoints.size}", style = MaterialTheme.typography.labelLarge, color = colors.primary) }
+                            items(result.wifiAccessPoints, key = { "wifi:" + it.identifier }) { point ->
+                                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp), color = colors.surfaceContainerHigh) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.Wifi, null, tint = colors.primary)
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(point.macAddress, fontWeight = FontWeight.SemiBold)
+                                            Text((point.frequencyMhz?.let { "${it} MHz · " } ?: "") +
+                                                (point.ageMillis?.let { "возраст ${it / 1_000} с" } ?: "возраст неизвестен"),
+                                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                        }
+                                        Text(point.signalStrength.toString() + " dBm",
+                                            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                                     }
-                                    Text(cell.signalStrength.toString() + " dBm",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = colors.onSurfaceVariant)
+                                }
+                            }
+                        }
+                        if (result.bluetoothBeacons.isNotEmpty()) {
+                            item { Text("Стабильные BLE-маяки · ${result.bluetoothBeacons.size}", style = MaterialTheme.typography.labelLarge, color = colors.primary) }
+                            items(result.bluetoothBeacons, key = { "ble:" + it.identifier }) { beacon ->
+                                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp), color = colors.surfaceContainerHigh) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.Bluetooth, null, tint = colors.primary)
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(beacon.macAddress, fontWeight = FontWeight.SemiBold)
+                                            Text(beacon.ageMillis?.let { "возраст ${it / 1_000} с" } ?: "возраст неизвестен",
+                                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                        }
+                                        Text(beacon.signalStrength.toString() + " dBm",
+                                            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                        if (result.cells.isNotEmpty()) {
+                            item { Text("Сотовые ячейки · ${result.cells.size}", style = MaterialTheme.typography.labelLarge, color = colors.primary) }
+                            items(result.cells, key = { "cell:" + it.identifier }) { cell ->
+                                Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp), color = colors.surfaceContainerHigh) {
+                                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.SignalCellularAlt, null, tint = colors.primary)
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(cell.radioType.uppercase() + " · " + cell.mobileCountryCode + "/" + cell.mobileNetworkCode,
+                                                fontWeight = FontWeight.SemiBold)
+                                            Text("Зона " + cell.locationAreaCode + " · ID соты " + cell.cellId,
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        Text(cell.signalStrength.toString() + " dBm",
+                                            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                                    }
                                 }
                             }
                         }
@@ -4986,7 +5028,7 @@ private fun SettingsScreen(
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 SettingSwitch(
                     "Разрешить запросы к BeaconDB",
-                    "По умолчанию выключено. При включении и ручном поиске передаются только ID текущих поддерживаемых сотовых ячеек и уровни сигнала. IP-адрес виден серверу; Wi-Fi, Bluetooth и GPS-координаты в запрос не входят. Отправка вкладов/наблюдений не используется.",
+                    "По умолчанию выключено. При ручном поиске отправляются доступные Wi-Fi BSSID/RSSI, стабильные BLE MAC/RSSI и поддерживаемые GSM/WCDMA/LTE ID/RSSI. IP-адрес виден серверу. SSID, имена Bluetooth, payload, GPS-координаты и история не отправляются; скрытые сети и SSID с _nomap, а также private/random BLE MAC исключаются. Загрузка вкладов/наблюдений не используется.",
                     beaconDbEnabled,
                     onBeaconDbEnabled
                 )
@@ -5223,9 +5265,9 @@ private fun SettingsScreen(
                     Text("Приватность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
                         if (beaconDbEnabled) {
-                            "BeaconDB разрешён только для ручных cell-only запросов из вкладки «База»: сервер получает ID текущих сотовых ячеек и уровни сигнала, а также видит IP-адрес. Wi-Fi, Bluetooth, GPS-координаты и вклад в базу не отправляются. API WiGLE не вызывается."
+                            "BeaconDB разрешён только для ручного запроса из вкладки «База»: передаются текущие Wi-Fi BSSID/RSSI, стабильные BLE-адреса/RSSI и поддерживаемые сотовые ID/RSSI. Сервер также видит IP-адрес. SSID, Bluetooth-имена/payload, GPS-координаты и история не отправляются. Скрытые и _nomap Wi-Fi, а также private/random BLE MAC исключаются; API загрузки вкладов не вызывается."
                         } else {
-                            "Запросы BeaconDB выключены. Радиоидентификаторы остаются на устройстве; API WiGLE не вызывается. При включении BeaconDB доступны только ручные запросы по сотовым ячейкам, без загрузки наблюдений."
+                            "Запросы BeaconDB выключены. Радиоидентификаторы остаются на устройстве. При включении можно вручную запросить оценку по текущим Wi-Fi, стабильным BLE-маякам и поддерживаемым сотовым ячейкам; автоматической отправки и загрузки наблюдений нет."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
