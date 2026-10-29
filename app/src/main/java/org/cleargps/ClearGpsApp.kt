@@ -302,6 +302,7 @@ fun ClearGpsApp(
     var backExitArmed by remember { mutableStateOf(false) }
     var pendingMonitorStart by remember { mutableStateOf(false) }
     var pendingMockEnable by remember { mutableStateOf(false) }
+    var pendingPositionMode by remember { mutableStateOf<PositionMode?>(null) }
     val mapIsDark = when (mapThemeMode) {
         MapThemeMode.SYSTEM -> systemDark
         MapThemeMode.LIGHT -> false
@@ -782,6 +783,11 @@ fun ClearGpsApp(
     }
 
     fun startMonitoringWithPermission(enableMock: Boolean) {
+        if (positionMode.gpsOnly && !hasFineLocationPermission(context)) {
+            serviceStatus = "Для режима «Только GPS» требуется разрешение «Точное местоположение»."
+            Toast.makeText(context, serviceStatus, Toast.LENGTH_LONG).show()
+            return
+        }
         try {
             prefs.edit().putBoolean(LocationMonitorService.KEY_MONITORING, true)
                 .putBoolean(LocationMonitorService.KEY_MOCK_ENABLED,
@@ -806,14 +812,34 @@ fun ClearGpsApp(
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        if (pendingMonitorStart) {
+        val requestedPositionMode = pendingPositionMode
+        if (requestedPositionMode != null) {
+            pendingPositionMode = null
+            if (hasFineLocationPermission(context)) {
+                applyPositionMode(requestedPositionMode)
+            } else {
+                serviceStatus = "Для режима «Только GPS» требуется разрешение «Точное местоположение»."
+                Toast.makeText(context, serviceStatus, Toast.LENGTH_LONG).show()
+            }
+        } else if (pendingMonitorStart) {
             pendingMonitorStart = false
-            if (hasAnyLocationPermission(context)) {
+            val requiredPermissionGranted = if (positionMode.gpsOnly) {
+                hasFineLocationPermission(context)
+            } else {
+                hasAnyLocationPermission(context)
+            }
+            if (requiredPermissionGranted) {
                 startMonitoringWithPermission(pendingMockEnable)
                 pendingMockEnable = false
             } else {
                 pendingMockEnable = false
-                Toast.makeText(context, "Мониторинг не запущен: разрешение геолокации отклонено.", Toast.LENGTH_LONG).show()
+                val message = if (positionMode.gpsOnly) {
+                    "Режим «Только GPS» не запущен: дай Clear GPS разрешение «Точное местоположение»."
+                } else {
+                    "Мониторинг не запущен: разрешение геолокации отклонено."
+                }
+                serviceStatus = message
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             }
         } else if (positionMode.gpsOnly) {
             scanMessage = "Радиосканирование отключено в режиме GPS."
@@ -828,6 +854,20 @@ fun ClearGpsApp(
         } else {
             scanMessage = "Без разрешения геолокации Android ограничивает сканирование Wi‑Fi и сотовых сетей."
             lookupPhase = LookupPhase.ERROR
+        }
+    }
+
+    fun selectPositionMode(requestedMode: PositionMode) {
+        if (requestedMode.gpsOnly && !hasFineLocationPermission(context)) {
+            pendingPositionMode = requestedMode
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        } else {
+            applyPositionMode(requestedMode)
         }
     }
 
@@ -1958,9 +1998,13 @@ fun ClearGpsApp(
         }
     }
 
+    fun needsLocationPermissionForCurrentMode(): Boolean =
+        !hasAnyLocationPermission(context) ||
+            (positionMode.gpsOnly && !hasFineLocationPermission(context))
+
     val runMonitoring: () -> Unit = {
         pendingMockEnable = false
-        if (!hasAnyLocationPermission(context)) {
+        if (needsLocationPermissionForCurrentMode()) {
             pendingMonitorStart = true
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else startMonitoringWithPermission(enableMock = false)
@@ -1977,7 +2021,7 @@ fun ClearGpsApp(
     }
     val runFix: () -> Unit = {
         pendingMockEnable = true
-        if (!hasAnyLocationPermission(context)) {
+        if (needsLocationPermissionForCurrentMode()) {
             pendingMonitorStart = true
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else {
@@ -1997,7 +2041,7 @@ fun ClearGpsApp(
     }
     val enableMock: () -> Unit = {
         pendingMockEnable = true
-        if (!hasAnyLocationPermission(context)) {
+        if (needsLocationPermissionForCurrentMode()) {
             pendingMonitorStart = true
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else startMonitoringWithPermission(enableMock = true)
@@ -2225,7 +2269,7 @@ fun ClearGpsApp(
                                     gnssBaselineReady = gnssBaselineReady, gnssBaselineDeviations = gnssBaselineDeviations,
                                     gnssDiagnosticsAtNanos = gnssDiagnosticsAtNanos, gnssDiagnosticsNowNanos = gnssDiagnosticsNowNanos,
                                     gnssLiveSnapshot = gnssLiveSnapshot,
-                                    onMode = { applyPositionMode(it) },
+                                    onMode = { requestedMode -> selectPositionMode(requestedMode) },
                                     obd2Connected = obd2Connected,
                                     onOpenObd2 = { navigateToTab(AppTab.OBD2) },
                                     onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
@@ -2617,7 +2661,7 @@ fun ClearGpsApp(
                                         DiagnosticLogStore.clear(context)
                                         diagnosticLogText = DiagnosticLogStore.read(context)
                                     },
-                                    onMode = { applyPositionMode(it) },
+                                    onMode = { requestedMode -> selectPositionMode(requestedMode) },
                                     onMapTheme = {
                                         mapThemeMode = it
                                         prefs.edit().putString(ClearGpsPreferences.KEY_MAP_STYLE, it.key).apply()
@@ -3026,6 +3070,44 @@ fun ClearGpsApp(
     }
 }
 
+private fun gpsFixStatusLabel(status: String): String = when {
+    status.contains("Точное местоположение", ignoreCase = true) ||
+        status.contains("precise location", ignoreCase = true) -> "Нужно точное разрешение"
+    status.contains("GPS выключен", ignoreCase = true) ||
+        status.contains("GPS provider disabled", ignoreCase = true) -> "GPS выключен"
+    status.contains("GPS-провайдер недоступен", ignoreCase = true) ||
+        status.contains("GPS provider unavailable", ignoreCase = true) -> "GPS недоступен"
+    status.contains("не выдал координаты за 30 секунд", ignoreCase = true) -> "Нет GPS-фикса"
+    status.contains("ожидание первого спутникового фикса", ignoreCase = true) -> "Ищем GPS-фикс"
+    status.contains("Mock GPS paused", ignoreCase = true) -> "Позиция не допущена"
+    status.contains("Mock GPS недоступен", ignoreCase = true) ||
+        status.contains("Mock GPS unavailable", ignoreCase = true) -> "Mock GPS недоступен"
+    else -> "Фикс ждёт координаты"
+}
+
+private fun gpsFixStatusHint(status: String): String? = when {
+    status.contains("Точное местоположение", ignoreCase = true) ||
+        status.contains("precise location", ignoreCase = true) ->
+        "Для режима «Только GPS» выдай Clear GPS разрешение «Точное местоположение» в настройках Android."
+    status.contains("GPS выключен", ignoreCase = true) ||
+        status.contains("GPS provider disabled", ignoreCase = true) ->
+        "GPS выключен в системных настройках геолокации. Включи геолокацию и повтори попытку."
+    status.contains("GPS-провайдер недоступен", ignoreCase = true) ||
+        status.contains("GPS provider unavailable", ignoreCase = true) ->
+        "Android не предоставляет GPS-провайдер на этом устройстве."
+    status.contains("не выдал координаты за 30 секунд", ignoreCase = true) ->
+        "За 30 секунд GPS не получил координату. Проверь включение геолокации и попробуй под открытым небом; слабый спутниковый приём может увеличить ожидание."
+    status.contains("ожидание первого спутникового фикса", ignoreCase = true) ->
+        "GPS-провайдер запущен; ждём первый спутниковый фикс. При первом запуске холодный старт может занять больше времени."
+    status.contains("Mock GPS paused", ignoreCase = true) ->
+        "GPS-измерение получено, но сейчас фильтр не разрешил его публикацию. Открой диагностику GNSS, чтобы увидеть причину."
+    status.contains("Mock GPS недоступен", ignoreCase = true) ||
+        status.contains("Mock GPS unavailable", ignoreCase = true) ->
+        "Координата подготовлена, но Android не разрешил mock-публикацию. Проверь выбор Clear GPS в настройках разработчика."
+    status.isBlank() || status == "Monitoring" || status == "Мониторинг запущен" -> null
+    else -> status.take(240)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MapHomeScreen(
@@ -3074,6 +3156,10 @@ private fun MapHomeScreen(
         PositionMode.RADIO_ONLY -> "Только радио"
     }
 
+    val gpsWaitHint = if (mode.gpsOnly && monitorEnabled && !mockOutputActive) {
+        gpsFixStatusHint(serviceStatus)
+    } else null
+
     fun applyPendingSourceSelection() {
         val selectedMode = when {
             pendingUseGps && pendingUseRadio -> PositionMode.AUTO
@@ -3107,7 +3193,7 @@ private fun MapHomeScreen(
                             fixEnabled && mockOutputActive &&
                                 serviceStatus.contains("Mock GPS + network published", ignoreCase = true) -> "Mock GPS + Network"
                             fixEnabled && mockOutputActive -> "Mock GPS активен"
-                            fixEnabled -> "Фикс ждёт координаты"
+                            fixEnabled -> gpsFixStatusLabel(serviceStatus)
                             coordinate != null -> "Координаты найдены"
                             else -> "Нет фикса"
                         },
@@ -3154,11 +3240,18 @@ private fun MapHomeScreen(
                             mode.usesRadio ->
                                 "Сначала запиши радиоточки в известных местах или импортируй локальный CSV с координатами."
                             else -> if (mode.gpsOnly) {
-                                "Разреши геолокацию и включи фикс. Радиосканирование в режиме GPS отключено."
+                                gpsWaitHint ?: "Разреши точную геолокацию и включи фикс. Радиосканирование в режиме GPS отключено."
                             } else {
                                 "Разреши геолокацию и включи фикс. Разовый поиск доступен в диагностике."
                             }
                         },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                if (coordinate != null && gpsWaitHint != null) {
+                    Text(
+                        gpsWaitHint,
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -5694,6 +5787,9 @@ private fun currentReference(location: Location?, anchor: ManualAnchor?): RadioR
     }
     return anchor?.let { RadioReference(it.latitude, it.longitude, 1_500.0, "manual-anchor") }
 }
+private fun hasFineLocationPermission(context: Context): Boolean =
+    context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
 private fun hasAnyLocationPermission(context: Context): Boolean =
     context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
