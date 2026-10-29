@@ -3663,6 +3663,7 @@ private fun DatabaseScreen(
     onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    val databaseScrollState = rememberScrollState()
     var pendingDeleteSource by remember { mutableStateOf<RadioSourceRecord?>(null) }
     var pendingDeleteSourceDay by remember { mutableStateOf<RadioSourceDayRecord?>(null) }
     var expandedSourceIds by remember { mutableStateOf(emptySet<Long>()) }
@@ -3677,7 +3678,7 @@ private fun DatabaseScreen(
     Column(
         Modifier.fillMaxSize()
             .then(
-                if (dataSource == DatabaseDataSource.LOCAL) Modifier.verticalScroll(rememberScrollState())
+                if (dataSource == DatabaseDataSource.LOCAL) Modifier.verticalScroll(databaseScrollState)
                 else Modifier
             )
             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -3788,15 +3789,15 @@ private fun DatabaseScreen(
             if (filteredPoints.isEmpty()) {
                 if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
                 else EmptyState("Нет точек этого типа", "Выбери «Все» или другой тип: Wi‑Fi, вышки либо Bluetooth.")
-            } else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                filteredPoints.forEach { point ->
+            } else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                items(filteredPoints, key = { it.id }) { point ->
                     RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
                 }
             }
         } else if (selectedView == PointsView.HISTORY) {
             if (history.isEmpty()) EmptyState("История пуста", "Первый запуск сканирования добавит сюда запись.")
-            else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                history.forEach { entry ->
+            else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                items(history, key = { it.id }) { entry ->
                     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
                         Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3874,8 +3875,8 @@ private fun DatabaseScreen(
                 if (visibleSources.isEmpty()) {
                     EmptyState("Нет совпадений", "Измени название источника, дату, тип радио, RSSI или число наблюдений.")
                 } else {
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        visibleSources.forEach { source ->
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(visibleSources, key = { it.id }) { source ->
                             RadioSourceRow(
                                 source = source,
                                 days = daysBySource[source.id].orEmpty(),
