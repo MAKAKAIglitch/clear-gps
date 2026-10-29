@@ -91,6 +91,9 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -461,6 +464,7 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
     var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
     var zoneRenameText by remember { mutableStateOf("") }
     var showRadioOnlyInfo by remember { mutableStateOf(false) }
+    var showMapLegend by remember { mutableStateOf(false) }
     var pendingRecordScan by remember { mutableStateOf(false) }
 
     // Load and publish the local database UI from the caller's existing coroutine.
@@ -2711,6 +2715,25 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                     }
                 )
             }
+            if (selectedTab == AppTab.MAP) {
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = panelBottomOffset + 46.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = colors.surfaceContainerHigh.copy(alpha = 0.96f),
+                    shadowElevation = 4.dp
+                ) {
+                    Row(
+                        modifier = Modifier.clickable { showMapLegend = true }
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("Легенда", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
             SnackbarHost(
                 hostState = snackbarHostState,
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -2950,6 +2973,16 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
             },
             confirmButton = { TextButton(onClick = { showRadioOnlyInfo = false }) { Text("Понятно") } }
         )
+        }
+        if (showMapLegend && selectedTab == AppTab.MAP) {
+            MapLegendBottomSheet(
+                onDismiss = { showMapLegend = false },
+                mode = positionMode,
+                mapSourceMode = mapSourceMode,
+                monitorEnabled = monitorEnabled,
+                mockEnabled = mockEnabled,
+                mockOutputActive = mockOutputActive
+            )
         }
     }
 }
@@ -5147,6 +5180,213 @@ private fun MapAttribution(modifier: Modifier = Modifier, dark: Boolean, onClick
         color = (if (dark) Color(0xFF222631) else Color.White).copy(alpha = 0.92f), shadowElevation = 2.dp, onClick = onClick) {
         Text("OpenFreeMap · OpenMapTiles · © OpenStreetMap", modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
             color = if (dark) Color.White else Color(0xFF253044), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MapLegendBottomSheet(
+    onDismiss: () -> Unit,
+    mode: PositionMode,
+    mapSourceMode: MapSourceMode,
+    monitorEnabled: Boolean,
+    mockEnabled: Boolean,
+    mockOutputActive: Boolean
+) {
+    val colors = MaterialTheme.colorScheme
+    val mockStatus = when {
+        mockOutputActive -> "Публикация координаты активна"
+        monitorEnabled && mockEnabled -> "Фикс включён, пригодная координата ещё не опубликована"
+        mockEnabled -> "Mock включён в настройках, мониторинг не запущен"
+        else -> "Выключен"
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = colors.surfaceContainerHigh
+    ) {
+        Column(
+            Modifier.fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Легенда карты", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Что означают метки и области", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Закрыть легенду")
+                }
+            }
+
+            Text("Положение и точность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLegendEntry(
+                title = "Основная позиция · GPS / mock",
+                description = "Синяя метка показывает текущую основную координату. Если активна публикация mock, отображается опубликованная позиция.",
+                markerColor = Color(0xFF1A73E8)
+            )
+            MapLegendEntry(
+                title = "Погрешность позиции",
+                description = "Полупрозрачный синий круг — горизонтальная точность, а не граница достоверности.",
+                markerColor = Color(0xFF4285F4),
+                ring = true
+            )
+            MapLegendEntry(
+                title = "Оценка по радиобазе",
+                description = "Красная метка и красноватая область показывают отдельный расчёт по локальным радиоданным.",
+                markerColor = Color(0xFFDC2626),
+                ring = true
+            )
+            MapLegendEntry(
+                title = "Ручной ориентир",
+                description = "Янтарная метка — ориентир, поставленный пользователем; это не измерение датчика и не эталонная координата.",
+                markerColor = Color(0xFFF9AB00)
+            )
+
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Радиоточки в базе", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLegendEntry(
+                title = "Wi‑Fi",
+                description = "Зелёные точки.",
+                markerColor = Color(0xFF16A34A)
+            )
+            MapLegendEntry(
+                title = "Сотовые сети",
+                description = "Фиолетовые точки.",
+                markerColor = Color(0xFFA855F7)
+            )
+            MapLegendEntry(
+                title = "Bluetooth LE",
+                description = "Янтарные точки.",
+                markerColor = Color(0xFFF59E0B)
+            )
+            Text(
+                if (mode.gpsOnly) {
+                    "Сейчас выбран режим GPS: радио-точки скрыты на карте и не участвуют в отображении основной позиции."
+                } else {
+                    "В режиме «Авто» радио-точки могут отображаться вместе с GPS; в режиме «Только радио» координата рассчитывается по совпадениям с локальной базой."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant
+            )
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceContainer
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Происхождение данных", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Цвет точки показывает тип радио, а не происхождение. Локальные, WiGLE и другие импортированные записи используют те же цвета по типу; управление источниками и их доверием находится в «База → Источники».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Зоны и состояние", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLegendEntry(
+                title = "Зона риска",
+                description = "Розово-красная область и контур — сохранённая пользовательская зона риска.",
+                markerColor = Color(0xFFD94B68),
+                area = true
+            )
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceContainer
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Mock GPS", fontWeight = FontWeight.SemiBold)
+                    Text(mockStatus, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                    Text(
+                        "Рабочее состояние публикации показывается отдельно от наличия координаты на карте.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceContainer
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Высотные зоны и DEM", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Высотные зоны пока не отображаются отдельным слоем карты. Доступная высотная диагностика не означает, что DEM или hillshade уже нарисованы на карте.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = colors.surfaceContainer
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Источник карты", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (mapSourceMode == MapSourceMode.OFFLINE) {
+                            "Офлайн-холст: внешние тайлы не загружаются."
+                        } else {
+                            "Онлайн-стиль OpenFreeMap: просмотр карты отправляет обычные запросы тайлов и раскрывает провайдеру IP и область карты."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+}
+
+@Composable
+private fun MapLegendEntry(
+    title: String,
+    description: String,
+    markerColor: Color,
+    ring: Boolean = false,
+    area: Boolean = false
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+            when {
+                area -> Surface(
+                    modifier = Modifier.size(width = 25.dp, height = 15.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    color = markerColor.copy(alpha = 0.18f),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, markerColor)
+                ) {}
+                ring -> Surface(
+                    modifier = Modifier.size(22.dp),
+                    shape = CircleShape,
+                    color = markerColor.copy(alpha = 0.16f),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, markerColor)
+                ) {}
+                else -> Surface(
+                    modifier = Modifier.size(13.dp),
+                    shape = CircleShape,
+                    color = markerColor,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, colors.outline.copy(alpha = 0.4f))
+                ) {}
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
     }
 }
 
