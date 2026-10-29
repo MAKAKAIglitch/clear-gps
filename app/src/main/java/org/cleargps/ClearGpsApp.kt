@@ -21,7 +21,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -2035,7 +2037,15 @@ fun ClearGpsApp(onMapViewCreated: (MapView) -> Unit) {
                         .padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    HeaderCard(tab = selectedTab, onCenter = { mapController.focusPrimary() }, onSettings = { navigateToTab(AppTab.SETTINGS) })
+                    HeaderCard(
+                        tab = selectedTab,
+                        mode = positionMode,
+                        monitorEnabled = monitorEnabled,
+                        filterState = filterState,
+                        riskScore = riskScore,
+                        onCenter = { mapController.focusPrimary() },
+                        onSettings = { navigateToTab(AppTab.SETTINGS) }
+                    )
                     if (mapTapMode != MapTapMode.NONE) {
                         ModeBanner(
                             text = if (mapTapMode == MapTapMode.PLACE_ANCHOR) "Нажми карту, чтобы поставить ориентир"
@@ -4950,31 +4960,132 @@ private fun ClearGpsTheme(dark: Boolean, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun HeaderCard(tab: AppTab, onCenter: () -> Unit, onSettings: () -> Unit) {
+private fun HeaderCard(
+    tab: AppTab,
+    mode: PositionMode,
+    monitorEnabled: Boolean,
+    filterState: String,
+    riskScore: Int,
+    onCenter: () -> Unit,
+    onSettings: () -> Unit
+) {
     val colors = MaterialTheme.colorScheme
-    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(25.dp), color = colors.surface.copy(alpha = 0.95f),
-        tonalElevation = 4.dp, shadowElevation = 4.dp) {
-        Row(Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(16.dp), color = colors.primaryContainer, modifier = Modifier.size(42.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.GpsFixed, null, tint = colors.onPrimaryContainer, modifier = Modifier.size(24.dp))
+    val statusLabel = when {
+        mode.usesRadio -> "Только радио"
+        !monitorEnabled -> "Мониторинг выключен"
+        filterState == FilterState.WAITING.name -> "Ждёт координаты…"
+        filterState == FilterState.NORMAL.name -> "Норма"
+        filterState == FilterState.SUSPECT.name -> "Подозрение"
+        filterState == FilterState.ZONE_RISK.name -> "Зона риска"
+        filterState == FilterState.CORRECTING.name -> "Резервная позиция"
+        filterState == FilterState.NO_FALLBACK.name -> "Нет доверенной позиции"
+        else -> "Анализ: мониторинг спуфинга"
+    }
+    val statusContainer = when {
+        mode.usesRadio -> colors.secondaryContainer
+        !monitorEnabled -> colors.surfaceVariant
+        filterState == FilterState.SUSPECT.name || filterState == FilterState.CORRECTING.name ->
+            colors.tertiaryContainer
+        filterState == FilterState.ZONE_RISK.name || filterState == FilterState.NO_FALLBACK.name ->
+            colors.errorContainer
+        else -> colors.primaryContainer
+    }
+    val statusForeground = when {
+        mode.usesRadio -> colors.onSecondaryContainer
+        !monitorEnabled -> colors.onSurfaceVariant
+        filterState == FilterState.SUSPECT.name || filterState == FilterState.CORRECTING.name ->
+            colors.onTertiaryContainer
+        filterState == FilterState.ZONE_RISK.name || filterState == FilterState.NO_FALLBACK.name ->
+            colors.onErrorContainer
+        else -> colors.onPrimaryContainer
+    }
+    // A persisted score is not current evidence when the monitor is stopped or GNSS is intentionally unused.
+    val riskAvailable = tab == AppTab.MAP && monitorEnabled && !mode.usesRadio &&
+        filterState != FilterState.WAITING.name
+    val visibleScore = riskScore.coerceIn(0, 100)
+    val animatedRisk by animateFloatAsState(
+        targetValue = if (riskAvailable) visibleScore / 100f else 0f,
+        animationSpec = tween(durationMillis = 360)
+    )
+    val riskColor = when {
+        !riskAvailable -> colors.outlineVariant
+        visibleScore >= 60 -> colors.error
+        visibleScore >= 30 -> colors.tertiary
+        else -> colors.primary
+    }
+
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(25.dp),
+        color = colors.surface.copy(alpha = 0.96f),
+        tonalElevation = 4.dp,
+        shadowElevation = 4.dp
+    ) {
+        Column(
+            Modifier.padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = RoundedCornerShape(16.dp), color = colors.primaryContainer, modifier = Modifier.size(42.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Outlined.GpsFixed, null, tint = colors.onPrimaryContainer, modifier = Modifier.size(24.dp))
+                    }
                 }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Clear GPS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(when (tab) {
+                        AppTab.MAP -> "Локальная навигация · GNSS"
+                        AppTab.POINTS -> "Радиоточки и история"
+                        AppTab.ZONES -> "Зоны аномалий"
+                        AppTab.OBD2 -> "Автопараметры · только чтение"
+                        AppTab.SETTINGS -> "Источники и приватность"
+                    }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                }
+                if (tab != AppTab.OBD2) {
+                    IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
+                }
+                IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
             }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text("Clear GPS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(when (tab) {
-                    AppTab.MAP -> "Локальная навигация · GNSS"
-                    AppTab.POINTS -> "Радиоточки и история"
-                    AppTab.ZONES -> "Зоны аномалий"
-                    AppTab.OBD2 -> "Автопараметры · только чтение"
-                    AppTab.SETTINGS -> "Источники и приватность"
-                }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+            if (tab == AppTab.MAP) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusPill(statusLabel, statusContainer, statusForeground)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (riskAvailable) "Уровень риска" else if (mode.usesRadio) "Риск GNSS недоступен в режиме «Только радио»" else "Нет свежей оценки риска",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Crossfade(targetState = if (riskAvailable) "$visibleScore/100" else "—") { label ->
+                                Text(
+                                    label,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = riskColor
+                                )
+                            }
+                        }
+                        LinearProgressIndicator(
+                            progress = { animatedRisk },
+                            modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                            color = riskColor,
+                            trackColor = colors.surfaceVariant
+                        )
+                    }
+                }
+                Text(
+                    if (riskAvailable) "Индекс риска — эвристическая оценка, не вероятность атаки."
+                    else "Для актуальной оценки нужны свежие данные мониторинга GNSS.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
             }
-            if (tab != AppTab.OBD2) {
-                IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
-            }
-            IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
         }
     }
 }
@@ -4995,8 +5106,15 @@ private fun ModeBanner(text: String, onCancel: () -> Unit) {
 @Composable
 private fun StatusPill(text: String, color: Color, foreground: Color) {
     Surface(shape = CircleShape, color = color) {
-        Text(text, modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-            style = MaterialTheme.typography.labelMedium, color = foreground, fontWeight = FontWeight.SemiBold)
+        Crossfade(targetState = text) { animatedText ->
+            Text(
+                animatedText,
+                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = foreground,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 
