@@ -47,7 +47,7 @@ class RadioGeolocationRepositoryBeaconDbConsentTest {
             failIfChecked = true
         )
 
-        val result = RadioGeolocationRepository(guardedContext).lookupBeaconDbCellsOnly()
+        val result = RadioGeolocationRepository(guardedContext).lookupBeaconDbAllRadios()
 
         assertFalse(result.success)
         assertTrue(result.cells.isEmpty())
@@ -67,7 +67,7 @@ class RadioGeolocationRepositoryBeaconDbConsentTest {
             permissionResult = PackageManager.PERMISSION_DENIED
         )
 
-        val result = RadioGeolocationRepository(guardedContext).lookupBeaconDbCellsOnly()
+        val result = RadioGeolocationRepository(guardedContext).lookupBeaconDbAllRadios()
 
         assertFalse(result.success)
         assertTrue(result.cells.isEmpty())

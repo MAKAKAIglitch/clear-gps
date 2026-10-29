@@ -90,6 +90,27 @@ class BeaconDbLookupCacheTest {
     }
 
     @Test
+    fun multiRadioFingerprintChangesWhenWifiSignalChanges() {
+        val cache = cache()
+        val first = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412, ssid = "private-name")
+            ),
+            bluetoothBeacons = listOf(BeaconDbBluetoothBeacon("00:11:22:33:44:55", -70))
+        ))
+        cache.putRequest(first, coordinate, queriedAtMillis = 1_700L)
+        assertNotNull(cache.getRequest(first))
+
+        val changed = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -51, frequencyMhz = 2_412, ssid = "private-name")
+            ),
+            bluetoothBeacons = listOf(BeaconDbBluetoothBeacon("00:11:22:33:44:55", -70))
+        ))
+        assertNull(cache.getRequest(changed))
+    }
+
+    @Test
     fun invalidCoordinatesAreNeverCached() {
         val cache = cache()
         cache.put(
