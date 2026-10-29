@@ -78,9 +78,12 @@ class LocationFilterEngine {
         return refreshSignalOnlyDecision(snapshot.elapsedRealtimeNanos)
     }
 
-    internal fun observeGnssMeasurements(snapshot: GnssRfSnapshot): FilterDecision? {
-        detector.observeGnssMeasurements(snapshot)
-        return refreshSignalOnlyDecision(snapshot.elapsedRealtimeNanos)
+    internal fun observeGnssMeasurements(
+        snapshot: GnssRfSnapshot,
+        nowElapsedRealtimeNanos: Long
+    ): FilterDecision? {
+        if (!detector.observeGnssMeasurements(snapshot, nowElapsedRealtimeNanos)) return null
+        return refreshSignalOnlyDecision(nowElapsedRealtimeNanos)
     }
 
     private fun refreshSignalOnlyDecision(nowNanos: Long): FilterDecision? {

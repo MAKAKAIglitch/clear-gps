@@ -427,9 +427,9 @@ class GnssSpoofingDetectorTest {
 
     @Test fun repeatedOppositeCn0AndAgcShiftsAreSupportingEvidenceOnly() {
         val detector = GnssSpoofingDetector()
-        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10))
-        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10))
-        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10), 1_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10), 2_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10), 3_100_000_000L)
 
         val result = detector.assessSignalOnly(3_200_000_000L)
         assertFalse(result.confirmed)
@@ -437,11 +437,44 @@ class GnssSpoofingDetectorTest {
         assertTrue(result.reasons.any { it.contains("C/N₀ и AGC", ignoreCase = true) })
     }
 
+    @Test
+    fun futureRfSampleCannotPoisonCursorOrBlockLaterValidEvidence() {
+        val detector = GnssSpoofingDetector()
+        val poisoned = GnssRfSnapshot(Long.MAX_VALUE - 1L, 10, 3, 36.0, -62.0, 10)
+        assertFalse(detector.observeGnssMeasurements(poisoned, 1_000_000_000L))
+
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10), 1_100_000_000L))
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10), 2_100_000_000L))
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10), 3_100_000_000L))
+
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertFalse(result.confirmed)
+        assertTrue(result.score >= 30)
+        assertTrue(result.reasons.any { it.contains("C/N₀ и AGC", ignoreCase = true) })
+    }
+
+    @Test
+    fun staleOrMalformedRfSamplesDoNotReplaceTheLastValidSample() {
+        val detector = GnssSpoofingDetector()
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10), 1_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 129, 3, 43.0, -66.0, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, Double.NaN, -66.0, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, Double.POSITIVE_INFINITY, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 9, 43.0, -66.0, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 43.0, -66.0, 10), 12_000_000_000L))
+
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10), 2_100_000_000L))
+        assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 50.0, -70.0, 10), 3_100_000_000L))
+        val result = detector.assessSignalOnly(3_200_000_000L)
+        assertFalse(result.confirmed)
+        assertTrue(result.score >= 30)
+    }
+
     @Test fun ordinarySmallRfFluctuationsDoNotTriggerAgcMismatch() {
         val detector = GnssSpoofingDetector()
-        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10))
-        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 37.0, -62.5, 10))
-        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 37.5, -62.2, 10))
+        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10), 1_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 37.0, -62.5, 10), 2_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 37.5, -62.2, 10), 3_100_000_000L)
 
         val result = detector.assessSignalOnly(3_200_000_000L)
         assertFalse(result.confirmed)
@@ -491,15 +524,9 @@ class GnssSpoofingDetectorTest {
 
     @Test fun unavailableAgcIsNeutralEvenWhenCn0ChangesSharply() {
         val detector = GnssSpoofingDetector()
-        detector.observeGnssMeasurements(
-            GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, null, 0)
-        )
-        detector.observeGnssMeasurements(
-            GnssRfSnapshot(2_100_000_000L, 10, 3, 44.0, null, 0)
-        )
-        detector.observeGnssMeasurements(
-            GnssRfSnapshot(3_100_000_000L, 10, 3, 51.0, null, 0)
-        )
+        detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, null, 0), 1_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 44.0, null, 0), 2_100_000_000L)
+        detector.observeGnssMeasurements(GnssRfSnapshot(3_100_000_000L, 10, 3, 51.0, null, 0), 3_100_000_000L)
 
         val result = detector.assessSignalOnly(3_200_000_000L)
         assertEquals(0, result.score)

@@ -263,7 +263,7 @@ class LocationMonitorService : Service(), LocationListener {
                 } catch (_: RuntimeException) {
                     // Replay capture must never interrupt live measurements processing.
                 }
-                val assessment = engine.observeGnssMeasurements(rfSnapshot)
+                val assessment = engine.observeGnssMeasurements(rfSnapshot, nowNanos)
                 persistGnssReceptionDiagnostics()
                 assessment?.let(::publishSignalDecision)
             } catch (_: RuntimeException) {

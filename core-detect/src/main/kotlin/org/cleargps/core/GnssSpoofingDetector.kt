@@ -238,11 +238,17 @@ class GnssSpoofingDetector {
         currentSignal = snapshot
     }
 
-    /** Compare aggregate RF metrics between epochs; no satellite IDs or raw samples are retained. */
-    fun observeGnssMeasurements(snapshot: GnssRfSnapshot) {
-        if (snapshot.elapsedRealtimeNanos <= 0L) return
+    /**
+     * Compare aggregate RF metrics between epochs, accepting only sane and fresh monotonic samples.
+     * Rejected snapshots leave the prior sample and evidence streak untouched.
+     */
+    fun observeGnssMeasurements(
+        snapshot: GnssRfSnapshot,
+        nowElapsedRealtimeNanos: Long
+    ): Boolean {
+        if (!isUsableRfSnapshot(snapshot, nowElapsedRealtimeNanos)) return false
         val old = previousRf
-        if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return
+        if (old != null && snapshot.elapsedRealtimeNanos <= old.elapsedRealtimeNanos) return false
         if (old != null) {
             val interval = (snapshot.elapsedRealtimeNanos - old.elapsedRealtimeNanos) / 1_000_000_000.0
             val oldCn0 = old.meanCn0DbHz
@@ -275,6 +281,27 @@ class GnssSpoofingDetector {
             }
         }
         previousRf = snapshot
+        return true
+    }
+
+    private fun isUsableRfSnapshot(
+        snapshot: GnssRfSnapshot,
+        nowElapsedRealtimeNanos: Long
+    ): Boolean {
+        val measuredAt = snapshot.elapsedRealtimeNanos
+        if (nowElapsedRealtimeNanos <= 0L ||
+            measuredAt <= 0L ||
+            measuredAt > nowElapsedRealtimeNanos ||
+            nowElapsedRealtimeNanos - measuredAt > RF_SNAPSHOT_MAX_AGE_NANOS
+        ) return false
+        if (snapshot.signalCount !in 0..MAX_RF_SIGNAL_COUNT ||
+            snapshot.constellationCount !in 0..MAX_RF_CONSTELLATION_COUNT ||
+            snapshot.agcSampleCount !in 0..MAX_RF_SIGNAL_COUNT ||
+            snapshot.agcSampleCount > snapshot.signalCount
+        ) return false
+        if (snapshot.meanCn0DbHz?.let { !it.isFinite() || it !in 0.0..MAX_RF_CN0_DB_HZ } == true) return false
+        if (snapshot.meanAgcDb?.let { !it.isFinite() || it !in MIN_RF_AGC_DB..MAX_RF_AGC_DB } == true) return false
+        return true
     }
 
     /**
@@ -753,6 +780,12 @@ class GnssSpoofingDetector {
         private const val MAX_PLAUSIBLE_GNSS_SPEED_MPS = 80.0
         private const val OBD_SPEED_MAX_QUERY_DURATION_MILLIS = 1_500L
         private const val OBD_SPEED_MAX_AGE_NANOS = 5_000_000_000L
+        private const val RF_SNAPSHOT_MAX_AGE_NANOS = 10_000_000_000L
+        private const val MAX_RF_SIGNAL_COUNT = 128
+        private const val MAX_RF_CONSTELLATION_COUNT = 8
+        private const val MAX_RF_CN0_DB_HZ = 100.0
+        private const val MIN_RF_AGC_DB = -200.0
+        private const val MAX_RF_AGC_DB = 200.0
         private const val OBD_GNSS_PAIRING_WINDOW_NANOS = 2_500_000_000L
         private const val OBD_GNSS_MAX_POSITION_ACCURACY_METERS = 100.0
         private const val OBD_GNSS_MAX_SPEED_ACCURACY_MPS = 2.5
