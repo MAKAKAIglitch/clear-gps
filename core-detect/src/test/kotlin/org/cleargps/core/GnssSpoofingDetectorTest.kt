@@ -457,10 +457,10 @@ class GnssSpoofingDetectorTest {
     fun staleOrMalformedRfSamplesDoNotReplaceTheLastValidSample() {
         val detector = GnssSpoofingDetector()
         assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(1_100_000_000L, 10, 3, 36.0, -62.0, 10), 1_100_000_000L))
-        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 129, 3, 43.0, -66.0, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 513, 3, 43.0, -66.0, 10), 2_100_000_000L))
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, Double.NaN, -66.0, 10), 2_100_000_000L))
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, Double.POSITIVE_INFINITY, 10), 2_100_000_000L))
-        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 9, 43.0, -66.0, 10), 2_100_000_000L))
+        assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 11, 43.0, -66.0, 10), 2_100_000_000L))
         assertFalse(detector.observeGnssMeasurements(GnssRfSnapshot(11_000_000_000L, 10, 3, 43.0, -66.0, 10), 22_000_000_000L))
 
         assertTrue(detector.observeGnssMeasurements(GnssRfSnapshot(2_100_000_000L, 10, 3, 43.0, -66.0, 10), 2_100_000_000L))

@@ -4,7 +4,7 @@
 
 **Изменённые файлы:**
 
-- `core-detect/src/main/kotlin/org/cleargps/core/GnssSpoofingDetector.kt` — перед сравнением C/N₀/AGC проверяются время, возраст до 10 секунд, диапазоны счётчиков и конечность/допустимый диапазон агрегатов. Отвергнутый образец не меняет предыдущий RF-снимок и счётчик свидетельств.
+- `core-detect/src/main/kotlin/org/cleargps/core/GnssSpoofingDetector.kt` — перед сравнением C/N₀/AGC проверяются время, возраст до 10 секунд, диапазоны из контракта реплея (до 512 RF-образцов и 10 созвездий; AGC-счётчик независим) и конечность/допустимый диапазон агрегатов. Отвергнутый образец не меняет предыдущий RF-снимок и счётчик свидетельств.
 - `core-detect/src/main/kotlin/org/cleargps/core/GnssReplay.kt` — replay runner передаёт время события из проверенного относительного offset (`offset + 1 нс`), сохраняя работу RF-проверки на временной шкале записи.
 - `app/src/main/java/org/cleargps/core/LocationFilterEngine.kt` — недопустимый RF-снимок не запускает пересчёт предупреждения по его временной метке.
 - `app/src/main/java/org/cleargps/LocationMonitorService.kt` — вместе со снимком передаются текущие `elapsedRealtimeNanos`, полученные в том же callback.

@@ -297,7 +297,6 @@ class GnssSpoofingDetector {
         if (snapshot.signalCount !in 0..MAX_RF_SIGNAL_COUNT ||
             snapshot.constellationCount !in 0..MAX_RF_CONSTELLATION_COUNT ||
             snapshot.agcSampleCount !in 0..MAX_RF_SIGNAL_COUNT ||
-            snapshot.agcSampleCount > snapshot.signalCount
         ) return false
         if (snapshot.meanCn0DbHz?.let { !it.isFinite() || it !in 0.0..MAX_RF_CN0_DB_HZ } == true) return false
         if (snapshot.meanAgcDb?.let { !it.isFinite() || it !in MIN_RF_AGC_DB..MAX_RF_AGC_DB } == true) return false
@@ -781,8 +780,8 @@ class GnssSpoofingDetector {
         private const val OBD_SPEED_MAX_QUERY_DURATION_MILLIS = 1_500L
         private const val OBD_SPEED_MAX_AGE_NANOS = 5_000_000_000L
         private const val RF_SNAPSHOT_MAX_AGE_NANOS = 10_000_000_000L
-        private const val MAX_RF_SIGNAL_COUNT = 128
-        private const val MAX_RF_CONSTELLATION_COUNT = 8
+        private const val MAX_RF_SIGNAL_COUNT = 512
+        private const val MAX_RF_CONSTELLATION_COUNT = 10
         private const val MAX_RF_CN0_DB_HZ = 100.0
         private const val MIN_RF_AGC_DB = -200.0
         private const val MAX_RF_AGC_DB = 200.0
