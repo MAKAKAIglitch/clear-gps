@@ -680,7 +680,7 @@ class RadioGeolocationRepository(private val context: Context) {
         private const val WIFI_SCAN_WAIT_MS = 3_000L
         private const val WIFI_SCAN_POLL_MS = 250L
         private const val BLE_SCAN_MS = 2_500L
-        private const val MAX_WIFI = 32
+        private const val MAX_WIFI = 64
         private const val MAX_CELLS = 16
         private val MAC_REGEX = Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
