@@ -39,7 +39,7 @@ class BeaconDbProtocolTest {
             RadioSignal("ble", "00:11:22:33:44:55", -73, observedAtElapsedRealtimeNanos = 8_500_000_000L),
             nowElapsedRealtimeNanos = 10_000_000_000L
         )
-        assertEquals(1L, wifi?.ageMillis)
+        assertEquals(1_000L, wifi?.ageMillis)
         assertEquals(5_180, wifi?.frequencyMhz)
         assertEquals(1_500L, beacon?.ageMillis)
 
