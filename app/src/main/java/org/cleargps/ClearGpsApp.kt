@@ -413,6 +413,9 @@ fun ClearGpsApp(
     var monitorEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
     var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
+    var publishLowAccuracy by remember {
+        mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_PUBLISH_LOW_ACCURACY, false))
+    }
     var filterState by remember { mutableStateOf(prefs.getString(LocationMonitorService.KEY_STATE, FilterState.WAITING.name) ?: FilterState.WAITING.name) }
     var riskScore by remember { mutableStateOf(prefs.getInt(LocationMonitorService.KEY_SCORE, 0)) }
     var riskEventSource by remember {
@@ -2667,6 +2670,17 @@ fun ClearGpsApp(
                                     manualFallbackEnabled = manualFallbackEnabled,
                                     mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
                                     batteryProfile = batteryProfile,
+                                    publishLowAccuracy = publishLowAccuracy,
+                                    onPublishLowAccuracy = { enabled ->
+                                        publishLowAccuracy = enabled
+                                        prefs.edit().putBoolean(LocationMonitorService.KEY_PUBLISH_LOW_ACCURACY, enabled).apply()
+                                        if (monitorEnabled) {
+                                            val intent = Intent(context, LocationMonitorService::class.java)
+                                                .setAction(LocationMonitorService.ACTION_START)
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+                                            else context.startService(intent)
+                                        }
+                                    },
                                     databaseFacts = "Точек: " + pointCount + " · наблюдений: " + observationCount,
                                     detailedLogging = detailedLogging,
                                     diagnosticLogMaxKb = diagnosticLogMaxKb,
@@ -4941,6 +4955,7 @@ private fun SettingsScreen(
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
     onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean, batteryProfile: BatteryProfile,
+    publishLowAccuracy: Boolean, onPublishLowAccuracy: (Boolean) -> Unit,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
     onScanInterval: (Int) -> Unit, onScanIntervalFinished: () -> Unit,
     onAdaptiveScan: (Boolean) -> Unit, onBatteryProfile: (BatteryProfile) -> Unit,
@@ -5134,6 +5149,13 @@ private fun SettingsScreen(
                         "Профиль меняет интервал запросов фикса и повторного радиопоиска: Eco ×2, Normal — заданный интервал, Max примерно ÷2. Сырые GNSS callback-и не прореживаются, чтобы не терять данные детектора. Фактические Wi‑Fi/BLE-сканы ограничиваются Android.",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
+                    )
+                    Divider(color = colors.outlineVariant)
+                    SettingSwitch(
+                        "Публиковать позицию даже при очень плохой точности",
+                        "Разрешает передавать свежую радиооценку с погрешностью больше 50 км. Координаты не улучшаются искусственно: приложение-получатель получает исходную большую погрешность. Устаревшие измерения и оценки менее чем по двум совпадениям по-прежнему не публикуются.",
+                        publishLowAccuracy,
+                        onPublishLowAccuracy
                     )
                     Divider(color = colors.outlineVariant)
                     SettingSwitch(

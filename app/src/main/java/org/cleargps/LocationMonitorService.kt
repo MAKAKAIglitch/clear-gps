@@ -1158,8 +1158,9 @@ class LocationMonitorService : Service(), LocationListener {
                             "Кэш радиосигналов больше не продлевает mock GPS: ожидаю новый подтверждённый скан или истечение ограниченного резерва."
                         estimate.matchedCount < RADIO_MIN_MATCHES ->
                             "Оценка отклонена для mock GPS: совпадений ${estimate.matchedCount}, нужно не меньше $RADIO_MIN_MATCHES."
-                        estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ->
-                            "Оценка отклонена для mock GPS: погрешность ±${estimate.accuracyMeters.toInt()} м превышает лимит ±${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м."
+                        estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS &&
+                            !prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false) ->
+                            "Оценка отклонена для mock GPS: погрешность ±${estimate.accuracyMeters.toInt()} м превышает лимит ±${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м. Включи публикацию при плохой точности, чтобы передавать её с честной погрешностью."
                         else -> ""
                     }
                     DiagnosticLogStore.log(
@@ -1172,7 +1173,8 @@ class LocationMonitorService : Service(), LocationListener {
                     )
                     if (estimate != null && estimateAllowedForOutput &&
                         estimate.matchedCount >= RADIO_MIN_MATCHES &&
-                        estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS) {
+                        (estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS ||
+                            prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false))) {
                         val output = Location(LocationManager.NETWORK_PROVIDER).apply {
                             latitude = estimate.latitude
                             longitude = estimate.longitude
@@ -2356,6 +2358,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LAT = "lat"
         const val KEY_LON = "lon"
         const val KEY_ACCURACY = "accuracy"
+        const val KEY_PUBLISH_LOW_ACCURACY = "publish_low_accuracy"
         const val KEY_SERVICE_STATUS = "service_status"
         const val KEY_GNSS_ENVIRONMENT = "gnss_environment"
         const val KEY_GNSS_ENVIRONMENT_REASONS = "gnss_environment_reasons"
