@@ -296,7 +296,7 @@ class GnssSpoofingDetector {
         ) return false
         if (snapshot.signalCount !in 0..MAX_RF_SIGNAL_COUNT ||
             snapshot.constellationCount !in 0..MAX_RF_CONSTELLATION_COUNT ||
-            snapshot.agcSampleCount !in 0..MAX_RF_SIGNAL_COUNT ||
+            snapshot.agcSampleCount !in 0..MAX_RF_SIGNAL_COUNT
         ) return false
         if (snapshot.meanCn0DbHz?.let { !it.isFinite() || it !in 0.0..MAX_RF_CN0_DB_HZ } == true) return false
         if (snapshot.meanAgcDb?.let { !it.isFinite() || it !in MIN_RF_AGC_DB..MAX_RF_AGC_DB } == true) return false
