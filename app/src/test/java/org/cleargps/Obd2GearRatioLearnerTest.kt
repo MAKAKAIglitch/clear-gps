@@ -110,6 +110,30 @@ class Obd2GearRatioLearnerTest {
     }
 
     @Test
+    fun invalidFutureTimestampsCannotPoisonTheDeduplicationCursor() {
+        val learner = Obd2GearRatioLearner()
+        val invalid = observe(
+            learner,
+            0,
+            rpmTime = Long.MAX_VALUE - 2L,
+            speedTime = Long.MAX_VALUE - 1L,
+            now = baseTime + 100_000_000L
+        )
+        assertEquals(Obd2GearLearningStatus.TIME_MISMATCH, invalid.status)
+
+        val valid = observe(
+            learner,
+            1,
+            rpmTime = baseTime + 2_000_000_000L,
+            speedTime = baseTime + 2_100_000_000L,
+            now = baseTime + 2_200_000_000L
+        )
+        assertEquals(Obd2GearLearningStatus.LEARNING, valid.status)
+        assertEquals(1, valid.pendingSamples)
+        assertTrue(valid.bands.isEmpty())
+    }
+
+    @Test
     fun samplesCannotBeCountedTwiceAndResetClearsAllBands() {
         val learner = Obd2GearRatioLearner()
         val timestamp = baseTime

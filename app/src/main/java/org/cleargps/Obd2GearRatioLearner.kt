@@ -68,20 +68,15 @@ internal class Obd2GearRatioLearner {
             return setStatus(Obd2GearLearningStatus.WAITING_FOR_DATA)
         }
 
-        if (rpmAt <= 0L || speedAt <= 0L) {
+        // Validate the monotonic clock window before advancing the deduplication cursor.
+        // A malformed/future timestamp must not make later valid samples look out of order.
+        if (nowElapsedRealtimeNanos <= 0L ||
+            rpmAt <= 0L || speedAt <= 0L ||
+            rpmAt > nowElapsedRealtimeNanos || speedAt > nowElapsedRealtimeNanos
+        ) {
             pending.clear()
             return setStatus(Obd2GearLearningStatus.TIME_MISMATCH)
         }
-        val pairTimestamp = rpmAt + (speedAt - rpmAt) / 2L
-        val lastTimestamp = lastProcessedPairTimestampNanos
-        if (lastTimestamp != null && pairTimestamp <= lastTimestamp) return snapshot
-        lastProcessedPairTimestampNanos = pairTimestamp
-
-        if (!trustedSpeedPair) {
-            pending.clear()
-            return setStatus(Obd2GearLearningStatus.WAITING_FOR_TRUSTED_SPEED_PAIR)
-        }
-
         val rpmAge = nowElapsedRealtimeNanos - rpmAt
         val speedAge = nowElapsedRealtimeNanos - speedAt
         val querySkew = absoluteDifference(rpmAt, speedAt)
@@ -93,6 +88,18 @@ internal class Obd2GearRatioLearner {
         ) {
             pending.clear()
             return setStatus(Obd2GearLearningStatus.TIME_MISMATCH)
+        }
+
+        val pairTimestamp = rpmAt + (speedAt - rpmAt) / 2L
+        val lastTimestamp = lastProcessedPairTimestampNanos
+        if (lastTimestamp != null && pairTimestamp <= lastTimestamp) return snapshot
+        // Temporally valid samples are consumed even when the GPS pair is not trusted, so the
+        // same OBD response cannot be replayed later under a different trust state.
+        lastProcessedPairTimestampNanos = pairTimestamp
+
+        if (!trustedSpeedPair) {
+            pending.clear()
+            return setStatus(Obd2GearLearningStatus.WAITING_FOR_TRUSTED_SPEED_PAIR)
         }
 
         if (vehicleSpeedKmh !in MIN_SPEED_KMH..MAX_SPEED_KMH ||
