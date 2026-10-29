@@ -70,6 +70,10 @@ class LocationMonitorService : Service(), LocationListener {
     private var lastRadioMockFix: Location? = null
     private var lastRadioMockFixAtElapsedMs = 0L
     private var activePositionMode: String? = null
+    private var gpsAcquisitionJob: Job? = null
+    private var gpsAcquisitionStartedAtElapsedMs = 0L
+    private var gpsFirstFixReceived = false
+    private var lastGpsLocationElapsedRealtimeNanos = 0L
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
     private var serviceHeartbeatJob: Job? = null
@@ -656,13 +660,36 @@ class LocationMonitorService : Service(), LocationListener {
             // A real source-mode change immediately cancels the one-shot override.
             cancelBeaconDbMockOutput()
         }
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        val nextPositionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+        val hasFineLocationPermission =
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasCoarseLocationPermission =
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasFineLocationPermission && !hasCoarseLocationPermission) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             ServiceRecoveryWatchdog.cancel(this)
+            gpsAcquisitionJob?.cancel()
+            gpsAcquisitionJob = null
             mock?.disable()
             saveServiceStatus("Location permission missing")
             DiagnosticLogStore.log(this, "SERVICE", "Мониторинг не запущен: отсутствует разрешение геолокации", "ERROR")
+            stopSelf()
+            return
+        }
+        if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(nextPositionMode) &&
+            !hasFineLocationPermission
+        ) {
+            prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
+            ServiceRecoveryWatchdog.cancel(this)
+            gpsAcquisitionJob?.cancel()
+            gpsAcquisitionJob = null
+            mock?.disable()
+            saveServiceStatus("Для режима «Только GPS» требуется разрешение «Точное местоположение».")
+            DiagnosticLogStore.log(
+                this, "SERVICE",
+                "GPS-only monitoring refused: ACCESS_FINE_LOCATION is not granted.",
+                "WARN"
+            )
             stopSelf()
             return
         }
@@ -673,6 +700,8 @@ class LocationMonitorService : Service(), LocationListener {
 
         try {
             manager.removeUpdates(this)
+            gpsAcquisitionJob?.cancel()
+            gpsAcquisitionJob = null
             unregisterGnssStatus()
             radioOnlyJob?.cancel()
             radioOnlyJob = null
@@ -682,9 +711,15 @@ class LocationMonitorService : Service(), LocationListener {
             obd2FallbackJob = null
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
 
-            val nextPositionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
             if (nextPositionMode in setOf("radio", "radio_obd2")) GnssReplayRecorder.stop(this, "SERVICE_STOP")
             val modeChanged = activePositionMode != nextPositionMode
+            if (modeChanged) {
+                gpsFirstFixReceived = false
+                lastGpsLocationElapsedRealtimeNanos = 0L
+                gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            } else if (gpsAcquisitionStartedAtElapsedMs <= 0L) {
+                gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            }
             // Don't unregister a working mock provider every time the user changes the refresh
             // interval. Unregister only for a real source change or when mock output was turned off.
             if (modeChanged || !prefs.getBoolean(KEY_MOCK_ENABLED, false)) {
@@ -750,25 +785,44 @@ class LocationMonitorService : Service(), LocationListener {
                     return
                 }
                 "gps", "gps_obd2" -> {
-                    if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
+                    val gpsAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
+                    val gpsEnabled = gpsAvailable && manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    if (hasFineLocationPermission && gpsEnabled) {
+                        manager.requestLocationUpdates(
+                            LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                        )
                         registerGnssStatus()
+                        seedFreshLastKnownGpsFix()
                     }
                     startObd2FallbackLoop()
                 }
                 else -> {
-                    if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
+                    val gpsAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
+                    val gpsEnabled = gpsAvailable && hasFineLocationPermission &&
+                        manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    if (gpsEnabled) {
+                        manager.requestLocationUpdates(
+                            LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                        )
                         registerGnssStatus()
                     }
-                    if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
-                        manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this)
+                    val networkAvailable = manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)
+                    if (networkAvailable && manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                        manager.requestLocationUpdates(
+                            LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                        )
                     }
                     startObd2FallbackLoop()
                 }
             }
             startRadioFusionLoop(nextPositionMode)
-            saveServiceStatus("Monitoring")
+            if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(nextPositionMode)) {
+                startGpsAcquisitionWatchdog()
+            } else {
+                gpsAcquisitionJob?.cancel()
+                gpsAcquisitionJob = null
+                saveServiceStatus("Monitoring")
+            }
         } catch (error: SecurityException) {
             prefs.edit().putBoolean(KEY_MONITORING, false).putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
             ServiceRecoveryWatchdog.cancel(this)
@@ -1585,6 +1639,11 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        gpsAcquisitionJob?.cancel()
+        gpsAcquisitionJob = null
+        gpsAcquisitionStartedAtElapsedMs = 0L
+        gpsFirstFixReceived = false
+        lastGpsLocationElapsedRealtimeNanos = 0L
         demSampleGeneration += 1L
         demSampleJob?.cancel()
         demSampleJob = null
@@ -1733,6 +1792,16 @@ class LocationMonitorService : Service(), LocationListener {
             return
         }
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
+        if (gpsFix) {
+            lastGpsLocationElapsedRealtimeNanos = maxOf(
+                lastGpsLocationElapsedRealtimeNanos, location.elapsedRealtimeNanos
+            )
+            if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(activePositionMode ?: "")) {
+                gpsFirstFixReceived = true
+                gpsAcquisitionJob?.cancel()
+                gpsAcquisitionJob = null
+            }
+        }
         val point = ZonePoint(location.latitude, location.longitude)
         val accuracyMeters = if (location.hasAccuracy() && location.accuracy.isFinite() &&
             location.accuracy >= 0f) location.accuracy.toDouble() else null
@@ -1927,8 +1996,105 @@ class LocationMonitorService : Service(), LocationListener {
 
     @Deprecated("Deprecated by Android")
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
-    override fun onProviderEnabled(provider: String) = Unit
-    override fun onProviderDisabled(provider: String) = Unit
+    override fun onProviderEnabled(provider: String) {
+        if (!provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) ||
+            !prefs.getBoolean(KEY_MONITORING, false)
+        ) return
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+        try {
+            if (manager.allProviders.contains(LocationManager.GPS_PROVIDER) &&
+                manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+            ) {
+                manager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                )
+                registerGnssStatus()
+                if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(
+                        prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+                    )
+                ) {
+                    gpsFirstFixReceived = false
+                    gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+                    startGpsAcquisitionWatchdog()
+                }
+            }
+        } catch (_: SecurityException) {
+            saveServiceStatus("Для режима «Только GPS» требуется разрешение «Точное местоположение».")
+        } catch (_: IllegalArgumentException) {
+            saveServiceStatus("GPS-провайдер недоступен на этом устройстве.")
+        }
+    }
+
+    override fun onProviderDisabled(provider: String) {
+        if (!provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) ||
+            !prefs.getBoolean(KEY_MONITORING, false)
+        ) return
+        val mode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+        if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(mode)) {
+            gpsFirstFixReceived = false
+            gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            startGpsAcquisitionWatchdog()
+        }
+    }
+
+    private fun startGpsAcquisitionWatchdog() {
+        if (!GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+            )
+        ) return
+        gpsAcquisitionJob?.cancel()
+        if (gpsAcquisitionStartedAtElapsedMs <= 0L) {
+            gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+        }
+        gpsAcquisitionJob = serviceScope.launch {
+            while (
+                isActive &&
+                prefs.getBoolean(KEY_MONITORING, false) &&
+                GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(
+                    prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+                )
+            ) {
+                if (gpsFirstFixReceived) return@launch
+                val hasFinePermission =
+                    checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                val providerAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
+                val providerEnabled = providerAvailable && runCatching {
+                    manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                }.getOrDefault(false)
+                val elapsed = (SystemClock.elapsedRealtime() - gpsAcquisitionStartedAtElapsedMs).coerceAtLeast(0L)
+                val status = GpsFixAcquisitionPolicy.waitingStatus(
+                    hasFineLocationPermission = hasFinePermission,
+                    providerAvailable = providerAvailable,
+                    providerEnabled = providerEnabled,
+                    elapsedSinceTrackingStartedMs = elapsed
+                )
+                if ((prefs.getString(KEY_SERVICE_STATUS, "") ?: "") != status) {
+                    saveServiceStatus(status)
+                    DiagnosticLogStore.log(this@LocationMonitorService, "GPS_FIX", status, "WARN")
+                }
+                delay(GpsFixAcquisitionPolicy.CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun seedFreshLastKnownGpsFix() {
+        val cached = try {
+            manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+        } catch (_: SecurityException) {
+            null
+        } ?: return
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        val measuredAt = cached.elapsedRealtimeNanos
+        val ageNanos = nowNanos - measuredAt
+        if (LocationFilterEngine.isMockLocation(cached) ||
+            measuredAt <= 0L ||
+            ageNanos < 0L ||
+            ageNanos > GpsFixAcquisitionPolicy.LAST_KNOWN_MAX_AGE_NANOS ||
+            measuredAt <= lastGpsLocationElapsedRealtimeNanos
+        ) return
+        DiagnosticLogStore.log(this, "GPS_FIX", "Using a fresh last-known physical GPS location to initialise the fix pipeline.")
+        onLocationChanged(cached)
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onTaskRemoved(rootIntent: Intent?) {
