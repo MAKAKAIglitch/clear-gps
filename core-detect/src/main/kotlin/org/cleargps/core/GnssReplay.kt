@@ -445,7 +445,7 @@ class GnssReplayRunner {
                 satellites += event.satellites.size
             }
             is GnssReplayEvent.Rf -> {
-                detector.observeGnssMeasurements(event.snapshot)
+                detector.observeGnssMeasurements(event.snapshot, event.snapshot.elapsedRealtimeNanos)
                 rf++
                 measurements += event.measurements.size
             }
