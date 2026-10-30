@@ -19,12 +19,14 @@ import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
 import android.telephony.CellIdentityNr
 import android.telephony.TelephonyManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -249,7 +251,12 @@ class RadioGeolocationRepository(private val context: Context) {
 
         val snapshot = scanMutex.withLock {
             withContext(Dispatchers.Main.immediate) {
-                collectSnapshot(useWifi = true, useCells = true, useBle = true)
+                collectSnapshot(
+                    useWifi = true,
+                    useCells = true,
+                    useBle = true,
+                    refreshCellInfo = true
+                )
             }
         }
         val nowNanos = snapshot.collectedAtElapsedRealtimeNanos
@@ -260,6 +267,23 @@ class RadioGeolocationRepository(private val context: Context) {
             bluetoothBeacons = snapshot.signals.mapNotNull { BeaconDbProtocol.bluetoothFromSignal(it, nowNanos) }
         ).normalized()
         val unsupportedCount = (cellSignals.size - request.cells.size).coerceAtLeast(0)
+        val unsupportedNrCount = cellSignals.count {
+            it.identifier.substringBefore(':').equals("nr", ignoreCase = true)
+        }
+        val cellAvailabilityHint = buildList {
+            if (cellSignals.isEmpty()) {
+                add(
+                    "Android не предоставил актуальных идентификаторов сотовых ячеек в этом запросе. " +
+                        "Наличие мобильного интернета не гарантирует, что TelephonyManager раскроет CellInfo приложению."
+                )
+            }
+            if (unsupportedNrCount > 0) {
+                add(
+                    "Android вернул $unsupportedNrCount ячеек 5G NR, но текущий контракт BeaconDB/Ichnaea " +
+                        "документирует GSM/WCDMA/LTE; NR не отправлялись. Если Android также предоставил LTE-якорь, он включён в запрос."
+                )
+            }
+        }.joinToString(separator = " ")
 
         // Recheck both the crash-loop guard and consent immediately before networking.
         if (CrashLoopGuard.isSafeModeActive(context)) {
@@ -282,11 +306,16 @@ class RadioGeolocationRepository(private val context: Context) {
                 unsupportedCellCount = unsupportedCount,
                 wifiAccessPoints = request.wifiAccessPoints,
                 bluetoothBeacons = request.bluetoothBeacons,
-                message = "Недостаточно поддерживаемых сигналов. BeaconDB нужна поддерживаемая сота либо минимум два допустимых Wi-Fi/BLE-идентификатора. Запрос не отправлялся."
+                message = listOf(
+                    "Недостаточно поддерживаемых сигналов. BeaconDB нужна поддерживаемая сота либо минимум два допустимых Wi-Fi/BLE-идентификатора. Запрос не отправлялся.",
+                    cellAvailabilityHint
+                ).filter { it.isNotBlank() }.joinToString(" ")
             )
         }
 
-        return BeaconDbClient.lookup(request, unsupportedCount)
+        val lookup = BeaconDbClient.lookup(request, unsupportedCount)
+        return if (cellAvailabilityHint.isBlank()) lookup
+            else lookup.copy(message = lookup.message + " " + cellAvailabilityHint)
     }
 
     @Deprecated("Use lookupBeaconDbAllRadios(); all supported radio types are included.")
@@ -295,19 +324,23 @@ class RadioGeolocationRepository(private val context: Context) {
     private suspend fun collectSnapshot(
         useWifi: Boolean,
         useCells: Boolean,
-        useBle: Boolean
+        useBle: Boolean,
+        refreshCellInfo: Boolean = false
     ): ScanSnapshot = coroutineScope {
-        // Only collect sources the user enabled. Wi-Fi and BLE run concurrently, while cellular
-        // information is read synchronously from Android's current telephony snapshot.
+        // The modem query is asynchronous on Android 10+; collect it concurrently with Wi-Fi/BLE.
         val wifiTask = async {
             if (useWifi) collectWifi() else TimedRadioSignals(emptyList(), null)
         }
         val bleTask = async {
             if (useBle) collectBluetooth() else TimedRadioSignals(emptyList(), null)
         }
-        val cells = if (useCells) collectCells() else TimedRadioSignals(emptyList(), null)
+        val cellsTask = async {
+            if (useCells) collectCells(forceRefresh = refreshCellInfo)
+            else TimedRadioSignals(emptyList(), null)
+        }
         val wifi = wifiTask.await()
         val ble = bleTask.await()
+        val cells = cellsTask.await()
         ScanSnapshot(
             signals = wifi.signals + cells.signals + ble.signals,
             wifiCount = wifi.signals.size,
@@ -424,7 +457,7 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private fun collectCells(): TimedRadioSignals {
+    private suspend fun collectCells(forceRefresh: Boolean): TimedRadioSignals {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (!RadioPermissionPolicy.canReadCellInfo(fineGranted)) {
@@ -436,8 +469,33 @@ class RadioGeolocationRepository(private val context: Context) {
             return TimedRadioSignals(emptyList(), null)
         }
         return try {
-            val allCellInfo = telephony.allCellInfo.orEmpty()
             val nowElapsedMs = SystemClock.elapsedRealtime()
+            val radioAccessFeatureAvailable = context.packageManager.hasSystemFeature(
+                PackageManager.FEATURE_TELEPHONY_RADIO_ACCESS
+            )
+            val shouldRefresh = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                radioAccessFeatureAvailable &&
+                CellInfoRefreshPolicy.shouldRequestUpdate(
+                    nowElapsedMillis = nowElapsedMs,
+                    lastRequestElapsedMillis = lastCellInfoRefreshRequestedAtElapsedMs,
+                    force = forceRefresh
+                )
+            val requestedCellInfo = if (shouldRefresh) {
+                // Android Q+ getAllCellInfo() only exposes the current cache for apps targeting Q+.
+                // requestCellInfoUpdate() asks the modem asynchronously; Android may rate-limit it.
+                lastCellInfoRefreshRequestedAtElapsedMs = nowElapsedMs
+                requestFreshCellInfo(telephony)
+            } else null
+            val snapshotSource = when {
+                !radioAccessFeatureAvailable -> "cached API only: TELEPHONY_RADIO_ACCESS unavailable"
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q -> "legacy getAllCellInfo"
+                !shouldRefresh -> "Android cache (request cooldown)"
+                requestedCellInfo == null -> "Android cache (refresh timeout/unavailable)"
+                requestedCellInfo.isEmpty() -> "Android cache (refresh returned no cells)"
+                else -> "requestCellInfoUpdate"
+            }
+            val allCellInfo = requestedCellInfo?.takeIf { it.isNotEmpty() }
+                ?: telephony.allCellInfo.orEmpty()
             fun timestampMillis(info: CellInfo): Long =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) info.timestampMillis
                 else info.timeStamp / 1_000_000L
@@ -466,9 +524,11 @@ class RadioGeolocationRepository(private val context: Context) {
             }
             DiagnosticLogStore.log(
                 context, "RADIO_CELL",
-                "CellInfo от Android: всего=${allCellInfo.size}, актуальных=${freshCellInfo.size}, " +
-                    "используется=${parsed.size}, возраст самого старого=${ageMillis?.div(1_000) ?: "unknown"}s, " +
-                    "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}"
+                "CellInfo от Android: источник=$snapshotSource, всего=${allCellInfo.size}, " +
+                    "актуальных=${freshCellInfo.size}, используется=${parsed.size}, " +
+                    "возраст самого старого=${ageMillis?.div(1_000) ?: "unknown"}s, " +
+                    "просрочено/некорректно=${allCellInfo.size - freshCellInfo.size}, " +
+                    "неподдерживаемых/неполных=${freshCellInfo.size - parsed.size}"
             )
             TimedRadioSignals(parsed.map { (info, observation) ->
                 observation.toSignal().copy(
@@ -481,6 +541,66 @@ class RadioGeolocationRepository(private val context: Context) {
         } catch (error: RuntimeException) {
             DiagnosticLogStore.log(context, "RADIO_CELL", "Ошибка чтения CellInfo: ${error.javaClass.simpleName}", "ERROR")
             TimedRadioSignals(emptyList(), null)
+        }
+    }
+
+    /**
+     * Ask Android/the modem for a fresh CellInfo snapshot. This API is available from Android 10.
+     * A timeout, rate limit, empty modem response or missing hardware feature falls back to
+     * TelephonyManager.allCellInfo(), whose timestamps are still checked before use.
+     */
+    private suspend fun requestFreshCellInfo(telephony: TelephonyManager): List<CellInfo>? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return try {
+            withTimeoutOrNull(CellInfoRefreshPolicy.CALLBACK_TIMEOUT_MS) {
+                suspendCancellableCoroutine { continuation ->
+                    try {
+                        telephony.requestCellInfoUpdate(
+                            context.mainExecutor,
+                            object : TelephonyManager.CellInfoCallback() {
+                                override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
+                                    if (continuation.isActive) {
+                                        continuation.resume(cellInfo.toList())
+                                    }
+                                }
+
+                                override fun onError(errorCode: Int, detail: Throwable?) {
+                                    DiagnosticLogStore.log(
+                                        context,
+                                        "RADIO_CELL",
+                                        "Android не обновил CellInfo: modem error=$errorCode, detail=${detail?.javaClass?.simpleName ?: "none"}",
+                                        "WARN"
+                                    )
+                                    if (continuation.isActive) continuation.resume(emptyList())
+                                }
+                            }
+                        )
+                    } catch (error: SecurityException) {
+                        DiagnosticLogStore.log(
+                            context, "RADIO_CELL",
+                            "Запрос свежих CellInfo запрещён Android: ${error.message ?: "SecurityException"}",
+                            "WARN"
+                        )
+                        if (continuation.isActive) continuation.resume(emptyList())
+                    } catch (error: UnsupportedOperationException) {
+                        DiagnosticLogStore.log(
+                            context, "RADIO_CELL",
+                            "Модем не поддерживает requestCellInfoUpdate(): ${error.javaClass.simpleName}",
+                            "WARN"
+                        )
+                        if (continuation.isActive) continuation.resume(emptyList())
+                    } catch (error: RuntimeException) {
+                        DiagnosticLogStore.log(
+                            context, "RADIO_CELL",
+                            "Не удалось запросить обновление CellInfo: ${error.javaClass.simpleName}",
+                            "WARN"
+                        )
+                        if (continuation.isActive) continuation.resume(emptyList())
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         }
     }
 
@@ -674,6 +794,7 @@ class RadioGeolocationRepository(private val context: Context) {
     companion object {
         private val scanMutex = Mutex()
         private var lastWifiScanRequestAtElapsedMs = 0L
+        private var lastCellInfoRefreshRequestedAtElapsedMs = 0L
         private var lastBleScanStartedAtElapsedMs = 0L
         private var lastBleScanFinishedAtElapsedMs = 0L
         private var cachedBleSignals: List<RadioSignal> = emptyList()

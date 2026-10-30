@@ -129,7 +129,10 @@ class BeaconDbProtocolTest {
     fun unsupportedRadiosAndInvalidCellsAreRejected() {
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("wifi", "aa:bb:cc:dd:ee:ff", -50)))
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("ble", "aa:bb:cc:dd:ee:ff", -50)))
+        // BeaconDB uses the Ichnaea contract, which currently documents GSM/WCDMA/LTE only.
+        // Do not send an NR/5G NCI through the legacy 32-bit cellId field as if it were LTE.
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("cell", "nr:250:1:123:987654321", -75)))
+        assertFalse(BeaconDbCell("nr", 250, 1, 123, 987654321L, -75).isValid())
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("cell", "lte:250:1:123:0", -70)))
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("cell", "lte:9999:1:123:100", -70)))
         assertNull(BeaconDbProtocol.cellFromSignal(RadioSignal("cell", "lte:250:1:123:100", -200)))
