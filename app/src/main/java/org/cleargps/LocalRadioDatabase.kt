@@ -705,6 +705,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     override fun onCreate(db: SQLiteDatabase) {
         createRadioSourcesTable(db)
+        createOpenCellIdCellsTable(db)
         createRadioSourceSegmentSettingsTable(db)
         ensureLocalSource(db)
         db.execSQL("""
@@ -812,6 +813,10 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 "CREATE INDEX IF NOT EXISTS radio_obs_radio_time " +
                     "ON radio_observations(radio_type, identifier, observed_at DESC)"
             )
+        }
+        if (oldVersion < 10) {
+            // Isolated catalogue: tower coordinates must not become handset fingerprints.
+            createOpenCellIdCellsTable(db)
         }
     }
 
@@ -1233,6 +1238,29 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 "fingerprint TEXT UNIQUE)"
         )
         db.execSQL("CREATE INDEX radio_sources_created ON radio_sources(created_at DESC, id DESC)")
+    }
+
+    private fun createOpenCellIdCellsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS opencellid_cells (" +
+                "radio TEXT NOT NULL CHECK(radio IN ('GSM','UMTS','LTE','NR')), " +
+                "mcc INTEGER NOT NULL CHECK(mcc BETWEEN 1 AND 999), " +
+                "mnc INTEGER NOT NULL CHECK(mnc BETWEEN 0 AND 999), " +
+                "area INTEGER NOT NULL CHECK(area >= 0), " +
+                "cell_id INTEGER NOT NULL CHECK(cell_id > 0), " +
+                "latitude REAL, longitude REAL, range_m INTEGER, " +
+                "samples INTEGER NOT NULL DEFAULT 0 CHECK(samples >= 0), " +
+                "changeable INTEGER NOT NULL DEFAULT 0 CHECK(changeable IN (0,1)), " +
+                "checked_at INTEGER NOT NULL, " +
+                "status TEXT NOT NULL CHECK(status IN ('found','not_found')), " +
+                "PRIMARY KEY(radio, mcc, mnc, area, cell_id), " +
+                "CHECK((status = 'found' AND latitude IS NOT NULL AND longitude IS NOT NULL) OR " +
+                    "(status = 'not_found' AND latitude IS NULL AND longitude IS NULL)))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS opencellid_checked_at " +
+                "ON opencellid_cells(checked_at DESC)"
+        )
     }
 
     private fun createRadioSourceSegmentSettingsTable(db: SQLiteDatabase) {
@@ -1828,6 +1856,50 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 deleted, affected.size, undoToken.takeIf { hasChanges }
             )
         } finally { db.endTransaction() }
+    }
+
+    fun listOpenCellIdCells(limit: Int = 300): List<OpenCellIdCellRecord> {
+        val result = ArrayList<OpenCellIdCellRecord>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM opencellid_cells WHERE status = 'found' " +
+                "ORDER BY samples DESC, checked_at DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 1_000).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) result.add(cursor.toOpenCellIdCellRecord())
+        }
+        return result
+    }
+
+    fun getOpenCellIdCell(key: OpenCellIdCellKey): OpenCellIdCellRecord? =
+        readableDatabase.rawQuery(
+            "SELECT * FROM opencellid_cells WHERE radio = ? AND mcc = ? AND mnc = ? AND area = ? AND cell_id = ?",
+            arrayOf(key.radio, key.mcc.toString(), key.mnc.toString(), key.area.toString(), key.cellId.toString())
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.toOpenCellIdCellRecord() else null }
+
+    fun saveOpenCellIdCell(record: OpenCellIdCellRecord): Boolean {
+        require(record.key.radio in setOf("GSM", "UMTS", "LTE", "NR"))
+        require(record.status == "found" || record.status == "not_found")
+        require(
+            if (record.status == "found") validCoordinates(record.latitude, record.longitude)
+            else record.latitude == null && record.longitude == null
+        )
+        val values = ContentValues().apply {
+            put("radio", record.key.radio)
+            put("mcc", record.key.mcc)
+            put("mnc", record.key.mnc)
+            put("area", record.key.area)
+            put("cell_id", record.key.cellId)
+            put("latitude", record.latitude)
+            put("longitude", record.longitude)
+            put("range_m", record.rangeMeters)
+            put("samples", record.samples.coerceAtLeast(0))
+            put("changeable", if (record.changeable) 1 else 0)
+            put("checked_at", record.checkedAtMillis.coerceAtLeast(0L))
+            put("status", record.status)
+        }
+        return writableDatabase.insertWithOnConflict(
+            "opencellid_cells", null, values, SQLiteDatabase.CONFLICT_REPLACE
+        ) != -1L
     }
 
     fun listRadioSources(): List<RadioSourceRecord> {
@@ -3023,6 +3095,23 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             r.longitude.isFinite() && r.longitude in -180.0..180.0 &&
             r.accuracyMeters.isFinite() && r.accuracyMeters in 1.0..100_000.0
 
+    private fun Cursor.toOpenCellIdCellRecord() = OpenCellIdCellRecord(
+        key = OpenCellIdCellKey(
+            radio = getString(getColumnIndexOrThrow("radio")).orEmpty(),
+            mcc = getInt(getColumnIndexOrThrow("mcc")),
+            mnc = getInt(getColumnIndexOrThrow("mnc")),
+            area = getInt(getColumnIndexOrThrow("area")),
+            cellId = getLong(getColumnIndexOrThrow("cell_id"))
+        ),
+        latitude = if (isNull(getColumnIndexOrThrow("latitude"))) null else getDouble(getColumnIndexOrThrow("latitude")),
+        longitude = if (isNull(getColumnIndexOrThrow("longitude"))) null else getDouble(getColumnIndexOrThrow("longitude")),
+        rangeMeters = if (isNull(getColumnIndexOrThrow("range_m"))) null else getInt(getColumnIndexOrThrow("range_m")),
+        samples = getInt(getColumnIndexOrThrow("samples")),
+        changeable = getInt(getColumnIndexOrThrow("changeable")) != 0,
+        checkedAtMillis = getLong(getColumnIndexOrThrow("checked_at")),
+        status = getString(getColumnIndexOrThrow("status")).orEmpty()
+    )
+
     private fun Cursor.toRadioPoint() = RadioPointRecord(
         getLong(getColumnIndexOrThrow("id")),
         getString(getColumnIndexOrThrow("radio_type")),
@@ -3060,7 +3149,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 9
+        private const val DB_VERSION = 10
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0

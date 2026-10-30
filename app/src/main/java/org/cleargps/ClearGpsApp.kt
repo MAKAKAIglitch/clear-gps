@@ -132,6 +132,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -164,7 +165,8 @@ private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY, SOURCES }
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
-    BEACONDB("beacondb", "BeaconDB · вышки")
+    BEACONDB("beacondb", "BeaconDB · вышки"),
+    OPENCELLID("opencellid", "OpenCellID")
 }
 private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     ALL("Все", null),
@@ -410,6 +412,16 @@ fun ClearGpsApp(
     }
     var beaconDbLookupJob by remember { mutableStateOf<Job?>(null) }
     var beaconDbRequestToken by remember { mutableStateOf(0) }
+    var openCellIdRecords by remember { mutableStateOf(database.listOpenCellIdCells()) }
+    var openCellIdKeyConfigured by remember { mutableStateOf(OpenCellIdKeyStore.hasKey(context)) }
+    var openCellIdKeyInput by remember { mutableStateOf("") }
+    var openCellIdEnabled by remember { mutableStateOf(OpenCellIdKeyStore.isEnabled(context)) }
+    var openCellIdLoading by remember { mutableStateOf(false) }
+    var openCellIdMessage by remember {
+        mutableStateOf("OpenCellID выключен. Сохрани личный API-ключ и отдельно разреши ручные запросы.")
+    }
+    var openCellIdLookupJob by remember { mutableStateOf<Job?>(null) }
+    var openCellIdRequestToken by remember { mutableStateOf(0) }
     var monitorEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
     var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
@@ -928,6 +940,122 @@ fun ClearGpsApp(
             }
         }
         beaconDbLookupJob = queryJob
+    }
+
+    fun startOpenCellIdLookup() {
+        if (!openCellIdEnabled || !OpenCellIdKeyStore.isEnabled(context)) {
+            openCellIdMessage = "Ручные запросы OpenCellID выключены. Сетевого обращения не было."
+            return
+        }
+        if (openCellIdLoading || openCellIdLookupJob?.isActive == true) return
+        val apiKey = OpenCellIdKeyStore.read(context)
+        if (apiKey.isNullOrBlank()) {
+            openCellIdKeyConfigured = false
+            openCellIdMessage = "Сохрани действующий API-ключ OpenCellID. Сетевого обращения не было."
+            return
+        }
+        if (CrashLoopGuard.isSafeModeActive(context)) {
+            openCellIdMessage = "Безопасный режим после повторных сбоев: запросы OpenCellID заблокированы."
+            return
+        }
+
+        val requestToken = openCellIdRequestToken + 1
+        openCellIdRequestToken = requestToken
+        openCellIdLoading = true
+        openCellIdMessage = "Получаю свежие CellInfo Android. Запрос к OpenCellID ещё не отправлен…"
+        val queryJob = scope.launch {
+            try {
+                val cells = repository.currentCellsForOpenCellId()
+                if (requestToken != openCellIdRequestToken) return@launch
+                if (cells.isEmpty()) {
+                    openCellIdMessage =
+                        "Android не предоставил свежих поддерживаемых GSM/UMTS/LTE/NR-ячеек. " +
+                        "Проверь точное разрешение геолокации и доступность CellInfo на устройстве."
+                    return@launch
+                }
+
+                var queried = 0
+                var found = 0
+                var notFound = 0
+                var reused = 0
+                var limited = false
+                var stoppedMessage = ""
+                for (cell in cells) {
+                    if (requestToken != openCellIdRequestToken || !OpenCellIdKeyStore.isEnabled(context)) break
+                    val cached = withContext(Dispatchers.IO) { database.getOpenCellIdCell(cell) }
+                    if (!OpenCellIdLookupPolicy.shouldLookup(cached, System.currentTimeMillis())) {
+                        reused++
+                        if (cached?.status == "found") found++ else notFound++
+                        continue
+                    }
+                    if (queried >= OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION) {
+                        limited = true
+                        break
+                    }
+                    val response = OpenCellIdClient.lookup(apiKey, cell)
+                    val record = response.record
+                    if (record != null) {
+                        withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
+                        queried++
+                        if (response.status == OpenCellIdLookupStatus.FOUND) found++ else notFound++
+                    } else {
+                        stoppedMessage = response.message
+                        break
+                    }
+                    if (queried < OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION) delay(150L)
+                }
+                openCellIdRecords = withContext(Dispatchers.IO) { database.listOpenCellIdCells() }
+                if (requestToken == openCellIdRequestToken) {
+                    openCellIdMessage = buildString {
+                        append("Текущих сот: ").append(cells.size)
+                        append(" · новых запросов: ").append(queried)
+                        append(" · найдены: ").append(found)
+                        append(" · не найдены: ").append(notFound)
+                        append(" · взято из кэша: ").append(reused).append(".")
+                        if (limited) append(" Достигнут лимит одного запуска: ")
+                            .append(OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION).append(" запросов.")
+                        if (stoppedMessage.isNotBlank()) append(" ").append(stoppedMessage)
+                        if (!OpenCellIdKeyStore.isEnabled(context)) append(" Запрос остановлен: разрешение выключено.")
+                    }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (requestToken == openCellIdRequestToken) {
+                    openCellIdMessage = "Не удалось получить данные OpenCellID: " +
+                        error.javaClass.simpleName + ". Проверь интернет и разрешение точной геолокации."
+                }
+            } finally {
+                if (requestToken == openCellIdRequestToken) {
+                    openCellIdLoading = false
+                    openCellIdLookupJob = null
+                }
+            }
+        }
+        openCellIdLookupJob = queryJob
+    }
+
+    fun saveOpenCellIdApiKey() {
+        val saved = OpenCellIdKeyStore.save(context, openCellIdKeyInput)
+        if (saved) {
+            openCellIdKeyConfigured = true
+            openCellIdKeyInput = ""
+            openCellIdMessage = "API-ключ зашифрован Android Keystore и сохранён локально."
+        } else {
+            openCellIdMessage = "Не удалось сохранить ключ. Проверь формат ключа и доступность Android Keystore."
+        }
+    }
+
+    fun forgetOpenCellIdApiKey() {
+        openCellIdRequestToken += 1
+        openCellIdLookupJob?.cancel()
+        openCellIdLookupJob = null
+        openCellIdLoading = false
+        OpenCellIdKeyStore.clear(context)
+        openCellIdKeyConfigured = false
+        openCellIdEnabled = false
+        openCellIdKeyInput = ""
+        openCellIdMessage = "API-ключ удалён из зашифрованного хранилища; запросы выключены."
     }
 
     fun publishBeaconDbEstimateAsMock() {
@@ -2517,15 +2645,45 @@ fun ClearGpsApp(
                                     beaconDbLoading = beaconDbLoading,
                                     beaconDbResult = beaconDbLookupResult,
                                     beaconDbMessage = beaconDbMessage,
+                                    openCellIdRecords = openCellIdRecords,
+                                    openCellIdKeyConfigured = openCellIdKeyConfigured,
+                                    openCellIdKeyInput = openCellIdKeyInput,
+                                    openCellIdEnabled = openCellIdEnabled,
+                                    openCellIdLoading = openCellIdLoading,
+                                    openCellIdMessage = openCellIdMessage,
+                                    onOpenCellIdKeyInput = { openCellIdKeyInput = it },
+                                    onSaveOpenCellIdKey = { saveOpenCellIdApiKey() },
+                                    onForgetOpenCellIdKey = { forgetOpenCellIdApiKey() },
+                                    onOpenCellIdEnabled = {
+                                        openCellIdEnabled = it
+                                        OpenCellIdKeyStore.setEnabled(context, it)
+                                        openCellIdMessage = if (it) {
+                                            "Ручные запросы разрешены. Они начнутся только после нажатия кнопки."
+                                        } else {
+                                            openCellIdRequestToken += 1
+                                            openCellIdLookupJob?.cancel()
+                                            openCellIdLookupJob = null
+                                            openCellIdLoading = false
+                                            "Запросы OpenCellID выключены."
+                                        }
+                                    },
+                                    onOpenCellIdLookup = { startOpenCellIdLookup() },
                                     onDataSource = { source ->
                                         databaseDataSource = source
                                         prefs.edit().putString(ClearGpsPreferences.KEY_DATABASE_VIEW_SOURCE, source.key).apply()
-                                        if (source == DatabaseDataSource.LOCAL && beaconDbLookupJob?.isActive == true) {
+                                        if (source != DatabaseDataSource.BEACONDB && beaconDbLookupJob?.isActive == true) {
                                             beaconDbRequestToken += 1
                                             beaconDbLookupJob?.cancel()
                                             beaconDbLookupJob = null
                                             beaconDbLoading = false
-                                            beaconDbMessage = "Запрос BeaconDB отменён при возврате к локальной базе."
+                                            beaconDbMessage = "Запрос BeaconDB отменён при переключении источника."
+                                        }
+                                        if (source != DatabaseDataSource.OPENCELLID && openCellIdLookupJob?.isActive == true) {
+                                            openCellIdRequestToken += 1
+                                            openCellIdLookupJob?.cancel()
+                                            openCellIdLookupJob = null
+                                            openCellIdLoading = false
+                                            openCellIdMessage = "Запрос OpenCellID отменён при переключении источника."
                                         }
                                     },
                                     onBeaconDbLookup = { startBeaconDbLookup() },
@@ -3906,7 +4064,12 @@ private fun DatabaseScreen(
     dataSource: DatabaseDataSource, beaconDbEnabled: Boolean, beaconDbLoading: Boolean,
     beaconDbResult: BeaconDbLookupResult?, beaconDbMessage: String,
     onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit,
-    onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit
+    onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit,
+    openCellIdRecords: List<OpenCellIdCellRecord>, openCellIdKeyConfigured: Boolean,
+    openCellIdKeyInput: String, openCellIdEnabled: Boolean, openCellIdLoading: Boolean,
+    openCellIdMessage: String, onOpenCellIdKeyInput: (String) -> Unit,
+    onSaveOpenCellIdKey: () -> Unit, onForgetOpenCellIdKey: () -> Unit,
+    onOpenCellIdEnabled: (Boolean) -> Unit, onOpenCellIdLookup: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val databaseScrollState = rememberScrollState()
@@ -4211,7 +4374,7 @@ private fun DatabaseScreen(
                 }
             )
         }
-        } else {
+        } else if (dataSource == DatabaseDataSource.BEACONDB) {
             BeaconDbDatabaseContent(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 enabled = beaconDbEnabled,
@@ -4221,6 +4384,21 @@ private fun DatabaseScreen(
                 onLookup = onBeaconDbLookup,
                 onPublishAsMock = onPublishBeaconDbLocation,
                 onOpenSettings = onOpenBeaconDbSettings
+            )
+        } else {
+            OpenCellIdDatabaseContent(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                records = openCellIdRecords,
+                keyConfigured = openCellIdKeyConfigured,
+                keyInput = openCellIdKeyInput,
+                enabled = openCellIdEnabled,
+                loading = openCellIdLoading,
+                message = openCellIdMessage,
+                onKeyInput = onOpenCellIdKeyInput,
+                onSaveKey = onSaveOpenCellIdKey,
+                onForgetKey = onForgetOpenCellIdKey,
+                onEnabled = onOpenCellIdEnabled,
+                onLookup = onOpenCellIdLookup
             )
         }
     }
@@ -4443,6 +4621,137 @@ private fun RadioSourceSegmentRow(
                 ) { Text("CSV") }
                 TextButton(onClick = onDelete) { Text("Удалить запись") }
             }
+        }
+    }
+}
+
+@Composable
+private fun OpenCellIdDatabaseContent(
+    modifier: Modifier = Modifier,
+    records: List<OpenCellIdCellRecord>,
+    keyConfigured: Boolean,
+    keyInput: String,
+    enabled: Boolean,
+    loading: Boolean,
+    message: String,
+    onKeyInput: (String) -> Unit,
+    onSaveKey: () -> Unit,
+    onForgetKey: () -> Unit,
+    onEnabled: (Boolean) -> Unit,
+    onLookup: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    Column(modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("OpenCellID · база координат сотовых вышек",
+                    fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Отдельный read-only поиск по текущим GSM/UMTS/LTE/NR ячейкам Android. OpenCellID возвращает примерные координаты самой вышки и радиус области, а не координату телефона. Wi-Fi/BSSID, BLE, GPS-координаты и история сюда не отправляются.",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                )
+            }
+        }
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Разрешить ручные запросы", fontWeight = FontWeight.SemiBold)
+                        Text("Сетевой вызов выполняется только после нажатия кнопки ниже.",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                    Switch(checked = enabled, onCheckedChange = onEnabled, enabled = !loading)
+                }
+                OutlinedTextField(
+                    value = keyInput,
+                    onValueChange = onKeyInput,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Личный API-ключ OpenCellID") },
+                    placeholder = { Text(if (keyConfigured) "Ключ сохранён; введи новый для замены" else "Вставь ключ из своего аккаунта") },
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Text(
+                    if (keyConfigured) "Ключ хранится в зашифрованном виде через Android Keystore."
+                    else "Ключ ещё не сохранён. Получи его в аккаунте OpenCellID.",
+                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(
+                        onClick = onSaveKey,
+                        enabled = keyInput.isNotBlank() && !loading,
+                        modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)
+                    ) { Text(if (keyConfigured) "Заменить ключ" else "Сохранить ключ") }
+                    TextButton(onClick = onForgetKey, enabled = keyConfigured && !loading) {
+                        Text("Удалить ключ")
+                    }
+                }
+            }
+        }
+        FilledTonalButton(
+            onClick = onLookup,
+            enabled = enabled && keyConfigured && !loading,
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Outlined.Refresh, null)
+            Spacer(Modifier.width(7.dp))
+            Text(if (loading) "Запрашиваю OpenCellID…" else "Найти координаты текущих сот")
+        }
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Text(message, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Найдено в кэше: ${records.size}", fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://opencellid.org")))
+            }) { Text("OpenCellID") }
+        }
+        if (records.isEmpty()) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = colors.surfaceContainer) {
+                Text("Пока нет найденных вышек. Ответы «не найдено» тоже кэшируются, чтобы не расходовать квоту повторно.",
+                    Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                items(records, key = { it.key.toString() }) { cell ->
+                    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = colors.surfaceContainerHigh) {
+                        Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("${cell.key.radio} · MCC ${cell.key.mcc} / MNC ${cell.key.mnc}",
+                                fontWeight = FontWeight.SemiBold)
+                            Text("LAC/TAC ${cell.key.area} · Cell ID ${cell.key.cellId}",
+                                style = MaterialTheme.typography.bodySmall)
+                            Text(String.format(Locale.US, "%.4f, %.4f", cell.latitude, cell.longitude),
+                                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Радиус: " + (cell.rangeMeters?.let { "≈${it} м" } ?: "не указан") +
+                                    " · измерений в базе: ${cell.samples}",
+                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                            )
+                            Text("Проверено: " + dateTime(cell.checkedAtMillis),
+                                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            "Атрибуция: данные координат базовых станций OpenCellID, CC BY-SA 4.0. " +
+                "Радиус — оценка базы, а не гарантированная зона покрытия. " +
+                "квота аккаунта — до 1 000 API-кредитов в сутки; один запуск делает не более ${OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION} запросов. " +
+                "Данные не добавляются в локальные fingerprints и не публикуются в Mock GPS.",
+            style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://creativecommons.org/licenses/by-sa/4.0/")))
+            }) { Text("Лицензия CC BY-SA 4.0") }
+            TextButton(onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://docs.opencellid.org/docs/attribution")))
+            }) { Text("Условия атрибуции") }
         }
     }
 }

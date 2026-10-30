@@ -321,6 +321,19 @@ class RadioGeolocationRepository(private val context: Context) {
     @Deprecated("Use lookupBeaconDbAllRadios(); all supported radio types are included.")
     suspend fun lookupBeaconDbCellsOnly(): BeaconDbLookupResult = lookupBeaconDbAllRadios()
 
+    /**
+     * Captures fresh Android CellInfo for a manual OpenCellID lookup. This path never reads
+     * Wi-Fi/BLE identifiers; only normalized cellular identifiers are returned to its caller.
+     */
+    suspend fun currentCellsForOpenCellId(): List<OpenCellIdCellKey> {
+        val signals = scanMutex.withLock {
+            withContext(Dispatchers.Main.immediate) {
+                collectCells(forceRefresh = true).signals
+            }
+        }
+        return signals.mapNotNull(OpenCellIdCellKey::fromRadioSignal).distinct()
+    }
+
     private suspend fun collectSnapshot(
         useWifi: Boolean,
         useCells: Boolean,
