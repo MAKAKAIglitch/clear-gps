@@ -115,17 +115,17 @@ class BeaconDbLookupCacheTest {
         val cache = cache()
         val first = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
             wifiAccessPoints = listOf(
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412)
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412, ssid = "CacheTestNetwork")
             )
         ))
         val nearby = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
             wifiAccessPoints = listOf(
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -54, frequencyMhz = 2_412)
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -54, frequencyMhz = 2_412, ssid = "CacheTestNetwork")
             )
         ))
         val changed = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
             wifiAccessPoints = listOf(
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -61, frequencyMhz = 2_412)
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -61, frequencyMhz = 2_412, ssid = "CacheTestNetwork")
             )
         ))
         cache.putRequest(first, coordinate, queriedAtMillis = 1_700L)
@@ -137,17 +137,17 @@ class BeaconDbLookupCacheTest {
     @Test
     fun automaticIdentityFingerprintIgnoresRssiButDetectsNewRadioIdentifiers() {
         val first = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
-            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412)),
+            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412, ssid = "IdentityTestNetwork")),
             cells = listOf(cellA)
         ))
         val changedRssi = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
-            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -87, frequencyMhz = 2_412)),
+            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -87, frequencyMhz = 2_412, ssid = "RenamedTestNetwork")),
             cells = listOf(cellA.copy(signalStrength = -101))
         ))
         val newRadio = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
             wifiAccessPoints = listOf(
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412),
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:02", -65, frequencyMhz = 5_180)
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412, ssid = "IdentityTestNetwork"),
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:02", -65, frequencyMhz = 5_180, ssid = "SecondTestNetwork")
             ),
             cells = listOf(cellA)
         ))
