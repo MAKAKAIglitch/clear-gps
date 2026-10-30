@@ -654,7 +654,11 @@ class LocationMonitorService : Service(), LocationListener {
      * and remote requests independently to avoid battery and API quota waste.
      */
     private fun startAutoRadioDatabaseRefreshLoop() {
-        if (!prefs.getBoolean(KEY_MONITORING, false)) {
+        val selectedMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
+        // "auto" is the combined GPS + radio mode; pure GPS must not scan or send radio IDs.
+        if (selectedMode !in setOf("auto", "radio", "radio_obd2") ||
+            !prefs.getBoolean(KEY_MONITORING, false)
+        ) {
             autoRadioDatabaseRefreshJob?.cancel()
             autoRadioDatabaseRefreshJob = null
             return
