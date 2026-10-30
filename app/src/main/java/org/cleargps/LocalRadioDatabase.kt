@@ -68,7 +68,11 @@ data class RadioEstimate(
      * Monotonic timestamp of the oldest matched live radio observation, when available.
      * This is process/boot-local evidence only: it is never persisted or reconstructed from wall time.
      */
-    val measurementElapsedRealtimeNanos: Long? = null
+    val measurementElapsedRealtimeNanos: Long? = null,
+    /** Positioning providers that actually contributed to this combined fix. */
+    val contributingSources: Set<String> = emptySet(),
+    /** True when providers disagreed beyond their declared uncertainty. */
+    val sourceConflictDetected: Boolean = false
 )
 
 data class RadioPointObservation(
@@ -263,6 +267,11 @@ object ClearGpsPreferences {
     const val KEY_MAP_STYLE = "map_style"
     const val KEY_DATABASE_VIEW_SOURCE = "database_view_source"
     const val KEY_BEACONDB_LOOKUP_ENABLED = "beacondb_cell_lookup_enabled"
+    const val KEY_RADIO_SOURCE_LOCAL_ENABLED = "radio_source_local_enabled"
+    const val KEY_RADIO_SOURCE_BEACONDB_ENABLED = "radio_source_beacondb_enabled"
+    const val KEY_RADIO_SOURCE_OPENCELLID_ENABLED = "radio_source_opencellid_enabled"
+    const val KEY_LAST_CONTRIBUTING_SOURCES = "radio_last_contributing_sources"
+    const val KEY_LAST_SOURCE_CONFLICT = "radio_last_source_conflict"
     const val KEY_RADIO_OBSERVATION_LIMIT = "radio_observation_retention_limit"
     const val KEY_WIFI_SSID_BLACKLIST = "wifi_ssid_blacklist"
 }

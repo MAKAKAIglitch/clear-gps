@@ -233,15 +233,15 @@ internal object BeaconDbProtocol {
         return buildString {
             append("beacondb-multiradio-v2\n")
             append("cells\n")
-            normalized.cells.forEach { append(it.identifier).append(':').append(it.signalStrength).append('\n') }
+            normalized.cells.forEach { append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append('\n') }
             append("wifi\n")
             normalized.wifiAccessPoints.forEach {
-                append(it.identifier).append(':').append(it.signalStrength).append(':')
+                append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append(':')
                     .append(it.frequencyMhz ?: 0).append('\n')
             }
             append("ble\n")
             normalized.bluetoothBeacons.forEach {
-                append(it.identifier).append(':').append(it.signalStrength).append('\n')
+                append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append('\n')
             }
         }
     }

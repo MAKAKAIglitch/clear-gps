@@ -86,9 +86,17 @@ class RadioGeolocationRepository(private val context: Context) {
         } catch (_: RuntimeException) {
             // Recording must not interrupt live radio positioning.
         }
-        val estimate = withContext(Dispatchers.IO) {
-            database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
-        }?.let { candidate ->
+        val localSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, true)
+        val beaconSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true)
+        val openCellIdSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true)
+        val safeMode = CrashLoopGuard.isSafeModeActive(context)
+
+        val localEstimate = if (localSourceEnabled) {
+            withContext(Dispatchers.IO) {
+                database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
+            }
+        } else null
+        val localEstimateWithFreshness = localEstimate?.let { candidate ->
             val staleWifiPenalty = RadioFixReliability.wifiAgePenaltyMeters(
                 ageMillis = snapshot.wifiAgeMillis,
                 wifiSignalCount = snapshot.wifiCount,
@@ -104,10 +112,6 @@ class RadioGeolocationRepository(private val context: Context) {
                 bleSignalCount = snapshot.bleCount,
                 totalSignalCount = snapshot.signals.size
             )
-            val totalStalePenalty = staleWifiPenalty + staleCellPenalty + staleBlePenalty
-            // updatedAt denotes the age of the evidence, not the time we finished calculating.
-            // Otherwise repeatedly reading the same Android cache refreshes the fix timestamp
-            // forever and the UI can incorrectly label a stale radio result as fresh.
             val oldestEvidenceAgeMillis = listOfNotNull(
                 snapshot.wifiAgeMillis.takeIf { snapshot.wifiCount > 0 },
                 snapshot.cellAgeMillis.takeIf { snapshot.cellCount > 0 },
@@ -116,7 +120,8 @@ class RadioGeolocationRepository(private val context: Context) {
             val evidenceTimestamp = (System.currentTimeMillis() - oldestEvidenceAgeMillis).coerceAtLeast(0L)
             candidate.copy(
                 updatedAt = evidenceTimestamp,
-                accuracyMeters = (candidate.accuracyMeters + totalStalePenalty).coerceAtMost(50_000.0),
+                accuracyMeters = (candidate.accuracyMeters + staleWifiPenalty + staleCellPenalty + staleBlePenalty)
+                    .coerceAtMost(50_000.0),
                 measurementElapsedRealtimeNanos =
                     RadioMeasurementTimestampPolicy.oldestMatchingEvidenceTimestampNanos(
                         signals = snapshot.signals,
@@ -125,9 +130,80 @@ class RadioGeolocationRepository(private val context: Context) {
                     )
             )
         }
-        val matchCounts = withContext(Dispatchers.IO) {
-            database.countMatchingPoints(snapshot.signals, useWifi, useCells, useBle)
+
+        // BeaconDB is queried only by the explicit button. Normal radio scans can consume its
+        // short-lived cache when the user independently enabled this source for position fusion.
+        val beaconCachedResult = if (beaconSourceEnabled && !safeMode) {
+            val cellSignals = snapshot.signals.filter { it.type == "cell" }
+            val request = BeaconDbRequest(
+                cells = cellSignals.mapNotNull {
+                    BeaconDbProtocol.cellFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos)
+                },
+                wifiAccessPoints = snapshot.signals.mapNotNull {
+                    BeaconDbProtocol.wifiFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos)
+                },
+                bluetoothBeacons = snapshot.signals.mapNotNull {
+                    BeaconDbProtocol.bluetoothFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos)
+                }
+            ).normalized()
+            val unsupportedCount = (cellSignals.size - request.cells.size).coerceAtLeast(0)
+            BeaconDbClient.lookupCached(request, unsupportedCount)
+        } else null
+
+        // OpenCellID tower coordinates are read from the local catalogue only. Periodic radio
+        // scans never call /cell/get; refreshing that catalogue remains an explicit, quota-guarded action.
+        val openCellIdEstimate = if (openCellIdSourceEnabled && useCells && !safeMode) {
+            withContext(Dispatchers.IO) {
+                val evidence = snapshot.signals.asSequence()
+                    .filter { it.type == "cell" }
+                    .mapNotNull { signal ->
+                        val key = OpenCellIdCellKey.fromRadioSignal(signal) ?: return@mapNotNull null
+                        val record = database.getOpenCellIdCell(key) ?: return@mapNotNull null
+                        signal to record
+                    }.toList()
+                OpenCellIdPositionEstimator.estimate(evidence)
+            }
+        } else null
+
+        val sourceEstimates = buildList {
+            localEstimateWithFreshness?.let {
+                add(RadioPositionFusion.SourceEstimate("local", it, trustWeight = 1.0))
+            }
+            beaconCachedResult?.let { cachedResult ->
+                cachedResult.coordinate?.let { coordinate ->
+                    val cacheAgePenalty = (cachedResult.cacheAgeMillis / 60_000.0) * 10.0
+                    val beaconEstimate = RadioEstimate(
+                        latitude = coordinate.latitude,
+                        longitude = coordinate.longitude,
+                        accuracyMeters = (coordinate.accuracyMeters + cacheAgePenalty).coerceAtMost(100_000.0),
+                        updatedAt = cachedResult.queriedAtMillis,
+                        fingerprint = "beacondb-cache",
+                        fallbackUsed = true,
+                        matchedCount = (
+                            cachedResult.cells.size +
+                                cachedResult.wifiAccessPoints.size +
+                                cachedResult.bluetoothBeacons.size
+                        ).coerceAtLeast(1),
+                        matchedRadioTypes = buildSet {
+                            if (cachedResult.cells.isNotEmpty()) add("cell")
+                            if (cachedResult.wifiAccessPoints.isNotEmpty()) add("wifi")
+                            if (cachedResult.bluetoothBeacons.isNotEmpty()) add("ble")
+                        },
+                        contributingSources = setOf("beacondb")
+                    )
+                    add(RadioPositionFusion.SourceEstimate("beacondb", beaconEstimate, trustWeight = 0.85))
+                }
+            }
+            openCellIdEstimate?.let {
+                add(RadioPositionFusion.SourceEstimate("opencellid", it, trustWeight = 0.30))
+            }
         }
+        val estimate = RadioPositionFusion.combine(sourceEstimates)
+        val matchCounts = if (localSourceEnabled) {
+            withContext(Dispatchers.IO) {
+                database.countMatchingPoints(snapshot.signals, useWifi, useCells, useBle)
+            }
+        } else RadioMatchCounts(0, 0)
         // Radio-only coordinates are estimates from this very database, not independent
         // reference fixes. Never persist them as training coordinates, even if a caller passes one.
         val safeReference = if (mode == "radio" || mode == "radio_obd2") null else reference
@@ -153,8 +229,20 @@ class RadioGeolocationRepository(private val context: Context) {
             snapshot.signals.isEmpty() ->
                 "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио, системную геолокацию и ограничения Android."
             estimate != null -> {
-                val method = if (estimate.fallbackUsed) "по координатам локальных радиоточек" else "по похожему историческому радиоснимку"
-                "Сканирование завершено: $summary. Метод расчёта: $method. Совпадений: ${estimate.matchedCount}; оценка приблизительная, радиус ±${estimate.accuracyMeters.toInt()} м."
+                val sourceTitles = estimate.contributingSources.map { source ->
+                    when (source) {
+                        "local" -> "локальная БД"
+                        "beacondb" -> "BeaconDB (кэш)"
+                        "opencellid" -> "OpenCellID (кэш вышек)"
+                        else -> source
+                    }
+                }
+                val sourcesText = sourceTitles.joinToString(" + ").ifBlank { "доступные радиоданные" }
+                val conflictHint = if (estimate.sourceConflictDetected) {
+                    " Источники не согласовались; выбран наиболее надёжный вариант, погрешность увеличена."
+                } else ""
+                "Сканирование завершено: $summary. Комбинированная оценка: $sourcesText. " +
+                    "Совпадений: ${estimate.matchedCount}; погрешность ±${estimate.accuracyMeters.toInt()} м.$conflictHint"
             }
             else ->
                 "Сканирование завершено: $summary. Совпадений идентификаторов в локальной базе: ${matchCounts.knownRadios}; пригодных координатных записей: ${matchCounts.usableCoordinateRadios}. " +
@@ -179,7 +267,7 @@ class RadioGeolocationRepository(private val context: Context) {
             "Сканирование завершено: Wi-Fi=${snapshot.wifiCount}, соты=${snapshot.cellCount}, BLE=${snapshot.bleCount}, " +
                 "Wi-Fi age=${snapshot.wifiAgeMillis?.div(1_000) ?: "unknown"}s, cell age=${snapshot.cellAgeMillis?.div(1_000) ?: "unknown"}s, " +
                 "BLE age=${snapshot.bleAgeMillis?.div(1_000) ?: "unknown"}s, " +
-                (estimate?.let { "оценка есть, совпадений=${it.matchedCount}, точность≈${it.accuracyMeters.toInt()} м, fallback=${it.fallbackUsed}" }
+                (estimate?.let { "оценка есть, источники=${it.contributingSources.joinToString("+")}, совпадений=${it.matchedCount}, точность≈${it.accuracyMeters.toInt()} м, конфликт=${it.sourceConflictDetected}" }
                     ?: "координата не рассчитана")
         )
         prefs.edit()
@@ -325,13 +413,19 @@ class RadioGeolocationRepository(private val context: Context) {
      * Captures fresh Android CellInfo for a manual OpenCellID lookup. This path never reads
      * Wi-Fi/BLE identifiers; only normalized cellular identifiers are returned to its caller.
      */
-    suspend fun currentCellsForOpenCellId(): List<OpenCellIdCellKey> {
+    suspend fun currentCellsForOpenCellId(): List<Pair<OpenCellIdCellKey, Int>> {
         val signals = scanMutex.withLock {
             withContext(Dispatchers.Main.immediate) {
                 collectCells(forceRefresh = true).signals
             }
         }
-        return signals.mapNotNull(OpenCellIdCellKey::fromRadioSignal).distinct()
+        return signals.asSequence()
+            .mapNotNull { signal ->
+                OpenCellIdCellKey.fromRadioSignal(signal)?.let { it to signal.rssi }
+            }
+            .groupBy { it.first }
+            .values.mapNotNull { values -> values.maxByOrNull { it.second } }
+            .sortedByDescending { it.second }
     }
 
     private suspend fun collectSnapshot(
@@ -825,10 +919,18 @@ class RadioGeolocationRepository(private val context: Context) {
             val accuracy = p.getString(ClearGpsPreferences.KEY_LAST_ACCURACY, null)?.toDoubleOrNull() ?: return null
             if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 ||
                 lon !in -180.0..180.0 || !accuracy.isFinite() || accuracy <= 0.0) return null
-            return RadioEstimate(lat, lon, accuracy,
-                p.getLong(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT, 0L),
-                p.getString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, "") ?: "", true,
-                p.getInt(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT, 0))
+            return RadioEstimate(
+                latitude = lat,
+                longitude = lon,
+                accuracyMeters = accuracy,
+                updatedAt = p.getLong(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT, 0L),
+                fingerprint = p.getString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, "") ?: "",
+                fallbackUsed = true,
+                matchedCount = p.getInt(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT, 0),
+                contributingSources = (p.getString(ClearGpsPreferences.KEY_LAST_CONTRIBUTING_SOURCES, "") ?: "")
+                    .split(',').filter { it.isNotBlank() }.toSet(),
+                sourceConflictDetected = p.getBoolean(ClearGpsPreferences.KEY_LAST_SOURCE_CONFLICT, false)
+            )
         }
 
         fun saveEstimate(context: Context, estimate: RadioEstimate) {
@@ -839,6 +941,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 .putLong(ClearGpsPreferences.KEY_LAST_ESTIMATE_AT, estimate.updatedAt)
                 .putString(ClearGpsPreferences.KEY_LAST_FINGERPRINT, estimate.fingerprint)
                 .putInt(ClearGpsPreferences.KEY_LAST_MATCHED_COUNT, estimate.matchedCount)
+                .putString(ClearGpsPreferences.KEY_LAST_CONTRIBUTING_SOURCES, estimate.contributingSources.sorted().joinToString(","))
+                .putBoolean(ClearGpsPreferences.KEY_LAST_SOURCE_CONFLICT, estimate.sourceConflictDetected)
                 .apply()
         }
     }

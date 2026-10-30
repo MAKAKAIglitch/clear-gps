@@ -125,11 +125,13 @@ internal class BeaconDbLookupCache(
                 cell.mobileNetworkCode.toString(),
                 cell.locationAreaCode.toString(),
                 cell.cellId.toString(),
-                cell.signalStrength.toString()
+                signalStrengthBucket(cell.signalStrength).toString()
             ).joinToString(":")
         }
         return digest(canonical)
     }
+
+    private fun signalStrengthBucket(value: Int): Int = Math.floorDiv(value, 10) * 10
 
     private fun digest(value: String): String =
         MessageDigest.getInstance("SHA-256")
@@ -143,7 +145,7 @@ internal class BeaconDbLookupCache(
             accuracyMeters <= 10_000_000.0
 
     companion object {
-        const val DEFAULT_TTL_MILLIS = 30_000L
+        const val DEFAULT_TTL_MILLIS = 120_000L
         const val DEFAULT_MAX_ENTRIES = 32
     }
 }

@@ -51,7 +51,7 @@ class BeaconDbLookupCacheTest {
         val cache = cache()
         cache.put(listOf(cellA), coordinate, queriedAtMillis = 1_700L)
 
-        assertNull(cache.get(listOf(cellA.copy(signalStrength = -81))))
+        assertNull(cache.get(listOf(cellA.copy(signalStrength = -91))))
     }
 
     @Test
@@ -103,10 +103,33 @@ class BeaconDbLookupCacheTest {
 
         val changed = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
             wifiAccessPoints = listOf(
-                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -51, frequencyMhz = 2_412, ssid = "private-name")
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -61, frequencyMhz = 2_412, ssid = "private-name")
             ),
             bluetoothBeacons = listOf(BeaconDbBluetoothBeacon("00:11:22:33:44:55", -70))
         ))
+        assertNull(cache.getRequest(changed))
+    }
+
+    @Test
+    fun coarseRssiBucketsReuseBeaconDbResultAcrossSmallSignalFluctuations() {
+        val cache = cache()
+        val first = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412)
+            )
+        ))
+        val nearby = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -54, frequencyMhz = 2_412)
+            )
+        ))
+        val changed = BeaconDbProtocol.cacheFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -61, frequencyMhz = 2_412)
+            )
+        ))
+        cache.putRequest(first, coordinate, queriedAtMillis = 1_700L)
+        assertNotNull(cache.getRequest(nearby))
         assertNull(cache.getRequest(changed))
     }
 

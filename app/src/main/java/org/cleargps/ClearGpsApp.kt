@@ -377,6 +377,17 @@ fun ClearGpsApp(
         )
     }
 
+    var localPositionSourceEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, true))
+    }
+    // Use any available BeaconDB cache by default; its separate network-consent setting
+    // remains opt-in and false by default, so this cannot start an online request.
+    var beaconDbPositionSourceEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true))
+    }
+    var openCellIdPositionSourceEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true))
+    }
     var useWifi by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) }
     var useCells by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true)) }
     var useBle by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)) }
@@ -980,29 +991,58 @@ fun ClearGpsApp(
                 var reused = 0
                 var limited = false
                 var stoppedMessage = ""
-                for (cell in cells) {
+                val staleCells = ArrayList<OpenCellIdCellKey>()
+                for ((cell, _) in cells) {
                     if (requestToken != openCellIdRequestToken || !OpenCellIdKeyStore.isEnabled(context)) break
                     val cached = withContext(Dispatchers.IO) { database.getOpenCellIdCell(cell) }
                     if (!OpenCellIdLookupPolicy.shouldLookup(cached, System.currentTimeMillis())) {
                         reused++
                         if (cached?.status == "found") found++ else notFound++
-                        continue
-                    }
-                    if (queried >= OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION) {
-                        limited = true
-                        break
-                    }
-                    val response = OpenCellIdClient.lookup(apiKey, cell)
-                    val record = response.record
-                    if (record != null) {
-                        withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
-                        queried++
-                        if (response.status == OpenCellIdLookupStatus.FOUND) found++ else notFound++
                     } else {
-                        stoppedMessage = response.message
-                        break
+                        staleCells.add(cell)
                     }
-                    if (queried < OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION) delay(150L)
+                }
+
+                if (staleCells.isNotEmpty() && requestToken == openCellIdRequestToken &&
+                    OpenCellIdKeyStore.isEnabled(context)
+                ) {
+                    when (OpenCellIdUsageBudget.tryStartBatch(context)) {
+                        OpenCellIdBudgetBlock.NONE -> {
+                            val batch = staleCells.take(OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION)
+                            limited = staleCells.size > batch.size
+                            for (cell in batch) {
+                                if (requestToken != openCellIdRequestToken || !OpenCellIdKeyStore.isEnabled(context)) break
+                                // Reserve before opening the socket. A timeout may still have consumed
+                                // an API credit, so failed attempts remain inside the local safety budget.
+                                if (!OpenCellIdUsageBudget.reserveRequest(context)) {
+                                    stoppedMessage = "Достигнут дневной лимит Clear GPS."
+                                    break
+                                }
+                                queried++
+                                val response = OpenCellIdClient.lookup(apiKey, cell)
+                                if (response.status == OpenCellIdLookupStatus.RATE_LIMITED) {
+                                    OpenCellIdUsageBudget.markServerLimitReached(context)
+                                    stoppedMessage = response.message + " Повтор будет разрешён после смены UTC-даты."
+                                    break
+                                }
+                                val record = response.record
+                                if (record != null) {
+                                    withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
+                                    if (response.status == OpenCellIdLookupStatus.FOUND) found++ else notFound++
+                                } else {
+                                    stoppedMessage = response.message
+                                    break
+                                }
+                                if (queried < batch.size) delay(150L)
+                            }
+                        }
+                        OpenCellIdBudgetBlock.DAILY_BUDGET ->
+                            stoppedMessage = "Дневной лимит Clear GPS исчерпан; счётчик сбросится в 00:00 UTC."
+                        OpenCellIdBudgetBlock.SERVER_LIMIT ->
+                            stoppedMessage = "OpenCellID сообщил об исчерпании серверной квоты; Clear GPS проверит доступность после следующей UTC-даты."
+                        OpenCellIdBudgetBlock.COOLDOWN ->
+                            stoppedMessage = "Экономия запросов: между пакетами OpenCellID выдерживается пауза 15 минут."
+                    }
                 }
                 openCellIdRecords = withContext(Dispatchers.IO) { database.listOpenCellIdCells() }
                 if (requestToken == openCellIdRequestToken) {
@@ -2641,6 +2681,32 @@ fun ClearGpsApp(
                                     onClear = { showDeleteAllDialog = true },
                                     onRefresh = { refreshLocalUi() },
                                     dataSource = databaseDataSource,
+                                    localPositionSourceEnabled = localPositionSourceEnabled,
+                                    beaconDbPositionSourceEnabled = beaconDbPositionSourceEnabled,
+                                    openCellIdPositionSourceEnabled = openCellIdPositionSourceEnabled,
+                                    onLocalPositionSourceEnabled = { enabled ->
+                                        localPositionSourceEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, enabled).apply()
+                                        if (!enabled) scanMessage = "Локальная база отключена только для расчёта позиции; данные не удалены."
+                                    },
+                                    onBeaconDbPositionSourceEnabled = { enabled ->
+                                        beaconDbPositionSourceEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, enabled).apply()
+                                        beaconDbMessage = if (enabled) {
+                                            "BeaconDB включена как источник объединённой позиции. Используется только кэш; ручной запрос по-прежнему управляется отдельным разрешением."
+                                        } else {
+                                            "BeaconDB исключена из объединённой позиции. Кэш и результат не удалены."
+                                        }
+                                    },
+                                    onOpenCellIdPositionSourceEnabled = { enabled ->
+                                        openCellIdPositionSourceEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, enabled).apply()
+                                        openCellIdMessage = if (enabled) {
+                                            "OpenCellID включён как источник объединённой позиции. Используется только локальный кэш вышек."
+                                        } else {
+                                            "OpenCellID исключён из объединённой позиции. Кэш вышек сохранён."
+                                        }
+                                    },
                                     beaconDbEnabled = beaconDbEnabled,
                                     beaconDbLoading = beaconDbLoading,
                                     beaconDbResult = beaconDbLookupResult,
@@ -2845,7 +2911,8 @@ fun ClearGpsApp(
                                     beaconDbEnabled = beaconDbEnabled,
                                     onBeaconDbEnabled = { enabled ->
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, enabled).apply()
-                                        if (!enabled) BeaconDbClient.clearCache()
+                                        // Disabling future network requests does not discard an already
+                                        // downloaded estimate; the separate position-source switch controls its use.
                                         beaconDbEnabled = enabled
                                         beaconDbRequestToken += 1
                                         beaconDbLookupJob?.cancel()
@@ -2855,7 +2922,7 @@ fun ClearGpsApp(
                                         beaconDbMessage = if (enabled) {
                                             "Разрешено. Запросы выполняются только вручную из вкладки «База»."
                                         } else {
-                                            "BeaconDB выключён. Новые запросы не отправляются; результат очищен с экрана."
+                                            "Новые BeaconDB-запросы выключены. Ранее полученный кэш сохранён; его участие управляется отдельным переключателем источника позиции."
                                         }
                                     },
                                     onDetailedLogging = { enabled ->
@@ -4031,7 +4098,7 @@ private fun MapHomeScreen(
                     }
                 }
                 Text(
-                    "Радиоидентификаторы остаются на устройстве, кроме явно разрешённого ручного BeaconDB-запроса, который отправляет только ID сотовых ячеек и уровень сигнала. API WiGLE не вызывается. Онлайн-карта OpenFreeMap видит сетевые метаданные обычных запросов тайлов.",
+                    "Радиоидентификаторы остаются на устройстве. Только вручную разрешённый BeaconDB-запрос отправляет текущие допустимые Wi-Fi/BLE/сотовые идентификаторы и RSSI; OpenCellID отправляет только текущие MCC/MNC/LAC или TAC/Cell ID и личный API-ключ. Обычные сканы используют локальные данные и кэш, без сетевых запросов к этим сервисам. API WiGLE не вызывается. Онлайн-карта OpenFreeMap видит сетевые метаданные запросов тайлов.",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant
                 )
@@ -4061,7 +4128,13 @@ private fun DatabaseScreen(
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
-    dataSource: DatabaseDataSource, beaconDbEnabled: Boolean, beaconDbLoading: Boolean,
+    dataSource: DatabaseDataSource,
+    localPositionSourceEnabled: Boolean, beaconDbPositionSourceEnabled: Boolean,
+    openCellIdPositionSourceEnabled: Boolean,
+    onLocalPositionSourceEnabled: (Boolean) -> Unit,
+    onBeaconDbPositionSourceEnabled: (Boolean) -> Unit,
+    onOpenCellIdPositionSourceEnabled: (Boolean) -> Unit,
+    beaconDbEnabled: Boolean, beaconDbLoading: Boolean,
     beaconDbResult: BeaconDbLookupResult?, beaconDbMessage: String,
     onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit,
     onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit,
@@ -4086,10 +4159,7 @@ private fun DatabaseScreen(
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(
         Modifier.fillMaxSize()
-            .then(
-                if (dataSource != DatabaseDataSource.BEACONDB) Modifier.verticalScroll(databaseScrollState)
-                else Modifier
-            )
+            .verticalScroll(databaseScrollState)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -4113,6 +4183,39 @@ private fun DatabaseScreen(
                         containerColor = if (selected) colors.secondaryContainer else colors.surfaceVariant,
                         labelColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
                     )
+                )
+            }
+        }
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = colors.surfaceContainer
+        ) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("Источники объединённой позиции", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Эти переключатели определяют, какие независимые базы участвуют в расчёте координаты. Они не удаляют данные и не включают автоматические сетевые запросы.",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                )
+                FusionSourceToggleRow(
+                    title = "Локальная база",
+                    description = "Исторические радиоснимки, импорт WiGLE и вручную привязанные точки.",
+                    checked = localPositionSourceEnabled,
+                    onCheckedChange = onLocalPositionSourceEnabled
+                )
+                Divider(color = colors.outlineVariant)
+                FusionSourceToggleRow(
+                    title = "BeaconDB",
+                    description = "Используется только уже полученная кешированная оценка. Новые запросы — отдельно вручную и только при разрешении BeaconDB в настройках.",
+                    checked = beaconDbPositionSourceEnabled,
+                    onCheckedChange = onBeaconDbPositionSourceEnabled
+                )
+                Divider(color = colors.outlineVariant)
+                FusionSourceToggleRow(
+                    title = "OpenCellID",
+                    description = "Используются координаты текущих вышек из локального кэша; обычное сканирование API не вызывает.",
+                    checked = openCellIdPositionSourceEnabled,
+                    onCheckedChange = onOpenCellIdPositionSourceEnabled
                 )
             }
         }
@@ -4376,7 +4479,7 @@ private fun DatabaseScreen(
         }
         } else if (dataSource == DatabaseDataSource.BEACONDB) {
             BeaconDbDatabaseContent(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 enabled = beaconDbEnabled,
                 loading = beaconDbLoading,
                 result = beaconDbResult,
@@ -4626,6 +4729,27 @@ private fun RadioSourceSegmentRow(
 }
 
 @Composable
+private fun FusionSourceToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+            Text(description, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
 private fun OpenCellIdDatabaseContent(
     modifier: Modifier = Modifier,
     records: List<OpenCellIdCellRecord>,
@@ -4642,13 +4766,14 @@ private fun OpenCellIdDatabaseContent(
 ) {
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val usage = OpenCellIdUsageBudget.snapshot(context)
     Column(modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("OpenCellID · база координат сотовых вышек",
+                Text("OpenCellID · примерные координаты сотовых ячеек",
                     fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Отдельный read-only поиск по текущим GSM/UMTS/LTE/NR ячейкам Android. OpenCellID возвращает примерные координаты самой вышки и радиус области, а не координату телефона. Wi-Fi/BSSID, BLE, GPS-координаты и история сюда не отправляются.",
+                    "Отдельный read-only поиск по текущим GSM/UMTS/LTE/NR ячейкам Android. OpenCellID возвращает расчётное положение ячейки по наблюдениям сообщества; оно может отличаться от физического места антенны и не является координатой телефона. Wi-Fi/BSSID, BLE, GPS-координаты и история сюда не отправляются.",
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
                 )
             }
@@ -4700,6 +4825,24 @@ private fun OpenCellIdDatabaseContent(
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         Text(message, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    "Экономия запросов: ${usage.requestsUsed}/${OpenCellIdUsageBudget.DAILY_APP_BUDGET} попыток Clear GPS за UTC-день; осталось ${usage.requestsRemaining}.",
+                    style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Не более ${OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION} новых ячеек за пакет; пауза между пакетами — 15 минут. Найденные ячейки кэшируются 30 дней, отсутствующие — 7 дней.",
+                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+                )
+                if (usage.serverLimitReached) {
+                    Text(
+                        "OpenCellID сообщил об исчерпании серверной квоты. Clear GPS выдержит паузу до следующей UTC-даты; фактический сброс задаёт сервис.",
+                        style = MaterialTheme.typography.labelSmall, color = colors.error
+                    )
+                }
+            }
+        }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Найдено в кэше: ${records.size}", fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f))
@@ -4739,10 +4882,9 @@ private fun OpenCellIdDatabaseContent(
             }
         }
         Text(
-            "Атрибуция: данные координат базовых станций OpenCellID, CC BY-SA 4.0. " +
-                "Радиус — оценка базы, а не гарантированная зона покрытия. " +
-                "квота аккаунта — до 1 000 API-кредитов в сутки; один запуск делает не более ${OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION} запросов. " +
-                "Данные не добавляются в локальные fingerprints и не публикуются в Mock GPS.",
+            "Attribution: расчётные координаты сотовых ячеек OpenCellID, CC BY-SA 4.0. " +
+                "Радиус — оценка базы, а не гарантированная зона покрытия. Официальная квота сервиса — до 1 000 кредитов в сутки на пользователя; " +
+                "Clear GPS ограничивает себя 100 попытками в UTC-день. Данные не добавляются в локальные fingerprints и не публикуются в Mock GPS.",
             style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5346,6 +5488,14 @@ private fun SettingsScreen(
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant
                 )
+                Divider(color = colors.outlineVariant)
+                Text("OpenCellID",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "OpenCellID не вызывается автоматически. Личный API-ключ и разрешение ручных запросов настраиваются во вкладке «База → OpenCellID». По HTTPS отправляются только текущие идентификаторы сотовых ячеек и ключ; периодические сканы используют готовый локальный кэш. Clear GPS ограничивает себя 100 попытками в UTC-день, не более 3 новых ячеек за пакет и с паузой 15 минут.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant
+                )
             }
         }
 
@@ -5573,11 +5723,12 @@ private fun SettingsScreen(
                     Divider(color = colors.outlineVariant)
                     Text("Приватность", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (beaconDbEnabled) {
+                        (if (beaconDbEnabled) {
                             "BeaconDB разрешён только для ручного запроса из вкладки «База»: передаются текущие Wi-Fi BSSID/RSSI, стабильные BLE-адреса/RSSI и поддерживаемые сотовые ID/RSSI. Сервер также видит IP-адрес. SSID, Bluetooth-имена/payload, GPS-координаты и история не отправляются. Скрытые и _nomap Wi-Fi, а также private/random BLE MAC исключаются; API загрузки вкладов не вызывается."
                         } else {
                             "Запросы BeaconDB выключены. Радиоидентификаторы остаются на устройстве. При включении можно вручную запросить оценку по текущим Wi-Fi, стабильным BLE-маякам и поддерживаемым сотовым ячейкам; автоматической отправки и загрузки наблюдений нет."
-                        },
+                        }) + "\n\n" +
+                        "OpenCellID отправляет только текущие MCC/MNC/LAC или TAC/full Cell ID и личный API-ключ по HTTPS; Wi-Fi, BLE, GPS-координаты и история не передаются. Запросы выполняются только вручную, а обычные сканы читают локальный кэш. Координаты OpenCellID — расчётное положение записи ячейки по наблюдениям сообщества, а не положение телефона или гарантированное место антенны.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
