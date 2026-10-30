@@ -145,7 +145,7 @@ class LocalRadioDatabaseUndoTest {
         database = LocalRadioDatabase(context)
         sqlite = database.writableDatabase
 
-        assertEquals(9, sqlite.version)
+        assertEquals(10, sqlite.version)
         UNDO_TABLES.forEach { table -> assertTrue("missing migrated table $table", tableExists(table)) }
         assertTrue("missing radio-key/time index", indexExists("radio_obs_radio_time"))
         assertTrue("write-ahead logging should be enabled", sqlite.isWriteAheadLoggingEnabled)

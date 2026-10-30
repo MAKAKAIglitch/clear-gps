@@ -106,7 +106,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(9, sqlite!!.version)
+        assertEquals(10, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertEquals(1, countRows("radio_points", "LOWER(identifier) = ?", WIGLE_ID))
         assertEquals(2, database!!.observationCount())
@@ -326,7 +326,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(9, sqlite!!.version)
+        assertEquals(10, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertEquals(3, database!!.pointCount())
         assertEquals(3, database!!.observationCount())
