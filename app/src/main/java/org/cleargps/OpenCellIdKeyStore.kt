@@ -69,6 +69,9 @@ internal object OpenCellIdKeyStore {
     fun clear(context: Context) {
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().remove(KEY_ENCRYPTED).putBoolean(KEY_ENABLED, false).commit()
+        runCatching {
+            KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }.deleteEntry(KEY_ALIAS)
+        }
     }
 
     private fun getOrCreateSecretKey(): SecretKey {

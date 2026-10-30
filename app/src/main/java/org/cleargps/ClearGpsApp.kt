@@ -4087,7 +4087,7 @@ private fun DatabaseScreen(
     Column(
         Modifier.fillMaxSize()
             .then(
-                if (dataSource == DatabaseDataSource.LOCAL) Modifier.verticalScroll(databaseScrollState)
+                if (dataSource != DatabaseDataSource.BEACONDB) Modifier.verticalScroll(databaseScrollState)
                 else Modifier
             )
             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -4387,7 +4387,7 @@ private fun DatabaseScreen(
             )
         } else {
             OpenCellIdDatabaseContent(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 records = openCellIdRecords,
                 keyConfigured = openCellIdKeyConfigured,
                 keyInput = openCellIdKeyInput,
