@@ -143,26 +143,14 @@ internal object OpenCellIdProtocol {
 }
 
 internal object OpenCellIdLookupPolicy {
-    const val SUCCESS_TTL_MILLIS = 30L * 24L * 60L * 60L * 1_000L
-    const val NOT_FOUND_TTL_MILLIS = 7L * 24L * 60L * 60L * 1_000L
-    const val MAX_LOOKUPS_PER_ACTION = 3
-    const val POSITION_MAX_AGE_MILLIS = 90L * 24L * 60L * 60L * 1_000L
+    const val SUCCESS_TTL_MILLIS = 7L * 24L * 60L * 60L * 1_000L
+    const val NOT_FOUND_TTL_MILLIS = 24L * 60L * 60L * 1_000L
+    const val MAX_LOOKUPS_PER_ACTION = 20
 
     fun shouldLookup(cached: OpenCellIdCellRecord?, nowMillis: Long): Boolean {
         if (cached == null || cached.checkedAtMillis <= 0L || nowMillis < cached.checkedAtMillis) return true
         val age = nowMillis - cached.checkedAtMillis
         val ttl = if (cached.status == "not_found") NOT_FOUND_TTL_MILLIS else SUCCESS_TTL_MILLIS
         return age >= ttl
-    }
-
-    fun shouldUseForPosition(record: OpenCellIdCellRecord, nowMillis: Long): Boolean {
-        if (record.status != "found" || record.checkedAtMillis <= 0L || nowMillis < record.checkedAtMillis) {
-            return false
-        }
-        val latitude = record.latitude ?: return false
-        val longitude = record.longitude ?: return false
-        return latitude.isFinite() && latitude in -90.0..90.0 &&
-            longitude.isFinite() && longitude in -180.0..180.0 &&
-            nowMillis - record.checkedAtMillis <= POSITION_MAX_AGE_MILLIS
     }
 }

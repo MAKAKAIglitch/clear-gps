@@ -18,25 +18,6 @@ internal object BeaconDbClient {
 
     fun clearCache() = lookupCache.clear()
 
-    /**
-     * Returns only an already-cached response. Live positioning uses this method so an enabled
-     * BeaconDB source contributes to fusion without turning periodic radio scans into network calls.
-     */
-    fun lookupCached(request: BeaconDbRequest, unsupportedCellCount: Int): BeaconDbLookupResult? {
-        val normalized = request.normalized()
-        if (!normalized.canLookup()) return null
-        val fingerprint = BeaconDbProtocol.cacheFingerprint(normalized)
-        val cached = lookupCache.getRequest(fingerprint) ?: return null
-        return normalized.toResult(
-            unsupportedCellCount,
-            coordinate = cached.coordinate,
-            queriedAtMillis = cached.queriedAtMillis,
-            message = "Использована сохранённая оценка BeaconDB; сетевой запрос не отправлялся.",
-            fromCache = true,
-            cacheAgeMillis = cached.ageMillis
-        )
-    }
-
     suspend fun lookup(request: BeaconDbRequest, unsupportedCellCount: Int): BeaconDbLookupResult =
         withContext(Dispatchers.IO) {
             val normalized = request.normalized()

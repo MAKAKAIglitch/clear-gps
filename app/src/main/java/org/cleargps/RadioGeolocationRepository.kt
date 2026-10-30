@@ -310,6 +310,192 @@ class RadioGeolocationRepository(private val context: Context) {
         snapshot.signals.size
     }
 
+
+    /**
+     * Updates approved external radio sources while location monitoring is active.
+     * BeaconDB returns a geolocation estimate (not a downloadable database) kept in its
+     * bounded memory cache. OpenCellID records are persisted in the separate SQLite table.
+     * Neither response is written into local training fingerprints.
+     */
+    suspend fun refreshExternalDatabasesAutomatically(): String? {
+        if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
+            CrashLoopGuard.isSafeModeActive(context)
+        ) return null
+
+        val beaconEnabled =
+            prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&
+                prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false)
+        val openCellIdEnabled =
+            prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
+                OpenCellIdKeyStore.isEnabled(context) &&
+                OpenCellIdKeyStore.hasKey(context)
+        if (!beaconEnabled && !openCellIdEnabled) return null
+
+        val fineLocationGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!fineLocationGranted) return null
+
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val shouldCapture = synchronized(AUTO_REFRESH_LOCK) {
+            if (!ExternalRadioDatabaseRefreshPolicy.shouldCaptureSnapshot(
+                    nowElapsedMillis = nowElapsed,
+                    lastSnapshotElapsedMillis = lastAutomaticDatabaseSnapshotElapsedMs
+                )
+            ) false else {
+                lastAutomaticDatabaseSnapshotElapsedMs = nowElapsed
+                true
+            }
+        }
+        if (!shouldCapture) return null
+
+        val useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true) &&
+            (beaconEnabled || openCellIdEnabled)
+        val useWifi = beaconEnabled && prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)
+        val useBle = beaconEnabled && prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+        if (!useCells && !useWifi && !useBle) return null
+
+        val snapshot = scanMutex.withLock {
+            withContext(Dispatchers.Main.immediate) {
+                collectSnapshot(
+                    useWifi = useWifi,
+                    useCells = useCells,
+                    useBle = useBle,
+                    refreshCellInfo = false
+                )
+            }
+        }
+        if (snapshot.signals.isEmpty()) return null
+
+        var beaconStatus = ""
+        if (beaconEnabled) {
+            val request = BeaconDbRequest(
+                cells = snapshot.signals.filter { it.type == "cell" }
+                    .mapNotNull { BeaconDbProtocol.cellFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos) },
+                wifiAccessPoints = snapshot.signals.mapNotNull {
+                    BeaconDbProtocol.wifiFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos)
+                },
+                bluetoothBeacons = snapshot.signals.mapNotNull {
+                    BeaconDbProtocol.bluetoothFromSignal(it, snapshot.collectedAtElapsedRealtimeNanos)
+                }
+            ).normalized()
+            if (request.canLookup()) {
+                val identity = BeaconDbProtocol.identityFingerprint(request)
+                val autoPrefs = context.getSharedPreferences(AUTO_REFRESH_PREFS, Context.MODE_PRIVATE)
+                val state = BeaconDbAutoRefreshState(
+                    identityFingerprint = autoPrefs.getString(KEY_BEACON_IDENTITY, null),
+                    lastAttemptAtMillis = autoPrefs.getLong(KEY_BEACON_ATTEMPT_AT, 0L),
+                    lastSuccessAtMillis = autoPrefs.getLong(KEY_BEACON_SUCCESS_AT, 0L)
+                )
+                val now = System.currentTimeMillis()
+                if (ExternalRadioDatabaseRefreshPolicy.shouldRequestBeaconDb(state, identity, now)) {
+                    val savedAttempt = autoPrefs.edit()
+                        .putString(KEY_BEACON_IDENTITY, identity)
+                        .putLong(KEY_BEACON_ATTEMPT_AT, now)
+                        .commit()
+                    if (savedAttempt &&
+                        prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+                        prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&
+                        prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                        !CrashLoopGuard.isSafeModeActive(context)
+                    ) {
+                        val result = BeaconDbClient.lookup(
+                            request,
+                            (snapshot.cellCount - request.cells.size).coerceAtLeast(0)
+                        )
+                        if (result.success) {
+                            autoPrefs.edit().putLong(KEY_BEACON_SUCCESS_AT, System.currentTimeMillis()).apply()
+                            beaconStatus = "BeaconDB estimate refreshed"
+                        } else {
+                            beaconStatus = "BeaconDB refresh deferred: ${result.message}"
+                        }
+                    }
+                }
+            }
+        }
+
+        var openCellIdStatus = ""
+        if (openCellIdEnabled &&
+            prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+            prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
+            OpenCellIdKeyStore.isEnabled(context)
+        ) {
+            val apiKey = OpenCellIdKeyStore.read(context)
+            if (!apiKey.isNullOrBlank()) {
+                val candidates = snapshot.signals.asSequence()
+                    .filter { it.type == "cell" }
+                    .mapNotNull { signal -> OpenCellIdCellKey.fromRadioSignal(signal)?.let { it to signal.rssi } }
+                    .groupBy { it.first }
+                    .values.mapNotNull { it.maxByOrNull { candidate -> candidate.second } }
+                    .sortedByDescending { it.second }
+                    .take(16)
+
+                val staleCells = ArrayList<OpenCellIdCellKey>()
+                for ((cell, _) in candidates) {
+                    val cached = withContext(Dispatchers.IO) { database.getOpenCellIdCell(cell) }
+                    if (OpenCellIdLookupPolicy.shouldLookup(cached, System.currentTimeMillis())) {
+                        staleCells.add(cell)
+                    }
+                }
+
+                if (staleCells.isNotEmpty() &&
+                    prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+                    prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
+                    OpenCellIdKeyStore.isEnabled(context)
+                ) {
+                    when (OpenCellIdUsageBudget.tryStartBatch(context)) {
+                        OpenCellIdBudgetBlock.NONE -> {
+                            val batch = staleCells.take(OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION)
+                            var queried = 0
+                            var saved = 0
+                            var stoppedMessage = ""
+                            for (cell in batch) {
+                                if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
+                                    !prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) ||
+                                    !OpenCellIdKeyStore.isEnabled(context)
+                                ) break
+                                if (!OpenCellIdUsageBudget.reserveRequest(context)) {
+                                    stoppedMessage = "local daily quota reached"
+                                    break
+                                }
+                                queried++
+                                val response = OpenCellIdClient.lookup(apiKey, cell)
+                                if (response.status == OpenCellIdLookupStatus.RATE_LIMITED) {
+                                    OpenCellIdUsageBudget.markServerLimitReached(context)
+                                    stoppedMessage = "OpenCellID server quota reached"
+                                    break
+                                }
+                                val record = response.record
+                                if (record != null) {
+                                    withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
+                                    saved++
+                                } else {
+                                    stoppedMessage = response.message
+                                    break
+                                }
+                                if (queried < batch.size) delay(150L)
+                            }
+                            if (queried > 0) {
+                                openCellIdStatus = "OpenCellID checked ${queried} new cells; ${saved} records saved" +
+                                    if (stoppedMessage.isBlank()) "" else " (${stoppedMessage})"
+                            }
+                        }
+                        OpenCellIdBudgetBlock.DAILY_BUDGET ->
+                            openCellIdStatus = "OpenCellID daily app budget reached"
+                        OpenCellIdBudgetBlock.SERVER_LIMIT ->
+                            openCellIdStatus = "OpenCellID server quota is blocked"
+                        OpenCellIdBudgetBlock.COOLDOWN ->
+                            openCellIdStatus = "OpenCellID batch cooldown active"
+                    }
+                }
+            }
+        }
+
+        return listOf(beaconStatus, openCellIdStatus)
+            .filter { it.isNotBlank() }
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString("; ")
+    }
+
     /**
      * Requests one read-only estimate using the available Wi-Fi, BLE and supported cell signals.
      * Explicit consent is checked here and again immediately before networking.
@@ -900,6 +1086,12 @@ class RadioGeolocationRepository(private val context: Context) {
 
     companion object {
         private val scanMutex = Mutex()
+        private val AUTO_REFRESH_LOCK = Any()
+        private var lastAutomaticDatabaseSnapshotElapsedMs = 0L
+        private const val AUTO_REFRESH_PREFS = "external_radio_database_auto_refresh"
+        private const val KEY_BEACON_IDENTITY = "beacondb_identity_sha256"
+        private const val KEY_BEACON_ATTEMPT_AT = "beacondb_last_attempt_at"
+        private const val KEY_BEACON_SUCCESS_AT = "beacondb_last_success_at"
         private var lastWifiScanRequestAtElapsedMs = 0L
         private var lastCellInfoRefreshRequestedAtElapsedMs = 0L
         private var lastBleScanStartedAtElapsedMs = 0L

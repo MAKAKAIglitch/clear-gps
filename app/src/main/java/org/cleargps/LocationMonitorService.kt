@@ -58,6 +58,7 @@ class LocationMonitorService : Service(), LocationListener {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
     private var radioFusionJob: Job? = null
+    private var autoRadioDatabaseRefreshJob: Job? = null
     private var replayRadioCaptureJob: Job? = null
     private var obd2FallbackJob: Job? = null
     private var mockFreshnessJob: Job? = null
@@ -646,6 +647,41 @@ class LocationMonitorService : Service(), LocationListener {
         beaconDbOutputJob = null
     }
 
+
+    /**
+     * Refreshes external radio sources while the user has explicitly enabled monitoring.
+     * The loop checks every 5 seconds; the repository throttles actual hardware snapshots
+     * and remote requests independently to avoid battery and API quota waste.
+     */
+    private fun startAutoRadioDatabaseRefreshLoop() {
+        if (!prefs.getBoolean(KEY_MONITORING, false)) {
+            autoRadioDatabaseRefreshJob?.cancel()
+            autoRadioDatabaseRefreshJob = null
+            return
+        }
+        if (autoRadioDatabaseRefreshJob?.isActive == true) return
+        val repository = RadioGeolocationRepository(applicationContext)
+        autoRadioDatabaseRefreshJob = serviceScope.launch {
+            while (isActive && prefs.getBoolean(KEY_MONITORING, false)) {
+                try {
+                    repository.refreshExternalDatabasesAutomatically()?.let { summary ->
+                        DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_DATABASE_AUTO", summary)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    DiagnosticLogStore.log(
+                        this@LocationMonitorService, "RADIO_DATABASE_AUTO",
+                        "Automatic database refresh skipped: ${error.javaClass.simpleName}", "WARN"
+                    )
+                }
+                if (!prefs.getBoolean(KEY_MONITORING, false)) break
+                delay(ExternalRadioDatabaseRefreshPolicy.CHECK_INTERVAL_MILLIS)
+            }
+            autoRadioDatabaseRefreshJob = null
+        }
+    }
+
     private fun startTracking() {
         if (beaconDbOutputJob?.isActive == true &&
             prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
@@ -746,6 +782,7 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
+            startAutoRadioDatabaseRefreshLoop()
             // IMU may adjust a short prediction, but never creates a position anchor or trust signal.
             barometerReader?.start()
             imuMotionReader?.start()
@@ -1659,6 +1696,8 @@ class LocationMonitorService : Service(), LocationListener {
         GnssReplayRecorder.stop(this, "SERVICE_STOP")
         stopReplayRadioCapture()
         cancelBeaconDbMockOutput()
+        autoRadioDatabaseRefreshJob?.cancel()
+        autoRadioDatabaseRefreshJob = null
         radioOnlyJob?.cancel()
         radioOnlyJob = null
         radioFusionJob?.cancel()

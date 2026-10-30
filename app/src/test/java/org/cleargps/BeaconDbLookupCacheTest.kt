@@ -133,6 +133,28 @@ class BeaconDbLookupCacheTest {
         assertNull(cache.getRequest(changed))
     }
 
+
+    @Test
+    fun automaticIdentityFingerprintIgnoresRssiButDetectsNewRadioIdentifiers() {
+        val first = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412)),
+            cells = listOf(cellA)
+        ))
+        val changedRssi = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -87, frequencyMhz = 2_412)),
+            cells = listOf(cellA.copy(signalStrength = -101))
+        ))
+        val newRadio = BeaconDbProtocol.identityFingerprint(BeaconDbRequest(
+            wifiAccessPoints = listOf(
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -50, frequencyMhz = 2_412),
+                BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:02", -65, frequencyMhz = 5_180)
+            ),
+            cells = listOf(cellA)
+        ))
+        assertEquals(first, changedRssi)
+        assertTrue(first != newRadio)
+    }
+
     @Test
     fun invalidCoordinatesAreNeverCached() {
         val cache = cache()

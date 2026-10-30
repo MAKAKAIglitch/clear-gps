@@ -131,7 +131,7 @@ internal class BeaconDbLookupCache(
         return digest(canonical)
     }
 
-    private fun signalStrengthBucket(value: Int): Int = Math.floorDiv(value, 10) * 10
+    private fun signalStrengthBucket(value: Int): Int = Math.floorDiv(value + 5, 10) * 10
 
     private fun digest(value: String): String =
         MessageDigest.getInstance("SHA-256")

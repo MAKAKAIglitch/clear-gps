@@ -227,21 +227,43 @@ internal object BeaconDbProtocol {
         return root.toString()
     }
 
+    /** Stable identity-only digest for automatic refresh scheduling; raw IDs are never persisted. */
+    fun identityFingerprint(request: BeaconDbRequest): String {
+        val normalized = request.normalized()
+        if (normalized.cells.isEmpty() && normalized.wifiAccessPoints.isEmpty() &&
+            normalized.bluetoothBeacons.isEmpty()
+        ) return ""
+        val canonical = buildString {
+            append("beacondb-auto-identities-v1\\n")
+            append("cells\\n")
+            normalized.cells.forEach { append(it.identifier).append('\\n') }
+            append("wifi\\n")
+            normalized.wifiAccessPoints.forEach { append(it.identifier).append('\\n') }
+            append("ble\\n")
+            normalized.bluetoothBeacons.forEach { append(it.identifier).append('\\n') }
+        }
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun signalStrengthBucket(value: Int): Int = Math.floorDiv(value + 5, 10) * 10
+
     /** Cache fingerprint intentionally excludes SSIDs and sample ages. */
     fun cacheFingerprint(request: BeaconDbRequest): String {
         val normalized = request.normalized()
         return buildString {
             append("beacondb-multiradio-v2\n")
             append("cells\n")
-            normalized.cells.forEach { append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append('\n') }
+            normalized.cells.forEach { append(it.identifier).append(':').append(signalStrengthBucket(it.signalStrength)).append('\n') }
             append("wifi\n")
             normalized.wifiAccessPoints.forEach {
-                append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append(':')
+                append(it.identifier).append(':').append(signalStrengthBucket(it.signalStrength)).append(':')
                     .append(it.frequencyMhz ?: 0).append('\n')
             }
             append("ble\n")
             normalized.bluetoothBeacons.forEach {
-                append(it.identifier).append(':').append(Math.floorDiv(it.signalStrength, 10) * 10).append('\n')
+                append(it.identifier).append(':').append(signalStrengthBucket(it.signalStrength)).append('\n')
             }
         }
     }
