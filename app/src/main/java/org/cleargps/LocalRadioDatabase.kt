@@ -14,11 +14,14 @@ import java.io.OutputStream
 import java.io.InputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.OffsetDateTime
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 import java.util.zip.GZIPInputStream
+import java.util.zip.ZipInputStream
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -607,7 +610,7 @@ internal fun estimateRadioAnchorPosition(
             val typeFactor = radioTypeWeight(signal.type)
             val sourceFactor = when (point.positionSource.lowercase(Locale.ROOT)) {
                 "manual-edit" -> 1.2
-                "wigle-import" -> 0.85
+                "wigle-import", "neostumbler-import" -> 0.85
                 "strongest-signal-sample" -> 0.95
                 else -> 1.0
             }
@@ -2453,6 +2456,225 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         return RadioImportResult(importedObservations, touched.size, newRadios, "WiGLE CSV", sourceId)
     }
 
+
+    /**
+     * Imports either a WiGLE CSV (optionally gzipped) or NeoStumbler's native CSV export.
+     * NeoStumbler exports a ZIP containing wifis.csv, cells.csv and/or beacons.csv.
+     * A single one of those CSV files can also be imported directly.
+     */
+    fun importRadioCsv(input: InputStream): RadioImportResult {
+        val raw = input.use { readBounded(it, MAX_IMPORT_BYTES) }
+        if (raw.size >= 4 && raw[0] == 0x50.toByte() && raw[1] == 0x4b.toByte() &&
+            (raw[2] == 0x03.toByte() || raw[2] == 0x05.toByte() || raw[2] == 0x07.toByte())) {
+            val entries = readNeoStumblerZip(raw)
+            return importNeoStumblerCsvFiles(entries, "neostumbler-zip:" + sha256(raw))
+        }
+
+        val decoded = if (raw.size >= 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
+            GZIPInputStream(ByteArrayInputStream(raw)).use { readBounded(it, MAX_IMPORT_BYTES) }
+        } else raw
+        val csvText = String(decoded, Charsets.UTF_8).removePrefix("\uFEFF")
+        val rows = parseCsv(csvText)
+        val header = rows.firstOrNull().orEmpty().map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
+        val neoFileName = when {
+            "macaddress" in header && "beacontype" in header -> "beacons.csv"
+            "cellid" in header && "radiotype" in header && "mcc" in header -> "cells.csv"
+            "macaddress" in header && "ssid" in header -> "wifis.csv"
+            else -> null
+        }
+        return if (neoFileName != null) {
+            importNeoStumblerCsvFiles(mapOf(neoFileName to decoded), "neostumbler-csv:" + sha256(decoded))
+        } else {
+            importWigleCsv(ByteArrayInputStream(raw))
+        }
+    }
+
+    private fun readNeoStumblerZip(raw: ByteArray): Map<String, ByteArray> {
+        val supported = setOf("wifis.csv", "cells.csv", "beacons.csv")
+        val entries = LinkedHashMap<String, ByteArray>()
+        var totalBytes = 0
+        ZipInputStream(ByteArrayInputStream(raw)).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (!entry.isDirectory) {
+                    val name = entry.name.substringAfterLast('/').lowercase(Locale.ROOT)
+                    val bytes = readBounded(zip, (MAX_IMPORT_BYTES - totalBytes).coerceAtLeast(0))
+                    totalBytes += bytes.size
+                    if (totalBytes > MAX_IMPORT_BYTES) {
+                        throw IllegalArgumentException("Распакованный NeoStumbler CSV больше 32 МБ.")
+                    }
+                    if (name in supported) {
+                        if (entries.put(name, bytes) != null) {
+                            throw IllegalArgumentException("В NeoStumbler ZIP повторяется файл $name.")
+                        }
+                    }
+                }
+                zip.closeEntry()
+            }
+        }
+        if (entries.isEmpty()) {
+            throw IllegalArgumentException("В архиве NeoStumbler не найдены wifis.csv, cells.csv или beacons.csv.")
+        }
+        return entries
+    }
+
+    private data class NeoStumblerImportRow(
+        val type: String,
+        val identifier: String,
+        val label: String,
+        val latitude: Double?,
+        val longitude: Double?,
+        val accuracy: Double?,
+        val rssi: Int,
+        val frequency: Int,
+        val observedAt: Long
+    )
+
+    private fun importNeoStumblerCsvFiles(
+        files: Map<String, ByteArray>,
+        fingerprint: String
+    ): RadioImportResult {
+        val parsed = ArrayList<NeoStumblerImportRow>()
+        files.forEach { (fileName, bytes) ->
+            val rows = parseCsv(String(bytes, Charsets.UTF_8).removePrefix("\uFEFF"))
+            val header = rows.firstOrNull()?.mapIndexed { index, value ->
+                value.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) to index
+            }?.toMap() ?: emptyMap()
+            fun field(row: List<String>, key: String): String =
+                header[key]?.let { row.getOrNull(it).orEmpty().trim() }.orEmpty()
+            val required = when (fileName) {
+                "wifis.csv" -> setOf("timestamp", "macaddress", "ssid", "latitude", "longitude")
+                "beacons.csv" -> setOf("timestamp", "macaddress", "beacontype", "latitude", "longitude")
+                "cells.csv" -> setOf("timestamp", "cellid", "radiotype", "mcc", "mnc", "lac", "latitude", "longitude")
+                else -> emptySet()
+            }
+            if (required.isEmpty() || !header.keys.containsAll(required)) {
+                throw IllegalArgumentException("Файл $fileName не соответствует формату NeoStumbler CSV.")
+            }
+            rows.drop(1).forEach { row ->
+                val reportTime = parseNeoStumblerTimestamp(field(row, "timestamp")) ?: return@forEach
+                val latitudeText = field(row, "latitude")
+                val longitudeText = field(row, "longitude")
+                val hasNoCoordinates = latitudeText.isBlank() && longitudeText.isBlank()
+                val latitude = latitudeText.toDoubleOrNull()
+                val longitude = longitudeText.toDoubleOrNull()
+                if (!hasNoCoordinates && !validCoordinates(latitude, longitude)) return@forEach
+                val accuracy = field(row, "locationaccuracy").toDoubleOrNull()
+                    ?.takeIf { it.isFinite() && it > 0.0 }?.coerceAtMost(100_000.0)
+                    ?: DEFAULT_IMPORTED_ACCURACY_METERS
+                val rssi = field(row, "signalstrength").toIntOrNull()?.coerceIn(-120, 0) ?: -100
+                val ageKey = when (fileName) {
+                    "wifis.csv" -> "wifiscanage"
+                    "beacons.csv" -> "bluetoothscanage"
+                    else -> "cellscanage"
+                }
+                val age = field(row, ageKey).toLongOrNull()?.coerceIn(0L, MAX_IMPORTED_RADIO_AGE_MS) ?: 0L
+                val observedAt = (reportTime - age).coerceAtLeast(0L)
+                val (type, identifier, label, frequency) = when (fileName) {
+                    "wifis.csv" -> {
+                        val mac = canonicalIdentifier(field(row, "macaddress"))
+                        if (!mac.matches(Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) return@forEach
+                        Quadruple("wifi", mac, field(row, "ssid").take(100), field(row, "frequency").toIntOrNull()?.coerceIn(0, 100_000) ?: 0)
+                    }
+                    "beacons.csv" -> {
+                        val mac = canonicalIdentifier(field(row, "macaddress"))
+                        if (!mac.matches(Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))) return@forEach
+                        Quadruple("ble", mac, "NeoStumbler BLE beacon", 0)
+                    }
+                    else -> {
+                        val radio = field(row, "radiotype").lowercase(Locale.ROOT).let {
+                            when (it) { "umts" -> "wcdma"; else -> it }
+                        }
+                        val mcc = field(row, "mcc").toIntOrNull()
+                        val mnc = field(row, "mnc").toIntOrNull()
+                        val area = field(row, "lac").toIntOrNull()
+                        val cellId = field(row, "cellid").toLongOrNull()
+                        if (radio !in setOf("gsm", "wcdma", "lte", "nr") ||
+                            mcc == null || mcc !in 1..999 || mnc == null || mnc !in 0..999 ||
+                            area == null || area < 0 || cellId == null || cellId <= 0L ||
+                            (radio != "nr" && cellId > Int.MAX_VALUE.toLong())) return@forEach
+                        Quadruple("cell", "$radio:$mcc:$mnc:$area:$cellId", "NeoStumbler $radio cell", 0)
+                    }
+                }
+                parsed.add(
+                    NeoStumblerImportRow(
+                        type, identifier, label,
+                        if (hasNoCoordinates) null else latitude,
+                        if (hasNoCoordinates) null else longitude,
+                        if (hasNoCoordinates) null else accuracy,
+                        rssi, frequency, observedAt
+                    )
+                )
+            }
+        }
+        if (parsed.isEmpty()) {
+            throw IllegalArgumentException("В NeoStumbler CSV нет корректных наблюдений с идентификаторами радио.")
+        }
+
+        val db = writableDatabase
+        val importTime = System.currentTimeMillis()
+        var sourceId = 0L
+        var importedObservations = 0
+        var newRadios = 0
+        val touched = LinkedHashSet<String>()
+        db.beginTransaction()
+        try {
+            clearAllRadioDeletionUndo(db)
+            sourceId = createOrGetImportedSource(
+                db, "custom", "NeoStumbler CSV", fingerprint, importTime
+            )
+            parsed.forEach { item ->
+                touched.add(item.type + "|" + item.identifier)
+                val inserted = insertObservationIfAbsent(
+                    db, item.type, item.identifier, item.observedAt,
+                    item.latitude, item.longitude, item.accuracy,
+                    item.rssi, item.frequency, "neostumbler-import", sourceId
+                )
+                val summaryMissing = findPoint(db, item.type, item.identifier) == null
+                if (inserted || summaryMissing) {
+                    if (upsertImportedPoint(
+                            db, item.type, item.identifier, item.label,
+                            item.latitude, item.longitude, item.accuracy,
+                            item.rssi, item.frequency, item.observedAt,
+                            "neostumbler-import", sourceId
+                        )
+                    ) newRadios++
+                }
+                if (inserted) importedObservations++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        pruneToObservationLimit(observationRetentionLimit())
+        val format = if (files.size > 1 || fingerprint.startsWith("neostumbler-zip:")) {
+            "NeoStumbler CSV (ZIP)"
+        } else {
+            "NeoStumbler CSV"
+        }
+        return RadioImportResult(importedObservations, touched.size, newRadios, format, sourceId)
+    }
+
+    private fun parseNeoStumblerTimestamp(value: String): Long? {
+        if (value.isBlank()) return null
+        value.toLongOrNull()?.let { raw ->
+            return if (raw in 1_000_000_000L..99_999_999_999L) raw * 1_000L else raw
+        }
+        return try {
+            Instant.parse(value).toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                OffsetDateTime.parse(value).toInstant().toEpochMilli()
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private data class Quadruple<A, B, C, D>(
+        val first: A, val second: B, val third: C, val fourth: D
+    )
+
     /**
      * Accepts a Clear GPS backup or a native WiGLE SQLite database (network/location).
      * Source content is only read; importing merges records and never replaces local data.
@@ -2900,7 +3122,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             val oldAccuracy = old.accuracyMeters
             val improvesPosition = validPosition && old.positionSource != "manual-edit" &&
                 (old.latitude == null || old.longitude == null ||
-                    (source.startsWith("wigle") &&
+                    ( (source.startsWith("wigle") || source == "neostumbler-import") &&
                         (rssi > old.peakRssi || (accuracy != null && (oldAccuracy == null || accuracy < oldAccuracy)))))
             if (improvesPosition) {
                 put("latitude", latitude); put("longitude", longitude); put("accuracy", accuracy)
@@ -3091,7 +3313,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     private fun shouldReplacePosition(old: RadioPointRecord, reference: RadioReference, signal: RadioSignal): Boolean {
         // Do not move manually pinned coordinates or trusted imported WiGLE coordinates.
-        if (old.positionSource == "manual-edit" || old.positionSource == "wigle-import") return false
+        if (old.positionSource == "manual-edit" || old.positionSource == "wigle-import" ||
+            old.positionSource == "neostumbler-import") return false
         if (reference.accuracyMeters !in 1.0..MAX_SIGNAL_SAMPLE_ACCURACY_METERS) return false
         if (old.latitude == null || old.longitude == null) return true
         val accuracy = old.accuracyMeters
@@ -3168,6 +3391,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         private const val MAX_FINGERPRINT_KEYS = 80
         private const val MAX_FINGERPRINT_SCANS = 250
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024
+        private const val MAX_IMPORTED_RADIO_AGE_MS = 365L * 24 * 60 * 60 * 1_000L
         private const val MAX_SQLITE_IMPORT_BYTES = 128 * 1024 * 1024
         private val VALID_TYPES = setOf("wifi", "ble", "cell")
         private val UTC_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply {

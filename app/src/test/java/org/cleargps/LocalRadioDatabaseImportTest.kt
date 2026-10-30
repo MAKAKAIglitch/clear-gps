@@ -16,7 +16,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -206,6 +209,64 @@ class LocalRadioDatabaseImportTest {
             File(unsupportedFile.absolutePath + "-wal").delete()
             File(unsupportedFile.absolutePath + "-shm").delete()
         }
+    }
+
+
+    @Test
+    fun importsNeoStumblerZipWithWifiCellsAndBluetoothAndReusesSource() {
+        val archive = neoStumblerZip(
+            "wifis.csv" to (
+                "timestamp,latitude,longitude,locationAccuracy,macAddress,frequency,signalStrength,ssid,wifiScanAge\n" +
+                    "2026-01-02T03:04:05Z,52.274,40.452,8.5,aa:bb:cc:dd:ee:01,2412,-55,Home,1200\n"
+                ).toByteArray(),
+            "cells.csv" to (
+                "timestamp,latitude,longitude,locationAccuracy,cellId,radioType,mcc,mnc,lac,psc,signalStrength,asu,arfcn,cellScanAge\n" +
+                    "2026-01-02T03:04:05Z,52.275,40.453,35,456789,lte,262,01,123,, -91,15,1300,2500\n"
+                ).toByteArray(),
+            "beacons.csv" to (
+                "timestamp,latitude,longitude,locationAccuracy,macAddress,beaconType,id1,id2,id3,bluetoothScanAge,signalStrength\n" +
+                    "2026-01-02T03:04:05Z,52.276,40.454,10,aa:bb:cc:dd:ee:03, iBeacon,uuid,1,2,500,-63\n"
+                ).toByteArray()
+        )
+
+        val first = database.importRadioCsv(ByteArrayInputStream(archive))
+        val second = database.importRadioCsv(ByteArrayInputStream(archive))
+
+        assertEquals("NeoStumbler CSV (ZIP)", first.format)
+        assertEquals(3, first.observationsImported)
+        assertEquals(3, first.uniqueRadios)
+        assertEquals(0, second.observationsImported)
+        assertEquals(first.sourceId, second.sourceId)
+        assertEquals(1, countRows("radio_sources", "kind = ? AND name = ?", "custom", "NeoStumbler CSV"))
+        assertEquals(1, countRows("radio_observations", "radio_type = ?", "wifi"))
+        assertEquals(1, countRows("radio_observations", "radio_type = ?", "cell"))
+        assertEquals(1, countRows("radio_observations", "radio_type = ?", "ble"))
+        assertEquals(1, countRows("radio_points", "identifier = ?", "lte:262:1:123:456789"))
+        assertEquals("neostumbler-import", readPointPositionSource("aa:bb:cc:dd:ee:01"))
+    }
+
+    @Test
+    fun importsStandaloneNeoStumblerWifiCsv() {
+        val csv = (
+            "timestamp,latitude,longitude,locationAccuracy,macAddress,frequency,signalStrength,ssid,wifiScanAge\n" +
+                "2026-01-02T03:04:05Z,52.274,40.452,8.5,aa:bb:cc:dd:ee:11,5180,-48,Office,1000\n"
+            )
+        val result = database.importRadioCsv(ByteArrayInputStream(csv.toByteArray(Charsets.UTF_8)))
+        assertEquals("NeoStumbler CSV", result.format)
+        assertEquals(1, result.observationsImported)
+        assertEquals(1, countRows("radio_points", "radio_type = ? AND identifier = ?", "wifi", "aa:bb:cc:dd:ee:11"))
+    }
+
+    private fun neoStumblerZip(vararg entries: Pair<String, ByteArray>): ByteArray {
+        val output = ByteArrayOutputStream()
+        ZipOutputStream(output).use { zip ->
+            entries.forEach { (name, bytes) ->
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+        }
+        return output.toByteArray()
     }
 
     private data class Seed(val sourceId: Long, val dayKey: String, val observationId: Long)

@@ -1312,7 +1312,7 @@ fun ClearGpsApp(
                     buffered.reset()
                     val isSqlite = signatureBytes == 16 &&
                         String(signature, Charsets.US_ASCII).startsWith("SQLite format 3\u0000")
-                    if (isSqlite) database.importSqliteDatabase(buffered) else database.importWigleCsv(buffered)
+                    if (isSqlite) database.importSqliteDatabase(buffered) else database.importRadioCsv(buffered)
                 }
                 refreshLocalUi()
                 Toast.makeText(
