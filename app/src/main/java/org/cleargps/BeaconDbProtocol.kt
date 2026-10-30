@@ -236,11 +236,11 @@ internal object BeaconDbProtocol {
         val canonical = buildString {
             append("beacondb-auto-identities-v1\\n")
             append("cells\\n")
-            normalized.cells.forEach { append(it.identifier).append('\\n') }
+            normalized.cells.forEach { append(it.identifier).append('\n') }
             append("wifi\\n")
-            normalized.wifiAccessPoints.forEach { append(it.identifier).append('\\n') }
+            normalized.wifiAccessPoints.forEach { append(it.identifier).append('\n') }
             append("ble\\n")
-            normalized.bluetoothBeacons.forEach { append(it.identifier).append('\\n') }
+            normalized.bluetoothBeacons.forEach { append(it.identifier).append('\n') }
         }
         return java.security.MessageDigest.getInstance("SHA-256")
             .digest(canonical.toByteArray(Charsets.UTF_8))
