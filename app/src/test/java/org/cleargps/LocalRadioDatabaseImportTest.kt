@@ -257,6 +257,54 @@ class LocalRadioDatabaseImportTest {
         assertEquals(1, countRows("radio_points", "radio_type = ? AND identifier = ?", "wifi", "aa:bb:cc:dd:ee:11"))
     }
 
+    @Test
+    fun mapPointQueryIncludesPointsBeyondThePreviousMarkerLimit() {
+        val now = System.currentTimeMillis()
+        sqlite.beginTransaction()
+        try {
+            repeat(1_700) { index ->
+                val identifier = index.toString(16).padStart(12, '0').chunked(2).joinToString(":")
+                sqlite.insertOrThrow(
+                    "radio_points",
+                    null,
+                    ContentValues().apply {
+                        put("radio_type", "wifi")
+                        put("identifier", identifier)
+                        put("label", "map test")
+                        put("ssid", "map test")
+                        put("notes", "")
+                        put("latitude", 52.0 + index / 1_000_000.0)
+                        put("longitude", 5.0)
+                        put("accuracy", 10.0)
+                        put("last_rssi", -55)
+                        put("peak_rssi", -50)
+                        put("frequency", 2412)
+                        put("first_seen", now)
+                        put("last_seen", now - index)
+                        put("sightings", 1)
+                        put("position_source", "test")
+                    }
+                )
+            }
+            sqlite.setTransactionSuccessful()
+        } finally {
+            sqlite.endTransaction()
+        }
+
+        assertEquals(1_700, database.listMapPoints().size)
+        val indexExists = sqlite.rawQuery("PRAGMA index_list('radio_observations')", null).use { cursor ->
+            var found = false
+            while (cursor.moveToNext()) {
+                if (cursor.getString(cursor.getColumnIndexOrThrow("name")) == "radio_obs_import_dedupe") {
+                    found = true
+                    break
+                }
+            }
+            found
+        }
+        assertTrue("Observation duplicate lookup index must be present", indexExists)
+    }
+
     private fun neoStumblerZip(vararg entries: Pair<String, ByteArray>): ByteArray {
         val output = ByteArrayOutputStream()
         ZipOutputStream(output).use { zip ->

@@ -6365,7 +6365,7 @@ private fun effectiveScanIntervalSeconds(
 
 private fun recommendedMapPointLimit(context: Context): Int {
     val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
-    return if (activityManager?.isLowRamDevice == true || Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 400 else 2_500
+    return if (activityManager?.isLowRamDevice == true || Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 5_000 else 20_000
 }
 
 private fun currentReference(location: Location?, anchor: ManualAnchor?): RadioReference? {

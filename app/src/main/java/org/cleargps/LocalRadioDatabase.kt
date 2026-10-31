@@ -748,6 +748,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         db.execSQL("CREATE INDEX radio_obs_time ON radio_observations(observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
+        db.execSQL("CREATE INDEX radio_obs_import_dedupe ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         db.execSQL("""
             CREATE TABLE scan_history (
@@ -829,6 +830,11 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         if (oldVersion < 10) {
             // Isolated catalogue: tower coordinates must not become handset fingerprints.
             createOpenCellIdCellsTable(db)
+        }
+        if (oldVersion < 11) {
+            // Speeds up the exact duplicate check performed for each imported observation.
+            db.execSQL("CREATE INDEX IF NOT EXISTS radio_obs_import_dedupe " +
+                "ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         }
     }
 
@@ -2149,13 +2155,13 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     }
 
     /** Fetch geolocated points only; unlocated rows cannot consume the map marker limit. */
-    fun listMapPoints(limit: Int = 1_500): List<RadioPointRecord> {
+    fun listMapPoints(limit: Int = 20_000): List<RadioPointRecord> {
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
             "SELECT * FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
                 "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 " +
                 "ORDER BY last_seen DESC LIMIT ?",
-            arrayOf(limit.coerceIn(1, 4_000).toString())
+            arrayOf(limit.coerceIn(1, 20_000).toString())
         ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
         return result
     }
@@ -2437,14 +2443,15 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 )
                 // A stale/manual deletion may have removed the summary row while leaving history.
                 // Re-create that summary on a duplicate import, but don't increment sightings twice.
-                val summaryMissing = findPoint(db, type, identifier) == null
-                if (newObservation || summaryMissing) {
-                    if (upsertImportedPoint(
-                            db, type, identifier, ssid, coordinateLat, coordinateLon,
-                            if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import", sourceId
-                        )
-                    ) newRadios++
-                }
+                // A duplicate observation can outlive its summary row after manual deletion.
+                // Only check the summary separately when the observation itself was already present;
+                // upsertImportedPoint performs its own lookup for newly inserted observations.
+                val needsSummary = newObservation || findPoint(db, type, identifier) == null
+                if (needsSummary && upsertImportedPoint(
+                        db, type, identifier, ssid, coordinateLat, coordinateLon,
+                        if (coordinateLat != null) accuracy else null, rssi, frequency, observedAt, "wigle-import", sourceId
+                    )
+                ) newRadios++
                 if (newObservation) importedObservations++
             }
             if (validRows == 0) throw IllegalArgumentException("В CSV нет корректных строк с MAC/BSSID.")
@@ -2630,16 +2637,14 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                     item.latitude, item.longitude, item.accuracy,
                     item.rssi, item.frequency, "neostumbler-import", sourceId
                 )
-                val summaryMissing = findPoint(db, item.type, item.identifier) == null
-                if (inserted || summaryMissing) {
-                    if (upsertImportedPoint(
-                            db, item.type, item.identifier, item.label,
-                            item.latitude, item.longitude, item.accuracy,
-                            item.rssi, item.frequency, item.observedAt,
-                            "neostumbler-import", sourceId
-                        )
-                    ) newRadios++
-                }
+                val needsSummary = inserted || findPoint(db, item.type, item.identifier) == null
+                if (needsSummary && upsertImportedPoint(
+                        db, item.type, item.identifier, item.label,
+                        item.latitude, item.longitude, item.accuracy,
+                        item.rssi, item.frequency, item.observedAt,
+                        "neostumbler-import", sourceId
+                    )
+                ) newRadios++
                 if (inserted) importedObservations++
             }
             db.setTransactionSuccessful()
@@ -3295,7 +3300,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     private fun findPoint(db: SQLiteDatabase, type: String, identifier: String): RadioPointRecord? {
         val canonical = canonicalIdentifier(identifier)
         val exact = db.rawQuery(
-            "SELECT * FROM radio_points WHERE radio_type = ? AND lower(identifier) = ? LIMIT 1",
+            "SELECT * FROM radio_points WHERE radio_type = ? AND identifier = ? LIMIT 1",
             arrayOf(type, canonical)
         ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
         if (exact != null) return exact
@@ -3381,7 +3386,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 10
+        private const val DB_VERSION = 11
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0

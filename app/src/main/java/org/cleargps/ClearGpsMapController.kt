@@ -18,7 +18,10 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -81,7 +84,7 @@ class ClearGpsMapController {
         offlineMode = initialOfflineMode
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         maxRadioPoints = if (activityManager?.isLowRamDevice == true ||
-            Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 400 else MAX_MAP_RADIO_POINTS
+            Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 5_000 else MAX_MAP_RADIO_POINTS
         mapView.getMapAsync { mapObject ->
             if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
@@ -90,16 +93,40 @@ class ClearGpsMapController {
                 if (tapMode != MapTapMode.NONE) {
                     onMapTap?.invoke(point.latitude, point.longitude) ?: false
                 } else {
-                    val hit = try {
-                        mapObject.queryRenderedFeatures(
-                            mapObject.projection.toScreenLocation(point),
-                            WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER
-                        ).firstNotNullOfOrNull { feature -> feature.getStringProperty("pointId")?.toLongOrNull() }
-                    } catch (_: Exception) { null }
-                    if (hit != null) {
-                        onRadioPointTap?.invoke(hit)
+                    val screenPoint = mapObject.projection.toScreenLocation(point)
+                    fun expandCluster(source: GeoJsonSource?, layerId: String): Boolean {
+                        val cluster = try {
+                            mapObject.queryRenderedFeatures(screenPoint, layerId).firstOrNull()
+                        } catch (_: Exception) { null } ?: return false
+                        val expansionZoom = try {
+                            source?.getClusterExpansionZoom(cluster)
+                        } catch (_: Exception) { null } ?: return false
+                        mapObject.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(
+                                point,
+                                (expansionZoom.toDouble() + 0.5).coerceAtMost(20.0)
+                            )
+                        )
+                        return true
+                    }
+                    val clusterExpanded =
+                        expandCluster(wifiPointsSource, WIFI_CLUSTERS_LAYER) ||
+                        expandCluster(cellPointsSource, CELL_CLUSTERS_LAYER) ||
+                        expandCluster(blePointsSource, BLE_CLUSTERS_LAYER)
+                    if (clusterExpanded) {
                         true
-                    } else false
+                    } else {
+                        val hit = try {
+                            mapObject.queryRenderedFeatures(
+                                screenPoint,
+                                WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER
+                            ).firstNotNullOfOrNull { feature -> feature.getStringProperty("pointId")?.toLongOrNull() }
+                        } catch (_: Exception) { null }
+                        if (hit != null) {
+                            onRadioPointTap?.invoke(hit)
+                            true
+                        } else false
+                    }
                 }
             }
             mapClickListener = clickListener
@@ -434,9 +461,13 @@ class ClearGpsMapController {
         polygonSource = GeoJsonSource(POLYGON_SOURCE, emptyCollection())
         lineSource = GeoJsonSource(LINE_SOURCE, emptyCollection())
         zonePointsSource = GeoJsonSource(ZONE_POINTS_SOURCE, emptyCollection())
-        wifiPointsSource = GeoJsonSource(WIFI_POINTS_SOURCE, emptyCollection())
-        cellPointsSource = GeoJsonSource(CELL_POINTS_SOURCE, emptyCollection())
-        blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection())
+        val pointSourceOptions = GeoJsonOptions()
+            .withCluster(true)
+            .withClusterMaxZoom(14)
+            .withClusterRadius(48)
+        wifiPointsSource = GeoJsonSource(WIFI_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
+        cellPointsSource = GeoJsonSource(CELL_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
+        blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
         listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
             wifiPointsSource, cellPointsSource, blePointsSource).forEach { style.addSource(it!!) }
 
@@ -453,15 +484,44 @@ class ClearGpsMapController {
         style.addLayer(CircleLayer(WIFI_POINTS_LAYER, WIFI_POINTS_SOURCE).withProperties(
             PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#16A34A"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
-        ))
+        ).withFilter(Expression.neq(Expression.get("cluster"), true)))
         style.addLayer(CircleLayer(CELL_POINTS_LAYER, CELL_POINTS_SOURCE).withProperties(
             PropertyFactory.circleRadius(7f), PropertyFactory.circleColor("#A855F7"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
-        ))
+        ).withFilter(Expression.neq(Expression.get("cluster"), true)))
         style.addLayer(CircleLayer(BLE_POINTS_LAYER, BLE_POINTS_SOURCE).withProperties(
             PropertyFactory.circleRadius(6f), PropertyFactory.circleColor("#F59E0B"),
             PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f), PropertyFactory.circleOpacity(0.95f)
-        ))
+        ).withFilter(Expression.neq(Expression.get("cluster"), true)))
+
+        style.addLayer(CircleLayer(WIFI_CLUSTERS_LAYER, WIFI_POINTS_SOURCE).withProperties(
+            PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#16A34A"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2f), PropertyFactory.circleOpacity(0.98f)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(CircleLayer(CELL_CLUSTERS_LAYER, CELL_POINTS_SOURCE).withProperties(
+            PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#A855F7"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2f), PropertyFactory.circleOpacity(0.98f)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(CircleLayer(BLE_CLUSTERS_LAYER, BLE_POINTS_SOURCE).withProperties(
+            PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#F59E0B"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2f), PropertyFactory.circleOpacity(0.98f)
+        ).withFilter(Expression.has("point_count")))
+
+        style.addLayer(SymbolLayer(WIFI_CLUSTER_COUNT_LAYER, WIFI_POINTS_SOURCE).withProperties(
+            PropertyFactory.textField("{point_count_abbreviated}"), PropertyFactory.textSize(10f),
+            PropertyFactory.textColor("#FFFFFF"), PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(SymbolLayer(CELL_CLUSTER_COUNT_LAYER, CELL_POINTS_SOURCE).withProperties(
+            PropertyFactory.textField("{point_count_abbreviated}"), PropertyFactory.textSize(10f),
+            PropertyFactory.textColor("#FFFFFF"), PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(SymbolLayer(BLE_CLUSTER_COUNT_LAYER, BLE_POINTS_SOURCE).withProperties(
+            PropertyFactory.textField("{point_count_abbreviated}"), PropertyFactory.textSize(10f),
+            PropertyFactory.textColor("#FFFFFF"), PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        ).withFilter(Expression.has("point_count")))
         style.addLayer(CircleLayer(ANCHOR_HALO_LAYER, ANCHOR_SOURCE).withProperties(
             PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#F9AB00"), PropertyFactory.circleOpacity(0.22f)
         ))
@@ -615,7 +675,13 @@ class ClearGpsMapController {
     private fun emptyCollection() = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     companion object {
-        private const val MAX_MAP_RADIO_POINTS = 1_500
+        private const val MAX_MAP_RADIO_POINTS = 20_000
+        private const val WIFI_CLUSTERS_LAYER = "cleargps-wifi-clusters-layer"
+        private const val CELL_CLUSTERS_LAYER = "cleargps-cell-clusters-layer"
+        private const val BLE_CLUSTERS_LAYER = "cleargps-ble-clusters-layer"
+        private const val WIFI_CLUSTER_COUNT_LAYER = "cleargps-wifi-cluster-count-layer"
+        private const val CELL_CLUSTER_COUNT_LAYER = "cleargps-cell-cluster-count-layer"
+        private const val BLE_CLUSTER_COUNT_LAYER = "cleargps-ble-cluster-count-layer"
         private const val EARTH_RADIUS_METERS = 6_371_000.0
         private const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
         private const val ACCURACY_RING_SEGMENTS = 64
