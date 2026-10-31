@@ -163,10 +163,11 @@ import kotlin.math.roundToInt
 
 private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY, SOURCES }
+private const val RADIO_POINT_LIST_LIMIT = 5_000
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
-    BEACONDB("beacondb", "BeaconDB · вышки"),
-    OPENCELLID("opencellid", "OpenCellID")
+    BEACONDB("beacondb", "BeaconDB · оценка"),
+    OPENCELLID("opencellid", "OpenCellID · соты")
 }
 private enum class RadioPointTypeFilter(val title: String, val type: String?) {
     ALL("Все", null),
@@ -285,6 +286,8 @@ fun ClearGpsApp(
     val prefs = remember { context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE) }
     val repository = remember { RadioGeolocationRepository(context.applicationContext) }
     val database = remember { LocalRadioDatabase(context.applicationContext) }
+    val radioRepository = remember { RadioRepository(database) }
+    val initialRadioPointCounts = remember { radioRepository.pointCounts() }
     val mapController = remember { ClearGpsMapController() }
     val obd2Repository = remember { Obd2Repository(context.applicationContext) }
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
@@ -352,7 +355,7 @@ fun ClearGpsApp(
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
-    var points by remember { mutableStateOf(database.listPoints(500)) }
+    var points by remember { mutableStateOf(radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT)) }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
@@ -362,14 +365,14 @@ fun ClearGpsApp(
             )
         )
     }
-    var geolocatedMapPointCount by remember { mutableStateOf(database.mapPointCount()) }
+    var geolocatedMapPointCount by remember { mutableStateOf(initialRadioPointCounts.geolocated) }
     var mapPointsLoading by remember { mutableStateOf(false) }
     var mapPointsLoadJob by remember { mutableStateOf<Job?>(null) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var radioSources by remember { mutableStateOf(database.listRadioSources()) }
     var sourceDaysBySource by remember { mutableStateOf(database.listRadioSourceDays().groupBy { it.sourceId }) }
     var sourceSegmentsBySource by remember { mutableStateOf(database.listRadioSourceSegments().groupBy { it.sourceId }) }
-    var pointCount by remember { mutableStateOf(database.pointCount()) }
+    var pointCount by remember { mutableStateOf(initialRadioPointCounts.total) }
     var observationCount by remember { mutableStateOf(database.observationCount()) }
     var observationRetentionLimit by remember { mutableStateOf(database.observationRetentionLimit()) }
     var retentionLimitUpdating by remember { mutableStateOf(false) }
@@ -517,7 +520,7 @@ fun ClearGpsApp(
     // have left the composition by the time an asynchronous scan returns.
     suspend fun refreshMapPointsInCurrentCoroutine(limit: Int = mapPointLimit) {
         val loaded = withContext(Dispatchers.IO) {
-            database.listMapPoints(limit) to database.mapPointCount()
+            radioRepository.loadMapPoints(limit) to radioRepository.pointCounts().geolocated
         }
         if (limit == mapPointLimit) {
             mapPoints = loaded.first
@@ -550,14 +553,14 @@ fun ClearGpsApp(
     suspend fun refreshLocalUiInCurrentCoroutine() {
         val query = searchQuery
         points = withContext(Dispatchers.IO) {
-            if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
+            if (query.isBlank()) radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT) else radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT)
         }
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
         sourceSegmentsBySource = withContext(Dispatchers.IO) { database.listRadioSourceSegments().groupBy { it.sourceId } }
-        pointCount = withContext(Dispatchers.IO) { database.pointCount() }
+        pointCount = withContext(Dispatchers.IO) { radioRepository.pointCounts().total }
         observationCount = withContext(Dispatchers.IO) { database.observationCount() }
         zones = ZoneStore.loadAll(context)
     }
@@ -2539,6 +2542,8 @@ fun ClearGpsApp(
                                     points = points, history = history, sources = radioSources, sourceDaysBySource = sourceDaysBySource,
                                     sourceSegmentsBySource = sourceSegmentsBySource,
                                     pointCount = pointCount, observationCount = observationCount,
+                                    mapPointLoadedCount = mapPoints.size,
+                                    geolocatedPointCount = geolocatedMapPointCount,
                                     onSetSourceEnabled = { source, enabled ->
                                         scope.launch {
                                             try {
@@ -2706,7 +2711,7 @@ fun ClearGpsApp(
                                         searchQuery = query
                                         scope.launch {
                                             points = withContext(Dispatchers.IO) {
-                                                if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
+                                                if (query.isBlank()) radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT) else radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT)
                                             }
                                         }
                                     },
@@ -4156,6 +4161,7 @@ private fun MapHomeScreen(
 @Composable
 private fun DatabaseScreen(
     points: List<RadioPointRecord>, history: List<RadioScanHistoryItem>, pointCount: Int, observationCount: Int,
+    mapPointLoadedCount: Int, geolocatedPointCount: Int,
     observationRetentionLimit: Int, retentionLimitUpdating: Boolean, onObservationRetentionLimit: (Int) -> Unit,
     searchQuery: String, onSearch: (String) -> Unit,
     sources: List<RadioSourceRecord>,
@@ -4271,6 +4277,14 @@ private fun DatabaseScreen(
                 Text("Локальная база", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(pointCount.toString() + " точек · " + observationCount + " наблюдений",
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                Text(
+                    "Загружено в список: " + points.size + " из " + pointCount +
+                        "; отображается после фильтра: " + filteredPoints.size +
+                        ". На карте загружено " + mapPointLoadedCount + " из " + geolocatedPointCount +
+                        " точек с координатами. Точки без координат остаются в базе, но не отображаются маркерами.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
             }
             IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Обновить список") }
         }
@@ -4819,7 +4833,7 @@ private fun OpenCellIdDatabaseContent(
                 Text("OpenCellID · примерные координаты сотовых ячеек",
                     fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Отдельный read-only поиск по текущим GSM/UMTS/LTE/NR ячейкам Android. OpenCellID возвращает расчётное положение ячейки по наблюдениям сообщества; оно может отличаться от физического места антенны и не является координатой телефона. Wi-Fi/BSSID, BLE, GPS-координаты и история сюда не отправляются.",
+                    "Здесь показан отдельный каталог примерных координат сотовых ячеек, а не список BLE/Wi-Fi-точек карты. Read-only поиск выполняется по текущим GSM/UMTS/LTE/NR ячейкам Android. OpenCellID возвращает расчётное положение ячейки по наблюдениям сообщества; оно может отличаться от физического места антенны и не является координатой телефона. Wi-Fi/BSSID, BLE, GPS-координаты и история сюда не отправляются.",
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
                 )
             }
@@ -4959,10 +4973,10 @@ private fun BeaconDbDatabaseContent(
     Column(modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("BeaconDB · Wi-Fi, BLE и сотовые вышки", fontWeight = FontWeight.SemiBold,
+                Text("BeaconDB · оценка положения", fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Это не выгрузка всей базы: публичного дампа BeaconDB нет. Ручной запрос оценивает положение по видимым Wi-Fi BSSID, стабильным BLE-маякам и поддерживаемым сотовым ячейкам. SSID, имена Bluetooth и рекламные payload не отправляются; локальная SQLite-база не меняется.",
+                    "Здесь показывается одна оценка координат для текущего радиоснимка, а не список отдельных Wi-Fi/BLE-точек или копия базы BeaconDB. Ручной запрос оценивает положение по видимым Wi-Fi BSSID, стабильным BLE-маякам и поддерживаемым сотовым ячейкам. SSID, имена Bluetooth и рекламные payload не отправляются; локальная SQLite-база не меняется.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )

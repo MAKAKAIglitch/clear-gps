@@ -258,8 +258,9 @@ class LocalRadioDatabaseImportTest {
     }
 
     @Test
-    fun mapPointQueryIncludesPointsBeyondThePreviousMarkerLimit() {
+    fun localListAndMapUseTheSameDatasetWithCoordinateFilteringOnly() {
         val now = System.currentTimeMillis()
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
         sqlite.beginTransaction()
         try {
             repeat(1_700) { index ->
@@ -286,12 +287,44 @@ class LocalRadioDatabaseImportTest {
                     }
                 )
             }
+            sqlite.insertOrThrow(
+                "radio_points",
+                null,
+                ContentValues().apply {
+                    put("radio_type", "ble")
+                    put("identifier", "aa:bb:cc:dd:ee:ff")
+                    put("label", "unlocated BLE")
+                    put("ssid", "")
+                    put("notes", "")
+                    putNull("latitude")
+                    putNull("longitude")
+                    putNull("accuracy")
+                    put("last_rssi", -60)
+                    put("peak_rssi", -55)
+                    put("frequency", 0)
+                    put("first_seen", now)
+                    put("last_seen", now + 1L)
+                    put("sightings", 1)
+                    put("position_source", "unlocated")
+                    put("source_id", localSourceId)
+                }
+            )
             sqlite.setTransactionSuccessful()
         } finally {
             sqlite.endTransaction()
         }
 
-        assertEquals(1_700, database.listMapPoints().size)
+        val repository = RadioRepository(database)
+        val localPoints = repository.loadLocalPoints(limit = RadioRepository.DEFAULT_LIST_LIMIT)
+        val mapPoints = repository.loadMapPoints(limit = 5_000)
+        val counts = repository.pointCounts()
+
+        assertEquals(1_701, localPoints.size)
+        assertEquals(1_700, mapPoints.size)
+        assertEquals(1_701, counts.total)
+        assertEquals(1_700, counts.geolocated)
+        assertTrue(localPoints.any { it.type == "ble" && it.identifier == "aa:bb:cc:dd:ee:ff" })
+        assertTrue(mapPoints.none { it.identifier == "aa:bb:cc:dd:ee:ff" })
         val indexExists = sqlite.rawQuery("PRAGMA index_list('radio_observations')", null).use { cursor ->
             var found = false
             while (cursor.moveToNext()) {
