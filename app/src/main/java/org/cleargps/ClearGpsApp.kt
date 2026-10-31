@@ -355,6 +355,16 @@ fun ClearGpsApp(
     var points by remember { mutableStateOf(database.listPoints(500)) }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
+    var mapPointLimit by remember {
+        mutableStateOf(
+            RadioMapPointLimitPolicy.normalizeLimit(
+                prefs.getInt(ClearGpsPreferences.KEY_MAP_RADIO_POINT_LIMIT, RadioMapPointLimitPolicy.DEFAULT_LIMIT)
+            )
+        )
+    }
+    var geolocatedMapPointCount by remember { mutableStateOf(database.mapPointCount()) }
+    var mapPointsLoading by remember { mutableStateOf(false) }
+    var mapPointsLoadJob by remember { mutableStateOf<Job?>(null) }
     var history by remember { mutableStateOf(database.listHistory(150)) }
     var radioSources by remember { mutableStateOf(database.listRadioSources()) }
     var sourceDaysBySource by remember { mutableStateOf(database.listRadioSourceDays().groupBy { it.sourceId }) }
@@ -505,13 +515,44 @@ fun ClearGpsApp(
     // Load and publish the local database UI from the caller's existing coroutine.
     // A scan must not start a nested rememberCoroutineScope job: that scope may already
     // have left the composition by the time an asynchronous scan returns.
+    suspend fun refreshMapPointsInCurrentCoroutine(limit: Int = mapPointLimit) {
+        val loaded = withContext(Dispatchers.IO) {
+            database.listMapPoints(limit) to database.mapPointCount()
+        }
+        if (limit == mapPointLimit) {
+            mapPoints = loaded.first
+            geolocatedMapPointCount = loaded.second
+            mapPointsRevision++
+        }
+    }
+
+    fun changeMapPointLimit(requested: Int) {
+        val normalized = RadioMapPointLimitPolicy.normalizeLimit(requested)
+        if (normalized == mapPointLimit) return
+        mapPointLimit = normalized
+        prefs.edit().putInt(ClearGpsPreferences.KEY_MAP_RADIO_POINT_LIMIT, normalized).apply()
+        mapPointLoadJob?.cancel()
+        mapPointLoadJob = scope.launch {
+            mapPointsLoading = true
+            try {
+                refreshMapPointsInCurrentCoroutine(normalized)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Toast.makeText(context, "Не удалось загрузить точки карты: " +
+                    (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            } finally {
+                if (mapPointLimit == normalized) mapPointsLoading = false
+            }
+        }
+    }
+
     suspend fun refreshLocalUiInCurrentCoroutine() {
         val query = searchQuery
         points = withContext(Dispatchers.IO) {
             if (query.isBlank()) database.listPoints(500) else database.searchPoints(query, 500)
         }
-        mapPoints = withContext(Dispatchers.IO) { database.listMapPoints(recommendedMapPointLimit(context)) }
-        mapPointsRevision++
+        refreshMapPointsInCurrentCoroutine(mapPointLimit)
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
@@ -3347,7 +3388,12 @@ fun ClearGpsApp(
                 mapSourceMode = mapSourceMode,
                 monitorEnabled = monitorEnabled,
                 mockEnabled = mockEnabled,
-                mockOutputActive = mockOutputActive
+                mockOutputActive = mockOutputActive,
+                mapPointLimit = mapPointLimit,
+                loadedMapPointCount = mapPoints.size,
+                availableMapPointCount = geolocatedMapPointCount,
+                mapPointsLoading = mapPointsLoading,
+                onMapPointLimit = ::changeMapPointLimit
             )
         }
     }
@@ -6160,7 +6206,12 @@ private fun MapLegendBottomSheet(
     mapSourceMode: MapSourceMode,
     monitorEnabled: Boolean,
     mockEnabled: Boolean,
-    mockOutputActive: Boolean
+    mockOutputActive: Boolean,
+    mapPointLimit: Int,
+    loadedMapPointCount: Int,
+    availableMapPointCount: Int,
+    mapPointsLoading: Boolean,
+    onMapPointLimit: (Int) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val mockStatus = when {
@@ -6183,8 +6234,8 @@ private fun MapLegendBottomSheet(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Легенда карты", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("Что означают метки и области", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Text("Легенда и настройки карты", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Значения маркеров и количество отображаемых радиоточек", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Outlined.Close, contentDescription = "Закрыть легенду")
@@ -6232,6 +6283,40 @@ private fun MapLegendBottomSheet(
                 description = "Янтарные точки.",
                 markerColor = Color(0xFFF59E0B)
             )
+
+            Text("Количество радиоточек на карте", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (mapPointsLoading) {
+                    "Загружаем точки… Уже загружено: $loadedMapPointCount из $availableMapPointCount с координатами."
+                } else {
+                    "Загружено: $loadedMapPointCount из $availableMapPointCount точек с координатами. Выбери максимальное количество маркеров, которое будет передаваться карте."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                RadioMapPointLimitPolicy.LIMIT_OPTIONS.forEach { limit ->
+                    val selected = mapPointLimit == limit
+                    AssistChip(
+                        onClick = { onMapPointLimit(limit) },
+                        enabled = !mapPointsLoading,
+                        label = { Text(RadioMapPointLimitPolicy.label(limit)) },
+                        colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                            containerColor = if (selected) colors.secondaryContainer else colors.surfaceVariant,
+                            labelColor = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+                        )
+                    )
+                }
+            }
+            Text(
+                "Настройка независима от лимита истории наблюдений. Максимум — 500 тыс. точек; большие значения увеличивают расход памяти и могут замедлять карту. Записи без координат на карту не выводятся.",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
+            )
+
             Text(
                 if (mode.gpsOnly) {
                     "Сейчас выбран режим GPS: радио-точки скрыты на карте и не участвуют в отображении основной позиции."
@@ -6362,11 +6447,6 @@ private fun MapLegendEntry(
 private fun effectiveScanIntervalSeconds(
     configuredSeconds: Int, speedKmh: Float?, adaptive: Boolean, profile: BatteryProfile
 ): Int = BatteryProfilePolicy.intervalSeconds(configuredSeconds, speedKmh, adaptive, profile)
-
-private fun recommendedMapPointLimit(context: Context): Int {
-    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
-    return if (activityManager?.isLowRamDevice == true || Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 5_000 else 20_000
-}
 
 private fun currentReference(location: Location?, anchor: ManualAnchor?): RadioReference? {
     val now = System.currentTimeMillis()

@@ -3,7 +3,6 @@ package org.cleargps
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.app.ActivityManager
 import android.content.Context
 import android.location.Location
 import android.view.animation.DecelerateInterpolator
@@ -70,7 +69,7 @@ class ClearGpsMapController {
     private var darkMode = false
     private var offlineMode = false
     private var showRadioPoints = true
-    private var maxRadioPoints = MAX_MAP_RADIO_POINTS
+    private val maxRadioPoints = RadioMapPointLimitPolicy.MAX_LIMIT
     var onMapTap: ((Double, Double) -> Boolean)? = null
     var onRadioPointTap: ((Long) -> Unit)? = null
 
@@ -82,9 +81,6 @@ class ClearGpsMapController {
         mapReady = false
         darkMode = initialDarkMode
         offlineMode = initialOfflineMode
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        maxRadioPoints = if (activityManager?.isLowRamDevice == true ||
-            Runtime.getRuntime().maxMemory() < 256L * 1024L * 1024L) 5_000 else MAX_MAP_RADIO_POINTS
         mapView.getMapAsync { mapObject ->
             if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
@@ -675,7 +671,6 @@ class ClearGpsMapController {
     private fun emptyCollection() = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     companion object {
-        private const val MAX_MAP_RADIO_POINTS = 20_000
         private const val WIFI_CLUSTERS_LAYER = "cleargps-wifi-clusters-layer"
         private const val CELL_CLUSTERS_LAYER = "cleargps-cell-clusters-layer"
         private const val BLE_CLUSTERS_LAYER = "cleargps-ble-clusters-layer"

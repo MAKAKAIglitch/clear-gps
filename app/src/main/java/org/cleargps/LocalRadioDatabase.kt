@@ -245,6 +245,7 @@ object ClearGpsPreferences {
     const val KEY_ADAPTIVE_SCAN = "adaptive_scan_enabled"
     const val KEY_BATTERY_PROFILE = "battery_profile"
     const val KEY_MAP_SOURCE = "map_source_mode"
+    const val KEY_MAP_RADIO_POINT_LIMIT = "map_radio_point_limit"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
     const val KEY_LAST_ACCURACY = "radio_last_accuracy"
@@ -2155,16 +2156,23 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     }
 
     /** Fetch geolocated points only; unlocated rows cannot consume the map marker limit. */
-    fun listMapPoints(limit: Int = 20_000): List<RadioPointRecord> {
+    fun listMapPoints(limit: Int = RadioMapPointLimitPolicy.DEFAULT_LIMIT): List<RadioPointRecord> {
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
             "SELECT * FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
                 "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 " +
                 "ORDER BY last_seen DESC LIMIT ?",
-            arrayOf(limit.coerceIn(1, 20_000).toString())
+            arrayOf(limit.coerceIn(1, RadioMapPointLimitPolicy.MAX_LIMIT).toString())
         ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
         return result
     }
+
+    /** Count rows with usable coordinates, which are the only records eligible for map markers. */
+    fun mapPointCount(): Int = readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
+            "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180",
+        null
+    ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
     /** Local search across SSID, BSSID/MAC, labels and notes. */
     fun searchPoints(query: String, limit: Int = 500): List<RadioPointRecord> {
