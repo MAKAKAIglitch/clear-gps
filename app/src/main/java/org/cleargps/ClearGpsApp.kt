@@ -2470,9 +2470,10 @@ fun ClearGpsApp(
             // Keep the target height available during the exit animation; the visibility
             // transition itself slides the panel off-screen rather than removing it abruptly.
             val panelMaxHeight = if (selectedTab == AppTab.MAP) {
-                maxHeight * panelFraction.value
+                0.dp
             } else {
-                (maxHeight - WindowInsets.statusBars.asPaddingValues().calculateTopPadding() - 75.dp).coerceAtLeast(0.dp)
+                val reservedHeaderHeight = if (selectedTab == AppTab.HOME) 8.dp else 75.dp
+                (maxHeight - WindowInsets.statusBars.asPaddingValues().calculateTopPadding() - reservedHeaderHeight).coerceAtLeast(0.dp)
             }
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
@@ -2493,6 +2494,7 @@ fun ClearGpsApp(
             }
 
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+                if (selectedTab != AppTab.HOME) {
                 Column(
                     Modifier.fillMaxWidth()
                         .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 7.dp)
@@ -2524,6 +2526,7 @@ fun ClearGpsApp(
                     }
                 }
 
+                }
 
 
                 AnimatedVisibility(
@@ -3263,7 +3266,8 @@ fun ClearGpsApp(
             if (selectedTab == AppTab.MAP) {
                 MapFloatingControls(
                     modifier = Modifier.align(Alignment.TopEnd).padding(
-                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 82.dp,
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
+                            (if (mapTapMode == MapTapMode.NONE) 132.dp else 178.dp),
                         end = 12.dp
                     ),
                     anchorActive = mapTapMode == MapTapMode.PLACE_ANCHOR,
@@ -6599,7 +6603,7 @@ private fun HeaderCard(
         else -> colors.onPrimaryContainer
     }
     // A persisted score is not current evidence when the monitor is stopped or GNSS is intentionally unused.
-    val riskAvailable = tab == AppTab.HOME && monitorEnabled && !mode.usesRadio &&
+    val riskAvailable = tab == AppTab.MAP && monitorEnabled && !mode.usesRadio &&
         filterState != FilterState.WAITING.name
     val visibleScore = riskScore.coerceIn(0, 100)
     val animatedRisk by animateFloatAsState(
@@ -6654,7 +6658,7 @@ private fun HeaderCard(
                      }
                 }
             }
-            if (tab == AppTab.HOME) {
+            if (tab == AppTab.MAP) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     StatusPill(statusLabel, statusContainer, statusForeground)
                     Spacer(Modifier.width(10.dp))
