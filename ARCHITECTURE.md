@@ -28,6 +28,7 @@ In Auto mode, a low-cadence local radio scan can contribute an absolute RADIO me
 - `ServiceRecoveryWatchdog.kt`, `ServiceRecoveryWorker.kt` and `ServiceRecoveryPolicy.kt` add a 30-second monotonic service heartbeat, a WorkManager watchdog with a 15-minute minimum interval, and a delayed task-removal/service-destruction check. Recovery requires previously enabled monitoring and location/background-location permissions; Android can still reject a background FGS start, in which case the status asks the user to open the app.
 - `MockLocationOutput.kt` handles publication through Android mock providers. The user must select Clear GPS in Developer options; the app cannot silently grant itself mock-location authority.
 - `RadioGeolocationRepository.kt`, `RadioFixReliability.kt` and `LocationQuality.kt` implement/support local radio estimates and the quality checks around them.
+- `BleBeaconAdvertisementParser.kt` decodes protocol-level BLE beacon identities and auxiliary Eddystone frames before any observation enters the radio database.
 - The `Obd2*` classes implement the current read-only OBD-II foundation, transports, polling, vehicle metrics and a short GPS-anchored speed fallback. That fallback requires the original monotonic PID 0D midpoints, query durations no longer than 1.5 seconds, a fresh sample history after the GPS anchor, recent course and conservative limits on sample gaps, age, distance and initial accuracy. Distance is trapezoidally integrated between actual speed samples; missing or stale history fails closed. Wall-clock time is not used to integrate OBD speed into coordinates. This is still a short emergency projection, not continuous OBD dead reckoning; make-specific CAN profiles and field calibration remain open.
 - `DiagnosticLogStore.kt`, `GnssReplayRecorder.kt`, `RiskFeedbackStore.kt` and `SettingsZoneBackupCodec.kt` own their corresponding local diagnostic or export data paths.
 
@@ -35,6 +36,24 @@ In Auto mode, a low-cadence local radio scan can contribute an absolute RADIO me
 
 The JVM module contains GNSS signal/data models and anomaly logic, baseline/environment helpers, and replay codecs. Its tests cover deterministic logic without requiring an Android phone. Device-dependent availability (for example AGC or L5/E5) must be represented as unavailable/neutral rather than fabricated.
 
+## BLE beacon formats and identity
+
+BleBeaconAdvertisementParser reads Android ScanRecord manufacturer data and service data without introducing another runtime scanner library. Current protocol handling is:
+
+- iBeacon: Apple manufacturer ID 0x004C, UUID + unsigned Major/Minor.
+- Eddystone-UID: 10-byte Namespace + 6-byte Instance. Standard 20-byte frames require zero RFU bytes; the legacy 18-byte form is accepted.
+- Eddystone-URL: compressed URI is decoded and classified; it is not yet exposed in a dedicated beacon-details screen.
+- Eddystone-TLM v0: battery mV, signed 8.8 temperature, advertising count and uptime are decoded.
+- Eddystone-EID: detected as an ephemeral frame, but not promoted to a persistent anchor unless a future resolver has the required provisioning material.
+- AltBeacon: company ID + 20-byte Beacon ID. SemBeacon is identified when an AltBeacon identity and an Eddystone-URL-compatible scan response are present in the same Android scan record.
+
+Only stable protocol identities are emitted as BLE positioning keys. URL, TLM and EID metadata are not fabricated into map points. A protocol identity is independent of the advertiser MAC, so a changing address does not split the beacon into multiple local points.
+
+For a generic BLE advertiser with no stable protocol identity, a MAC fallback is allowed only on Android API 35+ when BLUETOOTH_CONNECT is already granted and BluetoothDevice.getAddressType() explicitly reports ADDRESS_TYPE_PUBLIC and the address is unicast/global. The scanner does not request BLUETOOTH_CONNECT just for this fallback. RANDOM, ANONYMOUS, UNKNOWN and unavailable address types are rejected. On older Android releases the address type is not exposed publicly, so generic MAC-only advertisements are not promoted to persistent radio points; recognized protocol identities remain supported.
+
+Radio keys are stored in the existing (radio_type, identifier) columns. This change does not require a SQLite schema migration and does not delete or rewrite previously imported BLE records. BeaconDB's MAC-based payload builder continues to reject protocol IDs; protocol identifiers remain local. Parser and address-policy tests cover valid frames, malformed/truncated payloads, duplicate identities across address changes, SemBeacon composition and randomized/unknown address handling.
+
+Physical-device validation is still required for scan-record delivery, Android/OEM address-type behavior, RSSI stability and scan throttling. Unit tests validate byte parsing and policy, not RF performance or indoor positioning accuracy.
 ## Local radio database and provenance
 
 `LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **11**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.

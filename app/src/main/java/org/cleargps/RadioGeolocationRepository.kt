@@ -1,6 +1,7 @@
 package org.cleargps
 
 import android.Manifest
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -39,7 +40,16 @@ private data class CellObservation(
     fun toSignal() = RadioSignal("cell", "$type:$mcc:$mnc:$area:$cellId", rssi)
 }
 
-private data class TimedRadioSignals(val signals: List<RadioSignal>, val ageMillis: Long?)
+private data class TimedRadioSignals(
+    val signals: List<RadioSignal>,
+    val ageMillis: Long?,
+    val bleProtocols: Set<String> = emptySet()
+)
+
+private data class BleScanPayload(
+    val signals: List<RadioSignal>,
+    val protocols: Set<String>
+)
 
 private data class ScanSnapshot(
     val signals: List<RadioSignal>,
@@ -49,6 +59,7 @@ private data class ScanSnapshot(
     val wifiAgeMillis: Long?,
     val cellAgeMillis: Long?,
     val bleAgeMillis: Long?,
+    val bleProtocols: Set<String>,
     val collectedAtElapsedRealtimeNanos: Long
 )
 
@@ -220,12 +231,16 @@ class RadioGeolocationRepository(private val context: Context) {
             .apply()
         if (estimate != null) saveEstimate(context, estimate)
 
+        val protocolSummary = snapshot.bleProtocols.sorted().joinToString(", ")
         val summary = buildList {
             if (snapshot.wifiCount > 0) add("${snapshot.wifiCount} Wi‑Fi")
             if (snapshot.cellCount > 0) add("${snapshot.cellCount} сот")
-            if (snapshot.bleCount > 0) add("${snapshot.bleCount} BLE")
+            if (snapshot.bleCount > 0) add("${snapshot.bleCount} BLE-идентификаторов")
+            if (snapshot.bleProtocols.isNotEmpty()) add("форматы BLE: $protocolSummary")
         }.joinToString(", ").ifBlank { "радиосигналы не обнаружены" }
         val message = when {
+            snapshot.signals.isEmpty() && snapshot.bleProtocols.isNotEmpty() ->
+                "Обнаружены BLE-кадры ($protocolSummary), но среди них нет постоянного идентификатора, пригодного для радиопозиционирования."
             snapshot.signals.isEmpty() ->
                 "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио, системную геолокацию и ограничения Android."
             estimate != null -> {
@@ -642,6 +657,7 @@ class RadioGeolocationRepository(private val context: Context) {
             wifiAgeMillis = wifi.ageMillis,
             cellAgeMillis = cells.ageMillis,
             bleAgeMillis = ble.ageMillis,
+            bleProtocols = ble.bleProtocols,
             collectedAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         )
     }
@@ -995,25 +1011,28 @@ class RadioGeolocationRepository(private val context: Context) {
         // If no recent cache exists during the cooldown, return no BLE data instead of bypassing it.
         if (!RadioFixReliability.shouldRequestBleScan(nowElapsedMs, lastBleScanStartedAtElapsedMs)) {
             return if (cachedBleSignals.isNotEmpty() && cachedAgeMs <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
-                TimedRadioSignals(cachedBleSignals, cachedAgeMs)
+                TimedRadioSignals(cachedBleSignals, cachedAgeMs, cachedBleProtocols)
             } else {
                 TimedRadioSignals(emptyList(), null)
             }
         }
 
         lastBleScanStartedAtElapsedMs = nowElapsedMs
-        val freshSignals = suspendCancellableCoroutine<List<RadioSignal>> { continuation ->
+        val freshScan = suspendCancellableCoroutine<BleScanPayload> { continuation ->
             val seen = linkedMapOf<String, RadioSignal>()
+            val seenProtocols = linkedSetOf<String>()
             val resultLock = Any()
             val completed = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             lateinit var callback: ScanCallback
 
-            fun snapshot(): List<RadioSignal> = synchronized(resultLock) { seen.values.toList() }
+            fun snapshot(): BleScanPayload = synchronized(resultLock) {
+                BleScanPayload(seen.values.toList(), seenProtocols.toSet())
+            }
 
             // Scan failure and timeout can race. Only the first completion may resume the
             // coroutine, and callbacks cannot mutate results after the scan has completed.
-            fun finish(results: List<RadioSignal>) {
+            fun finish(results: BleScanPayload) {
                 if (!completed.compareAndSet(false, true)) return
                 if (continuation.isActive) continuation.resume(results)
             }
@@ -1026,15 +1045,84 @@ class RadioGeolocationRepository(private val context: Context) {
             }
             callback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
-                    if (completed.get()) return
-                    val address = try { result.device?.address?.lowercase(Locale.ROOT) } catch (_: SecurityException) { null }
-                    if (address.isNullOrBlank() || !address.matches(MAC_REGEX) || result.rssi !in -115..0) return
-                    // Do not read or store Bluetooth device names or advertisement payload contents.
+                    if (completed.get() || result.rssi !in -115..0) return
+
+                    val scanRecord = result.scanRecord
+                    val manufacturerData = buildMap<Int, ByteArray> {
+                        val data = try { scanRecord?.manufacturerSpecificData } catch (_: RuntimeException) { null }
+                        if (data != null) {
+                            for (index in 0 until data.size()) {
+                                val payload = data.valueAt(index) ?: continue
+                                put(data.keyAt(index), payload)
+                            }
+                        }
+                    }
+                    val serviceData = try {
+                        scanRecord?.serviceData?.mapNotNull { (uuid, payload) ->
+                            payload?.let { uuid.uuid.toString() to it }
+                        }?.toMap().orEmpty()
+                    } catch (_: RuntimeException) {
+                        emptyMap()
+                    }
+
+                    // Decode the supported frames once. Only protocol-defined stable IDs
+                    // become position fingerprints; URL, telemetry and rotating EID remain
+                    // metadata and never become synthetic beacon coordinates.
+                    val frames = BleBeaconAdvertisementParser.parse(manufacturerData, serviceData)
+                    val protocolNames = frames.mapNotNull { frame ->
+                        when (frame) {
+                            is BleBeaconFrame.StableIdentity -> frame.protocol
+                            is BleBeaconFrame.EddystoneUrl -> "eddystone-url"
+                            is BleBeaconFrame.EddystoneTelemetry -> "eddystone-tlm"
+                            is BleBeaconFrame.EddystoneEphemeralId -> "eddystone-eid"
+                        }
+                    }.toSet()
+                    val protocolIdentities = frames.filterIsInstance<BleBeaconFrame.StableIdentity>()
+                        .map { it.identifier }
+                        .distinct()
+
+                    val identifiers = if (protocolIdentities.isNotEmpty()) {
+                        protocolIdentities
+                    } else if (Build.VERSION.SDK_INT >= 35 &&
+                        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                            PackageManager.PERMISSION_GRANTED
+                    ) {
+                        // On API 35+ Android explicitly classifies the address. Keep only a
+                        // reported public unicast address; RANDOM/ANONYMOUS/UNKNOWN are transient.
+                        // BLUETOOTH_CONNECT is checked rather than requested by the scanner.
+                        val device = try { result.device } catch (_: SecurityException) { null }
+                            catch (_: RuntimeException) { null }
+                        val addressType = try { device?.addressType } catch (_: SecurityException) { null }
+                            catch (_: RuntimeException) { null }
+                        val address = try { device?.address?.lowercase(Locale.ROOT) }
+                            catch (_: SecurityException) { null }
+                            catch (_: RuntimeException) { null }
+                        if (BleAddressPolicy.isStablePublicAddress(
+                                addressType = addressType,
+                                publicAddressType = BluetoothDevice.ADDRESS_TYPE_PUBLIC,
+                                address = address
+                            )
+                        ) listOf(address!!) else emptyList()
+                    } else {
+                        // Older Android versions do not expose the advertiser address type.
+                        // A MAC-only fallback would misclassify rotating private addresses.
+                        emptyList()
+                    }
+
+                    val measuredAt = result.timestampNanos.takeIf { it > 0L }
                     synchronized(resultLock) {
-                        if (!completed.get()) seen[address] = RadioSignal(
-                            "ble", address, result.rssi,
-                            observedAtElapsedRealtimeNanos = result.timestampNanos.takeIf { it > 0L }
-                        )
+                        if (!completed.get()) {
+                            seenProtocols.addAll(protocolNames)
+                            identifiers.forEach { identifier ->
+                                val previous = seen[identifier]
+                                if (previous == null || result.rssi > previous.rssi) {
+                                    seen[identifier] = RadioSignal(
+                                        "ble", identifier, result.rssi,
+                                        observedAtElapsedRealtimeNanos = measuredAt
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 override fun onBatchScanResults(results: MutableList<ScanResult>) {
@@ -1052,10 +1140,10 @@ class RadioGeolocationRepository(private val context: Context) {
                 handler.postDelayed(stopTask, BLE_SCAN_MS)
             } catch (error: SecurityException) {
                 DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scan запрещён Android: ${error.message ?: "SecurityException"}", "ERROR")
-                finish(emptyList())
+                finish(BleScanPayload(emptyList(), emptySet()))
             } catch (error: RuntimeException) {
                 DiagnosticLogStore.log(context, "RADIO_BLE", "Ошибка запуска BLE scan: ${error.javaClass.simpleName}", "ERROR")
-                finish(emptyList())
+                finish(BleScanPayload(emptyList(), emptySet()))
             }
             continuation.invokeOnCancellation {
                 completed.set(true)
@@ -1065,10 +1153,11 @@ class RadioGeolocationRepository(private val context: Context) {
         }
 
         val finishedAt = SystemClock.elapsedRealtime()
-        if (freshSignals.isNotEmpty()) {
-            cachedBleSignals = freshSignals
+        if (freshScan.signals.isNotEmpty()) {
+            cachedBleSignals = freshScan.signals
+            cachedBleProtocols = freshScan.protocols
             lastBleScanFinishedAtElapsedMs = finishedAt
-            return TimedRadioSignals(freshSignals, 0L)
+            return TimedRadioSignals(freshScan.signals, 0L, freshScan.protocols)
         }
         // If a BLE scan failed or returned nothing, a recent snapshot can bridge this one miss.
         // The age penalty and hard cache limit stop that old data from looking continuously fresh.
@@ -1077,11 +1166,12 @@ class RadioGeolocationRepository(private val context: Context) {
             finishedAt - lastBleScanFinishedAtElapsedMs
         } else Long.MAX_VALUE
         if (cachedBleSignals.isNotEmpty() && ageAfterAttempt <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
-            return TimedRadioSignals(cachedBleSignals, ageAfterAttempt)
+            return TimedRadioSignals(cachedBleSignals, ageAfterAttempt, cachedBleProtocols + freshScan.protocols)
         }
         cachedBleSignals = emptyList()
+        cachedBleProtocols = emptySet()
         lastBleScanFinishedAtElapsedMs = 0L
-        return TimedRadioSignals(emptyList(), null)
+        return TimedRadioSignals(emptyList(), null, freshScan.protocols)
     }
 
     companion object {
@@ -1097,6 +1187,7 @@ class RadioGeolocationRepository(private val context: Context) {
         private var lastBleScanStartedAtElapsedMs = 0L
         private var lastBleScanFinishedAtElapsedMs = 0L
         private var cachedBleSignals: List<RadioSignal> = emptyList()
+        private var cachedBleProtocols: Set<String> = emptySet()
         private const val WIFI_SCAN_WAIT_MS = 3_000L
         private const val WIFI_SCAN_POLL_MS = 250L
         private const val BLE_SCAN_MS = 2_500L
