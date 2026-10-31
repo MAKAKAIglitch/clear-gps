@@ -29,6 +29,20 @@ internal sealed interface BleBeaconFrame {
         val ephemeralId: String,
         val calibratedTxPowerDbm: Int
     ) : BleBeaconFrame
+
+    data class RuuviTelemetry(
+        val identifier: String?,
+        val temperatureCelsius: Double?,
+        val humidityPercent: Double?,
+        val pressurePascals: Int?,
+        val accelerationXG: Double?,
+        val accelerationYG: Double?,
+        val accelerationZG: Double?,
+        val batteryMillivolts: Int?,
+        val txPowerDbm: Int?,
+        val movementCounter: Int?,
+        val measurementSequence: Int?
+    ) : BleBeaconFrame
 }
 
 /**
@@ -40,6 +54,7 @@ internal sealed interface BleBeaconFrame {
  */
 internal object BleBeaconAdvertisementParser {
     const val APPLE_COMPANY_ID = 0x004C
+    const val RUUVI_COMPANY_ID = 0x0499
     const val EDDYSTONE_SERVICE_UUID = "0000feaa-0000-1000-8000-00805f9b34fb"
 
     fun parse(
@@ -53,6 +68,10 @@ internal object BleBeaconAdvertisementParser {
 
             if (companyId == APPLE_COMPANY_ID) {
                 parseIBeacon(payload)?.let(frames::add)
+            }
+
+            if (companyId == RUUVI_COMPANY_ID) {
+                parseRuuviRawV2(payload)?.let(frames::add)
             }
 
             parseAltBeacon(companyId, payload)?.let(frames::add)
@@ -90,8 +109,40 @@ internal object BleBeaconAdvertisementParser {
                 is BleBeaconFrame.EddystoneTelemetry ->
                     "tlm:${frame.batteryMillivolts}:${frame.advertisementCount}:${frame.uptimeSeconds}"
                 is BleBeaconFrame.EddystoneEphemeralId -> "eid:${frame.ephemeralId}"
+                is BleBeaconFrame.RuuviTelemetry ->
+                    frame.identifier ?: "ruuvi-unidentified:${frame.measurementSequence}:${frame.movementCounter}"
             }
         }
+    }
+
+    fun summary(frame: BleBeaconFrame): String? = when (frame) {
+        is BleBeaconFrame.StableIdentity -> null
+        is BleBeaconFrame.EddystoneUrl -> "Eddystone URL: ${frame.url.take(120)}"
+        is BleBeaconFrame.EddystoneTelemetry -> buildList {
+            add("Eddystone TLM")
+            frame.batteryMillivolts.takeIf { it > 0 }?.let { add("battery ${it} mV") }
+            frame.temperatureCelsius?.let { add("temperature ${"%.1f".format(Locale.ROOT, it)} °C") }
+            add("advertisements ${frame.advertisementCount}")
+            add("uptime ${frame.uptimeSeconds} s")
+        }.joinToString("; ")
+        is BleBeaconFrame.EddystoneEphemeralId -> "Eddystone EID (rotating identifier)"
+        is BleBeaconFrame.RuuviTelemetry -> buildList {
+            add("Ruuvi RAWv2")
+            frame.temperatureCelsius?.let { add("temperature ${"%.1f".format(Locale.ROOT, it)} °C") }
+            frame.humidityPercent?.let { add("humidity ${"%.1f".format(Locale.ROOT, it)} %") }
+            frame.pressurePascals?.let { add("pressure ${"%.1f".format(Locale.ROOT, it / 100.0)} hPa") }
+            frame.accelerationXG?.let { x ->
+                val y = frame.accelerationYG
+                val z = frame.accelerationZG
+                if (y != null && z != null) {
+                    add("acceleration ${"%.2f".format(Locale.ROOT, x)}/${"%.2f".format(Locale.ROOT, y)}/${"%.2f".format(Locale.ROOT, z)} g")
+                }
+            }
+            frame.batteryMillivolts?.let { add("battery ${"%.2f".format(Locale.ROOT, it / 1_000.0)} V") }
+            frame.txPowerDbm?.let { add("TX ${it} dBm") }
+            frame.movementCounter?.let { add("movement ${it}") }
+            frame.measurementSequence?.let { add("sequence ${it}") }
+        }.joinToString("; ")
     }
 
     private fun parseIBeacon(payload: ByteArray): BleBeaconFrame.StableIdentity? {
@@ -196,6 +247,52 @@ internal object BleBeaconAdvertisementParser {
         )
     }
 
+    private fun parseRuuviRawV2(payload: ByteArray): BleBeaconFrame.RuuviTelemetry? {
+        // Ruuvi RAWv2 manufacturer payload: format, sensor fields, power, counters and
+        // embedded 48-bit MAC. Android has already removed the 0x0499 company identifier.
+        if (payload.size != 24 || payload.u8(0) != 0x05) return null
+
+        val rawTemperature = payload.i16be(1)
+        val rawHumidity = payload.u16be(3)
+        val rawPressure = payload.u16be(5)
+        val rawAccelerationX = payload.i16be(7)
+        val rawAccelerationY = payload.i16be(9)
+        val rawAccelerationZ = payload.i16be(11)
+        val powerInfo = payload.u16be(13)
+        val rawBattery = powerInfo ushr 5
+        val rawTxPower = powerInfo and 0x1F
+        val rawMovement = payload.u8(15)
+        val rawSequence = payload.u16be(16)
+
+        val embeddedMac = payload.hex(18, 24).chunked(2).joinToString(":")
+        val firstOctet = embeddedMac.substringBefore(':').toIntOrNull(16) ?: return null
+        val validMac = embeddedMac != "ff:ff:ff:ff:ff:ff" &&
+            embeddedMac != "00:00:00:00:00:00" &&
+            (firstOctet and 0x01) == 0
+
+        return BleBeaconFrame.RuuviTelemetry(
+            identifier = if (validMac) "ruuvi:$embeddedMac" else null,
+            temperatureCelsius = rawTemperature.takeIf { it != Short.MIN_VALUE.toInt() }
+                ?.div(200.0),
+            humidityPercent = rawHumidity.takeIf { it <= 40_000 }
+                ?.div(400.0),
+            pressurePascals = rawPressure.takeIf { it != 0xFFFF }
+                ?.plus(50_000),
+            accelerationXG = rawAccelerationX.takeIf { it != Short.MIN_VALUE.toInt() }
+                ?.div(1_000.0),
+            accelerationYG = rawAccelerationY.takeIf { it != Short.MIN_VALUE.toInt() }
+                ?.div(1_000.0),
+            accelerationZG = rawAccelerationZ.takeIf { it != Short.MIN_VALUE.toInt() }
+                ?.div(1_000.0),
+            batteryMillivolts = rawBattery.takeIf { it != 0x07FF }
+                ?.plus(1_600),
+            txPowerDbm = rawTxPower.takeIf { it != 0x1F }
+                ?.let { -40 + (it * 2) },
+            movementCounter = rawMovement.takeIf { it != 0xFF },
+            measurementSequence = rawSequence.takeIf { it != 0xFFFF }
+        )
+    }
+
     private fun parseEddystoneEid(payload: ByteArray): BleBeaconFrame.EddystoneEphemeralId? {
         // EID is intentionally rotating. It is surfaced as a frame but is never a
         // persistent position key without the provisioning service's resolver material.
@@ -221,6 +318,9 @@ internal object BleBeaconAdvertisementParser {
 
     private fun ByteArray.u16be(index: Int): Int =
         (u8(index) shl 8) or u8(index + 1)
+
+    private fun ByteArray.i16be(index: Int): Int =
+        u16be(index).toShort().toInt()
 
     private fun ByteArray.u32be(index: Int): Long =
         (u8(index).toLong() shl 24) or

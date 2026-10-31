@@ -45,9 +45,10 @@ BleBeaconAdvertisementParser reads Android ScanRecord manufacturer data and serv
 - Eddystone-URL: compressed URI is decoded and classified; it is not yet exposed in a dedicated beacon-details screen.
 - Eddystone-TLM v0: battery mV, signed 8.8 temperature, advertising count and uptime are decoded.
 - Eddystone-EID: detected as an ephemeral frame, but not promoted to a persistent anchor unless a future resolver has the required provisioning material.
+- RuuviTag RAWv2: manufacturer ID 0x0499; the 24-byte production frame is decoded into an embedded MAC identity plus temperature, humidity, pressure, acceleration, battery/TX power, movement counter and measurement sequence.
 - AltBeacon: company ID + 20-byte Beacon ID. SemBeacon is identified when an AltBeacon identity and an Eddystone-URL-compatible scan response are present in the same Android scan record.
 
-Only stable protocol identities are emitted as BLE positioning keys. URL, TLM and EID metadata are not fabricated into map points. A protocol identity is independent of the advertiser MAC, so a changing address does not split the beacon into multiple local points.
+Only stable protocol identities are emitted as BLE positioning keys. RuuviTag uses its embedded payload MAC (not the advertiser address) and also exposes parsed sensor values in the scan summary. Eddystone URL/TLM values are shown as scan details; EID is reported as rotating. URL, telemetry and EID metadata are not fabricated into map points. A protocol identity is independent of the advertiser MAC, so a changing address does not split the beacon into multiple local points.
 
 For a generic BLE advertiser with no stable protocol identity, a MAC fallback is allowed only on Android API 35+ when BLUETOOTH_CONNECT is already granted and BluetoothDevice.getAddressType() explicitly reports ADDRESS_TYPE_PUBLIC and the address is unicast/global. The scanner does not request BLUETOOTH_CONNECT just for this fallback. RANDOM, ANONYMOUS, UNKNOWN and unavailable address types are rejected. On older Android releases the address type is not exposed publicly, so generic MAC-only advertisements are not promoted to persistent radio points; recognized protocol identities remain supported.
 

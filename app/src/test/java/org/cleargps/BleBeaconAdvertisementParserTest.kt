@@ -210,6 +210,90 @@ class BleBeaconAdvertisementParserTest {
         assertFalse(BleAddressPolicy.isStablePublicAddress(0, 0, "not-a-mac"))
     }
 
+    @Test
+    fun decodesRuuviRawV2TelemetryAndUsesItsEmbeddedMacAsStableIdentity() {
+        val payload = byteArrayOf(
+            0x05,
+            0x13, 0x88.toByte(),       // 25.00 C
+            0x4E, 0x20,               // 50.00 %RH
+            0xC8.toByte(), 0x7D,      // 101325 Pa
+            0x03, 0xE8.toByte(),      // +1.000 g
+            0xF8.toByte(), 0x30,      // -2.000 g
+            0x00, 0x00,               // 0.000 g
+            0xAF.toByte(), 0x0A,      // 3000 mV, -20 dBm
+            0x07,                     // movement counter
+            0x12, 0x34,               // measurement sequence
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55
+        )
+        val frame = parseRuuvi(payload)
+
+        assertEquals("ruuvi", frame.identifier?.substringBefore(':'))
+        assertEquals("ruuvi:00:11:22:33:44:55", frame.identifier)
+        assertEquals(25.0, frame.temperatureCelsius!!, 0.001)
+        assertEquals(50.0, frame.humidityPercent!!, 0.001)
+        assertEquals(101325, frame.pressurePascals)
+        assertEquals(1.0, frame.accelerationXG!!, 0.001)
+        assertEquals(-2.0, frame.accelerationYG!!, 0.001)
+        assertEquals(0.0, frame.accelerationZG!!, 0.001)
+        assertEquals(3000, frame.batteryMillivolts)
+        assertEquals(-20, frame.txPowerDbm)
+        assertEquals(7, frame.movementCounter)
+        assertEquals(0x1234, frame.measurementSequence)
+        assertTrue(BleBeaconAdvertisementParser.summary(frame)!!.contains("temperature 25.0 °C"))
+        assertTrue(BleBeaconAdvertisementParser.summary(frame)!!.contains("humidity 50.0 %"))
+    }
+
+    @Test
+    fun ruuviRawV2UnavailableFieldsStayNullAndInvalidMacIsNotAnIdentity() {
+        val payload = ByteArray(24).apply {
+            this[0] = 0x05
+            this[1] = 0x80.toByte(); this[2] = 0x00 // unavailable temperature
+            this[3] = 0xFF.toByte(); this[4] = 0xFF.toByte()
+            this[5] = 0xFF.toByte(); this[6] = 0xFF.toByte()
+            this[7] = 0x80.toByte(); this[8] = 0x00
+            this[9] = 0x80.toByte(); this[10] = 0x00
+            this[11] = 0x80.toByte(); this[12] = 0x00
+            this[13] = 0xFF.toByte(); this[14] = 0xFF.toByte()
+            this[15] = 0xFF.toByte()
+            this[16] = 0xFF.toByte(); this[17] = 0xFF.toByte()
+            for (index in 18..23) this[index] = 0xFF.toByte()
+        }
+        val frame = parseRuuvi(payload)
+        assertNull(frame.identifier)
+        assertNull(frame.temperatureCelsius)
+        assertNull(frame.humidityPercent)
+        assertNull(frame.pressurePascals)
+        assertNull(frame.accelerationXG)
+        assertNull(frame.accelerationYG)
+        assertNull(frame.accelerationZG)
+        assertNull(frame.batteryMillivolts)
+        assertNull(frame.txPowerDbm)
+        assertNull(frame.movementCounter)
+        assertNull(frame.measurementSequence)
+    }
+
+    @Test
+    fun rejectsMalformedRuuviFramesAndWrongManufacturerId() {
+        val payload = ByteArray(24).apply { this[0] = 0x05 }
+        assertTrue(BleBeaconAdvertisementParser.parse(
+            mapOf(0x1234 to payload), emptyMap()
+        ).none { it is BleBeaconFrame.RuuviTelemetry })
+        assertTrue(BleBeaconAdvertisementParser.parse(
+            mapOf(BleBeaconAdvertisementParser.RUUVI_COMPANY_ID to payload.copyOf(23)),
+            emptyMap()
+        ).none { it is BleBeaconFrame.RuuviTelemetry })
+        assertTrue(BleBeaconAdvertisementParser.parse(
+            mapOf(BleBeaconAdvertisementParser.RUUVI_COMPANY_ID to payload.copyOf().apply { this[0] = 0x03 }),
+            emptyMap()
+        ).none { it is BleBeaconFrame.RuuviTelemetry })
+    }
+
+    private fun parseRuuvi(payload: ByteArray): BleBeaconFrame.RuuviTelemetry =
+        BleBeaconAdvertisementParser.parse(
+            mapOf(BleBeaconAdvertisementParser.RUUVI_COMPANY_ID to payload),
+            emptyMap()
+        ).filterIsInstance<BleBeaconFrame.RuuviTelemetry>().single()
+
     private fun parseEddystone(payload: ByteArray): List<BleBeaconFrame> =
         BleBeaconAdvertisementParser.parse(
             emptyMap(),

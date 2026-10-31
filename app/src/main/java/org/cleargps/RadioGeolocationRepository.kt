@@ -43,12 +43,14 @@ private data class CellObservation(
 private data class TimedRadioSignals(
     val signals: List<RadioSignal>,
     val ageMillis: Long?,
-    val bleProtocols: Set<String> = emptySet()
+    val bleProtocols: Set<String> = emptySet(),
+    val bleDetails: List<String> = emptyList()
 )
 
 private data class BleScanPayload(
     val signals: List<RadioSignal>,
-    val protocols: Set<String>
+    val protocols: Set<String>,
+    val details: List<String>
 )
 
 private data class ScanSnapshot(
@@ -60,6 +62,7 @@ private data class ScanSnapshot(
     val cellAgeMillis: Long?,
     val bleAgeMillis: Long?,
     val bleProtocols: Set<String>,
+    val bleDetails: List<String>,
     val collectedAtElapsedRealtimeNanos: Long
 )
 
@@ -237,10 +240,15 @@ class RadioGeolocationRepository(private val context: Context) {
             if (snapshot.cellCount > 0) add("${snapshot.cellCount} сот")
             if (snapshot.bleCount > 0) add("${snapshot.bleCount} BLE-идентификаторов")
             if (snapshot.bleProtocols.isNotEmpty()) add("форматы BLE: $protocolSummary")
+            snapshot.bleDetails.take(4).forEach { add(it) }
         }.joinToString(", ").ifBlank { "радиосигналы не обнаружены" }
         val message = when {
-            snapshot.signals.isEmpty() && snapshot.bleProtocols.isNotEmpty() ->
-                "Обнаружены BLE-кадры ($protocolSummary), но среди них нет постоянного идентификатора, пригодного для радиопозиционирования."
+            snapshot.signals.isEmpty() && snapshot.bleProtocols.isNotEmpty() -> {
+                val beaconDetails = snapshot.bleDetails.take(4)
+                    .joinToString(prefix = " Данные маяков: ", separator = "; ")
+                "Обнаружены BLE-кадры ($protocolSummary), но среди них нет постоянного идентификатора, пригодного для радиопозиционирования." +
+                    beaconDetails
+            }
             snapshot.signals.isEmpty() ->
                 "Сканирование завершено, но Android не вернул доступных радиосигналов. Проверь разрешения, включённые радио, системную геолокацию и ограничения Android."
             estimate != null -> {
@@ -658,6 +666,7 @@ class RadioGeolocationRepository(private val context: Context) {
             cellAgeMillis = cells.ageMillis,
             bleAgeMillis = ble.ageMillis,
             bleProtocols = ble.bleProtocols,
+            bleDetails = ble.bleDetails,
             collectedAtElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         )
     }
@@ -1011,7 +1020,7 @@ class RadioGeolocationRepository(private val context: Context) {
         // If no recent cache exists during the cooldown, return no BLE data instead of bypassing it.
         if (!RadioFixReliability.shouldRequestBleScan(nowElapsedMs, lastBleScanStartedAtElapsedMs)) {
             return if (cachedBleSignals.isNotEmpty() && cachedAgeMs <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
-                TimedRadioSignals(cachedBleSignals, cachedAgeMs, cachedBleProtocols)
+                TimedRadioSignals(cachedBleSignals, cachedAgeMs, cachedBleProtocols, cachedBleDetails)
             } else {
                 TimedRadioSignals(emptyList(), null)
             }
@@ -1021,13 +1030,14 @@ class RadioGeolocationRepository(private val context: Context) {
         val freshScan = suspendCancellableCoroutine<BleScanPayload> { continuation ->
             val seen = linkedMapOf<String, RadioSignal>()
             val seenProtocols = linkedSetOf<String>()
+            val seenDetails = linkedSetOf<String>()
             val resultLock = Any()
             val completed = AtomicBoolean(false)
             val handler = Handler(Looper.getMainLooper())
             lateinit var callback: ScanCallback
 
             fun snapshot(): BleScanPayload = synchronized(resultLock) {
-                BleScanPayload(seen.values.toList(), seenProtocols.toSet())
+                BleScanPayload(seen.values.toList(), seenProtocols.toSet(), seenDetails.toList())
             }
 
             // Scan failure and timeout can race. Only the first completion may resume the
@@ -1075,11 +1085,15 @@ class RadioGeolocationRepository(private val context: Context) {
                             is BleBeaconFrame.EddystoneUrl -> "eddystone-url"
                             is BleBeaconFrame.EddystoneTelemetry -> "eddystone-tlm"
                             is BleBeaconFrame.EddystoneEphemeralId -> "eddystone-eid"
+                            is BleBeaconFrame.RuuviTelemetry -> "ruuvi-rawv2"
                         }
                     }.toSet()
-                    val protocolIdentities = frames.filterIsInstance<BleBeaconFrame.StableIdentity>()
-                        .map { it.identifier }
-                        .distinct()
+                    val protocolIdentities = buildList {
+                        frames.filterIsInstance<BleBeaconFrame.StableIdentity>()
+                            .mapTo(this) { it.identifier }
+                        frames.filterIsInstance<BleBeaconFrame.RuuviTelemetry>()
+                            .mapNotNullTo(this) { it.identifier }
+                    }.distinct()
 
                     val identifiers = if (protocolIdentities.isNotEmpty()) {
                         protocolIdentities
@@ -1113,6 +1127,10 @@ class RadioGeolocationRepository(private val context: Context) {
                     synchronized(resultLock) {
                         if (!completed.get()) {
                             seenProtocols.addAll(protocolNames)
+                            if (seenDetails.size < 8) {
+                                frames.mapNotNull(BleBeaconAdvertisementParser::summary)
+                                    .forEach { if (seenDetails.size < 8) seenDetails.add(it.take(180)) }
+                            }
                             identifiers.forEach { identifier ->
                                 val previous = seen[identifier]
                                 if (previous == null || result.rssi > previous.rssi) {
@@ -1140,10 +1158,10 @@ class RadioGeolocationRepository(private val context: Context) {
                 handler.postDelayed(stopTask, BLE_SCAN_MS)
             } catch (error: SecurityException) {
                 DiagnosticLogStore.log(context, "RADIO_BLE", "BLE scan запрещён Android: ${error.message ?: "SecurityException"}", "ERROR")
-                finish(BleScanPayload(emptyList(), emptySet()))
+                finish(BleScanPayload(emptyList(), emptySet(), emptyList()))
             } catch (error: RuntimeException) {
                 DiagnosticLogStore.log(context, "RADIO_BLE", "Ошибка запуска BLE scan: ${error.javaClass.simpleName}", "ERROR")
-                finish(BleScanPayload(emptyList(), emptySet()))
+                finish(BleScanPayload(emptyList(), emptySet(), emptyList()))
             }
             continuation.invokeOnCancellation {
                 completed.set(true)
@@ -1156,8 +1174,9 @@ class RadioGeolocationRepository(private val context: Context) {
         if (freshScan.signals.isNotEmpty()) {
             cachedBleSignals = freshScan.signals
             cachedBleProtocols = freshScan.protocols
+            cachedBleDetails = freshScan.details
             lastBleScanFinishedAtElapsedMs = finishedAt
-            return TimedRadioSignals(freshScan.signals, 0L, freshScan.protocols)
+            return TimedRadioSignals(freshScan.signals, 0L, freshScan.protocols, freshScan.details)
         }
         // If a BLE scan failed or returned nothing, a recent snapshot can bridge this one miss.
         // The age penalty and hard cache limit stop that old data from looking continuously fresh.
@@ -1166,12 +1185,17 @@ class RadioGeolocationRepository(private val context: Context) {
             finishedAt - lastBleScanFinishedAtElapsedMs
         } else Long.MAX_VALUE
         if (cachedBleSignals.isNotEmpty() && ageAfterAttempt <= RadioFixReliability.BLE_MAX_CACHE_AGE_MS) {
-            return TimedRadioSignals(cachedBleSignals, ageAfterAttempt, cachedBleProtocols + freshScan.protocols)
+            return TimedRadioSignals(
+                cachedBleSignals, ageAfterAttempt,
+                cachedBleProtocols + freshScan.protocols,
+                (cachedBleDetails + freshScan.details).distinct().take(8)
+            )
         }
         cachedBleSignals = emptyList()
         cachedBleProtocols = emptySet()
+        cachedBleDetails = emptyList()
         lastBleScanFinishedAtElapsedMs = 0L
-        return TimedRadioSignals(emptyList(), null, freshScan.protocols)
+        return TimedRadioSignals(emptyList(), null, freshScan.protocols, freshScan.details)
     }
 
     companion object {
@@ -1188,6 +1212,7 @@ class RadioGeolocationRepository(private val context: Context) {
         private var lastBleScanFinishedAtElapsedMs = 0L
         private var cachedBleSignals: List<RadioSignal> = emptyList()
         private var cachedBleProtocols: Set<String> = emptySet()
+        private var cachedBleDetails: List<String> = emptyList()
         private const val WIFI_SCAN_WAIT_MS = 3_000L
         private const val WIFI_SCAN_POLL_MS = 250L
         private const val BLE_SCAN_MS = 2_500L
