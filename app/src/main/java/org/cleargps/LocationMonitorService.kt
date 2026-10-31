@@ -42,8 +42,10 @@ import org.cleargps.core.GnssReplaySatellite
 import org.cleargps.core.RadioPositionSnapshot
 import org.cleargps.core.ObdVehicleSpeedSnapshot
 import org.cleargps.fusion.HorizontalAccelerationSample
+import org.cleargps.fusion.PositionFusionConfig
 import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
+import org.cleargps.fusion.PositionMeasurement
 
 private data class LastResortFallback(val source: String, val location: Location)
 
@@ -53,12 +55,18 @@ class LocationMonitorService : Service(), LocationListener {
     private val engine = LocationFilterEngine()
     // Admits trusted GNSS and bounded radio measurements into a chronological replay timeline.
     private val positionFusionEngine = PositionFusionTimeline()
+    // Radio updates arrive less frequently than GNSS; keep their history separate and allow
+    // the 45-second evidence window without changing normal GNSS fusion semantics.
+    private val autoRadioPositionFusionEngine = PositionFusionTimeline(
+        config = PositionFusionConfig(maximumMeasurementGapNanos = 45_000_000_000L)
+    )
     private val riskZoneMembership = RiskZoneMembershipTracker()
     private val spoofZoneService by lazy(LazyThreadSafetyMode.NONE) { SpoofZoneService(applicationContext) }
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
     private var radioFusionJob: Job? = null
+    private var autoPositionModeJob: Job? = null
     private var autoRadioDatabaseRefreshJob: Job? = null
     private var replayRadioCaptureJob: Job? = null
     private var obd2FallbackJob: Job? = null
@@ -76,6 +84,11 @@ class LocationMonitorService : Service(), LocationListener {
     private var gpsAcquisitionStartedAtElapsedMs = 0L
     private var gpsFirstFixReceived = false
     private var lastGpsLocationElapsedRealtimeNanos = 0L
+    private var autoPositionModeState = AutoPositionModePolicy.initialState()
+    private var autoPositionModeStartedAtElapsedMs = 0L
+    private var autoGpsFixEverReceived = false
+    private var lastGpsProbeLocation: Location? = null
+    private var autoRadioMotionAnchor: PositionMeasurement? = null
     private var gnssStatusRegistered = false
     private var gnssMeasurementsRegistered = false
     private var serviceHeartbeatJob: Job? = null
@@ -748,6 +761,8 @@ class LocationMonitorService : Service(), LocationListener {
             radioOnlyJob = null
             radioFusionJob?.cancel()
             radioFusionJob = null
+            autoPositionModeJob?.cancel()
+            autoPositionModeJob = null
             obd2FallbackJob?.cancel()
             obd2FallbackJob = null
             if (obd2FallbackPublished) clearObd2FallbackOutput("OBD-II fallback cleared while restarting location monitoring")
@@ -758,6 +773,14 @@ class LocationMonitorService : Service(), LocationListener {
                 gpsFirstFixReceived = false
                 lastGpsLocationElapsedRealtimeNanos = 0L
                 gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+                if (nextPositionMode == "auto") {
+                    autoPositionModeState = AutoPositionModePolicy.initialState()
+                    autoPositionModeStartedAtElapsedMs = SystemClock.elapsedRealtime()
+                    autoGpsFixEverReceived = false
+                    lastGpsProbeLocation = null
+                    autoRadioMotionAnchor = null
+                    autoRadioPositionFusionEngine.reset()
+                }
             } else if (gpsAcquisitionStartedAtElapsedMs <= 0L) {
                 gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
             }
@@ -839,25 +862,40 @@ class LocationMonitorService : Service(), LocationListener {
                     startObd2FallbackLoop()
                 }
                 else -> {
+                    val autoRadioFallback = nextPositionMode == "auto" &&
+                        autoPositionModeState.mode == AutoPositionMode.GPS_RADIO
+                    val autoGpsProbe = autoRadioFallback && autoPositionModeState.isGpsProbeActive
                     val gpsAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
                     val gpsEnabled = gpsAvailable && hasFineLocationPermission &&
                         manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-                    if (gpsEnabled) {
+                    if (gpsEnabled && (!autoRadioFallback || autoGpsProbe)) {
                         manager.requestLocationUpdates(
-                            LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                            LocationManager.GPS_PROVIDER,
+                            if (autoGpsProbe) AutoPositionModePolicy.STATE_CHECK_INTERVAL_MS
+                            else configuredUpdateIntervalMillis(),
+                            0f,
+                            this
                         )
                         registerGnssStatus()
                     }
                     val networkAvailable = manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)
-                    if (networkAvailable && manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    if (!autoRadioFallback && networkAvailable &&
+                        manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                    ) {
                         manager.requestLocationUpdates(
                             LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
                         )
                     }
-                    startObd2FallbackLoop()
+                    if (autoRadioFallback) {
+                        startRadioOnlyLoop()
+                        if (autoGpsProbe) startAutoGpsProbe()
+                    } else {
+                        startObd2FallbackLoop()
+                    }
                 }
             }
             startRadioFusionLoop(nextPositionMode)
+            if (nextPositionMode == "auto") startAutoPositionModeLoop()
             if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(nextPositionMode)) {
                 startGpsAcquisitionWatchdog()
             } else {
@@ -1145,9 +1183,11 @@ class LocationMonitorService : Service(), LocationListener {
         radioOnlyJob?.cancel()
         radioOnlyJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
-            restoreRecentRadioMockFixWhileScanning()
+            // Auto fallback must not resurrect a radio fix from before the GNSS outage.
+            if (!isAutoRadioFallbackActive()) restoreRecentRadioMockFixWhileScanning()
             while (isActive && prefs.getBoolean(KEY_MONITORING, false) &&
-                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2")) {
+                (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2") ||
+                    isAutoRadioFallbackActive())) {
                 try {
                     val result = repository.scan(
                         // Persist the same observations the UI recording toggle requests, but
@@ -1185,7 +1225,7 @@ class LocationMonitorService : Service(), LocationListener {
                     val estimateAllowedForOutput = estimateEvidenceRecent &&
                         measurementTimestampUsable &&
                         (!mockRequested || cachedEstimateAllowed)
-                    val rejectionReason = when {
+                    var rejectionReason = when {
                         estimate == null && currentSignalCount < 2 ->
                             "Сейчас обнаружено только $currentSignalCount радиосигналов. Для расчёта нужны минимум 2 актуальных сигнала; локальная база знает ${result.knownRadioCount} из них, пригодных координатных записей: ${result.coordinateRadioCount}."
                         estimate == null ->
@@ -1205,6 +1245,18 @@ class LocationMonitorService : Service(), LocationListener {
                             "Оценка отклонена для mock GPS: погрешность ±${estimate.accuracyMeters.toInt()} м превышает лимит ±${RADIO_FALLBACK_MAX_ACCURACY_METERS.toInt()} м. Включи публикацию при плохой точности, чтобы передавать её с честной погрешностью."
                         else -> ""
                     }
+                    val autoRadioFallback = isAutoRadioFallbackActive()
+                    val baseRadioAllowed = estimate != null && estimateEvidenceRecent &&
+                        measurementTimestampUsable && estimate.matchedCount >= RADIO_MIN_MATCHES &&
+                        (!mockRequested || cachedEstimateAllowed) &&
+                        (estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS ||
+                            prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false))
+                    val filteredAutoRadioOutput = if (autoRadioFallback && baseRadioAllowed) {
+                        autoRadioFallbackLocation(requireNotNull(estimate), nowWallMillis, nowElapsedRealtimeNanos)
+                    } else null
+                    if (autoRadioFallback && baseRadioAllowed && filteredAutoRadioOutput == null) {
+                        rejectionReason = "Auto RADIO: measurement rejected by timestamp, zone, continuity or position filter; waiting for next scan."
+                    }
                     DiagnosticLogStore.log(
                         this@LocationMonitorService, "RADIO_FIX",
                         "Служба: сигналы Wi-Fi=${result.wifiCount}, соты=${result.cellCount}, BLE=${result.beaconCount}; " +
@@ -1216,8 +1268,10 @@ class LocationMonitorService : Service(), LocationListener {
                     if (estimate != null && estimateAllowedForOutput &&
                         estimate.matchedCount >= RADIO_MIN_MATCHES &&
                         (estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS ||
-                            prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false))) {
-                        val output = Location(LocationManager.NETWORK_PROVIDER).apply {
+                            prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false)) &&
+                        (!autoRadioFallback || filteredAutoRadioOutput != null)
+                    ) {
+                        val output = filteredAutoRadioOutput ?: Location(LocationManager.NETWORK_PROVIDER).apply {
                             latitude = estimate.latitude
                             longitude = estimate.longitude
                             accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
@@ -1414,6 +1468,262 @@ class LocationMonitorService : Service(), LocationListener {
         }
     }
 
+    private fun isAutoRadioFallbackActive(): Boolean =
+        prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto" &&
+            autoPositionModeState.mode == AutoPositionMode.GPS_RADIO
+
+    private fun isAutoGpsProbeActive(): Boolean =
+        isAutoRadioFallbackActive() && autoPositionModeState.isGpsProbeActive
+
+    /** Runs only in Auto mode; GNSS is sampled in a bounded probe while RADIO remains active. */
+    private fun startAutoPositionModeLoop() {
+        autoPositionModeJob?.cancel()
+        autoPositionModeJob = null
+        if (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto" ||
+            !prefs.getBoolean(KEY_MONITORING, false)
+        ) return
+        if (autoPositionModeStartedAtElapsedMs <= 0L) {
+            autoPositionModeStartedAtElapsedMs = SystemClock.elapsedRealtime()
+        }
+
+        autoPositionModeJob = serviceScope.launch {
+            while (isActive &&
+                prefs.getBoolean(KEY_MONITORING, false) &&
+                prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto"
+            ) {
+                val nowElapsedMs = SystemClock.elapsedRealtime()
+                val nowElapsedNanos = SystemClock.elapsedRealtimeNanos()
+                val freshnessWindowMs = maxOf(
+                    AutoPositionModePolicy.GPS_DEGRADED_HOLD_MS,
+                    configuredUpdateIntervalMillis().coerceAtLeast(1_000L) * 2L
+                )
+                val lastGpsFixElapsedMs = lastGpsLocationElapsedRealtimeNanos / 1_000_000L
+                val gpsFixFresh = lastGpsLocationElapsedRealtimeNanos > 0L &&
+                    nowElapsedMs >= lastGpsFixElapsedMs &&
+                    nowElapsedMs - lastGpsFixElapsedMs <= freshnessWindowMs
+                if (autoPositionModeState.mode == AutoPositionMode.GPS_OK &&
+                    autoGpsFixEverReceived && !gpsFixFresh &&
+                    autoPositionModeState.degradedSinceElapsedMs == null &&
+                    lastGpsFixElapsedMs > 0L
+                ) {
+                    autoPositionModeState = autoPositionModeState.copy(degradedSinceElapsedMs = lastGpsFixElapsedMs)
+                }
+                val probeStartedAt = autoPositionModeState.gpsProbeStartedElapsedMs
+                val gpsFixReceivedAfterProbe = probeStartedAt == null ||
+                    lastGpsLocationElapsedRealtimeNanos > probeStartedAt * 1_000_000L
+                val decision = engine.currentDecision()
+                val gpsTrusted = decision.state == FilterState.NORMAL &&
+                    decision.source.equals("GPS", ignoreCase = true) &&
+                    !decision.inRiskZone && gpsFixFresh && gpsFixReceivedAfterProbe
+                val transition = AutoPositionModePolicy.update(
+                    state = autoPositionModeState,
+                    nowElapsedRealtimeMs = nowElapsedMs,
+                    gpsTrusted = gpsTrusted,
+                    gpsFixEverReceived = autoGpsFixEverReceived,
+                    autoModeStartedElapsedRealtimeMs = autoPositionModeStartedAtElapsedMs,
+                    gpsFixReceivedAfterProbe = gpsFixReceivedAfterProbe,
+                    initialGpsAcquisitionTimeoutMs = maxOf(
+                        AutoPositionModePolicy.INITIAL_GPS_ACQUISITION_TIMEOUT_MS,
+                        configuredUpdateIntervalMillis().coerceAtLeast(1_000L) * 2L
+                    )
+                )
+                autoPositionModeState = transition.state
+                when (transition.action) {
+                    AutoPositionAction.ENTER_RADIO -> enterAutoRadioFallback()
+                    AutoPositionAction.START_GPS_PROBE -> startAutoGpsProbe()
+                    AutoPositionAction.STOP_GPS_PROBE -> stopAutoGpsProbe()
+                    AutoPositionAction.RETURN_TO_GPS -> resumeAutoGpsAfterProbe()
+                    AutoPositionAction.NONE -> Unit
+                }
+                delay(AutoPositionModePolicy.STATE_CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun enterAutoRadioFallback() {
+        if (!isAutoRadioFallbackActive()) return
+        try { manager.removeUpdates(this) } catch (_: SecurityException) {}
+        unregisterGnssStatus()
+        radioFusionJob?.cancel()
+        radioFusionJob = null
+        obd2FallbackJob?.cancel()
+        obd2FallbackJob = null
+        positionFusionEngine.reset()
+        autoRadioPositionFusionEngine.reset()
+        autoRadioMotionAnchor = null
+        lastTrustedGpsFixForObd2 = null
+        lastGpsProbeLocation = null
+        lastRadioMockFix = null
+        lastRadioMockFixAtElapsedMs = 0L
+        mock?.disable()
+        prefs.edit()
+            .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putBoolean(KEY_HAS_OUTPUT, false)
+            .putString(KEY_SOURCE, "NONE")
+            .remove(KEY_LAT)
+            .remove(KEY_LON)
+            .remove(KEY_ACCURACY)
+            .apply()
+        startRadioOnlyLoop()
+        val reason = "Авто: физический GNSS остаётся недоверенным; включено радио. Проверка GPS — каждые 120 с, окно до 30 с."
+        saveServiceStatus(reason)
+        DiagnosticLogStore.log(this, "AUTO_MODE", reason, "WARN")
+    }
+
+    private fun startAutoGpsProbe() {
+        if (!isAutoGpsProbeActive()) return
+        lastGpsProbeLocation = null
+        val hasFinePermission =
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val providerAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
+        val providerEnabled = providerAvailable && runCatching {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        }.getOrDefault(false)
+        if (!hasFinePermission || !providerEnabled) {
+            val reason = "Авто/радио: фоновая проверка GPS недоступна (нужно точное разрешение и включённый GPS); радио продолжает работать."
+            saveServiceStatus(reason)
+            DiagnosticLogStore.log(this, "AUTO_MODE", reason, "WARN")
+            return
+        }
+        try {
+            manager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                AutoPositionModePolicy.STATE_CHECK_INTERVAL_MS,
+                0f,
+                this
+            )
+            registerGnssStatus()
+            val reason = "Авто/радио: тихая проверка физического GPS запущена на срок до 30 с; радио продолжает работать."
+            saveServiceStatus(reason)
+            DiagnosticLogStore.log(this, "AUTO_MODE", reason)
+        } catch (error: SecurityException) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "GPS probe permission denied: ${error.javaClass.simpleName}", "WARN")
+        } catch (error: IllegalArgumentException) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "GPS probe provider unavailable: ${error.javaClass.simpleName}", "WARN")
+        }
+    }
+
+    private fun stopAutoGpsProbe() {
+        try { manager.removeUpdates(this) } catch (_: SecurityException) {}
+        unregisterGnssStatus()
+        lastGpsProbeLocation = null
+        val reason = "Авто/радио: проверка GPS не подтвердила нормальный фикс за 30 с; остаёмся на радио."
+        saveServiceStatus(reason)
+        DiagnosticLogStore.log(this, "AUTO_MODE", reason, "WARN")
+    }
+
+    private fun resumeAutoGpsAfterProbe() {
+        val probeFix = lastGpsProbeLocation?.let { Location(it) }
+        lastGpsProbeLocation = null
+        try { manager.removeUpdates(this) } catch (_: SecurityException) {}
+        unregisterGnssStatus()
+        radioOnlyJob?.cancel()
+        radioOnlyJob = null
+        positionFusionEngine.reset()
+        autoRadioPositionFusionEngine.reset()
+        autoRadioMotionAnchor = null
+        lastTrustedGpsFixForObd2 = null
+        lastRadioMockFix = null
+        lastRadioMockFixAtElapsedMs = 0L
+
+        val hasFinePermission =
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val hasLocationPermission = hasFinePermission ||
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val gpsAvailable = manager.allProviders.contains(LocationManager.GPS_PROVIDER)
+        val gpsEnabled = hasFinePermission && gpsAvailable && runCatching {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        }.getOrDefault(false)
+        try {
+            if (gpsEnabled) {
+                manager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                )
+                registerGnssStatus()
+            }
+            val networkAvailable = manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)
+            if (hasLocationPermission && networkAvailable &&
+                manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+            ) {
+                manager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                )
+            }
+        } catch (error: SecurityException) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "Location permission changed during GPS recovery: ${error.javaClass.simpleName}", "WARN")
+        } catch (error: IllegalArgumentException) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "Location provider unavailable during GPS recovery: ${error.javaClass.simpleName}", "WARN")
+        }
+        startObd2FallbackLoop()
+        startRadioFusionLoop("auto")
+        saveServiceStatus("Авто: физический GPS восстановлен; возврат с радио на GPS.")
+        DiagnosticLogStore.log(this, "AUTO_MODE", "Returned from RADIO to trusted physical GPS.")
+        probeFix?.let(::onLocationChanged)
+    }
+
+    private fun autoRadioFallbackLocation(
+        estimate: RadioEstimate,
+        nowWallTimeMillis: Long,
+        nowElapsedRealtimeNanos: Long
+    ): Location? {
+        if (!isAutoRadioFallbackActive()) return null
+        val measuredAt = estimate.measurementElapsedRealtimeNanos ?: return null
+        if (!RadioFixReliability.hasUsableRadioMeasurementTimestamp(measuredAt, nowElapsedRealtimeNanos)) return null
+        val ageNanos = nowElapsedRealtimeNanos - measuredAt
+        if (ageNanos !in 0L..2_000_000_000L) return null
+
+        val precise = PositionFusionLocationAdapter.radioMeasurement(estimate, nowElapsedRealtimeNanos)
+        val measurement = precise ?: run {
+            if (!prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false) ||
+                estimate.accuracyMeters <= 5_000.0 ||
+                estimate.accuracyMeters > RADIO_FALLBACK_MAX_ACCURACY_METERS ||
+                estimate.matchedCount < RADIO_MIN_MATCHES ||
+                estimate.matchedRadioIdentifiers.size < RADIO_MIN_MATCHES
+            ) return null
+            PositionMeasurement(
+                source = org.cleargps.fusion.PositionMeasurementSource.RADIO,
+                latitude = estimate.latitude,
+                longitude = estimate.longitude,
+                horizontalUncertaintyMeters = estimate.accuracyMeters,
+                elapsedRealtimeNanos = measuredAt
+            )
+        }
+        val zones = ZoneStore.loadAll(this).filter { it.enabled }.map { it.points }
+        if (!RadioFusionZonePolicy.allowsFusion(measurement, zones)) return null
+        if (!AutoRadioMotionPolicy.allows(autoRadioMotionAnchor, measurement)) return null
+        val ageMillis = ageNanos / 1_000_000L
+        if (precise == null) {
+            autoRadioPositionFusionEngine.reset()
+            autoRadioMotionAnchor = measurement
+            return Location(LocationManager.NETWORK_PROVIDER).apply {
+                latitude = measurement.latitude
+                longitude = measurement.longitude
+                accuracy = measurement.horizontalUncertaintyMeters.toFloat().coerceAtLeast(1f)
+                time = nowWallTimeMillis - ageMillis
+                elapsedRealtimeNanos = measurement.elapsedRealtimeNanos
+            }
+        }
+        val update = autoRadioPositionFusionEngine.update(measurement)
+        if (update.status == org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "Auto RADIO measurement rejected by position filter: ${update.rejectionReason ?: "unknown"}", "WARN")
+            return null
+        }
+        val previous = autoRadioMotionAnchor
+        if (previous == null || measurement.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
+            autoRadioMotionAnchor = measurement
+        }
+        val fused = autoRadioPositionFusionEngine.estimate(nowElapsedRealtimeNanos)
+            ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) } ?: return null
+        val template = Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = estimate.latitude
+            longitude = estimate.longitude
+            accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
+            time = nowWallTimeMillis - ageMillis
+            elapsedRealtimeNanos = measurement.elapsedRealtimeNanos
+        }
+        return PositionFusionLocationAdapter.toLocation(fused, template, nowWallTimeMillis, nowElapsedRealtimeNanos)
+    }
+
     /**
      * Periodically obtains a local radio estimate in Auto mode. The radio sample enters the
      * fusion timeline only while the independent trust filter still accepts physical GPS as NORMAL.
@@ -1422,7 +1732,7 @@ class LocationMonitorService : Service(), LocationListener {
     private fun startRadioFusionLoop(positionMode: String) {
         radioFusionJob?.cancel()
         radioFusionJob = null
-        if (positionMode != "auto") return
+        if (positionMode != "auto" || isAutoRadioFallbackActive()) return
 
         radioFusionJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
@@ -1594,7 +1904,8 @@ class LocationMonitorService : Service(), LocationListener {
      */
     private fun radioScanEvidenceCurrentlyAllowed(): Boolean {
         if (!prefs.getBoolean(KEY_MONITORING, false) ||
-            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto"
+            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto" ||
+            isAutoRadioFallbackActive()
         ) return false
         val current = engine.currentDecision()
         if (current.inRiskZone || prefs.getBoolean(KEY_IN_ZONE, false)) return false
@@ -1622,7 +1933,8 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun radioFusionCurrentlyAllowed(): Boolean {
         if (!prefs.getBoolean(KEY_MONITORING, false) ||
-            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto"
+            prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") != "auto" ||
+            isAutoRadioFallbackActive()
         ) return false
 
         val decision = engine.currentDecision()
@@ -1683,6 +1995,14 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun stopTracking() {
+        autoPositionModeJob?.cancel()
+        autoPositionModeJob = null
+        autoPositionModeState = AutoPositionModePolicy.initialState()
+        autoPositionModeStartedAtElapsedMs = 0L
+        autoGpsFixEverReceived = false
+        lastGpsProbeLocation = null
+        autoRadioMotionAnchor = null
+        autoRadioPositionFusionEngine.reset()
         gpsAcquisitionJob?.cancel()
         gpsAcquisitionJob = null
         gpsAcquisitionStartedAtElapsedMs = 0L
@@ -1838,10 +2158,15 @@ class LocationMonitorService : Service(), LocationListener {
             return
         }
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
+        if (gpsFix && isAutoRadioFallbackActive() && !isAutoGpsProbeActive()) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "Late GPS callback ignored while Auto RADIO is active outside its scheduled probe.")
+            return
+        }
         if (gpsFix) {
             lastGpsLocationElapsedRealtimeNanos = maxOf(
                 lastGpsLocationElapsedRealtimeNanos, location.elapsedRealtimeNanos
             )
+            if (activePositionMode == "auto") autoGpsFixEverReceived = true
             if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(activePositionMode ?: "")) {
                 gpsFirstFixReceived = true
                 gpsAcquisitionJob?.cancel()
@@ -1886,6 +2211,16 @@ class LocationMonitorService : Service(), LocationListener {
             nearAirport = airportAssessment?.nearAirport == true,
             airportCheckAvailable = airportAssessment?.airportCheckAvailable == true
         )
+        if (gpsFix && isAutoGpsProbeActive()) {
+            lastGpsProbeLocation = Location(location)
+            try { GnssReplayRecorder.recordPosition(this, location, inZone, observedDecision) }
+            catch (_: RuntimeException) { /* Probe diagnostics must not interrupt radio positioning. */ }
+            DiagnosticLogStore.log(
+                this, "AUTO_MODE",
+                "GPS probe: state=${observedDecision.state}, source=${observedDecision.source}, risk=${observedDecision.riskScore}, inZone=${observedDecision.inRiskZone}; radio output unchanged."
+            )
+            return
+        }
         if (gpsFix) {
             val trustedPhysicalGps = observedDecision.state == FilterState.NORMAL &&
                 observedDecision.source.equals("GPS", ignoreCase = true) &&
@@ -2107,13 +2442,18 @@ class LocationMonitorService : Service(), LocationListener {
         if (!provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) ||
             !prefs.getBoolean(KEY_MONITORING, false)
         ) return
+        if (isAutoRadioFallbackActive() && !isAutoGpsProbeActive()) return
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         try {
             if (manager.allProviders.contains(LocationManager.GPS_PROVIDER) &&
                 manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
             ) {
                 manager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, configuredUpdateIntervalMillis(), 0f, this
+                    LocationManager.GPS_PROVIDER,
+                    if (isAutoGpsProbeActive()) AutoPositionModePolicy.STATE_CHECK_INTERVAL_MS
+                    else configuredUpdateIntervalMillis(),
+                    0f,
+                    this
                 )
                 registerGnssStatus()
                 if (GpsFixAcquisitionPolicy.requiresPreciseLocationPermission(
@@ -2326,6 +2666,13 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun publishSignalDecision(result: FilterDecision) {
+        if (isAutoGpsProbeActive()) {
+            DiagnosticLogStore.log(
+                this, "AUTO_MODE",
+                "GNSS signal assessment during GPS probe: state=${result.state}, risk=${result.riskScore}; radio output unchanged."
+            )
+            return
+        }
         if (result.state != FilterState.NORMAL || result.source == "GNSS_SIGNAL_ONLY") {
             positionFusionEngine.reset()
         }
