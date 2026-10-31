@@ -262,10 +262,11 @@ internal object BleBeaconAdvertisementParser {
         val rawSequence = payload.u16be(16)
 
         val embeddedMac = payload.hex(18, 24).chunked(2).joinToString(":")
-        val firstOctet = embeddedMac.substringBefore(':').toIntOrNull(16) ?: return null
+        // The embedded RAWv2 MAC is a payload identifier, not an Ethernet destination
+        // address. Do not apply the multicast-bit rule; official test vectors include
+        // valid values whose first octet is odd. Only reserved missing values are rejected.
         val validMac = embeddedMac != "ff:ff:ff:ff:ff:ff" &&
-            embeddedMac != "00:00:00:00:00:00" &&
-            (firstOctet and 0x01) == 0
+            embeddedMac != "00:00:00:00:00:00"
 
         return BleBeaconFrame.RuuviTelemetry(
             identifier = if (validMac) "ruuvi:$embeddedMac" else null,

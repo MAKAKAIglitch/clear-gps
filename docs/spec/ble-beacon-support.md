@@ -32,7 +32,7 @@ Hexadecimal components are lowercase. Major/Minor are unsigned decimal integers.
 
 ## Ruuvi RAWv2 sensor data
 
-For the production 24-byte RAWv2 frame under manufacturer ID 0x0499, the embedded six-byte MAC is the stable beacon key (`ruuvi:<mac>`). The parser decodes temperature in 0.005 °C steps, relative humidity in 0.0025% steps, pressure with the 50,000 Pa offset, three signed acceleration axes, battery voltage, TX power, movement counter and measurement sequence. Spec-defined unavailable sentinels are converted to null rather than treated as zero. A missing/broadcast/multicast embedded MAC leaves the sensor values readable but does not create a persistent position key. Current support targets RAWv2; deprecated RAWv1 and proposal/beta variants are not claimed as supported.
+For the production 24-byte RAWv2 frame under manufacturer ID 0x0499, the embedded six-byte MAC is the stable beacon key (`ruuvi:<mac>`). The parser decodes temperature in 0.005 °C steps, relative humidity in 0.0025% steps, pressure with the 50,000 Pa offset, three signed acceleration axes, battery voltage, TX power, movement counter and measurement sequence. Spec-defined unavailable sentinels are converted to null rather than treated as zero. The reserved all-FF or all-zero embedded MAC leaves the sensor values readable but does not create a persistent position key. The payload MAC is a protocol identifier; Ethernet multicast-bit filtering is not applied. Current support targets RAWv2; deprecated RAWv1 and proposal/beta variants are not claimed as supported.
 
 ## Address fallback
 

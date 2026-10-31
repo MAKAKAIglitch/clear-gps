@@ -248,6 +248,26 @@ class BleBeaconAdvertisementParserTest {
     }
 
     @Test
+    fun decodesOfficialRuuviRawV2TestVectorIncludingOddFirstMacOctet() {
+        // Official RAWv2 vector: a valid embedded MAC can have an odd first octet.
+        val payload = "0512FC5394C37C0004FFFC040CAC364200CDCBB8334C884F"
+            .chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val frame = parseRuuvi(payload)
+
+        assertEquals("ruuvi:cb:b8:33:4c:88:4f", frame.identifier)
+        assertEquals(24.3, frame.temperatureCelsius!!, 0.001)
+        assertEquals(53.49, frame.humidityPercent!!, 0.001)
+        assertEquals(100044, frame.pressurePascals)
+        assertEquals(0.004, frame.accelerationXG!!, 0.001)
+        assertEquals(-0.004, frame.accelerationYG!!, 0.001)
+        assertEquals(1.036, frame.accelerationZG!!, 0.001)
+        assertEquals(2977, frame.batteryMillivolts)
+        assertEquals(4, frame.txPowerDbm)
+        assertEquals(66, frame.movementCounter)
+        assertEquals(205, frame.measurementSequence)
+    }
+
+    @Test
     fun ruuviRawV2UnavailableFieldsStayNullAndInvalidMacIsNotAnIdentity() {
         val payload = ByteArray(24).apply {
             this[0] = 0x05
