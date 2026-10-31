@@ -531,8 +531,8 @@ fun ClearGpsApp(
         if (normalized == mapPointLimit) return
         mapPointLimit = normalized
         prefs.edit().putInt(ClearGpsPreferences.KEY_MAP_RADIO_POINT_LIMIT, normalized).apply()
-        mapPointLoadJob?.cancel()
-        mapPointLoadJob = scope.launch {
+        mapPointsLoadJob?.cancel()
+        mapPointsLoadJob = scope.launch {
             mapPointsLoading = true
             try {
                 refreshMapPointsInCurrentCoroutine(normalized)
