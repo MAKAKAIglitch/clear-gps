@@ -93,10 +93,7 @@ internal object BleBeaconAdvertisementParser {
             }
             if (altBeaconIndex >= 0) {
                 val alt = frames[altBeaconIndex] as BleBeaconFrame.StableIdentity
-                frames[altBeaconIndex] = alt.copy(
-                    protocol = "sembeacon",
-                    identifier = alt.identifier.replaceFirst("altbeacon:", "sembeacon:")
-                )
+                frames[altBeaconIndex] = alt.copy(protocol = "sembeacon")
             }
         }
 

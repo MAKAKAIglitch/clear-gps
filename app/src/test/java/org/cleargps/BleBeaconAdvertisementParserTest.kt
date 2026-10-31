@@ -195,6 +195,10 @@ class BleBeaconAdvertisementParserTest {
         )
         val identity = frames.filterIsInstance<BleBeaconFrame.StableIdentity>().single()
         assertEquals("sembeacon", identity.protocol)
+        assertEquals(
+            "altbeacon:0118:0000000000000000000000000000000000000000",
+            identity.identifier
+        )
         assertTrue(frames.any { it is BleBeaconFrame.EddystoneUrl })
     }
 

@@ -17,7 +17,7 @@ Radio V2 uses BLE advertisement payloads as the primary source of beacon identit
 | AltBeacon | Bluetooth company ID + 20-byte Beacon ID | Stable BLE key |
 | SemBeacon | AltBeacon identity plus Eddystone-URL-compatible scan response | Stable BLE key plus URI metadata |
 
-SemBeacon is identified when both components appear in the same Android ScanRecord. If Android/device firmware does not deliver the scan response, the underlying AltBeacon identity is still usable.
+SemBeacon is identified when both components appear in the same Android ScanRecord. Its database key remains the underlying AltBeacon ID, whether or not the Eddystone-URL scan response is received on a particular scan. This prevents one physical beacon from splitting into separate AltBeacon and SemBeacon points.
 
 ## Identifier encoding
 
@@ -25,8 +25,7 @@ The database uses radio_type = 'ble' and the existing identifier text field:
 
 - ibeacon:<uuid>:<major>:<minor>
 - eddystone-uid:<namespace-hex>:<instance-hex>
-- altbeacon:<company-id-hex>:<20-byte-id-hex>
-- sembeacon:<company-id-hex>:<20-byte-id-hex>
+- altbeacon:<company-id-hex>:<20-byte-id-hex> (SemBeacon uses the same AltBeacon key)
 - ruuvi:<embedded-mac>
 
 Hexadecimal components are lowercase. Major/Minor are unsigned decimal integers. Manufacturer-specific MFG_RESERVED bytes and Eddystone RFU bytes do not participate in identity.
