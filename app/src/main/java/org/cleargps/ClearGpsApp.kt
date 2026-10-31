@@ -2524,30 +2524,7 @@ fun ClearGpsApp(
                     }
                 }
 
-                if (selectedTab == AppTab.MAP) {
-                    MapFloatingControls(
-                        modifier = Modifier.align(Alignment.TopEnd).padding(
-                            top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 82.dp,
-                            end = 12.dp
-                        ),
-                        anchorActive = mapTapMode == MapTapMode.PLACE_ANCHOR,
-                        zoneActive = mapTapMode == MapTapMode.DRAW_ZONE,
-                        onLegend = { showMapLegend = true },
-                        onPlaceAnchor = {
-                            mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
-                        },
-                        onDrawZone = {
-                            if (mapTapMode == MapTapMode.DRAW_ZONE) {
-                                mapTapMode = MapTapMode.NONE
-                                draftZone = emptyList()
-                            } else {
-                                draftZone = emptyList()
-                                mapTapMode = MapTapMode.DRAW_ZONE
-                            }
-                            mapController.updateZones(zones, draftZone)
-                        }
-                    )
-                }
+
 
                 AnimatedVisibility(
                     visible = selectedTab != AppTab.MAP,
@@ -3281,6 +3258,31 @@ fun ClearGpsApp(
                     }
                 }
                 }
+            }
+
+            if (selectedTab == AppTab.MAP) {
+                MapFloatingControls(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 82.dp,
+                        end = 12.dp
+                    ),
+                    anchorActive = mapTapMode == MapTapMode.PLACE_ANCHOR,
+                    zoneActive = mapTapMode == MapTapMode.DRAW_ZONE,
+                    onLegend = { showMapLegend = true },
+                    onPlaceAnchor = {
+                        mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
+                    },
+                    onDrawZone = {
+                        if (mapTapMode == MapTapMode.DRAW_ZONE) {
+                            mapTapMode = MapTapMode.NONE
+                            draftZone = emptyList()
+                        } else {
+                            draftZone = emptyList()
+                            mapTapMode = MapTapMode.DRAW_ZONE
+                        }
+                        mapController.updateZones(zones, draftZone)
+                    }
+                )
             }
 
             if (selectedTab == AppTab.MAP) {
