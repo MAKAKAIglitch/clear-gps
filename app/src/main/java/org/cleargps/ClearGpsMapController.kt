@@ -47,6 +47,11 @@ class ClearGpsMapController {
     private var wifiPointsSource: GeoJsonSource? = null
     private var cellPointsSource: GeoJsonSource? = null
     private var blePointsSource: GeoJsonSource? = null
+    private var beaconDbSource: GeoJsonSource? = null
+    private var openCellIdSource: GeoJsonSource? = null
+    private var layerVisibility: MapLayerVisibility = MapLayerVisibility()
+    private var beaconDbCoordinate: MapCoordinate? = null
+    private var openCellIdCoordinates: List<MapCoordinate> = emptyList()
     private var primaryLocation: MapCoordinate? = null
     private var calculatedLocation: MapCoordinate? = null
     /** Radio-estimate position and uncertainty currently displayed by the map animator. */
@@ -163,6 +168,8 @@ class ClearGpsMapController {
         wifiPointsSource = null
         cellPointsSource = null
         blePointsSource = null
+        beaconDbSource = null
+        openCellIdSource = null
     }
 
     fun setDarkMode(dark: Boolean) {
@@ -176,6 +183,35 @@ class ClearGpsMapController {
         showRadioPoints = show
         renderRadioPoints()
     }
+
+    fun setLayerVisibility(value: MapLayerVisibility) {
+        if (layerVisibility == value) return
+        layerVisibility = value
+        renderPrimaryLayers()
+        renderCalculatedLocation()
+        renderAnchor()
+        renderZones()
+        renderRadioPoints()
+        renderLookupLayers()
+    }
+
+    fun updateBeaconDbEstimate(coordinate: MapCoordinate?) {
+        beaconDbCoordinate = coordinate?.takeIf(::isValidCoordinate)
+        renderLookupLayers()
+    }
+
+    fun updateOpenCellIdPoints(points: List<MapCoordinate>) {
+        openCellIdCoordinates = points.asSequence()
+            .filter(::isValidCoordinate)
+            .distinct()
+            .take(MAX_OPEN_CELL_ID_MAP_POINTS)
+            .toList()
+        renderLookupLayers()
+    }
+
+    private fun isValidCoordinate(coordinate: MapCoordinate): Boolean =
+        coordinate.latitude.isFinite() && coordinate.latitude in -90.0..90.0 &&
+            coordinate.longitude.isFinite() && coordinate.longitude in -180.0..180.0
 
     fun setOfflineMode(offline: Boolean) {
         if (offlineMode == offline) return
@@ -465,8 +501,10 @@ class ClearGpsMapController {
         wifiPointsSource = GeoJsonSource(WIFI_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
         cellPointsSource = GeoJsonSource(CELL_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
         blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
+        beaconDbSource = GeoJsonSource(BEACONDB_SOURCE, emptyCollection())
+        openCellIdSource = GeoJsonSource(OPENCELLID_SOURCE, emptyCollection(), pointSourceOptions)
         listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
-            wifiPointsSource, cellPointsSource, blePointsSource).forEach { style.addSource(it!!) }
+            wifiPointsSource, cellPointsSource, blePointsSource, beaconDbSource, openCellIdSource).forEach { style.addSource(it!!) }
 
         style.addLayer(FillLayer(POLYGON_LAYER, POLYGON_SOURCE).withProperties(
             PropertyFactory.fillColor("#E85D75"), PropertyFactory.fillOpacity(0.17f)
@@ -519,6 +557,26 @@ class ClearGpsMapController {
             PropertyFactory.textColor("#FFFFFF"), PropertyFactory.textAllowOverlap(true),
             PropertyFactory.textIgnorePlacement(true)
         ).withFilter(Expression.has("point_count")))
+        style.addLayer(CircleLayer(OPENCELLID_LAYER, OPENCELLID_SOURCE).withProperties(
+            PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#F97316"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f),
+            PropertyFactory.circleOpacity(0.95f)
+        ).withFilter(Expression.neq(Expression.get("cluster"), true)))
+        style.addLayer(CircleLayer(OPENCELLID_CLUSTERS_LAYER, OPENCELLID_SOURCE).withProperties(
+            PropertyFactory.circleRadius(13f), PropertyFactory.circleColor("#F97316"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2f),
+            PropertyFactory.circleOpacity(0.98f)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(SymbolLayer(OPENCELLID_CLUSTER_COUNT_LAYER, OPENCELLID_SOURCE).withProperties(
+            PropertyFactory.textField("{point_count_abbreviated}"), PropertyFactory.textSize(10f),
+            PropertyFactory.textColor("#FFFFFF"), PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        ).withFilter(Expression.has("point_count")))
+        style.addLayer(CircleLayer(BEACONDB_LAYER, BEACONDB_SOURCE).withProperties(
+            PropertyFactory.circleRadius(9f), PropertyFactory.circleColor("#0891B2"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f),
+            PropertyFactory.circleOpacity(0.98f)
+        ))
         style.addLayer(CircleLayer(ANCHOR_HALO_LAYER, ANCHOR_SOURCE).withProperties(
             PropertyFactory.circleRadius(14f), PropertyFactory.circleColor("#F9AB00"), PropertyFactory.circleOpacity(0.22f)
         ))
@@ -563,11 +621,12 @@ class ClearGpsMapController {
         renderAnchor()
         renderZones()
         renderRadioPoints()
+        renderLookupLayers()
     }
 
     private fun renderPrimaryLayers() {
         if (!mapReady) return
-        val position = primaryLocation
+        val position = primaryLocation.takeIf { layerVisibility.showPositionCenters }
         locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
         accuracySource?.setGeoJson(
             if (position != null) accuracyCollection(position, displayedAccuracyMeters) else emptyCollection()
@@ -577,13 +636,15 @@ class ClearGpsMapController {
 
     private fun renderPrimaryLocation() {
         if (!mapReady) return
-        locationSource?.setGeoJson(primaryLocation?.let { pointCollection(it) } ?: emptyCollection())
+        val position = primaryLocation.takeIf { layerVisibility.showPositionCenters }
+        locationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
         map?.triggerRepaint()
     }
 
     private fun renderCalculatedLocation() {
         if (!mapReady) return
-        val position = displayedCalculatedLocation ?: calculatedLocation
+        val position = (displayedCalculatedLocation ?: calculatedLocation)
+            .takeIf { layerVisibility.showPositionCenters }
         calculatedLocationSource?.setGeoJson(position?.let { pointCollection(it) } ?: emptyCollection())
         calculatedAccuracySource?.setGeoJson(
             if (position != null) accuracyCollection(position, displayedCalculatedAccuracyMeters) else emptyCollection()
@@ -594,7 +655,9 @@ class ClearGpsMapController {
     private fun renderAnchor() {
         if (!mapReady) return
         anchorSource?.setGeoJson(
-            manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection()
+            if (layerVisibility.showManualAnchor) {
+                manualAnchor?.let { pointCollection(MapCoordinate(it.latitude, it.longitude)) } ?: emptyCollection()
+            } else emptyCollection()
         )
         map?.triggerRepaint()
     }
@@ -603,7 +666,7 @@ class ClearGpsMapController {
         if (!mapReady) return
         val polygons = ArrayList<Feature>()
         val zoneLines = ArrayList<Feature>()
-        savedZones.filter { it.enabled }.forEach { zone ->
+        savedZones.filter { it.enabled && layerVisibility.showRiskZones }.forEach { zone ->
             val points = zone.points.map { Point.fromLngLat(it.longitude, it.latitude) }
             if (points.size >= 3) {
                 val ring = points.toMutableList()
@@ -627,7 +690,9 @@ class ClearGpsMapController {
     private fun renderRadioPoints() {
         if (!mapReady) return
         fun pointsFor(type: String): FeatureCollection {
-            if (!showRadioPoints) return emptyCollection()
+            if (!showRadioPoints || !MapLayerVisibilityPolicy.isRadioTypeVisible(type, layerVisibility)) {
+                return emptyCollection()
+            }
             val features = radioPoints.asSequence().filter { it.type == type }
                 .map { point ->
                     Feature.fromGeometry(Point.fromLngLat(point.longitude!!, point.latitude!!)).apply {
@@ -641,6 +706,23 @@ class ClearGpsMapController {
         cellPointsSource?.setGeoJson(pointsFor("cell"))
         blePointsSource?.setGeoJson(pointsFor("ble"))
         // GeoJSON updates are asynchronous in MapLibre; request a frame after marker changes.
+        map?.triggerRepaint()
+    }
+
+    private fun renderLookupLayers() {
+        if (!mapReady) return
+        val beaconPoint = beaconDbCoordinate.takeIf { layerVisibility.showBeaconDbEstimate }
+        beaconDbSource?.setGeoJson(
+            beaconPoint?.let { pointCollection(it) } ?: emptyCollection()
+        )
+        val cellFeatures = if (layerVisibility.showOpenCellIdCells) {
+            openCellIdCoordinates.map { coordinate ->
+                Feature.fromGeometry(Point.fromLngLat(coordinate.longitude, coordinate.latitude))
+            }
+        } else emptyList()
+        openCellIdSource?.setGeoJson(
+            FeatureCollection.fromFeatures(cellFeatures.toTypedArray())
+        )
         map?.triggerRepaint()
     }
 
@@ -695,6 +777,13 @@ class ClearGpsMapController {
         private const val WIFI_POINTS_SOURCE = "cleargps-wifi-points"
         private const val CELL_POINTS_SOURCE = "cleargps-cell-points"
         private const val BLE_POINTS_SOURCE = "cleargps-ble-points"
+        private const val BEACONDB_SOURCE = "cleargps-beacondb-estimate"
+        private const val OPENCELLID_SOURCE = "cleargps-opencellid-cells"
+        private const val BEACONDB_LAYER = "cleargps-beacondb-estimate-layer"
+        private const val OPENCELLID_LAYER = "cleargps-opencellid-cells-layer"
+        private const val OPENCELLID_CLUSTERS_LAYER = "cleargps-opencellid-clusters-layer"
+        private const val OPENCELLID_CLUSTER_COUNT_LAYER = "cleargps-opencellid-cluster-count-layer"
+        private const val MAX_OPEN_CELL_ID_MAP_POINTS = 2_000
         private const val LOCATION_HALO_LAYER = "cleargps-location-halo"
         private const val LOCATION_DOT_LAYER = "cleargps-location-dot"
         private const val CALCULATED_DOT_LAYER = "cleargps-calculated-location-dot"

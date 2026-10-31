@@ -3901,6 +3901,7 @@ private fun MapLayersBottomSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MapHomeScreen(
     coordinate: MapCoordinate?, accuracy: Double?, source: String, mode: PositionMode,
