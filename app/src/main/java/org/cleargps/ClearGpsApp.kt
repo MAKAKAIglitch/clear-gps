@@ -2474,7 +2474,7 @@ fun ClearGpsApp(
             } else {
                 (maxHeight - WindowInsets.statusBars.asPaddingValues().calculateTopPadding() - 75.dp).coerceAtLeast(0.dp)
             }
-            val panelBottomOffset = if (panelVisible && selectedTab == AppTab.MAP) panelMaxHeight else 0.dp
+            val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             if (selectedTab == AppTab.MAP) {
                 AndroidView(
@@ -2506,7 +2506,10 @@ fun ClearGpsApp(
                         filterState = filterState,
                         riskScore = riskScore,
                         onCenter = { mapController.focusPrimary() },
-                        onSettings = { navigateToTab(AppTab.SETTINGS) }
+                        onSettings = {
+                             if (selectedTab == AppTab.MAP) showMapLayers = true
+                             else navigateToTab(AppTab.SETTINGS)
+                         }
                     )
                     if (selectedTab == AppTab.MAP && mapTapMode != MapTapMode.NONE) {
                         ModeBanner(
@@ -2521,8 +2524,33 @@ fun ClearGpsApp(
                     }
                 }
 
+                if (selectedTab == AppTab.MAP) {
+                    MapFloatingControls(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(
+                            top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 82.dp,
+                            end = 12.dp
+                        ),
+                        anchorActive = mapTapMode == MapTapMode.PLACE_ANCHOR,
+                        zoneActive = mapTapMode == MapTapMode.DRAW_ZONE,
+                        onLegend = { showMapLegend = true },
+                        onPlaceAnchor = {
+                            mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
+                        },
+                        onDrawZone = {
+                            if (mapTapMode == MapTapMode.DRAW_ZONE) {
+                                mapTapMode = MapTapMode.NONE
+                                draftZone = emptyList()
+                            } else {
+                                draftZone = emptyList()
+                                mapTapMode = MapTapMode.DRAW_ZONE
+                            }
+                            mapController.updateZones(zones, draftZone)
+                        }
+                    )
+                }
+
                 AnimatedVisibility(
-                    visible = panelVisible || selectedTab != AppTab.MAP,
+                    visible = selectedTab != AppTab.MAP,
                     modifier = Modifier.fillMaxWidth(),
                     enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(190)) +
                         fadeIn(animationSpec = tween(140)),
@@ -2678,29 +2706,7 @@ fun ClearGpsApp(
                                     onOpenZones = { navigateToTab(AppTab.ZONES) },
                                     onOpenMap = { navigateToTab(AppTab.MAP) }
                                 )
-                                AppTab.MAP -> MapScreenPanel(
-                                    layerVisibility = mapLayerVisibility,
-                                    beaconDbAvailable = beaconDbLookupResult?.coordinate != null,
-                                    openCellIdCount = openCellIdRecords.count {
-                                        OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis())
-                                    },
-                                    mapTapMode = mapTapMode,
-                                    onOpenLayers = { showMapLayers = true },
-                                    onOpenLegend = { showMapLegend = true },
-                                    onPlaceAnchor = {
-                                        mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
-                                    },
-                                    onDrawZone = {
-                                        draftZone = emptyList()
-                                        mapTapMode = MapTapMode.DRAW_ZONE
-                                        mapController.updateZones(zones, draftZone)
-                                    },
-                                    onCancelMapAction = {
-                                        mapTapMode = MapTapMode.NONE
-                                        draftZone = emptyList()
-                                        mapController.updateZones(zones, draftZone)
-                                    }
-                                )
+                                AppTab.MAP -> Spacer(Modifier.fillMaxSize())
                                 AppTab.POINTS -> DatabaseScreen(
                                     points = points, history = history, sources = radioSources, sourceDaysBySource = sourceDaysBySource,
                                     sourceSegmentsBySource = sourceSegmentsBySource,
@@ -3277,36 +3283,32 @@ fun ClearGpsApp(
                 }
             }
 
-            AnimatedVisibility(
-                visible = selectedTab == AppTab.MAP && !panelVisible,
-                modifier = Modifier.align(Alignment.BottomCenter)
-                    .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
-                enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(220)) +
-                    fadeIn(animationSpec = tween(160)),
-                exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(180)) +
-                    fadeOut(animationSpec = tween(120))
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = colors.surfaceContainerHigh,
-                    shadowElevation = 6.dp
+            if (selectedTab == AppTab.MAP) {
+                NavigationBar(
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 5.dp).clip(RoundedCornerShape(28.dp)),
+                    windowInsets = WindowInsets.navigationBars,
+                    containerColor = colors.surfaceContainerHigh,
+                    tonalElevation = 3.dp
                 ) {
-                    Row(
-                        modifier = Modifier.clickable { panelVisible = true }
-                            .padding(horizontal = 14.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(Icons.Outlined.ExpandLess, contentDescription = "Открыть меню")
-                        Text("Открыть меню", style = MaterialTheme.typography.labelLarge)
-                    }
+                    NavigationBarItem(selected = selectedTab == AppTab.HOME, onClick = { navigateToTab(AppTab.HOME) },
+                        icon = { Icon(Icons.Outlined.Home, null) }, label = { Text("Главная", maxLines = 1) })
+                    NavigationBarItem(selected = selectedTab == AppTab.MAP, onClick = { navigateToTab(AppTab.MAP) },
+                        icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Карта", maxLines = 1) })
+                    NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { navigateToTab(AppTab.POINTS) },
+                        icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
+                    NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
+                        icon = { Icon(Icons.Outlined.Shield, null) }, label = { Text("Зоны", maxLines = 1) })
+                    NavigationBarItem(selected = selectedTab == AppTab.OBD2, onClick = { navigateToTab(AppTab.OBD2) },
+                        icon = { Icon(Icons.Outlined.DirectionsCar, null) }, label = { Text("OBD-II", maxLines = 1) })
+                    NavigationBarItem(selected = selectedTab == AppTab.SETTINGS, onClick = { navigateToTab(AppTab.SETTINGS) },
+                        icon = { Icon(Icons.Outlined.Settings, null) }, label = { Text("Настройки", maxLines = 1) })
                 }
             }
-
             if (selectedTab == AppTab.MAP) {
             Surface(
                 Modifier.align(Alignment.BottomEnd).padding(end = 16.dp,
-                    bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp),
+                    bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp),
                 shape = CircleShape, color = colors.primaryContainer, shadowElevation = 6.dp
             ) {
                 IconButton(onClick = { mapController.focusPrimary() }, modifier = Modifier.size(50.dp)) {
@@ -3314,38 +3316,19 @@ fun ClearGpsApp(
                 }
             }
             if (mapSourceMode == MapSourceMode.OFFLINE) {
-                Surface(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + 14.dp),
+                Surface(Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp),
                     shape = RoundedCornerShape(10.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.94f)) {
                     Text("Офлайн-холст · тайлы не запрашиваются", Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
                         style = MaterialTheme.typography.labelSmall, color = colors.onSurface)
                 }
             } else {
                 MapAttribution(
-                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + 14.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp),
                     dark = mapIsDark,
                     onClick = {
                         try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright"))) } catch (_: Exception) { }
                     }
                 )
-            }
-            if (selectedTab == AppTab.MAP) {
-                Surface(
-                    modifier = Modifier.align(Alignment.BottomStart)
-                        .padding(start = 12.dp, bottom = panelBottomOffset + 46.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    color = colors.surfaceContainerHigh.copy(alpha = 0.96f),
-                    shadowElevation = 4.dp
-                ) {
-                    Row(
-                        modifier = Modifier.clickable { showMapLegend = true }
-                            .padding(horizontal = 12.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
-                        Icon(Icons.Outlined.Info, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("Легенда", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
             }
             }
             SnackbarHost(
@@ -3355,7 +3338,7 @@ fun ClearGpsApp(
                     .padding(
                         bottom = panelBottomOffset +
                             WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-                            (if (panelVisible) 88.dp else 72.dp)
+                            88.dp
                     )
             )
         }
@@ -3761,6 +3744,65 @@ private fun MapScreenPanel(
             style = MaterialTheme.typography.labelSmall,
             color = colors.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun MapFloatingControls(
+    modifier: Modifier = Modifier,
+    anchorActive: Boolean,
+    zoneActive: Boolean,
+    onLegend: () -> Unit,
+    onPlaceAnchor: () -> Unit,
+    onDrawZone: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            modifier = Modifier.size(48.dp).clickable(onClick = onLegend),
+            shape = CircleShape,
+            color = colors.surface.copy(alpha = 0.97f),
+            tonalElevation = 2.dp,
+            shadowElevation = 5.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.Info, contentDescription = "Легенда", tint = colors.onSurface)
+            }
+        }
+        Surface(
+            modifier = Modifier.size(48.dp).clickable(onClick = onPlaceAnchor),
+            shape = CircleShape,
+            color = if (anchorActive) colors.secondaryContainer else colors.surface.copy(alpha = 0.97f),
+            tonalElevation = 2.dp,
+            shadowElevation = 5.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Outlined.LocationOn,
+                    contentDescription = if (anchorActive) "Отменить установку ориентира" else "Установить ориентир",
+                    tint = if (anchorActive) colors.onSecondaryContainer else colors.onSurface
+                )
+            }
+        }
+        Surface(
+            modifier = Modifier.size(48.dp).clickable(onClick = onDrawZone),
+            shape = CircleShape,
+            color = if (zoneActive) colors.secondaryContainer else colors.surface.copy(alpha = 0.97f),
+            tonalElevation = 2.dp,
+            shadowElevation = 5.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Outlined.EditLocationAlt,
+                    contentDescription = if (zoneActive) "Завершить рисование зоны" else "Рисовать зону",
+                    tint = if (zoneActive) colors.onSecondaryContainer else colors.onSurface
+                )
+            }
+        }
     }
 }
 
@@ -6602,7 +6644,12 @@ private fun HeaderCard(
                     IconButton(onClick = onCenter) { Icon(Icons.Outlined.MyLocation, "Моё местоположение") }
                 }
                 if (tab != AppTab.SETTINGS) {
-                    IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
+                    IconButton(onClick = onSettings) {
+                         Icon(
+                             if (tab == AppTab.MAP) Icons.Outlined.Layers else Icons.Outlined.Settings,
+                             if (tab == AppTab.MAP) "Слои карты" else "Настройки"
+                         )
+                     }
                 }
             }
             if (tab == AppTab.HOME) {
