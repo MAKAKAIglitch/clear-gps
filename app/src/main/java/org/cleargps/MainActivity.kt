@@ -24,6 +24,8 @@ class MainActivity : ComponentActivity() {
         window.navigationBarColor = Color.TRANSPARENT
 
         MapLibre.getInstance(this)
+        // Configure the resource interceptor only after the SDK has initialized its HTTP module.
+        NetworkGate.installMapLibre(applicationContext)
         setContent {
             ClearGpsApp(onMapViewCreated = ::attachMapView, onMapViewDisposed = ::detachMapView)
         }

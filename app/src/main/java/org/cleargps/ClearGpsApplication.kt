@@ -31,7 +31,6 @@ class ClearGpsApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        NetworkGate.installMapLibre(this)
         configureDebugDiagnostics()
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->

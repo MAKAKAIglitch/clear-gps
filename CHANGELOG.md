@@ -5,7 +5,7 @@
 **Изменения**
 - Добавлен `NetworkGate`: точный allowlist хостов/путей/методов, проверка HTTPS/порта, отдельные проверки согласия BeaconDB/OpenCellID и запрет произвольных редиректов MapLibre за пределы allowlist.
 - Единственный POST — `api.beacondb.net/v1/geolocate`: upstream Ichnaea-совместимый read-only lookup требует JSON POST. Это не endpoint вклада. `/v2/geosubmit`, OpenCellID endpoints записи, PUT/PATCH и остальные POST не разрешены.
-- OpenCellID ограничен `GET /cell/get` и отдельным сетевым переключателем/ключом; MapLibre использует проверяемый OkHttp Call.Factory и только HTTPS GET на `tiles.openfreemap.org` при онлайн-режиме карты.
+- OpenCellID ограничен `GET /cell/get` и отдельным сетевым переключателем/ключом; MapLibre использует проверяемый OkHttp Call.Factory и только HTTPS GET на `tiles.openfreemap.org` при онлайн-режиме карты. Клиент устанавливается в `MainActivity` сразу после `MapLibre.getInstance()`, чтобы соблюдать порядок инициализации SDK.
 - Добавлен Android `network_security_config.xml` с `cleartextTrafficPermitted=false`; `usesCleartextTraffic=false` сохранён.
 - Диагностика показывает только тип разрешённого/заблокированного запроса; URL query, API-ключи, body и радиоидентификаторы не журналируются.
 - README, ARCHITECTURE и THREAT_MODEL обновлены по фактическому сетевому контракту, включая минимальные lookup-поля и видимость IP/плиток для провайдеров.
