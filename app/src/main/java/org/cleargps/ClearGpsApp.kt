@@ -2531,7 +2531,11 @@ fun ClearGpsApp(
 
                 AnimatedVisibility(
                     visible = selectedTab != AppTab.MAP,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(
+                        top = if (selectedTab == AppTab.HOME) {
+                            WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+                        } else 0.dp
+                    ),
                     enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(190)) +
                         fadeIn(animationSpec = tween(140)),
                     exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(170)) +
