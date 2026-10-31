@@ -1,4 +1,4 @@
-ident,icao,iata,name,latitude_deg,longitude_deg,type
+ident,gps_code,iata_code,name,latitude_deg,longitude_deg,type
 00AK,00AK,,Lowell Field,59.94919968,-151.695999146,airport
 00AL,00AL,,Epps Airpark,34.8647994995,-86.7703018188,airport
 00AZ,00AZ,,Cordes Airport,34.3055992126,-112.1650009155,airport
