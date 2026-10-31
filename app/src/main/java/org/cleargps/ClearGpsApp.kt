@@ -327,6 +327,23 @@ fun ClearGpsApp(
     var manualAnchor by remember { mutableStateOf(ManualLocationStore.load(context)) }
     var manualFallbackEnabled by remember { mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_MANUAL_FALLBACK_ENABLED, false)) }
     var zones by remember { mutableStateOf(ZoneStore.loadAll(context)) }
+    var airportAvoidanceEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_AIRPORT_AVOIDANCE_ENABLED, true))
+    }
+    var airportRadiusMeters by remember {
+        mutableStateOf(prefs.getInt(
+            ClearGpsPreferences.KEY_AIRPORT_RADIUS_METERS,
+            SpoofZoneService.DEFAULT_AIRPORT_RADIUS_METERS
+        ).coerceIn(SpoofZoneService.MIN_AIRPORT_RADIUS_METERS, SpoofZoneService.MAX_AIRPORT_RADIUS_METERS))
+    }
+    var airportExclusions by remember {
+        mutableStateOf(prefs.getString(ClearGpsPreferences.KEY_AIRPORT_EXCLUSIONS, "").orEmpty())
+    }
+    var airportCatalogOnlineEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_AIRPORT_CATALOG_ONLINE_ENABLED, false))
+    }
+    var airportCatalogSnapshot by remember { mutableStateOf(AirportCatalogStore.load(context)) }
+    var airportCatalogRefreshing by remember { mutableStateOf(false) }
     var draftZone by remember { mutableStateOf(emptyList<ZonePoint>()) }
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
     var selectedTab by remember { mutableStateOf(AppTab.MAP) }
@@ -2804,6 +2821,63 @@ fun ClearGpsApp(
                                 )
                                 AppTab.ZONES -> ZonesScreen(
                                     zones = zones, draftZone = draftZone, mapTapMode = mapTapMode,
+                                    airportAvoidanceEnabled = airportAvoidanceEnabled,
+                                    airportRadiusMeters = airportRadiusMeters,
+                                    airportExclusions = airportExclusions,
+                                    airportCatalogOnlineEnabled = airportCatalogOnlineEnabled,
+                                    airportCatalogAvailable = airportCatalogSnapshot.isAvailable,
+                                    airportCatalogStale = airportCatalogSnapshot.isStale,
+                                    airportCatalogCount = airportCatalogSnapshot.airports.size,
+                                    airportCatalogUpdatedAt = airportCatalogSnapshot.updatedAtMillis,
+                                    airportCatalogSource = airportCatalogSnapshot.source,
+                                    airportCatalogRefreshing = airportCatalogRefreshing,
+                                    onAirportAvoidanceEnabled = { enabled ->
+                                        airportAvoidanceEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_AIRPORT_AVOIDANCE_ENABLED, enabled).apply()
+                                    },
+                                    onAirportRadiusMeters = { radius ->
+                                        val normalized = radius.coerceIn(
+                                            SpoofZoneService.MIN_AIRPORT_RADIUS_METERS,
+                                            SpoofZoneService.MAX_AIRPORT_RADIUS_METERS
+                                        )
+                                        airportRadiusMeters = normalized
+                                        prefs.edit().putInt(ClearGpsPreferences.KEY_AIRPORT_RADIUS_METERS, normalized).apply()
+                                    },
+                                    onAirportExclusions = { codes ->
+                                        airportExclusions = codes.take(500)
+                                        prefs.edit().putString(ClearGpsPreferences.KEY_AIRPORT_EXCLUSIONS, airportExclusions).apply()
+                                    },
+                                    onAirportCatalogOnlineEnabled = { enabled ->
+                                        airportCatalogOnlineEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_AIRPORT_CATALOG_ONLINE_ENABLED, enabled).apply()
+                                    },
+                                    onRefreshAirportCatalog = {
+                                        if (!airportCatalogRefreshing) {
+                                            scope.launch {
+                                                airportCatalogRefreshing = true
+                                                try {
+                                                    val snapshot = withContext(Dispatchers.IO) {
+                                                        AirportCatalogStore.refresh(context)
+                                                    }
+                                                    airportCatalogSnapshot = snapshot
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Каталог сохранён на устройстве: ${snapshot.airports.size} аэропортов.",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                } catch (error: Exception) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Не удалось обновить каталог аэропортов: " +
+                                                            (error.message ?: error.javaClass.simpleName),
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                } finally {
+                                                    airportCatalogRefreshing = false
+                                                }
+                                            }
+                                        }
+                                    },
                                     onStartDraw = {
                                         draftZone = emptyList(); mapTapMode = MapTapMode.DRAW_ZONE
                                         mapController.updateZones(zones, draftZone)
@@ -5447,16 +5521,100 @@ private fun RadioPointObservationRow(observation: RadioPointObservation) {
 @Composable
 private fun ZonesScreen(
     zones: List<SavedRiskZone>, draftZone: List<ZonePoint>, mapTapMode: MapTapMode,
+    airportAvoidanceEnabled: Boolean, airportRadiusMeters: Int, airportExclusions: String,
+    airportCatalogOnlineEnabled: Boolean, airportCatalogAvailable: Boolean, airportCatalogStale: Boolean,
+    airportCatalogCount: Int, airportCatalogUpdatedAt: Long, airportCatalogSource: String,
+    airportCatalogRefreshing: Boolean,
+    onAirportAvoidanceEnabled: (Boolean) -> Unit, onAirportRadiusMeters: (Int) -> Unit,
+    onAirportExclusions: (String) -> Unit, onAirportCatalogOnlineEnabled: (Boolean) -> Unit,
+    onRefreshAirportCatalog: () -> Unit,
     onStartDraw: () -> Unit, onSaveDraft: () -> Unit,
     onToggle: (SavedRiskZone, Boolean) -> Unit, onRename: (SavedRiskZone) -> Unit,
     onDelete: (SavedRiskZone) -> Unit, onCancelDraw: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    // A stale/missing offline catalogue may use the read-only online fallback only after consent.
+    LaunchedEffect(airportCatalogOnlineEnabled, airportCatalogAvailable, airportCatalogStale) {
+        if (airportCatalogOnlineEnabled && (!airportCatalogAvailable || airportCatalogStale)) {
+            onRefreshAirportCatalog()
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(horizontal = 16.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Зоны спуфинга", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Text("Отмечай участки, где телефон показывает ложное или скачкообразное местоположение. Каждая зона хранится локально и может отдельно включаться в фильтре.",
             style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Аэропорты", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "В радиусе аэропорта радио-точки не записываются и не участвуют в оценке. Близость к аэропорту добавляет только слабый контекстный сигнал риска — это не жёсткое состояние ZONE_RISK.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = airportAvoidanceEnabled,
+                        onCheckedChange = onAirportAvoidanceEnabled
+                    )
+                }
+                Text("Радиус исключения: ${airportRadiusMeters} м", fontWeight = FontWeight.Medium)
+                Slider(
+                    value = airportRadiusMeters.toFloat(),
+                    onValueChange = { onAirportRadiusMeters(it.toInt()) },
+                    valueRange = SpoofZoneService.MIN_AIRPORT_RADIUS_METERS.toFloat()..
+                        SpoofZoneService.MAX_AIRPORT_RADIUS_METERS.toFloat(),
+                    steps = 19,
+                    enabled = airportAvoidanceEnabled
+                )
+                OutlinedTextField(
+                    value = airportExclusions,
+                    onValueChange = onAirportExclusions,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Исключения ICAO/IATA") },
+                    placeholder = { Text("LSGG, GVA") },
+                    supportingText = { Text("Коды через запятую. Исключённые аэропорты не создают буфер.") },
+                    singleLine = false,
+                    minLines = 1,
+                    maxLines = 3,
+                    enabled = airportAvoidanceEnabled
+                )
+                Divider(color = colors.outlineVariant)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Разрешить загрузку каталога", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Отдельное согласие на один HTTPS GET публичного списка аэропортов. Координаты устройства и радиоданные не отправляются.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = airportCatalogOnlineEnabled,
+                        onCheckedChange = onAirportCatalogOnlineEnabled
+                    )
+                }
+                Text(
+                    when {
+                        !airportCatalogAvailable -> "Офлайн-каталог пока отсутствует. После загрузки он сохранится локально."
+                        airportCatalogStale -> "Локальный кэш устарел: ${airportCatalogCount} аэропортов · ${airportCatalogSource}."
+                        else -> "Локально доступно: ${airportCatalogCount} аэропортов · обновлён ${dateTime(airportCatalogUpdatedAt)}."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
+                FilledTonalButton(
+                    onClick = onRefreshAirportCatalog,
+                    enabled = airportCatalogOnlineEnabled && !airportCatalogRefreshing,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(if (airportCatalogRefreshing) "Загружаю каталог…" else "Загрузить / обновить офлайн-каталог")
+                }
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(onClick = onStartDraw, modifier = Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
                 Icon(Icons.Outlined.EditLocationAlt, null); Spacer(Modifier.width(6.dp))

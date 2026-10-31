@@ -1,0 +1,18 @@
+Airport coordinate catalogue bundled with Clear GPS
+=================================================
+
+Dataset: mwgg/Airports
+Repository: https://github.com/mwgg/Airports
+Pinned commit: a89e4e0dda9d9878337e2da190ebe1ef1d6af705
+Pinned commit date: 2026-10-01T07:20:10Z
+Entries: 29,308 valid airport / landing-strip coordinates
+Fields retained: ident, ICAO, IATA, name, latitude, longitude
+Licence: MIT (see AIRPORTS_DATA_LICENSE.txt)
+
+This asset is used as the default offline airport catalogue. Clear GPS can
+refresh a separate private cache from the public OurAirports daily CSV only
+after the user enables the airport-catalogue network-consent switch.
+The refresh is HTTPS GET and does not send the user's position or radio data.
+
+Online source:
+https://davidmegginson.github.io/ourairports-data/airports.csv

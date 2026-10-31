@@ -22,6 +22,8 @@ class LocationFilterEngine {
     private var network: Location? = null
     private var trusted: Location? = null
     private var gpsInZone = false
+    private var gpsNearAirport = false
+    private var gpsAirportCheckAvailable = true
     private val detector = GnssSpoofingDetector()
     private var decision = FilterDecision(FilterState.WAITING, 0, false, "NONE", null)
     private var signalOnlyWarningActive = false
@@ -116,7 +118,12 @@ class LocationFilterEngine {
         return null
     }
 
-    fun observe(location: Location, inRiskZone: Boolean): FilterDecision {
+    fun observe(
+        location: Location,
+        inRiskZone: Boolean,
+        nearAirport: Boolean = false,
+        airportCheckAvailable: Boolean = true
+    ): FilterDecision {
         // Ignore our own optional mock-location output to avoid a feedback loop.
         if (isMockLocation(location) || !validLocation(location)) return currentDecision()
         val isGps = location.provider.equals(LocationManager.GPS_PROVIDER, true)
@@ -128,6 +135,8 @@ class LocationFilterEngine {
             }
             gps = Location(location)
             gpsInZone = inRiskZone
+            gpsNearAirport = nearAirport
+            gpsAirportCheckAvailable = airportCheckAvailable
         } else {
             val previous = network
             if (previous != null && location.elapsedRealtimeNanos <= previous.elapsedRealtimeNanos) {
@@ -172,6 +181,7 @@ class LocationFilterEngine {
             gps = currentGps.toPositionFix(),
             network = currentNetwork?.toPositionFix(),
             inRiskZone = gpsInZone,
+            nearAirport = gpsNearAirport,
             nowElapsedRealtimeNanos = nowNanos,
             advanceState = changedGps
         )
@@ -179,7 +189,9 @@ class LocationFilterEngine {
         // and recovery are managed separately so brief anomalies cannot rapidly flip the alert.
         val suspicious = assessment.confirmed || gpsInZone
         if (!suspicious) {
-            if (assessment.score < CORRECTION_CANDIDATE_SCORE) trusted = Location(currentGps)
+            if (assessment.score < CORRECTION_CANDIDATE_SCORE && !gpsNearAirport && gpsAirportCheckAvailable) {
+                trusted = Location(currentGps)
+            }
             return FilterDecision(
                 if (assessment.score >= CORRECTION_CANDIDATE_SCORE) FilterState.SUSPECT else FilterState.NORMAL,
                 assessment.score, false, "GPS", Location(currentGps), assessment.reasons, assessment.breakdown

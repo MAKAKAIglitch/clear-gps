@@ -81,6 +81,9 @@ data class RiskBreakdown(
     val gnssSignalEvaluated: Boolean = false,
     val gnssSignalScore: Int = 0,
     val gnssSignalReason: String? = null,
+    val airportProximityEvaluated: Boolean = false,
+    val airportProximityScore: Int = 0,
+    val airportProximityReason: String? = null,
     val motionCrossSourceBonus: Int = 0,
     val radioCorroborationBonus: Int = 0,
     val obdSpeedCorroborationBonus: Int = 0,
@@ -99,6 +102,7 @@ data class RiskBreakdown(
         require(radioPositionScore in 0..50)
         require(obdSpeedScore in 0..35)
         require(gnssSignalScore in 0..100)
+        require(airportProximityScore in 0..10)
         require(motionCrossSourceBonus in 0..20)
         require(radioCorroborationBonus in 0..15)
         require(obdSpeedCorroborationBonus in 0..10)
@@ -369,7 +373,8 @@ class GnssSpoofingDetector {
         network: PositionFix?,
         inRiskZone: Boolean,
         nowElapsedRealtimeNanos: Long,
-        advanceState: Boolean
+        advanceState: Boolean,
+        nearAirport: Boolean = false
     ): SpoofingAssessment {
         val evidence = LinkedHashMap<String, Int>()
         var motionScore = 0
@@ -387,6 +392,12 @@ class GnssSpoofingDetector {
         var signalScore = 0
         var signalReason: String? = null
         var signalEvaluated = false
+        val airportEvaluated = nearAirport
+        val airportScore = if (nearAirport) 10 else 0
+        val airportReason = if (nearAirport) {
+            "Позиция вблизи аэропорта: слабый контекстный сигнал риска, не подтверждение спуфинга"
+        } else null
+        if (airportScore > 0 && airportReason != null) evidence[airportReason] = airportScore
 
         val previous = previousGps
         if (previous != null && gps.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
@@ -623,7 +634,7 @@ class GnssSpoofingDetector {
         signalScore = signalScore.coerceAtMost(35)
         if (signalScore > 0 && signalReason != null) evidence[signalReason] = signalScore
 
-        var rawScore = max(max(max(motionScore, crossSourceScore), radioPositionScore), obdSpeedScore)
+        var rawScore = max(max(max(max(motionScore, crossSourceScore), radioPositionScore), obdSpeedScore), airportScore)
         val motionCrossSourceBonus = if (motionScore > 0 && crossSourceScore > 0) 20 else 0
         rawScore += motionCrossSourceBonus
         val radioCorroborationBonus =
@@ -710,7 +721,7 @@ class GnssSpoofingDetector {
                 signal = currentSignal,
                 rf = previousRf,
                 nowElapsedRealtimeNanos = nowElapsedRealtimeNanos,
-                isNormal = !active && score < 25 && !signalAlertActive,
+                isNormal = !active && score < 25 && !signalAlertActive && !nearAirport,
                 inRiskZone = inRiskZone
             )
         }
@@ -731,6 +742,9 @@ class GnssSpoofingDetector {
             gnssSignalEvaluated = signalEvaluated,
             gnssSignalScore = signalScore,
             gnssSignalReason = signalReason,
+            airportProximityEvaluated = airportEvaluated,
+            airportProximityScore = airportScore,
+            airportProximityReason = airportReason,
             motionCrossSourceBonus = motionCrossSourceBonus,
             radioCorroborationBonus = radioCorroborationBonus,
             obdSpeedCorroborationBonus = obdSpeedCorroborationBonus,

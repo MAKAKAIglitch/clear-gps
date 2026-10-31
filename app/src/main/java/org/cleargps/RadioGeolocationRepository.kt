@@ -69,6 +69,7 @@ private data class ScanSnapshot(
 class RadioGeolocationRepository(private val context: Context) {
     private val database = LocalRadioDatabase(context.applicationContext)
     private val prefs = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+    private val spoofZoneService = SpoofZoneService(context.applicationContext)
 
     suspend fun scan(
         record: Boolean,
@@ -94,20 +95,31 @@ class RadioGeolocationRepository(private val context: Context) {
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
         }
-        // Independent opt-in: no-op unless a local replay session is active.
-        try {
-            GnssReplayRecorder.recordRadioSnapshot(context, SystemClock.elapsedRealtimeNanos(), snapshot.signals)
-        } catch (_: RuntimeException) {
-            // Recording must not interrupt live radio positioning.
-        }
         val localSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, true)
         val beaconSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true)
         val openCellIdSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true)
         val safeMode = CrashLoopGuard.isSafeModeActive(context)
+        spoofZoneService.refreshPolicy()
+        val safeReference = if (mode == "radio" || mode == "radio_obd2") null else reference
+        val trustedPhysicalFix = spoofZoneService.lastTrustedPhysicalFix()
+        val preferredPosition = safeReference?.let {
+            Triple(it.latitude, it.longitude, it.accuracyMeters)
+        } ?: trustedPhysicalFix?.let {
+            Triple(it.latitude, it.longitude, it.accuracyMeters)
+        }
+        val preferredPositionBlocked = preferredPosition?.let { (latitude, longitude, accuracy) ->
+            spoofZoneService.assess(latitude, longitude, accuracy).blocksRadioData
+        } == true
+        val excludeCoordinate: (Double, Double, Double?) -> Boolean = { latitude, longitude, accuracy ->
+            spoofZoneService.assess(latitude, longitude, accuracy).blocksRadioData
+        }
 
-        val localEstimate = if (localSourceEnabled) {
+        val localEstimate = if (localSourceEnabled && !preferredPositionBlocked) {
             withContext(Dispatchers.IO) {
-                database.estimatePosition(snapshot.signals, useWifi, useCells, useBle)
+                database.estimatePosition(
+                    snapshot.signals, useWifi, useCells, useBle,
+                    excludeCoordinate = excludeCoordinate
+                )
             }
         } else null
         val localEstimateWithFreshness = localEstimate?.let { candidate ->
@@ -147,7 +159,7 @@ class RadioGeolocationRepository(private val context: Context) {
 
         // BeaconDB is queried only by the explicit button. Normal radio scans can consume its
         // short-lived cache when the user independently enabled this source for position fusion.
-        val beaconCachedResult = if (beaconSourceEnabled && !safeMode) {
+        val beaconCachedResult = if (beaconSourceEnabled && !safeMode && !preferredPositionBlocked) {
             val cellSignals = snapshot.signals.filter { it.type == "cell" }
             val request = BeaconDbRequest(
                 cells = cellSignals.mapNotNull {
@@ -166,7 +178,7 @@ class RadioGeolocationRepository(private val context: Context) {
 
         // OpenCellID tower coordinates are read from the local catalogue only. Periodic radio
         // scans never call /cell/get; refreshing that catalogue remains an explicit, quota-guarded action.
-        val openCellIdEstimate = if (openCellIdSourceEnabled && useCells && !safeMode) {
+        val openCellIdEstimate = if (openCellIdSourceEnabled && useCells && !safeMode && !preferredPositionBlocked) {
             withContext(Dispatchers.IO) {
                 val evidence = snapshot.signals.asSequence()
                     .filter { it.type == "cell" }
@@ -212,18 +224,48 @@ class RadioGeolocationRepository(private val context: Context) {
                 add(RadioPositionFusion.SourceEstimate("opencellid", it, trustWeight = 0.30))
             }
         }
-        val estimate = RadioPositionFusion.combine(sourceEstimates)
-        val matchCounts = if (localSourceEnabled) {
+        val combinedEstimate = if (preferredPositionBlocked) null else RadioPositionFusion.combine(sourceEstimates)
+        val combinedEstimateBlocked = combinedEstimate?.let {
+            spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
+        } == true
+        val estimate = combinedEstimate?.takeUnless { combinedEstimateBlocked }
+        val selectedPositionAvailable = preferredPosition != null || estimate != null
+        val radioDataAllowed = !preferredPositionBlocked && !combinedEstimateBlocked &&
+            (selectedPositionAvailable || !spoofZoneService.requiresKnownPositionForRadioWrite())
+        val matchCounts = if (localSourceEnabled && radioDataAllowed) {
             withContext(Dispatchers.IO) {
-                database.countMatchingPoints(snapshot.signals, useWifi, useCells, useBle)
+                database.countMatchingPoints(
+                    snapshot.signals, useWifi, useCells, useBle,
+                    excludeCoordinate = excludeCoordinate
+                )
             }
         } else RadioMatchCounts(0, 0)
-        // Radio-only coordinates are estimates from this very database, not independent
-        // reference fixes. Never persist them as training coordinates, even if a caller passes one.
-        val safeReference = if (mode == "radio" || mode == "radio_obd2") null else reference
+
+        // A radio scan inside a manual spoof zone or airport exclusion radius must not
+        // contribute to fingerprints, replay capture, local point rows or scan-history fixes.
+        if (radioDataAllowed) {
+            try {
+                GnssReplayRecorder.recordRadioSnapshot(
+                    context, SystemClock.elapsedRealtimeNanos(), snapshot.signals
+                )
+            } catch (_: RuntimeException) {
+                // Replay recording must never interrupt live positioning.
+            }
+        }
         val recorded = withContext(Dispatchers.IO) {
-            database.recordScan(snapshot.signals, safeReference, estimate, mode,
-                snapshot.wifiCount, snapshot.cellCount, snapshot.bleCount, record)
+            database.recordScan(
+                signals = snapshot.signals,
+                reference = safeReference?.takeUnless {
+                    spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
+                },
+                estimate = estimate,
+                mode = mode,
+                wifiCount = snapshot.wifiCount,
+                cellCount = snapshot.cellCount,
+                bleCount = snapshot.bleCount,
+                shouldRecord = record,
+                allowRadioWrite = radioDataAllowed
+            )
         }
         prefs.edit()
             .putInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, snapshot.wifiCount)
@@ -322,6 +364,12 @@ class RadioGeolocationRepository(private val context: Context) {
         useBle: Boolean
     ): Int = scanMutex.withLock {
         if (!GnssReplayRecorder.isRecording(context)) return@withLock 0
+        spoofZoneService.refreshPolicy()
+        val trustedFix = spoofZoneService.lastTrustedPhysicalFix() ?: return@withLock 0
+        if (spoofZoneService.assess(
+                trustedFix.latitude, trustedFix.longitude, trustedFix.accuracyMeters
+            ).blocksRadioData
+        ) return@withLock 0
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
         }
@@ -344,6 +392,15 @@ class RadioGeolocationRepository(private val context: Context) {
         if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
             CrashLoopGuard.isSafeModeActive(context)
         ) return null
+
+        spoofZoneService.refreshPolicy()
+        val trustedFix = spoofZoneService.lastTrustedPhysicalFix() ?: return null
+        val zoneAssessment = spoofZoneService.assess(
+            trustedFix.latitude, trustedFix.longitude, trustedFix.accuracyMeters
+        )
+        if (zoneAssessment.blocksRadioData) {
+            return "External radio lookup skipped inside a spoof zone or airport exclusion radius"
+        }
 
         val beaconEnabled =
             prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&

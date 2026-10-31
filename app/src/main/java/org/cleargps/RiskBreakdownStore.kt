@@ -25,6 +25,9 @@ internal object RiskBreakdownStore {
     private const val KEY_SIGNAL_EVALUATED = "risk_gnss_signal_evaluated"
     private const val KEY_SIGNAL_SCORE = "risk_gnss_signal_score"
     private const val KEY_SIGNAL_REASON = "risk_gnss_signal_reason"
+    private const val KEY_AIRPORT_EVALUATED = "risk_airport_proximity_evaluated"
+    private const val KEY_AIRPORT_SCORE = "risk_airport_proximity_score"
+    private const val KEY_AIRPORT_REASON = "risk_airport_proximity_reason"
     private const val KEY_MOTION_CROSS_BONUS = "risk_motion_cross_bonus"
     private const val KEY_SIGNAL_BONUS = "risk_gnss_corroboration_bonus"
     private const val KEY_COMBINED_BEFORE_ZONE = "risk_combined_before_zone"
@@ -56,6 +59,9 @@ internal object RiskBreakdownStore {
             .putBoolean(KEY_SIGNAL_EVALUATED, value?.gnssSignalEvaluated == true)
             .putInt(KEY_SIGNAL_SCORE, value?.gnssSignalScore ?: 0)
             .putString(KEY_SIGNAL_REASON, value?.gnssSignalReason.orEmpty())
+            .putBoolean(KEY_AIRPORT_EVALUATED, value?.airportProximityEvaluated == true)
+            .putInt(KEY_AIRPORT_SCORE, value?.airportProximityScore ?: 0)
+            .putString(KEY_AIRPORT_REASON, value?.airportProximityReason.orEmpty())
             .putInt(KEY_MOTION_CROSS_BONUS, value?.motionCrossSourceBonus ?: 0)
             .putInt(KEY_SIGNAL_BONUS, value?.gnssCorroborationBonus ?: 0)
             .putInt(KEY_COMBINED_BEFORE_ZONE, value?.combinedBeforeZone ?: 0)
@@ -88,6 +94,7 @@ internal object RiskBreakdownStore {
         val obdSpeedScore = prefs.getInt(KEY_OBD_SPEED_SCORE, 0)
         val obdSpeedBonus = prefs.getInt(KEY_OBD_SPEED_BONUS, 0)
         val signalScore = prefs.getInt(KEY_SIGNAL_SCORE, -1)
+        val airportScore = prefs.getInt(KEY_AIRPORT_SCORE, 0)
         val motionBonus = prefs.getInt(KEY_MOTION_CROSS_BONUS, -1)
         val signalBonus = prefs.getInt(KEY_SIGNAL_BONUS, -1)
         val combinedBeforeZone = prefs.getInt(KEY_COMBINED_BEFORE_ZONE, -1)
@@ -95,7 +102,7 @@ internal object RiskBreakdownStore {
         val finalScore = prefs.getInt(KEY_FINAL_SCORE, -1)
         if (motionScore !in 0..100 || crossScore !in 0..100 || radioScore !in 0..50 ||
             radioBonus !in 0..15 || obdSpeedScore !in 0..35 || obdSpeedBonus !in 0..10 ||
-            signalScore !in 0..100 || motionBonus !in 0..20 || signalBonus !in 0..15 ||
+            signalScore !in 0..100 || airportScore !in 0..10 || motionBonus !in 0..20 || signalBonus !in 0..15 ||
             combinedBeforeZone !in 0..170 ||
             rawScore !in 0..100 || finalScore !in 0..100
         ) return null
@@ -117,6 +124,9 @@ internal object RiskBreakdownStore {
             gnssSignalEvaluated = prefs.getBoolean(KEY_SIGNAL_EVALUATED, false),
             gnssSignalScore = signalScore,
             gnssSignalReason = prefs.getString(KEY_SIGNAL_REASON, null)?.takeIf { it.isNotBlank() },
+            airportProximityEvaluated = prefs.getBoolean(KEY_AIRPORT_EVALUATED, false),
+            airportProximityScore = airportScore,
+            airportProximityReason = prefs.getString(KEY_AIRPORT_REASON, null)?.takeIf { it.isNotBlank() },
             motionCrossSourceBonus = motionBonus,
             radioCorroborationBonus = radioBonus,
             obdSpeedCorroborationBonus = obdSpeedBonus,

@@ -54,6 +54,7 @@ class LocationMonitorService : Service(), LocationListener {
     // Admits trusted GNSS and bounded radio measurements into a chronological replay timeline.
     private val positionFusionEngine = PositionFusionTimeline()
     private val riskZoneMembership = RiskZoneMembershipTracker()
+    private val spoofZoneService by lazy(LazyThreadSafetyMode.NONE) { SpoofZoneService(applicationContext) }
     private var mock: MockLocationOutput? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var radioOnlyJob: Job? = null
@@ -1875,8 +1876,36 @@ class LocationMonitorService : Service(), LocationListener {
             }
         }
 
-        val observedDecision = engine.observe(location, inZone)
+        val airportAssessment = if (gpsFix) {
+            spoofZoneService.refreshPolicy()
+            spoofZoneService.assess(location.latitude, location.longitude, accuracyMeters)
+        } else null
+        val observedDecision = engine.observe(
+            location,
+            inZone,
+            nearAirport = airportAssessment?.nearAirport == true,
+            airportCheckAvailable = airportAssessment?.airportCheckAvailable == true
+        )
         if (gpsFix) {
+            val trustedPhysicalGps = observedDecision.state == FilterState.NORMAL &&
+                observedDecision.source.equals("GPS", ignoreCase = true) &&
+                !observedDecision.inRiskZone &&
+                airportAssessment?.blocksRadioData != true
+            val trustedFixEditor = prefs.edit()
+            if (trustedPhysicalGps) {
+                trustedFixEditor
+                    .putString(KEY_LAST_TRUSTED_GPS_LAT, location.latitude.toString())
+                    .putString(KEY_LAST_TRUSTED_GPS_LON, location.longitude.toString())
+                    .putFloat(KEY_LAST_TRUSTED_GPS_ACCURACY, location.accuracy)
+                    .putLong(KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS, location.elapsedRealtimeNanos)
+            } else {
+                trustedFixEditor
+                    .remove(KEY_LAST_TRUSTED_GPS_LAT)
+                    .remove(KEY_LAST_TRUSTED_GPS_LON)
+                    .remove(KEY_LAST_TRUSTED_GPS_ACCURACY)
+                    .remove(KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS)
+            }
+            trustedFixEditor.apply()
             GnssDeviceBaselineStore.saveIfChanged(this, engine.deviceBaselineSnapshot())
         }
         val fallback = createLastResortFallback(observedDecision)
@@ -2408,6 +2437,10 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_GNSS_BASELINE_READY = "gnss_baseline_ready"
         const val KEY_GNSS_BASELINE_DEVIATIONS = "gnss_baseline_deviations"
         const val KEY_GNSS_DIAGNOSTICS_AT_NANOS = "gnss_diagnostics_at_nanos"
+        const val KEY_LAST_TRUSTED_GPS_LAT = "last_trusted_physical_gps_lat"
+        const val KEY_LAST_TRUSTED_GPS_LON = "last_trusted_physical_gps_lon"
+        const val KEY_LAST_TRUSTED_GPS_ACCURACY = "last_trusted_physical_gps_accuracy"
+        const val KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS = "last_trusted_physical_gps_elapsed_nanos"
 
         /**
          * Notify the existing foreground monitor when the user starts/stops an opt-in replay.

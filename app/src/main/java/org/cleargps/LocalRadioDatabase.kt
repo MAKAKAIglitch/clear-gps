@@ -915,19 +915,31 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     fun recordScan(
         signals: List<RadioSignal>, reference: RadioReference?, estimate: RadioEstimate?,
-        mode: String, wifiCount: Int, cellCount: Int, bleCount: Int, shouldRecord: Boolean
+        mode: String, wifiCount: Int, cellCount: Int, bleCount: Int, shouldRecord: Boolean,
+        allowRadioWrite: Boolean = true
     ): Int {
         val db = writableDatabase
-        clearAllRadioDeletionUndo(db)
         val now = System.currentTimeMillis()
-        val localSourceId = ensureLocalSource(db)
-        db.update("radio_sources", ContentValues().apply { put("last_seen", now) }, "id = ?", arrayOf(localSourceId.toString()))
+        val localSourceId = if (shouldRecord && allowRadioWrite) {
+            // A blocked zone/airport scan must not mutate radio points or invalidate an undo action.
+            clearAllRadioDeletionUndo(db)
+            ensureLocalSource(db).also { sourceId ->
+                db.update(
+                    "radio_sources",
+                    ContentValues().apply { put("last_seen", now) },
+                    "id = ?",
+                    arrayOf(sourceId.toString())
+                )
+            }
+        } else {
+            -1L
+        }
         val unique = applyWifiSsidFilter(signals).filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
             .distinctBy { it.type + "|" + it.identifier }
         var recorded = 0
         db.beginTransaction()
         try {
-            if (shouldRecord) {
+            if (shouldRecord && allowRadioWrite) {
                 unique.forEach { signal ->
                     val old = findPoint(db, signal.type, signal.identifier)
                     val values = ContentValues().apply {
@@ -991,7 +1003,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             val history = ContentValues().apply {
                 put("scanned_at", now); put("wifi_count", wifiCount); put("cell_count", cellCount)
                 put("ble_count", bleCount); put("matched_count", estimate?.matchedCount ?: 0)
-                put("mode", mode); put("recorded", if (shouldRecord) 1 else 0)
+                put("mode", mode); put("recorded", if (shouldRecord && allowRadioWrite) 1 else 0)
                 if (estimate != null) {
                     put("latitude", estimate.latitude); put("longitude", estimate.longitude); put("accuracy", estimate.accuracyMeters)
                 }
@@ -1015,7 +1027,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         useWifi: Boolean,
         useCells: Boolean,
         useBle: Boolean,
-        now: Long = System.currentTimeMillis()
+        now: Long = System.currentTimeMillis(),
+        excludeCoordinate: ((Double, Double, Double?) -> Boolean)? = null
     ): RadioMatchCounts {
         val enabledTypes = buildSet {
             if (useWifi) add("wifi")
@@ -1039,6 +1052,11 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         var located = 0
         current.forEach { signal ->
             val point = findPoint(db, signal.type, signal.identifier) ?: return@forEach
+            val pointLatitude = point.latitude
+            val pointLongitude = point.longitude
+            if (pointLatitude != null && pointLongitude != null &&
+                excludeCoordinate?.invoke(pointLatitude, pointLongitude, point.accuracyMeters) == true
+            ) return@forEach
             known++
             val age = now - point.lastSeen
             val hasCoordinates = point.latitude?.let { it.isFinite() && it in -90.0..90.0 } == true &&
@@ -1056,7 +1074,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     }
 
     fun estimatePosition(
-        signals: List<RadioSignal>, useWifi: Boolean, useCells: Boolean, useBle: Boolean
+        signals: List<RadioSignal>, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
+        excludeCoordinate: ((Double, Double, Double?) -> Boolean)? = null
     ): RadioEstimate? {
         val enabledTypes = buildSet {
             if (useWifi) add("wifi")
@@ -1086,11 +1105,12 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         val now = System.currentTimeMillis()
         // Prefer a past scan fingerprint: its coordinates are where the phone was,
         // not an average of the physical positions of nearby transmitters.
-        val fingerprintLookup = lookupRadioFingerprintPosition(
-            current,
-            loadFingerprintSamples(current, now),
-            now
-        )
+        val usableHistory = loadFingerprintSamples(current, now).filterNot { sample ->
+            val latitude = sample.latitude ?: return@filterNot false
+            val longitude = sample.longitude ?: return@filterNot false
+            excludeCoordinate?.invoke(latitude, longitude, sample.accuracyMeters) == true
+        }
+        val fingerprintLookup = lookupRadioFingerprintPosition(current, usableHistory, now)
         if (fingerprintLookup.estimate != null) {
             val estimate = fingerprintLookup.estimate
             DiagnosticLogStore.log(
@@ -1114,6 +1134,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             if (point != null && point.latitude != null && point.longitude != null &&
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
+                excludeCoordinate?.invoke(point.latitude, point.longitude, point.accuracyMeters) != true &&
                 (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
                 val weight = point.sourceId?.let {
                 sourceTrust(db, it, point.type, point.positionObservedAt ?: point.lastSeen) ?: 0.0

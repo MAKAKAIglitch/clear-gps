@@ -13,6 +13,32 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class RiskBreakdownStoreTest {
+
+    @Test
+    fun persistsAirportProximityAsAWeakIndependentSignal() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("risk-breakdown-airport-test", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+
+        val expected = RiskBreakdown(
+            available = true,
+            airportProximityEvaluated = true,
+            airportProximityScore = 10,
+            airportProximityReason = "Near airport; weak context only",
+            combinedBeforeZone = 10,
+            rawCombinedScore = 10,
+            finalScore = 10
+        )
+        RiskBreakdownStore.write(prefs, expected, 20_000_000_000L)
+
+        val restored = RiskBreakdownStore.read(prefs, 20_000_000_000L)
+        assertNotNull(restored)
+        assertEquals(true, restored!!.airportProximityEvaluated)
+        assertEquals(10, restored.airportProximityScore)
+        assertEquals(expected.airportProximityReason, restored.airportProximityReason)
+        prefs.edit().clear().commit()
+    }
+
     @Test
     fun persistsObdSpeedEvidenceAndCorroborationBonus() {
         val context = RuntimeEnvironment.getApplication()

@@ -25,7 +25,8 @@ internal object NetworkGate {
     internal enum class Operation {
         BEACONDB_LOOKUP,
         OPENCELLID_LOOKUP,
-        MAP_RESOURCE
+        MAP_RESOURCE,
+        AIRPORT_CATALOG_READ
     }
 
     private const val BEACONDB_HOST = "api.beacondb.net"
@@ -33,6 +34,8 @@ internal object NetworkGate {
     private const val OPENCELLID_HOST = "opencellid.org"
     private const val OPENCELLID_PATH = "/cell/get"
     private const val MAP_HOST = "tiles.openfreemap.org"
+    private const val AIRPORT_CATALOG_HOST = "davidmegginson.github.io"
+    private const val AIRPORT_CATALOG_PATH = "/ourairports-data/airports.csv"
     private const val MAP_LOG_INTERVAL_MS = 60_000L
 
     private val mapLogLock = Any()
@@ -90,6 +93,13 @@ internal object NetworkGate {
                     host != MAP_HOST || !approvedPath
                 ) reject()
             }
+
+            Operation.AIRPORT_CATALOG_READ -> {
+                if (!consentGranted || normalizedMethod != "GET" ||
+                    host != AIRPORT_CATALOG_HOST || uri.rawPath != AIRPORT_CATALOG_PATH ||
+                    !uri.rawQuery.isNullOrEmpty()
+                ) reject()
+            }
         }
         return uri
     }
@@ -101,6 +111,20 @@ internal object NetworkGate {
         val uri = validateRequest(url, "POST", Operation.BEACONDB_LOOKUP, consentGranted = enabled)
         logAllowed(context, "BeaconDB read-only geolocate")
         return openHttpsConnection(uri, "POST")
+    }
+
+    fun openAirportCatalogConnection(context: Context, url: String): HttpsURLConnection {
+        val enabled = context.applicationContext
+            .getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .getBoolean(ClearGpsPreferences.KEY_AIRPORT_CATALOG_ONLINE_ENABLED, false)
+        val uri = validateRequest(
+            url,
+            "GET",
+            Operation.AIRPORT_CATALOG_READ,
+            consentGranted = enabled
+        )
+        DiagnosticLogStore.log(context, "NETWORK", "Allowed read-only public airport catalogue download; URL and downloaded rows omitted")
+        return openHttpsConnection(uri, "GET")
     }
 
     fun openOpenCellIdLookupConnection(context: Context, url: String): HttpsURLConnection {

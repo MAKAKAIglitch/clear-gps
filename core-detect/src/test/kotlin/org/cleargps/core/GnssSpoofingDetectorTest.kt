@@ -6,6 +6,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GnssSpoofingDetectorTest {
+    @Test
+    fun airportProximityIsAWeakSignalAndNeverCreatesHardZoneRisk() {
+        val detector = GnssSpoofingDetector()
+        val now = 80_000_000_000L
+        val gps = PositionFix(
+            provider = "gps",
+            latitude = 46.2381,
+            longitude = 6.1089,
+            accuracyMeters = 8.0,
+            elapsedRealtimeNanos = now
+        )
+
+        val result = detector.assess(
+            gps = gps,
+            network = null,
+            inRiskZone = false,
+            nowElapsedRealtimeNanos = now,
+            advanceState = true,
+            nearAirport = true
+        )
+
+        assertEquals(10, result.score)
+        assertFalse(result.confirmed)
+        assertEquals(true, result.breakdown.airportProximityEvaluated)
+        assertEquals(10, result.breakdown.airportProximityScore)
+        assertFalse(result.breakdown.zoneFloorActive)
+    }
+
     private fun fix(
         lat: Double,
         lon: Double,

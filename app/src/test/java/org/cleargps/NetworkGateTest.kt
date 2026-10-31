@@ -30,6 +30,43 @@ class NetworkGateTest {
             mapOnline = true
         )
         assertEquals("tiles.openfreemap.org", tile.host)
+
+        val airport = NetworkGate.validateRequest(
+            "https://davidmegginson.github.io/ourairports-data/airports.csv",
+            "GET",
+            NetworkGate.Operation.AIRPORT_CATALOG_READ,
+            consentGranted = true
+        )
+        assertEquals("/ourairports-data/airports.csv", airport.path)
+    }
+
+
+    @Test
+    fun airportCatalogueIsReadOnlyAndRequiresItsOwnConsent() {
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://davidmegginson.github.io/ourairports-data/airports.csv",
+                "GET",
+                NetworkGate.Operation.AIRPORT_CATALOG_READ,
+                consentGranted = false
+            )
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://davidmegginson.github.io/ourairports-data/airports.csv",
+                "POST",
+                NetworkGate.Operation.AIRPORT_CATALOG_READ,
+                consentGranted = true
+            )
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://davidmegginson.github.io/ourairports-data/airport-frequencies.csv",
+                "GET",
+                NetworkGate.Operation.AIRPORT_CATALOG_READ,
+                consentGranted = true
+            )
+        }
     }
 
     @Test

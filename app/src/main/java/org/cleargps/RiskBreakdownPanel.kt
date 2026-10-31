@@ -43,6 +43,8 @@ internal fun RiskBreakdownPanel(
                 breakdown.obdSpeedReason, "Нет свежей скорости OBD-II либо качество/время пары GNSS–OBD недостаточно.")
             BreakdownRow("Сырые GNSS/RF-признаки", breakdown.gnssSignalEvaluated, breakdown.gnssSignalScore,
                 breakdown.gnssSignalReason, "Нет свежих пригодных сигнальных метрик GNSS.")
+            BreakdownRow("Близость к аэропорту", breakdown.airportProximityEvaluated, breakdown.airportProximityScore,
+                breakdown.airportProximityReason, "Нет подтверждённого попадания в радиус аэропорта.", maxScore = 10)
 
             if (breakdown.motionCrossSourceBonus > 0) Text(
                 "Подтверждение независимым источником: +${breakdown.motionCrossSourceBonus} внутренних баллов за совместное срабатывание траектории и расхождения источников.",
@@ -97,19 +99,20 @@ private fun BreakdownRow(
     evaluated: Boolean,
     score: Int,
     reason: String?,
-    notEvaluatedText: String
+    notEvaluatedText: String,
+    maxScore: Int = 100
 ) {
     val colors = MaterialTheme.colorScheme
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(title, style = MaterialTheme.typography.bodyMedium)
-            if (evaluated) Text("${score}/100", style = MaterialTheme.typography.bodySmall)
+            if (evaluated) Text("${score}/${maxScore}", style = MaterialTheme.typography.bodySmall)
         }
         if (!evaluated) {
             Text(notEvaluatedText, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
         } else {
             LinearProgressIndicator(
-                progress = { score.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth()
+                progress = { score.coerceIn(0, maxScore) / maxScore.toFloat() }, modifier = Modifier.fillMaxWidth()
             )
             Text(
                 reason ?: "В этой группе пороговый тревожный признак не сработал.",
