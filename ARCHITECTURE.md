@@ -37,14 +37,25 @@ The JVM module contains GNSS signal/data models and anomaly logic, baseline/envi
 
 ## Local radio database and provenance
 
-`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **9**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet. Core tables separate:
+`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **11**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
+
+Core tables and catalogues:
 
 - `radio_sources` — local or imported source identity and trust settings;
-- `radio_points` — a normalized radio identifier and its summary/selected position;
+- `radio_points` — normalized radio identifiers and their summary/selected coordinates;
 - `radio_observations` — timestamped RSSI/frequency observations with source provenance;
 - `scan_history` — bounded scan history;
-- `radio_source_segment_settings` — per-source/day/type enablement and trust weights;
-- short-lived deletion-undo snapshot tables.
+- `radio_source_segment_settings` — per-source/day/radio-type enablement and trust weights;
+- `opencellid_cells` — separate read-only catalogue of estimated cell positions; it is not mixed into local training observations;
+- `radio_deletion_undo` and its `*_keys`, `*_points`, `*_observations`, `*_history` and `*_segments` tables — short-lived snapshots for undoing scoped deletions.
+
+Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, and the OpenCellID checked-time index. Migrations are additive: version 10 adds the isolated OpenCellID catalogue; version 11 adds the composite import-deduplication index. Existing points, observations and scan history are preserved by these upgrades.
+
+Storage limits are independent:
+
+- Detailed `radio_observations` retention defaults to **20,000** rows; the selectable limits are 5,000, 10,000, 20,000 and 50,000. The maximum is **50,000**. Reducing this limit prunes the oldest detailed observation rows; it does not delete `radio_points` summaries or their selected coordinates.
+- `scan_history` retains at most **500** entries.
+- The persisted map marker limit is separate from observation retention. It defaults to **50,000** geolocated `radio_points`; choices are 5,000, 10,000, 20,000, 50,000, 100,000, 250,000 and 500,000, with a maximum of **500,000**. Only rows with valid coordinates can become map markers; there is no additional low-RAM/device-class cap. Wi-Fi, cell and BLE point layers use MapLibre clustering.
 
 Imports are merged into the existing local database, not used to replace it. The implemented file formats include WiGLE CSV (plain/gzip), WiGLE-shaped SQLite (`network/location`) and a full Clear GPS SQLite backup. A WiGLE-shaped export cannot preserve every Clear GPS-only field: use the full backup to preserve application history and metadata. Settings/zones use a separate `.cgsettings` format.
 
