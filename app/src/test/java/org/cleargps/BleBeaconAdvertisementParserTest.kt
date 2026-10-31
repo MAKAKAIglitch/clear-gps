@@ -147,7 +147,7 @@ class BleBeaconAdvertisementParserTest {
             0x20, 0x00,
             0x0B, 0xB8.toByte(), // 3000 mV
             0x19, 0x80.toByte(), // 25.5 C, signed 8.8
-            0x00, 0x00, 0x03, 0xE8, // 1000 advertisements
+            0x00, 0x00, 0x03, 0xE8.toByte(), // 1000 advertisements
             0x00, 0x00, 0x02, 0x58  // 600 seconds uptime
         )
         val telemetry = parseEddystone(payload)
