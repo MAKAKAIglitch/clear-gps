@@ -9,15 +9,20 @@ import java.net.SocketTimeoutException
 
 class Obd2ReconnectPolicyTest {
     @Test
-    fun retriesUseBoundedExponentialBackoffWithAMaximumDelay() {
+    fun retriesUseExponentialBackoffAndKeepRetryingAtTheCappedDelay() {
         assertEquals(1_000L, Obd2ReconnectPolicy.delayBeforeAttempt(0))
         assertEquals(2_000L, Obd2ReconnectPolicy.delayBeforeAttempt(1))
         assertEquals(4_000L, Obd2ReconnectPolicy.delayBeforeAttempt(2))
         assertEquals(8_000L, Obd2ReconnectPolicy.delayBeforeAttempt(3))
         assertEquals(15_000L, Obd2ReconnectPolicy.delayBeforeAttempt(4))
-        assertEquals(5, Obd2ReconnectPolicy.MAX_ATTEMPTS)
+        assertEquals(30_000L, Obd2ReconnectPolicy.delayBeforeAttempt(5))
+        assertEquals(60_000L, Obd2ReconnectPolicy.delayBeforeAttempt(6))
+        assertEquals(60_000L, Obd2ReconnectPolicy.delayBeforeAttempt(7))
+        assertEquals(60_000L, Obd2ReconnectPolicy.delayBeforeAttempt(100))
+        assertEquals(0, Obd2ReconnectPolicy.nextBackoffStage(-1))
+        assertEquals(6, Obd2ReconnectPolicy.nextBackoffStage(5))
+        assertEquals(6, Obd2ReconnectPolicy.nextBackoffStage(6))
         assertEquals(null, Obd2ReconnectPolicy.delayBeforeAttempt(-1))
-        assertEquals(null, Obd2ReconnectPolicy.delayBeforeAttempt(5))
     }
 
     @Test

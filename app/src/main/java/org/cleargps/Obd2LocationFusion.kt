@@ -49,6 +49,7 @@ internal object Obd2SpeedSamplePolicy {
  */
 internal object Obd2SharedState {
     const val KEY_ADAPTER_ADDRESS = "obd2_adapter_address"
+    const val KEY_AUTO_CONNECT_ENABLED = "obd2_auto_connect_enabled"
     const val KEY_SPEED_KMH = "obd2_vehicle_speed_kmh"
     const val KEY_SPEED_AT = "obd2_vehicle_speed_at"
     const val KEY_SPEED_AT_ELAPSED_REALTIME_NANOS = "obd2_vehicle_speed_at_elapsed_realtime_nanos"

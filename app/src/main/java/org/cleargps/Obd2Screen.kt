@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.os.SystemClock
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bluetooth
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Divider
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,6 +59,8 @@ internal fun Obd2Screen(
     driveMetrics: Obd2DriveMetricsSnapshot,
     status: String,
     statusIsError: Boolean,
+    autoReconnectEnabled: Boolean,
+    onAutoReconnectEnabledChange: (Boolean) -> Unit,
     externalBroadcastEnabled: Boolean,
     onExternalBroadcastEnabledChange: (Boolean) -> Unit,
     onRefresh: () -> Unit,
@@ -104,6 +108,20 @@ internal fun Obd2Screen(
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Автоподключение к последнему адаптеру", fontWeight = FontWeight.Medium)
+                        Text(
+                            "Повторяет подключение после включения адаптера и при запуске приложения. Пауза растёт до 60 секунд. Сеть телефона не переключается автоматически.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = autoReconnectEnabled,
+                        onCheckedChange = onAutoReconnectEnabledChange
+                    )
+                }
                 if (adapters.isEmpty()) {
                     Text(
                         "Пока список пуст. Можно сопрячь Classic SPP, найти BLE OBD кнопкой поиска или вручную добавить Wi-Fi OBD ниже.",
@@ -506,6 +524,66 @@ internal fun Obd2Screen(
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
+                }
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(13.dp),
+                    color = colors.surfaceContainer
+                ) {
+                    Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("Трассировка PID → потребители", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Возраст PID 0C/0D рассчитан по монотонной середине запроса. Для остальных PID показан только возраст цикла опроса: отдельной временной метки ЭБУ нет.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                        Obd2PidDiagnostics.rows(
+                            telemetry = telemetry,
+                            nowEpochMillis = System.currentTimeMillis(),
+                            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                        ).forEachIndexed { index, row ->
+                            if (index > 0) Divider(color = colors.outlineVariant)
+                            val issueText = when (row.issue) {
+                                Obd2PidIssue.PID_UNSUPPORTED -> "не поддерживается ЭБУ"
+                                Obd2PidIssue.NO_VALID_RESPONSE -> "нет корректного ответа"
+                                Obd2PidIssue.PID_DISABLED_FOR_SESSION -> "отключён до переподключения"
+                                Obd2PidIssue.TRANSIENT_ZERO_SUPPRESSED -> "ноль ожидает подтверждения"
+                                null -> if (row.value != null) "значение получено" else "нет данных"
+                            }
+                            val ageText = row.ageMillis?.let { age ->
+                                if (age < 1_000L) "$age мс"
+                                else String.format(Locale.ROOT, "%.1f с", age / 1_000.0)
+                            } ?: "—"
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "PID ${row.pid.toString(16).uppercase(Locale.ROOT).padStart(2, '0')} · ${row.label}",
+                                        modifier = Modifier.weight(1f),
+                                        fontWeight = FontWeight.Medium,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(row.value ?: "—", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text(
+                                    "Состояние: $issueText · возраст: $ageText",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (row.issue == Obd2PidIssue.NO_VALID_RESPONSE ||
+                                        row.issue == Obd2PidIssue.PID_DISABLED_FOR_SESSION
+                                    ) colors.error else colors.onSurfaceVariant
+                                )
+                                Text(
+                                    "Потребитель: " + row.consumers.joinToString("; "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                                Text(
+                                    row.ageBasis,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
