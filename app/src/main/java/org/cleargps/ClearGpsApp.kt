@@ -71,7 +71,9 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.GpsFixed
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.ImportExport
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Map
@@ -161,7 +163,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class AppTab { MAP, POINTS, ZONES, OBD2, SETTINGS }
+private enum class AppTab { HOME, MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY, SOURCES }
 private const val RADIO_POINT_LIST_LIMIT = 5_000
 private enum class DatabaseDataSource(val key: String, val title: String) {
@@ -346,7 +348,7 @@ fun ClearGpsApp(
     var airportCatalogRefreshing by remember { mutableStateOf(false) }
     var draftZone by remember { mutableStateOf(emptyList<ZonePoint>()) }
     var mapTapMode by remember { mutableStateOf(MapTapMode.NONE) }
-    var selectedTab by remember { mutableStateOf(AppTab.MAP) }
+    var selectedTab by remember { mutableStateOf(AppTab.HOME) }
     var obd2Adapters by remember { mutableStateOf(emptyList<Obd2Adapter>()) }
     var selectedObd2Address by remember {
         mutableStateOf(prefs.getString(Obd2SharedState.KEY_ADAPTER_ADDRESS, "").orEmpty())
@@ -534,6 +536,8 @@ fun ClearGpsApp(
     var zoneRenameText by remember { mutableStateOf("") }
     var showRadioOnlyInfo by remember { mutableStateOf(false) }
     var showMapLegend by remember { mutableStateOf(false) }
+    var showMapLayers by remember { mutableStateOf(false) }
+    var mapLayerVisibility by remember { mutableStateOf(MapLayerPreferences.load(prefs)) }
     var pendingRecordScan by remember { mutableStateOf(false) }
 
     // Load and publish the local database UI from the caller's existing coroutine.
@@ -627,6 +631,10 @@ fun ClearGpsApp(
 
     fun navigateToTab(tab: AppTab) {
         selectedTab = tab
+        if (tab != AppTab.MAP) {
+            showMapLayers = false
+            showMapLegend = false
+        }
         panelVisible = true
         scope.launch { panelFraction.animateTo(0.82f, animationSpec = tween(220)) }
         if (tab == AppTab.POINTS) refreshLocalUi()
@@ -2328,6 +2336,28 @@ fun ClearGpsApp(
     LaunchedEffect(pointsToRender) {
         mapController.updateRadioPoints(pointsToRender)
     }
+    LaunchedEffect(mapLayerVisibility) {
+        mapController.setLayerVisibility(mapLayerVisibility)
+    }
+    LaunchedEffect(beaconDbLookupResult?.coordinate) {
+        val coordinate = beaconDbLookupResult?.coordinate?.let {
+            MapCoordinate(it.latitude, it.longitude)
+        }
+        mapController.updateBeaconDbEstimate(coordinate)
+    }
+    LaunchedEffect(openCellIdRecords) {
+        val nowMillis = System.currentTimeMillis()
+        val coordinates = openCellIdRecords.asSequence()
+            .filter { OpenCellIdLookupPolicy.shouldUseForPosition(it, nowMillis) }
+            .mapNotNull { record ->
+                val latitude = record.latitude ?: return@mapNotNull null
+                val longitude = record.longitude ?: return@mapNotNull null
+                MapCoordinate(latitude, longitude)
+            }
+            .take(2_000)
+            .toList()
+        mapController.updateOpenCellIdPoints(coordinates)
+    }
     LaunchedEffect(selectedTab, mapTapMode) {
         if (selectedTab == AppTab.MAP) mapController.setTapMode(mapTapMode)
     }
@@ -2424,7 +2454,7 @@ fun ClearGpsApp(
             showZoneNameDialog -> showZoneNameDialog = false
             zoneToRename != null -> zoneToRename = null
             mapTapMode != MapTapMode.NONE -> { mapTapMode = MapTapMode.NONE; draftZone = emptyList() }
-            selectedTab != AppTab.MAP -> { navigateToTab(AppTab.MAP); backExitArmed = false }
+            selectedTab != AppTab.HOME -> { navigateToTab(AppTab.HOME); backExitArmed = false }
             !backExitArmed -> {
                 backExitArmed = true
                 Toast.makeText(context, "Нажми «Назад» ещё раз в течение 2 секунд, чтобы выйти.", Toast.LENGTH_SHORT).show()
@@ -2544,7 +2574,7 @@ fun ClearGpsApp(
                         }
                         Box(Modifier.fillMaxWidth().weight(1f)) {
                             when (selectedTab) {
-                                AppTab.MAP -> MapHomeScreen(
+                                AppTab.HOME -> MapHomeScreen(
                                     coordinate = displayCoordinate,
                                     accuracy = if (displayCoordinate != null) displayAccuracy else null,
                                     source = primarySource, mode = positionMode, currentEstimate = currentRadioEstimate,
@@ -2629,7 +2659,10 @@ fun ClearGpsApp(
                                     onOpenObd2 = { navigateToTab(AppTab.OBD2) },
                                     onFixToggle = { if (monitorEnabled && mockEnabled) stopFix() else runFix() },
                                     onScan = { startScan(recording) },
-                                    onManualAnchor = { mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR },
+                                    onManualAnchor = {
+                                        navigateToTab(AppTab.MAP)
+                                        mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
+                                    },
                                     onRemoveManualAnchor = {
                                         ManualLocationStore.save(context, null)
                                         manualAnchor = null
@@ -2642,7 +2675,31 @@ fun ClearGpsApp(
                                     onMonitoring = { if (monitorEnabled) stopMonitoring() else runMonitoring() },
                                     onMock = { if (mockEnabled) disableMock() else enableMock() },
                                     onOpenPoints = { navigateToTab(AppTab.POINTS) },
-                                    onOpenZones = { navigateToTab(AppTab.ZONES) }
+                                    onOpenZones = { navigateToTab(AppTab.ZONES) },
+                                    onOpenMap = { navigateToTab(AppTab.MAP) }
+                                )
+                                AppTab.MAP -> MapScreenPanel(
+                                    layerVisibility = mapLayerVisibility,
+                                    beaconDbAvailable = beaconDbLookupResult?.coordinate != null,
+                                    openCellIdCount = openCellIdRecords.count {
+                                        OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis())
+                                    },
+                                    mapTapMode = mapTapMode,
+                                    onOpenLayers = { showMapLayers = true },
+                                    onOpenLegend = { showMapLegend = true },
+                                    onPlaceAnchor = {
+                                        mapTapMode = if (mapTapMode == MapTapMode.PLACE_ANCHOR) MapTapMode.NONE else MapTapMode.PLACE_ANCHOR
+                                    },
+                                    onDrawZone = {
+                                        draftZone = emptyList()
+                                        mapTapMode = MapTapMode.DRAW_ZONE
+                                        mapController.updateZones(zones, draftZone)
+                                    },
+                                    onCancelMapAction = {
+                                        mapTapMode = MapTapMode.NONE
+                                        draftZone = emptyList()
+                                        mapController.updateZones(zones, draftZone)
+                                    }
                                 )
                                 AppTab.POINTS -> DatabaseScreen(
                                     points = points, history = history, sources = radioSources, sourceDaysBySource = sourceDaysBySource,
@@ -2968,8 +3025,10 @@ fun ClearGpsApp(
                                         }
                                     },
                                     onStartDraw = {
-                                        draftZone = emptyList(); mapTapMode = MapTapMode.DRAW_ZONE
+                                        draftZone = emptyList()
+                                        mapTapMode = MapTapMode.DRAW_ZONE
                                         mapController.updateZones(zones, draftZone)
+                                        navigateToTab(AppTab.MAP)
                                     },
                                     onSaveDraft = {
                                         if (draftZone.size >= 3) {
@@ -3200,8 +3259,10 @@ fun ClearGpsApp(
                             windowInsets = WindowInsets.navigationBars,
                             containerColor = colors.surfaceContainerHigh, tonalElevation = 3.dp
                         ) {
+                            NavigationBarItem(selected = selectedTab == AppTab.HOME, onClick = { navigateToTab(AppTab.HOME) },
+                                icon = { Icon(Icons.Outlined.Home, null) }, label = { Text("Главная", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.MAP, onClick = { navigateToTab(AppTab.MAP) },
-                                icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Главная", maxLines = 1) })
+                                icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Карта", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { navigateToTab(AppTab.POINTS) },
                                 icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
@@ -3527,6 +3588,30 @@ fun ClearGpsApp(
             confirmButton = { TextButton(onClick = { showRadioOnlyInfo = false }) { Text("Понятно") } }
         )
         }
+        if (showMapLayers && selectedTab == AppTab.MAP) {
+            MapLayersBottomSheet(
+                visibility = mapLayerVisibility,
+                onVisibilityChange = { next ->
+                    mapLayerVisibility = next
+                    MapLayerPreferences.save(prefs, next)
+                },
+                mapSource = mapSourceMode,
+                onMapSource = { next ->
+                    mapSourceMode = next
+                    prefs.edit().putString(ClearGpsPreferences.KEY_MAP_SOURCE, next.key).apply()
+                },
+                mapTheme = mapThemeMode,
+                onMapTheme = { next ->
+                    mapThemeMode = next
+                    prefs.edit().putString(ClearGpsPreferences.KEY_MAP_STYLE, next.key).apply()
+                },
+                beaconDbAvailable = beaconDbLookupResult?.coordinate != null,
+                openCellIdCount = openCellIdRecords.count {
+                    OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis())
+                },
+                onDismiss = { showMapLayers = false }
+            )
+        }
         if (showMapLegend && selectedTab == AppTab.MAP) {
             MapLegendBottomSheet(
                 onDismiss = { showMapLegend = false },
@@ -3585,6 +3670,238 @@ private fun gpsFixStatusHint(status: String): String? = when {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun MapScreenPanel(
+    layerVisibility: MapLayerVisibility,
+    beaconDbAvailable: Boolean,
+    openCellIdCount: Int,
+    mapTapMode: MapTapMode,
+    onOpenLayers: () -> Unit,
+    onOpenLegend: () -> Unit,
+    onPlaceAnchor: () -> Unit,
+    onDrawZone: () -> Unit,
+    onCancelMapAction: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val visibleRadioLayers = listOf(
+        layerVisibility.showWifiPoints,
+        layerVisibility.showCellPoints,
+        layerVisibility.showBlePoints
+    ).count { it }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Карта и объекты", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "$visibleRadioLayers из 3 радиослоёв включено · " +
+                (if (layerVisibility.showRiskZones) "зоны видимы" else "зоны скрыты") +
+                " · " + (if (layerVisibility.showPositionCenters) "центры видимы" else "центры скрыты"),
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onSurfaceVariant
+        )
+        Text(
+            "BeaconDB: " + (if (beaconDbAvailable) "есть результат поиска" else "результата пока нет") +
+                " · OpenCellID: $openCellIdCount координат из локального кэша",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onSurfaceVariant
+        )
+        FilledTonalButton(
+            onClick = onOpenLayers,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Outlined.Layers, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Слои и подложка")
+        }
+        OutlinedButton(
+            onClick = onOpenLegend,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Outlined.Info, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Легенда и лимит точек")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            FilledTonalButton(
+                onClick = onPlaceAnchor,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Outlined.LocationOn, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Ориентир")
+            }
+            OutlinedButton(
+                onClick = onDrawZone,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Outlined.EditLocationAlt, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Рисовать зону")
+            }
+        }
+        if (mapTapMode != MapTapMode.NONE) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (mapTapMode == MapTapMode.PLACE_ANCHOR) "Коснись карты, чтобы поставить ориентир."
+                    else "Коснись карты, чтобы добавить вершины зоны.",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.primary
+                )
+                TextButton(onClick = onCancelMapAction) { Text("Отмена") }
+            }
+        }
+        Text(
+            "Переключатели меняют только видимость. Они не включают запись и не запускают BeaconDB/OpenCellID.",
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun MapLayerToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MapLayersBottomSheet(
+    visibility: MapLayerVisibility,
+    onVisibilityChange: (MapLayerVisibility) -> Unit,
+    mapSource: MapSourceMode,
+    onMapSource: (MapSourceMode) -> Unit,
+    mapTheme: MapThemeMode,
+    onMapTheme: (MapThemeMode) -> Unit,
+    beaconDbAvailable: Boolean,
+    openCellIdCount: Int,
+    onDismiss: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = colors.surfaceContainerHigh
+    ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 680.dp).verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Слои карты", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Локальные данные и уже полученные справочные результаты",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Закрыть слои")
+                }
+            }
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Радиоточки из локальной базы", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLayerToggleRow("Wi‑Fi", "Зелёные точки и кластеры.", visibility.showWifiPoints) {
+                onVisibilityChange(visibility.copy(showWifiPoints = it))
+            }
+            MapLayerToggleRow("Сотовые сети", "Фиолетовые точки и кластеры.", visibility.showCellPoints) {
+                onVisibilityChange(visibility.copy(showCellPoints = it))
+            }
+            MapLayerToggleRow("Bluetooth LE", "Янтарные точки и кластеры.", visibility.showBlePoints) {
+                onVisibilityChange(visibility.copy(showBlePoints = it))
+            }
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Положение и справочные объекты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLayerToggleRow("Центры позиции", "GPS/mock и отдельный рассчитанный центр радио-позиции с погрешностью.", visibility.showPositionCenters) {
+                onVisibilityChange(visibility.copy(showPositionCenters = it))
+            }
+            MapLayerToggleRow("Ручной ориентир", "Сохранённая пользователем контрольная координата.", visibility.showManualAnchor) {
+                onVisibilityChange(visibility.copy(showManualAnchor = it))
+            }
+            MapLayerToggleRow(
+                "BeaconDB",
+                if (beaconDbAvailable) "Последняя оценка в этой сессии. Включение слоя не выполняет запрос."
+                else "Результата пока нет. Включение слоя не выполняет запрос.",
+                visibility.showBeaconDbEstimate
+            ) {
+                onVisibilityChange(visibility.copy(showBeaconDbEstimate = it))
+            }
+            MapLayerToggleRow(
+                "OpenCellID",
+                "$openCellIdCount координат ячеек из локального кэша, прошедших проверку статуса и срока. Это не координата телефона.",
+                visibility.showOpenCellIdCells
+            ) {
+                onVisibilityChange(visibility.copy(showOpenCellIdCells = it))
+            }
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Зоны", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapLayerToggleRow("Зоны спуфинга", "Сохранённые зоны; черновик рисования остаётся видимым.", visibility.showRiskZones) {
+                onVisibilityChange(visibility.copy(showRiskZones = it))
+            }
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Подложка", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapSourceMode.values().forEach { item ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onMapSource(item) }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(item.title, fontWeight = FontWeight.Medium)
+                        Text(
+                            if (item == MapSourceMode.ONLINE) "HTTPS-тайлы OpenFreeMap; провайдер видит IP и область карты."
+                            else "Офлайн-холст без внешних запросов тайлов.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                    RadioButton(selected = mapSource == item, onClick = { onMapSource(item) })
+                }
+            }
+            Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
+            Text("Тема интерфейса и карты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            MapThemeMode.values().forEach { item ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onMapTheme(item) }.padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(item.title, modifier = Modifier.weight(1f))
+                    RadioButton(selected = mapTheme == item, onClick = { onMapTheme(item) })
+                }
+            }
+            Text(
+                "Тема общая: отдельная светлая карта при тёмном интерфейсе пока не реализована.",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
+            )
+            Spacer(Modifier.height(18.dp))
+        }
+    }
+}
+
+@Composable
 private fun MapHomeScreen(
     coordinate: MapCoordinate?, accuracy: Double?, source: String, mode: PositionMode,
     currentEstimate: RadioEstimate?, manualAnchor: ManualAnchor?, wifiCount: Int, cellCount: Int, bleCount: Int,
@@ -3618,7 +3935,8 @@ private fun MapHomeScreen(
     onRemoveManualAnchor: () -> Unit,
     obd2Connected: Boolean,
     onOpenObd2: () -> Unit,
-    onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit, onOpenPoints: () -> Unit, onOpenZones: () -> Unit
+    onRecording: (Boolean) -> Unit, onMonitoring: () -> Unit, onMock: () -> Unit,
+    onOpenPoints: () -> Unit, onOpenZones: () -> Unit, onOpenMap: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     var showDetails by remember { mutableStateOf(false) }
@@ -3650,6 +3968,16 @@ private fun MapHomeScreen(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        FilledTonalButton(
+            onClick = onOpenMap,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Outlined.Map, contentDescription = null)
+            Spacer(Modifier.width(7.dp))
+            Text("Открыть карту")
+        }
+
         Surface(
             Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(22.dp),
@@ -6226,7 +6554,7 @@ private fun HeaderCard(
         else -> colors.onPrimaryContainer
     }
     // A persisted score is not current evidence when the monitor is stopped or GNSS is intentionally unused.
-    val riskAvailable = tab == AppTab.MAP && monitorEnabled && !mode.usesRadio &&
+    val riskAvailable = tab == AppTab.HOME && monitorEnabled && !mode.usesRadio &&
         filterState != FilterState.WAITING.name
     val visibleScore = riskScore.coerceIn(0, 100)
     val animatedRisk by animateFloatAsState(
@@ -6261,7 +6589,8 @@ private fun HeaderCard(
                 Column(Modifier.weight(1f)) {
                     Text("Clear GPS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(when (tab) {
-                        AppTab.MAP -> "Локальная навигация · GNSS"
+                        AppTab.HOME -> "Мониторинг и диагностика GNSS"
+                        AppTab.MAP -> "Карта · слои и точки"
                         AppTab.POINTS -> "Радиоточки и история"
                         AppTab.ZONES -> "Зоны аномалий"
                         AppTab.OBD2 -> "Автопараметры · только чтение"
@@ -6275,7 +6604,7 @@ private fun HeaderCard(
                     IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Настройки") }
                 }
             }
-            if (tab == AppTab.MAP) {
+            if (tab == AppTab.HOME) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     StatusPill(statusLabel, statusContainer, statusForeground)
                     Spacer(Modifier.width(10.dp))

@@ -108,7 +108,8 @@ class ClearGpsMapController {
                     val clusterExpanded =
                         expandCluster(wifiPointsSource, WIFI_CLUSTERS_LAYER) ||
                         expandCluster(cellPointsSource, CELL_CLUSTERS_LAYER) ||
-                        expandCluster(blePointsSource, BLE_CLUSTERS_LAYER)
+                        expandCluster(blePointsSource, BLE_CLUSTERS_LAYER) ||
+                        expandCluster(openCellIdSource, OPENCELLID_CLUSTERS_LAYER)
                     if (clusterExpanded) {
                         true
                     } else {
@@ -307,7 +308,7 @@ class ClearGpsMapController {
     }
 
     private fun updateAccuracySource() {
-        val position = primaryLocation
+        val position = primaryLocation.takeIf { layerVisibility.showPositionCenters }
         val radius = displayedAccuracyMeters
         accuracySource?.setGeoJson(
             if (position != null && radius != null) accuracyCollection(position, radius) else emptyCollection()

@@ -55,6 +55,14 @@ For a generic BLE advertiser with no stable protocol identity, a MAC fallback is
 Radio keys are stored in the existing (radio_type, identifier) columns. This change does not require a SQLite schema migration and does not delete or rewrite previously imported BLE records. BeaconDB's MAC-based payload builder continues to reject protocol IDs; protocol identifiers remain local. Parser and address-policy tests cover valid frames, malformed/truncated payloads, duplicate identities across address changes, SemBeacon composition and randomized/unknown address handling.
 
 Physical-device validation is still required for scan-record delivery, Android/OEM address-type behavior, RSSI stability and scan throttling. Unit tests validate byte parsing and policy, not RF performance or indoor positioning accuracy.
+## Home and Map screens
+
+The Compose navigation has separate `HOME` and `MAP` destinations. Home hosts the position/monitoring dashboard and GNSS diagnostics without constructing a MapLibre `MapView`. The Map destination owns the MapView; its existing attach/detach callbacks and AndroidView release path remain responsible for the native view lifecycle.
+
+The Map layer menu independently controls Wi‑Fi, cell, BLE, saved spoofing zones, GPS/radio position centres and accuracy areas, the manual anchor, the latest BeaconDB estimate already returned in the current session, and successful cached OpenCellID cell coordinates that pass the existing `shouldUseForPosition` freshness/status checks. OpenCellID display is capped at 2,000 coordinates and uses a clustered GeoJSON source. The menu flags are stored in UI preferences and affect only MapLibre rendering. They do not trigger recording, change position fusion or source trust, create radio observations, or initiate a provider lookup. The existing Settings switch for showing all radio points remains a master visibility switch above the per-radio-type menu toggles.
+
+BeaconDB contributes only the coordinate in the current in-memory lookup result; it is not persisted as a local radio fingerprint. OpenCellID markers are derived from the separate local cell catalogue and are not the device position. Opening the Map tab or changing either overlay switch does not issue a request. The online/offline basemap remains OpenFreeMap HTTPS tiles or the private blank offline canvas. The Light/Dark/System choice still affects the app and map together; an independently themed map is not implemented.
+
 ## Local radio database and provenance
 
 `LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **11**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
