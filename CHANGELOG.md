@@ -1,3 +1,19 @@
+## 2026-10-31 — Централизован сетевой доступ и запрет публикации наблюдений
+
+**Причина:** P0.1 требует технически закрепить HTTPS и модель «только получение данных»: разрешённые геолокационные lookup не должны превращаться в API публикации собственных измерений, а сетевые клиенты и картографические тайлы должны проходить одинаковые ограничения.
+
+**Изменения**
+- Добавлен `NetworkGate`: точный allowlist хостов/путей/методов, проверка HTTPS/порта, отдельные проверки согласия BeaconDB/OpenCellID и запрет произвольных редиректов MapLibre за пределы allowlist.
+- Единственный POST — `api.beacondb.net/v1/geolocate`: upstream Ichnaea-совместимый read-only lookup требует JSON POST. Это не endpoint вклада. `/v2/geosubmit`, OpenCellID endpoints записи, PUT/PATCH и остальные POST не разрешены.
+- OpenCellID ограничен `GET /cell/get` и отдельным сетевым переключателем/ключом; MapLibre использует проверяемый OkHttp Call.Factory и только HTTPS GET на `tiles.openfreemap.org` при онлайн-режиме карты.
+- Добавлен Android `network_security_config.xml` с `cleartextTrafficPermitted=false`; `usesCleartextTraffic=false` сохранён.
+- Диагностика показывает только тип разрешённого/заблокированного запроса; URL query, API-ключи, body и радиоидентификаторы не журналируются.
+- README, ARCHITECTURE и THREAT_MODEL обновлены по фактическому сетевому контракту, включая минимальные lookup-поля и видимость IP/плиток для провайдеров.
+
+**Проверки:** добавлены тесты NetworkGate для HTTPS, allowlist, consent, POST/PUT/write endpoints, OpenCellID query-полей и offline MapLibre. Полный Android/Windows CI запускается после push в `dev`.
+
+---
+
 ## 2026-10-31 — Ускорен импорт радиоотчётов и исправлено отображение точек
 
 **Причина:** большие CSV/ZIP-импорты выполняли лишние запросы на каждую строку, а карта отбрасывала часть уже загруженных точек из-за несовпадающих лимитов базы и контроллера.

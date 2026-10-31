@@ -422,7 +422,7 @@ class RadioGeolocationRepository(private val context: Context) {
                         !CrashLoopGuard.isSafeModeActive(context)
                     ) {
                         val result = BeaconDbClient.lookup(
-                            request,
+                            context, request,
                             (snapshot.cellCount - request.cells.size).coerceAtLeast(0)
                         )
                         if (result.success) {
@@ -481,7 +481,7 @@ class RadioGeolocationRepository(private val context: Context) {
                                     break
                                 }
                                 queried++
-                                val response = OpenCellIdClient.lookup(apiKey, cell)
+                                val response = OpenCellIdClient.lookup(context, apiKey, cell)
                                 if (response.status == OpenCellIdLookupStatus.RATE_LIMITED) {
                                     OpenCellIdUsageBudget.markServerLimitReached(context)
                                     stoppedMessage = "OpenCellID server quota reached"
@@ -610,7 +610,7 @@ class RadioGeolocationRepository(private val context: Context) {
             )
         }
 
-        val lookup = BeaconDbClient.lookup(request, unsupportedCount)
+        val lookup = BeaconDbClient.lookup(context, request, unsupportedCount)
         return if (cellAvailabilityHint.isBlank()) lookup
             else lookup.copy(message = lookup.message + " " + cellAvailabilityHint)
     }

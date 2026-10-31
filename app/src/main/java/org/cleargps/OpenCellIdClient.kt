@@ -1,14 +1,14 @@
 package org.cleargps
 
+import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import javax.net.ssl.HttpsURLConnection
 
 internal object OpenCellIdClient {
     private const val ENDPOINT = "https://opencellid.org/cell/get"
@@ -16,9 +16,9 @@ internal object OpenCellIdClient {
     private const val READ_TIMEOUT_MILLIS = 10_000
     private const val MAX_RESPONSE_BYTES = 64 * 1024
 
-    suspend fun lookup(apiKey: String, cell: OpenCellIdCellKey): OpenCellIdParsedResponse =
+    suspend fun lookup(context: Context, apiKey: String, cell: OpenCellIdCellKey): OpenCellIdParsedResponse =
         withContext(Dispatchers.IO) {
-            var connection: HttpURLConnection? = null
+            var connection: HttpsURLConnection? = null
             try {
                 val query = listOf(
                     "key" to apiKey,
@@ -31,7 +31,7 @@ internal object OpenCellIdClient {
                 ).joinToString("&") { (name, value) ->
                     name + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8.name())
                 }
-                connection = URL("$ENDPOINT?$query").openConnection() as HttpURLConnection
+                connection = NetworkGate.openOpenCellIdLookupConnection(context, "$ENDPOINT?$query")
                 connection.requestMethod = "GET"
                 connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
                 connection.readTimeout = READ_TIMEOUT_MILLIS

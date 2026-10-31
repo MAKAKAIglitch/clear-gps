@@ -1,10 +1,10 @@
 package org.cleargps
 
+import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.InputStream
-import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
 /** Explicit read-only multi-radio BeaconDB lookup. Never calls the data-submission endpoint. */
@@ -37,7 +37,7 @@ internal object BeaconDbClient {
         )
     }
 
-    suspend fun lookup(request: BeaconDbRequest, unsupportedCellCount: Int): BeaconDbLookupResult =
+    suspend fun lookup(context: Context, request: BeaconDbRequest, unsupportedCellCount: Int): BeaconDbLookupResult =
         withContext(Dispatchers.IO) {
             val normalized = request.normalized()
             if (!normalized.canLookup()) {
@@ -83,11 +83,7 @@ internal object BeaconDbClient {
                         message = "Запрос BeaconDB отменён: разрешение было выключено. Сетевого обращения не было."
                     )
                 }
-                val activeConnection = URL(ENDPOINT).openConnection() as? HttpsURLConnection
-                    ?: return@withContext normalized.toResult(
-                        unsupportedCellCount,
-                        message = "Не удалось открыть защищённое HTTPS-соединение с BeaconDB."
-                    )
+                val activeConnection = NetworkGate.openBeaconDbLookupConnection(context, ENDPOINT)
                 connection = activeConnection
                 activeConnection.connectTimeout = CONNECT_TIMEOUT_MS
                 activeConnection.readTimeout = READ_TIMEOUT_MS

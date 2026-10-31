@@ -118,16 +118,12 @@ When no position meets the publication policy, the intended safe behavior is to 
 - The existing SRTM HGT reader does not attach source uncertainty metadata, so even a same-datum observation remains unavailable for comparison until the imported product's uncertainty is described. Copernicus GeoTIFF, datum conversion, calibration from logs and real-device validation remain separate work.
 ## Network and privacy boundaries
 
-- Radio observations and the local database stay in app-private storage by default.
-- BeaconDB lookup is disabled by default. If the user enables it and starts a lookup, the current request is **cell-only** (supported cell identifiers and signal strength), not Wi-Fi/BSSID, BLE or GPS coordinates. The remote service also sees the device IP address. No contribution/upload endpoint is used, and the result is not automatically inserted into the local radio database.
-- The default map style is remote; a map provider can observe the IP address and requested map area. Radio identifiers are not attached to map requests.
-- Diagnostic logs redact recognized labelled identifiers and round explicitly recognized coordinate values. Arbitrary unlabelled free text cannot be guaranteed to be sanitized.
-- A minimal `CRASH` entry is forced to the app-private diagnostics log even when verbose logging is off. It contains the exception class, up to eight class/method/line frames, recent crash count and safe-mode flag, but not the exception message. Three uncaught crashes within ten minutes disable BeaconDB lookup and mock output for ten minutes and reset its opt-in preference to off.
-- Replay v2 stores relative time/track coordinates and opaque per-recording radio IDs. It can include available IMU samples and (only in Auto mode while recording) anonymized radio snapshots. These samples do **not** currently contribute to the live risk score. The replay remains a possible source of movement-context information, so it is kept private and exported only by user action.
-- A full SQLite backup can contain exact radio IDs, coordinates and observation history. It is a deliberate user-selected export, not a sanitized diagnostic log.
-
-See [`docs/spec/privacy.md`](docs/spec/privacy.md) and [`THREAT_MODEL.md`](THREAT_MODEL.md) for the privacy and threat boundaries.
-
+- `NetworkGate.kt` is the only approved Internet egress for app-owned HTTP and MapLibre resource requests. It validates HTTPS, exact hosts/paths, request methods and each provider's separate opt-in; diagnostics record only the operation, never URL query strings or request bodies. Android's `network_security_config.xml` also disables cleartext.
+- BeaconDB lookup is disabled by default. With the explicit lookup switch enabled, `POST https://api.beacondb.net/v1/geolocate` may carry only current supported Wi-Fi BSSID/RSSI, eligible public BLE MAC/RSSI and supported GSM/WCDMA/LTE cell ID/RSSI. SSID, Bluetooth names/payloads, GPS coordinates, scan history and stored observations are excluded. This POST is required by the read-only Ichnaea-compatible geolocate API; it is not a contribution endpoint. `/v2/geosubmit` is not allowlisted.
+- OpenCellID uses only `GET https://opencellid.org/cell/get` for current supported cell identifiers plus the user API key. It does not send RSSI, Wi-Fi/BSSID, BLE, GPS coordinates or observation history. The separate OpenCellID switch/key, per-batch cooldown and local daily budget remain required; its write/contribution API is not allowlisted.
+- MapLibre resources are routed through its `HttpRequestUtil` OkHttp Call.Factory and checked on every network exchange/redirect. Only HTTPS GET resources from `tiles.openfreemap.org` are accepted while the saved map source is `online`; offline mode blocks map egress. The map provider sees the IP address and tile area, not radio identities or app positioning fixes.
+- No app-owned radio observations, local database, settings backup, replay, diagnostic log or WiGLE export is uploaded. Wi-Fi TCP to a user-selected private OBD adapter is a local peripheral connection and is not an Internet lookup.
+- BeaconDB and OpenCellID lookup results are used as described in the source-fusion section above; they are not written into local training fingerprints as ground-truth observations.
 ## Build and test flow
 
 The Android CI uses JDK 17 and the checked-in Gradle Wrapper:

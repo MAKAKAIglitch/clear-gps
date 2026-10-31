@@ -1060,7 +1060,7 @@ fun ClearGpsApp(
                                     break
                                 }
                                 queried++
-                                val response = OpenCellIdClient.lookup(apiKey, cell)
+                                val response = OpenCellIdClient.lookup(context, apiKey, cell)
                                 if (response.status == OpenCellIdLookupStatus.RATE_LIMITED) {
                                     OpenCellIdUsageBudget.markServerLimitReached(context)
                                     stoppedMessage = response.message + " Повтор будет разрешён после смены UTC-даты."
