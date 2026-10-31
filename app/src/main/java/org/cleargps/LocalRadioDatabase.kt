@@ -278,6 +278,10 @@ object ClearGpsPreferences {
     const val KEY_LAST_SOURCE_CONFLICT = "radio_last_source_conflict"
     const val KEY_RADIO_OBSERVATION_LIMIT = "radio_observation_retention_limit"
     const val KEY_WIFI_SSID_BLACKLIST = "wifi_ssid_blacklist"
+    const val KEY_AIRPORT_AVOIDANCE_ENABLED = "airport_avoidance_enabled"
+    const val KEY_AIRPORT_RADIUS_METERS = "airport_avoidance_radius_m"
+    const val KEY_AIRPORT_EXCLUSIONS = "airport_avoidance_exclusions"
+    const val KEY_AIRPORT_CATALOG_ONLINE_ENABLED = "airport_catalog_online_enabled"
 }
 
 object ManualLocationStore {
