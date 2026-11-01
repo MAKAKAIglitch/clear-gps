@@ -6138,7 +6138,13 @@ private fun RadioPointDetailsPanel(
     }
 
     Surface(
-        modifier = modifier,
+        modifier = modifier.pointerInput(Unit) {
+            // Claim hit testing only inside the panel bounds; child buttons and list gestures
+            // still receive events, while the MapView below cannot steal panel touches.
+            awaitPointerEventScope {
+                while (true) awaitPointerEvent()
+            }
+        },
         shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
         color = colors.surfaceContainer,
         tonalElevation = 4.dp,
