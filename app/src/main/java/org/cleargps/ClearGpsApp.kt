@@ -6172,6 +6172,7 @@ private fun RadioPointDetailsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
+        scrimColor = Color.Transparent,
         dragHandle = {
             Box(
                 modifier = Modifier.fillMaxWidth()
