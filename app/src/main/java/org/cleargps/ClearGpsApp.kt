@@ -3530,7 +3530,6 @@ fun ClearGpsApp(
                             88.dp
                     )
             )
-        }
         if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
             RadioPointDetailsDialog(
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -6248,7 +6247,7 @@ private fun RadioPointObservationRow(
         Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    if (selected) Icons.Outlined.Place else Icons.Outlined.History,
+                    if (selected) Icons.Outlined.MyLocation else Icons.Outlined.History,
                     contentDescription = null,
                     tint = if (selected) colors.onSecondaryContainer else colors.primary
                 )
