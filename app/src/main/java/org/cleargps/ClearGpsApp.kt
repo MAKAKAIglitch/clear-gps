@@ -3561,6 +3561,7 @@ fun ClearGpsApp(
             )
         }
     }
+    }
 
     ClearGpsTheme(dark = mapIsDark) {
         if (selectedMapPlacePoints.isNotEmpty()) {
