@@ -155,6 +155,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import org.cleargps.core.FilterState
 import org.cleargps.core.RiskFeedbackCodec
@@ -2670,7 +2672,11 @@ fun ClearGpsApp(
             val detailsViewportTopPx =
                 mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
             val detailsViewportBottomPx =
-                (mapViewportBottomInWindowPx - detailsSheetTopInWindowPx).coerceAtLeast(0)
+                if (detailsSheetTopInWindowPx > 0 && mapViewportBottomInWindowPx > detailsSheetTopInWindowPx) {
+                    mapViewportBottomInWindowPx - detailsSheetTopInWindowPx
+                } else {
+                    0
+                }
             val mapHeaderHeightDp = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
             val navigationBottomInset =
                 WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -2708,7 +2714,10 @@ fun ClearGpsApp(
                         MapCoordinate(point.latitude, point.longitude)
                     } else null
                     if (focus != null) {
-                        snapshotFlow { detailsViewportBottomPx }.first { it > 0 }
+                        snapshotFlow { detailsViewportBottomPx }
+                            .filter { it > 0 }
+                            .debounce(120)
+                            .first()
                         mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
                         mapController.focus(focus, 16.0)
                     }
