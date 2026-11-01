@@ -5786,7 +5786,6 @@ private fun DatabaseScreen(
                     }
                 }
             }
-        }
         } else {
             refinementContent()
         }
