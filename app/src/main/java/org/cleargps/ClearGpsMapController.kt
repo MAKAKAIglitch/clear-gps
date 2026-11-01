@@ -809,10 +809,19 @@ class ClearGpsMapController {
             return false
         }
         val padding = request.paddingPx
+        // getCameraForLatLngBounds writes these values into the resulting CameraPosition.
+        // Include the persistent header/sheet insets here as well, otherwise the fit would
+        // calculate against the full screen and place observations underneath the sheet.
+        val cameraPadding = intArrayOf(
+            padding,
+            viewportTopPaddingPx + padding,
+            padding,
+            viewportBottomPaddingPx + padding
+        )
         val fittedCamera = try {
             mapObject.getCameraForLatLngBounds(
                 mapBounds,
-                intArrayOf(padding, padding, padding, padding)
+                cameraPadding
             )
         } catch (_: IllegalArgumentException) {
             null
