@@ -666,6 +666,7 @@ class RadioGeolocationRepository(private val context: Context) {
         var beaconStatus = ""
         if (beaconEnabled &&
             prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+            NetworkAccessPolicy.hasValidatedWifi(context) &&
             BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
         ) {
             val candidates = withContext(Dispatchers.IO) { database.loadBeaconDbRefinementSnapshot() }
@@ -702,6 +703,7 @@ class RadioGeolocationRepository(private val context: Context) {
                         prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
                         !CrashLoopGuard.isSafeModeActive(context) &&
                         PowerPolicy.canRunOptionalBackground(context) &&
+                        NetworkAccessPolicy.hasValidatedWifi(context) &&
                         BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
                     ) {
                         val result = BeaconDbClient.lookup(context, request, 0)

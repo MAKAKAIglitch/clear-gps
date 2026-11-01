@@ -74,6 +74,16 @@ internal object NetworkAccessPolicy {
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
+
+    fun hasValidatedWifi(context: Context): Boolean {
+        val app = context.applicationContext
+        val manager = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+        val capabilities = runCatching { manager.activeNetwork?.let(manager::getNetworkCapabilities) }
+            .getOrNull() ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
 }
 
 internal object BeaconDbAutoRefinementPolicy {
