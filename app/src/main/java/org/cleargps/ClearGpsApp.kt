@@ -2659,10 +2659,8 @@ fun ClearGpsApp(
                     .coerceAtLeast(260.dp)
                     .coerceAtMost(760.dp)
             } else {
-                (maxHeight * 0.50f)
-                    .coerceAtLeast(292.dp)
-                    .coerceAtMost(520.dp)
-                    .coerceAtMost(maxHeight * 0.62f)
+                // Keep the initial sheet close to 400 dp while adapting to short windows.
+                400.dp.coerceAtMost(maxHeight * 0.62f)
             }
             val detailsPanelHeight by animateDpAsState(
                 targetValue = detailsPanelHeightTarget,
@@ -2670,7 +2668,8 @@ fun ClearGpsApp(
                 label = "radioPointDetailsPanelHeight"
             )
             val detailsPanelBottomOffset by animateDpAsState(
-                targetValue = navigationBottomInset + if (selectedPointSheetExpanded) 0.dp else 88.dp,
+                // The details surface is drawn after NavigationBar, so it intentionally covers the tabs.
+                targetValue = navigationBottomInset,
                 animationSpec = tween(220),
                 label = "radioPointDetailsBottomOffset"
             )
