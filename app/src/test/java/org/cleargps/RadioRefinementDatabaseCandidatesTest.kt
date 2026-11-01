@@ -98,6 +98,44 @@ class RadioRefinementDatabaseCandidatesTest {
         addWifiPointOnly("a8:bb:cc:dd:ee:25", "Owner_nomap", now - 2_000L, localSourceId, 52.0001, 5.0001)
         addWifiPointOnly("a8:bb:cc:dd:ee:26", "Manual", now - 1_000L, localSourceId, 52.0001, 5.0001, "manual-edit")
 
+        val rawRows = sqlite!!.rawQuery(
+            """
+            SELECT p.identifier, p.last_seen, p.position_observed_at, p.latitude, p.longitude,
+                   p.accuracy, p.position_source, p.source_id, s.kind, s.enabled, s.trust_weight,
+                   sg.day_key, sg.enabled, sg.trust_weight,
+                   strftime('%Y-%m-%d', COALESCE(p.position_observed_at, p.last_seen) / 1000,
+                       'unixepoch', 'localtime') AS position_day
+            FROM radio_points p
+            LEFT JOIN radio_sources s ON s.id = p.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+              AND sg.day_key = strftime(
+                  '%Y-%m-%d', COALESCE(p.position_observed_at, p.last_seen) / 1000,
+                  'unixepoch', 'localtime'
+              )
+              AND sg.radio_type = p.radio_type
+            WHERE p.radio_type = 'wifi'
+            ORDER BY p.identifier
+            """,
+            null
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        "${cursor.getString(0)} last=${cursor.getLong(1)} " +
+                            "positionAt=${if (cursor.isNull(2)) "null" else cursor.getLong(2)} " +
+                            "lat=${if (cursor.isNull(3)) "null" else cursor.getDouble(3)} " +
+                            "lon=${if (cursor.isNull(4)) "null" else cursor.getDouble(4)} " +
+                            "accuracy=${if (cursor.isNull(5)) "null" else cursor.getDouble(5)} " +
+                            "positionSource=${cursor.getString(6)} sourceId=${cursor.getLong(7)} " +
+                            "sourceKind=${cursor.getString(8)} sourceEnabled=${cursor.getString(9)} " +
+                            "sourceTrust=${cursor.getString(10)} segmentDay=${cursor.getString(11)} " +
+                            "segmentEnabled=${cursor.getString(12)} segmentTrust=${cursor.getString(13)} " +
+                            "positionDay=${cursor.getString(14)}"
+                    )
+                }
+            }
+        }
+        println("BeaconDB raw point diagnostics: now=$now rows=$rawRows")
         val selection = database!!.loadBeaconDbManualRefinementSelection(nowMillis = now, maxGroups = 10)
         println(
             "BeaconDB nearby selection: total=${selection.totalWifiPoints}, " +
