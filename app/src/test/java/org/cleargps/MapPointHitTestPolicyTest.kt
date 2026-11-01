@@ -34,7 +34,7 @@ class MapPointHitTestPolicyTest {
     fun nearestMarkerWinsWhenTouchTargetsOverlap() {
         val selected = MapPointHitTestPolicy.selectNearest(
             candidates = listOf(
-                MapPointHitCandidate(10L, 60f, 0f),
+                MapPointHitCandidate(10L, 20f, 0f),
                 MapPointHitCandidate(20L, 12f, 0f)
             ),
             tapX = 0f,
