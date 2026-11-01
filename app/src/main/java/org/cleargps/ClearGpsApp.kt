@@ -3157,6 +3157,24 @@ fun ClearGpsApp(
                                             }
                                         }
                                     },
+                                    onDeleteAutoRefinement = { point ->
+                                        scope.launch {
+                                            try {
+                                                val deleted = withContext(Dispatchers.IO) {
+                                                    database.deleteAutoRefinementForPoint(point.type, point.identifier)
+                                                }
+                                                refreshLocalUiInCurrentCoroutine()
+                                                Toast.makeText(
+                                                    context,
+                                                    if (deleted > 0) "Автоуточнение точки удалено, координата пересчитана." else "Автоуточнение этой точки не найдено.",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } catch (error: Exception) {
+                                                Toast.makeText(context, "Не удалось удалить автоуточнение: " +
+                                                    (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
                                     onExportSource = { source ->
                                         pendingSourceExportId = source.id
                                         pendingSourceExportDay = null
@@ -5208,6 +5226,7 @@ private fun DatabaseScreen(
     onSetSourceEnabled: (RadioSourceRecord, Boolean) -> Unit,
     onSetSourceTrustWeight: (RadioSourceRecord, Double) -> Unit,
     onDeleteSource: (RadioSourceRecord) -> Unit,
+    onDeleteAutoRefinement: (RadioPointRecord) -> Unit,
     onExportSource: (RadioSourceRecord) -> Unit,
     onExportSourceDay: (RadioSourceRecord, RadioSourceDayRecord) -> Unit,
     onDeleteSourceDay: (RadioSourceDayRecord) -> Unit,
@@ -5237,6 +5256,7 @@ private fun DatabaseScreen(
     val colors = MaterialTheme.colorScheme
     val databaseScrollState = rememberScrollState()
     var pendingDeleteSource by remember { mutableStateOf<RadioSourceRecord?>(null) }
+    var pendingDeleteAutoRefinement by remember { mutableStateOf<RadioPointRecord?>(null) }
     var pendingPassiveSourceDeletion by remember { mutableStateOf<RadioSourceRecord?>(null) }
     var pendingDeleteSourceDay by remember { mutableStateOf<RadioSourceDayRecord?>(null) }
     var expandedSourceIds by remember { mutableStateOf(emptySet<Long>()) }
@@ -5402,7 +5422,12 @@ private fun DatabaseScreen(
                 else EmptyState("Нет точек этого типа", "Выбери «Все» или другой тип: Wi‑Fi, вышки либо Bluetooth.")
             } else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 items(filteredPoints, key = { it.id }) { point ->
-                    RadioPointRow(point, onEdit = { onEdit(point) }, onDelete = { onDelete(point) })
+                    RadioPointRow(
+                        point,
+                        onEdit = { onEdit(point) },
+                        onDelete = { onDelete(point) },
+                        onDeleteAutoRefinement = { pendingDeleteAutoRefinement = point }
+                    )
                 }
             }
         } else if (selectedView == PointsView.HISTORY) {
@@ -5516,6 +5541,27 @@ private fun DatabaseScreen(
                     }
                 }
             }
+        }
+        val autoRefinementPendingDeletion = pendingDeleteAutoRefinement
+        if (autoRefinementPendingDeletion != null) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteAutoRefinement = null },
+                title = { Text("Удалить автоуточнение точки?") },
+                text = {
+                    Text("Будут удалены только автоматически полученные координаты этой " +
+                        autoRefinementPendingDeletion.identifier + ". Локальные и импортированные наблюдения, " +
+                        "история и ручные координаты сохраняются; координата пересчитывается по оставшимся источникам.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingDeleteAutoRefinement = null
+                        onDeleteAutoRefinement(autoRefinementPendingDeletion)
+                    }) { Text("Удалить автоуточнение") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteAutoRefinement = null }) { Text("Отмена") }
+                }
+            )
         }
         val sourcePendingDeletion = pendingDeleteSource
         if (sourcePendingDeletion != null) {
@@ -6265,8 +6311,15 @@ private fun BeaconDbDatabaseContent(
 }
 
 @Composable
-private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun RadioPointRow(
+    point: RadioPointRecord,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onDeleteAutoRefinement: () -> Unit
+) {
     val colors = MaterialTheme.colorScheme
+    val hasAutoRefinement = point.positionSource == "beacondb-auto-refined" ||
+        point.positionSource == "opencellid-auto-refined"
     val typeLabel = when (point.type) { "wifi" -> "Wi‑Fi"; "cell" -> "Сотовая"; else -> "Bluetooth LE" }
     Surface(onClick = onEdit, modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp), color = colors.surfaceContainerHigh) {
@@ -6300,6 +6353,11 @@ private fun RadioPointRow(point: RadioPointRecord, onEdit: () -> Unit, onDelete:
             }
             Column {
                 IconButton(onClick = onEdit, modifier = Modifier.size(38.dp)) { Icon(Icons.Outlined.Edit, "Подробности и наблюдения точки") }
+                if (hasAutoRefinement) {
+                    IconButton(onClick = onDeleteAutoRefinement, modifier = Modifier.size(38.dp)) {
+                        Icon(Icons.Outlined.DeleteOutline, "Удалить только автоуточнение")
+                    }
+                }
                 IconButton(onClick = onDelete, modifier = Modifier.size(38.dp)) { Icon(Icons.Outlined.DeleteOutline, "Удалить точку") }
             }
         }
@@ -7046,7 +7104,7 @@ private fun SettingsScreen(
                 )
                 SettingSwitch(
                     "Автоматически уточнять локальные Wi‑Fi-точки через BeaconDB",
-                    "По умолчанию выключено. Требуется отдельно разрешить запросы BeaconDB выше. При включении — не чаще одного запроса за 5 минут, только по подтверждённой Wi‑Fi-сети, при заряде не ниже 60% и температуре аккумулятора не выше 37 °C. Результат имеет низкий вес доверия и хранится отдельной удаляемой партией.",
+                    "Включено по умолчанию, но не выполняет запросы, пока выше не дано отдельное согласие на BeaconDB. После согласия — не чаще одного запроса за 5 минут, только по подтверждённой Wi‑Fi-сети, при заряде не ниже 60% и температуре аккумулятора не выше 37 °C. Результат имеет низкий вес доверия и хранится отдельной удаляемой партией.",
                     beaconDbAutoRefinementEnabled,
                     onBeaconDbAutoRefinementEnabled
                 )

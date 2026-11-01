@@ -216,6 +216,165 @@ class LocalRadioDatabaseRetentionAndSourceDeletionTest {
         assertEquals(localSourceId, database.listRadioSources().single { it.kind == "local" }.id)
     }
 
+    @Test
+    fun deletingOneAutoRefinementKeepsObservationsAndRemovesOnlyDerivedCoordinate() {
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val now = System.currentTimeMillis()
+        val identifier = "aa:bb:cc:dd:ee:c8"
+        val pointId = sqlite.insertOrThrow(
+            "radio_points",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", identifier)
+                put("label", "auto-refined fixture")
+                put("ssid", "auto-network")
+                put("notes", "")
+                putNull("latitude")
+                putNull("longitude")
+                putNull("accuracy")
+                put("last_rssi", -61)
+                put("peak_rssi", -58)
+                put("frequency", 2412)
+                put("first_seen", now - 10_000L)
+                put("last_seen", now)
+                put("sightings", 2)
+                put("position_source", "unlocated")
+                putNull("source_id")
+                putNull("position_observed_at")
+            }
+        )
+        // Keep the training observation unlocated; only the separate refinement carries coordinates.
+        sqlite.insertOrThrow(
+            "radio_observations",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", identifier)
+                putNull("latitude")
+                putNull("longitude")
+                putNull("accuracy")
+                put("rssi", -61)
+                put("frequency", 2412)
+                put("observed_at", now)
+                put("position_source", "unlocated")
+                put("source_id", localSourceId)
+            }
+        )
+
+        val fingerprint = "beacondb-auto-refined-v1:point-delete:$now"
+        assertEquals(
+            1,
+            database.saveAutoRefinementBatch(
+                provider = "beacondb",
+                sourceName = "BeaconDB point-delete fixture",
+                fingerprint = fingerprint,
+                trustWeight = 1.0,
+                records = listOf(
+                    RadioAutoRefinementRecord(
+                        provider = "beacondb",
+                        radioType = "wifi",
+                        identifier = identifier,
+                        latitude = 52.280,
+                        longitude = 40.460,
+                        accuracyMeters = 30.0,
+                        observedAtMillis = now
+                    )
+                )
+            )
+        )
+
+        val refined = database.findPoint(pointId) ?: throw AssertionError("Auto-refined point disappeared")
+        assertEquals("beacondb-auto-refined", refined.positionSource)
+        assertEquals(52.280, refined.latitude!!, 0.000001)
+        assertEquals(1, countRows(
+            "radio_observations", "radio_type = ? AND identifier = ?", "wifi", identifier
+        ))
+
+        assertEquals(1, database.deleteAutoRefinementForPoint("wifi", identifier))
+
+        val restored = database.findPoint(pointId) ?: throw AssertionError("Observed radio point was deleted")
+        assertEquals("unlocated", restored.positionSource)
+        assertNull(restored.latitude)
+        assertNull(restored.longitude)
+        assertNull(restored.sourceId)
+        assertEquals(1, countRows(
+            "radio_observations", "radio_type = ? AND identifier = ?", "wifi", identifier
+        ))
+        assertEquals(0, countRows(
+            "radio_auto_refinements", "radio_type = ? AND identifier = ?", "wifi", identifier
+        ))
+        assertEquals(0, countRows("radio_sources", "fingerprint = ?", fingerprint))
+    }
+
+    @Test
+    fun deletingStaleAutoRefinementCannotChangeManualEditedCoordinate() {
+        val now = System.currentTimeMillis()
+        val identifier = "aa:bb:cc:dd:ee:c9"
+        val sourceFingerprint = "beacondb-auto-refined-v1:manual-pin:$now"
+        val sourceId = sqlite.insertOrThrow(
+            "radio_sources",
+            null,
+            ContentValues().apply {
+                put("kind", "beacondb")
+                put("name", "Stale BeaconDB manual pin fixture")
+                put("created_at", now)
+                put("last_seen", now)
+                put("enabled", 1)
+                put("trust_weight", 0.2)
+                put("fingerprint", sourceFingerprint)
+            }
+        )
+        val pointId = sqlite.insertOrThrow(
+            "radio_points",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", identifier)
+                put("label", "manual pin")
+                put("ssid", "manual-network")
+                put("notes", "")
+                put("latitude", 52.274)
+                put("longitude", 40.452)
+                put("accuracy", 3.0)
+                put("last_rssi", -55)
+                put("peak_rssi", -50)
+                put("frequency", 2412)
+                put("first_seen", now - 10_000L)
+                put("last_seen", now)
+                put("sightings", 5)
+                put("position_source", "manual-edit")
+                putNull("source_id")
+                putNull("position_observed_at")
+            }
+        )
+        sqlite.insertOrThrow(
+            "radio_auto_refinements",
+            null,
+            ContentValues().apply {
+                put("source_id", sourceId)
+                put("provider", "beacondb")
+                put("radio_type", "wifi")
+                put("identifier", identifier)
+                put("latitude", 52.280)
+                put("longitude", 40.460)
+                put("accuracy", 25.0)
+                put("observed_at", now)
+            }
+        )
+
+        assertEquals(1, database.deleteAutoRefinementForPoint("wifi", identifier))
+
+        val manual = database.findPoint(pointId) ?: throw AssertionError("Manual point disappeared")
+        assertEquals("manual-edit", manual.positionSource)
+        assertEquals(52.274, manual.latitude!!, 0.000001)
+        assertEquals(40.452, manual.longitude!!, 0.000001)
+        assertEquals(0, countRows(
+            "radio_auto_refinements", "radio_type = ? AND identifier = ?", "wifi", identifier
+        ))
+        assertEquals(0, countRows("radio_sources", "id = ?", sourceId.toString()))
+    }
+
     private fun insertObservation(
         sourceId: Long,
         observedAt: Long,

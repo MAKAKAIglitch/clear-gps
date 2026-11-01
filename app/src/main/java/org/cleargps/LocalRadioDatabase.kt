@@ -2374,6 +2374,72 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         return ids.count { deleteRadioSource(it) }
     }
 
+    /**
+     * Removes only external auto-refinement rows for one radio identifier, then recomputes
+     * its selected coordinate from all remaining enabled sources. Radio observations and
+     * user-edited coordinates are never deleted by this operation.
+     */
+    fun deleteAutoRefinementForPoint(radioType: String, identifier: String): Int {
+        require(radioType in VALID_TYPES)
+        require(identifier.isNotBlank())
+        val canonical = canonicalIdentifier(identifier)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val sourceIds = ArrayList<Long>()
+            db.rawQuery(
+                "SELECT DISTINCT source_id FROM radio_auto_refinements " +
+                    "WHERE radio_type = ? AND identifier = ?",
+                arrayOf(radioType, canonical)
+            ).use { cursor ->
+                while (cursor.moveToNext()) sourceIds.add(cursor.getLong(0))
+            }
+            val deleted = db.delete(
+                "radio_auto_refinements",
+                "radio_type = ? AND identifier = ?",
+                arrayOf(radioType, canonical)
+            )
+            if (deleted > 0) {
+                val currentPoint = findPoint(db, radioType, canonical)
+                if (currentPoint?.positionSource == "beacondb-auto-refined" ||
+                    currentPoint?.positionSource == "opencellid-auto-refined"
+                ) {
+                    // The selected auto-refined coordinate is also cached on radio_points.
+                    // Clear only that derived selection before rebuilding so it cannot
+                    // re-enter the candidate set after its refinement row has been removed.
+                    db.update(
+                        "radio_points",
+                        ContentValues().apply {
+                            putNull("latitude")
+                            putNull("longitude")
+                            putNull("accuracy")
+                            putNull("source_id")
+                            putNull("position_observed_at")
+                            put("position_source", "unlocated")
+                        },
+                        "id = ?",
+                        arrayOf(currentPoint.id.toString())
+                    )
+                }
+                rebuildRadioPointPosition(db, radioType, canonical)
+                sourceIds.forEach { sourceId ->
+                    db.delete(
+                        "radio_sources",
+                        "id = ? " +
+                            "AND NOT EXISTS (SELECT 1 FROM radio_auto_refinements a WHERE a.source_id = radio_sources.id) " +
+                            "AND NOT EXISTS (SELECT 1 FROM radio_observations o WHERE o.source_id = radio_sources.id) " +
+                            "AND NOT EXISTS (SELECT 1 FROM radio_points p WHERE p.source_id = radio_sources.id)",
+                        arrayOf(sourceId.toString())
+                    )
+                }
+            }
+            db.setTransactionSuccessful()
+            return deleted
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun listRadioSources(): List<RadioSourceRecord> {
         val result = ArrayList<RadioSourceRecord>()
         readableDatabase.rawQuery(
