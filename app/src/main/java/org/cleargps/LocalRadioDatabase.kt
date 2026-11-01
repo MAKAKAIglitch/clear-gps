@@ -148,52 +148,149 @@ data class RadioPointCenter(
  * More accurate fixes contribute more weight; spherical averaging also handles the date line.
  */
 fun estimateObservationCenter(observations: List<RadioPointObservation>): RadioPointCenter? {
-    val located = observations.mapNotNull { observation ->
-        val lat = observation.latitude
-        val lon = observation.longitude
-        if (lat == null || lon == null || !lat.isFinite() || !lon.isFinite() ||
-            lat !in -90.0..90.0 || lon !in -180.0..180.0) return@mapNotNull null
+    data class Located(
+        val observation: RadioPointObservation,
+        val latitude: Double,
+        val longitude: Double,
+        val accuracy: Double,
+        val robustDistanceMeters: Double
+    )
+
+    val valid = observations.mapNotNull { observation ->
+        val latitude = observation.latitude ?: return@mapNotNull null
+        val longitude = observation.longitude ?: return@mapNotNull null
+        if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+            !longitude.isFinite() || longitude !in -180.0..180.0
+        ) return@mapNotNull null
         val accuracy = observation.accuracyMeters
             ?.takeIf { it.isFinite() && it > 0.0 }
             ?.coerceIn(10.0, 100_000.0) ?: 250.0
-        Triple(observation, accuracy, 1.0 / (accuracy * accuracy))
+        Triple(observation, latitude, longitude to accuracy)
     }
-    if (located.isEmpty()) return null
+    if (valid.isEmpty()) return null
 
+    // Find a robust coordinate median before weighting, using unwrapped longitudes so
+    // observations around +/-180 degrees are treated as neighbours.
+    val longitudeOrigin = valid.first().third.first
+    fun unwrapLongitude(longitude: Double): Double {
+        val delta = ((longitude - longitudeOrigin + 540.0) % 360.0) - 180.0
+        return longitudeOrigin + delta
+    }
+    val medianLatitude = medianObservationValue(valid.map { it.second })
+    val medianLongitude = medianObservationValue(valid.map { unwrapLongitude(it.third.first) })
+    val robustDistances = valid.map { (_, latitude, longitudeAndAccuracy) ->
+        observationDistanceMeters(
+            medianLatitude, medianLongitude,
+            latitude, unwrapLongitude(longitudeAndAccuracy.first)
+        )
+    }
+    val medianDistance = medianObservationValue(robustDistances)
+    val medianAbsoluteDeviation = medianObservationValue(
+        robustDistances.map { kotlin.math.abs(it - medianDistance) }
+    )
+    val medianAccuracy = medianObservationValue(valid.map { it.third.second })
+    val outlierLimitMeters = maxOf(
+        100.0,
+        medianDistance + 3.0 * 1.4826 * medianAbsoluteDeviation + medianAccuracy * 0.5
+    )
+    val retainedIndexes = if (valid.size >= 4) {
+        robustDistances.indices.filter { robustDistances[it] <= outlierLimitMeters }
+            .takeIf { it.size >= maxOf(3, (valid.size + 1) / 2) }
+            ?: valid.indices.toList()
+    } else valid.indices.toList()
+
+    val strongestRssi = retainedIndexes.mapNotNull { index ->
+        valid[index].first.rssi.takeIf { it in -127..-1 }
+    }.maxOrNull()
+    val located = retainedIndexes.map { index ->
+        val (observation, latitude, longitudeAndAccuracy) = valid[index]
+        val accuracy = longitudeAndAccuracy.second
+        val measuredRssi = observation.rssi.takeIf { it in -127..-1 }
+        val signalWeight = if (measuredRssi != null && strongestRssi != null) {
+            (10.0.pow((measuredRssi - strongestRssi) / 20.0)).coerceIn(0.05, 1.0)
+        } else 0.75
+        val source = observation.positionSource.lowercase(Locale.ROOT)
+        val sourceWeight = when {
+            "opencellid" in source -> 0.20
+            "beacondb" in source || "beacon_db" in source -> 0.25
+            else -> 1.0
+        }
+        val accuracyWeight = 1.0 / (accuracy * accuracy)
+        val weight = accuracyWeight * signalWeight * sourceWeight
+        Located(
+            observation = observation,
+            latitude = latitude,
+            longitude = longitudeAndAccuracy.first,
+            accuracy = accuracy,
+            robustDistanceMeters = robustDistances[index]
+        ) to weight
+    }
+    val totalWeight = located.sumOf { it.second }
+    if (!totalWeight.isFinite() || totalWeight <= 0.0) return null
+
+    // Weighted spherical averaging avoids a longitude discontinuity at the date line.
     var x = 0.0
     var y = 0.0
     var z = 0.0
-    var totalWeight = 0.0
-    located.forEach { (observation, _, weight) ->
-        val lat = Math.toRadians(observation.latitude!!)
-        val lon = Math.toRadians(observation.longitude!!)
-        x += kotlin.math.cos(lat) * kotlin.math.cos(lon) * weight
-        y += kotlin.math.cos(lat) * kotlin.math.sin(lon) * weight
-        z += kotlin.math.sin(lat) * weight
-        totalWeight += weight
+    located.forEach { (item, weight) ->
+        val latitude = Math.toRadians(item.latitude)
+        val longitude = Math.toRadians(item.longitude)
+        x += cos(latitude) * cos(longitude) * weight
+        y += cos(latitude) * sin(longitude) * weight
+        z += sin(latitude) * weight
     }
-    if (totalWeight <= 0.0) return null
-    val horizontal = kotlin.math.sqrt(x * x + y * y)
+    val horizontal = sqrt(x * x + y * y)
     if (!horizontal.isFinite() || (horizontal < 1e-12 && abs(z) < 1e-12)) return null
-    val latitude = Math.toDegrees(kotlin.math.atan2(z, horizontal)).coerceIn(-90.0, 90.0)
-    val longitude = Math.toDegrees(kotlin.math.atan2(y, x))
-    val lat0 = Math.toRadians(latitude)
-    val lon0 = Math.toRadians(longitude)
-    val uncertaintySquared = located.sumOf { (observation, accuracy, weight) ->
-        val lat = Math.toRadians(observation.latitude!!)
-        val lon = Math.toRadians(observation.longitude!!)
-        val dLat = lat - lat0
-        val dLon = lon - lon0
-        val a = (kotlin.math.sin(dLat / 2).pow(2) +
-            kotlin.math.cos(lat0) * kotlin.math.cos(lat) * kotlin.math.sin(dLon / 2).pow(2)).coerceIn(0.0, 1.0)
-        val distance = 2.0 * 6_371_000.0 * kotlin.math.asin(kotlin.math.sqrt(a))
-        weight * (distance * distance + accuracy * accuracy)
+    val latitude = Math.toDegrees(atan2(z, horizontal)).coerceIn(-90.0, 90.0)
+    val longitude = Math.toDegrees(atan2(y, x))
+    val centerLatitude = Math.toRadians(latitude)
+    val centerLongitude = Math.toRadians(longitude)
+    val uncertaintySquared = located.sumOf { (item, weight) ->
+        val observationLatitude = Math.toRadians(item.latitude)
+        val observationLongitude = Math.toRadians(item.longitude)
+        val distance = observationDistanceMeters(
+            centerLatitude, centerLongitude, observationLatitude, observationLongitude,
+            radians = true
+        )
+        weight * (distance * distance + item.accuracy * item.accuracy)
     } / totalWeight
+
     return RadioPointCenter(
-        latitude, longitude,
-        kotlin.math.sqrt(uncertaintySquared).coerceIn(10.0, 100_000.0),
-        located.size
+        latitude = latitude,
+        longitude = longitude,
+        accuracyMeters = sqrt(uncertaintySquared).coerceIn(10.0, 100_000.0),
+        sampleCount = located.size
     )
+}
+
+private fun medianObservationValue(values: List<Double>): Double {
+    if (values.isEmpty()) return 0.0
+    val sorted = values.sorted()
+    val middle = sorted.size / 2
+    return if (sorted.size % 2 == 0) {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    } else sorted[middle]
+}
+
+private fun observationDistanceMeters(
+    latitude1: Double,
+    longitude1: Double,
+    latitude2: Double,
+    longitude2: Double,
+    radians: Boolean = false
+): Double {
+    val lat1 = if (radians) latitude1 else Math.toRadians(latitude1)
+    val lon1 = if (radians) longitude1 else Math.toRadians(longitude1)
+    val lat2 = if (radians) latitude2 else Math.toRadians(latitude2)
+    var deltaLongitude = (if (radians) longitude2 else Math.toRadians(longitude2)) - lon1
+    if (deltaLongitude > Math.PI) deltaLongitude -= 2.0 * Math.PI
+    if (deltaLongitude < -Math.PI) deltaLongitude += 2.0 * Math.PI
+    val deltaLatitude = lat2 - lat1
+    val haversine = (
+        sin(deltaLatitude / 2.0).pow(2.0) +
+            cos(lat1) * cos(lat2) * sin(deltaLongitude / 2.0).pow(2.0)
+        ).coerceIn(0.0, 1.0)
+    return 2.0 * 6_371_000.0 * kotlin.math.asin(sqrt(haversine))
 }
 
 data class RadioLookupResult(

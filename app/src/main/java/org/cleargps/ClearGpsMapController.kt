@@ -45,6 +45,11 @@ class ClearGpsMapController {
     private var polygonSource: GeoJsonSource? = null
     private var lineSource: GeoJsonSource? = null
     private var zonePointsSource: GeoJsonSource? = null
+    private var zoneLabelsSource: GeoJsonSource? = null
+    private var selectedPointCenterSource: GeoJsonSource? = null
+    private var selectedPointAccuracySource: GeoJsonSource? = null
+    private var observationPointsSource: GeoJsonSource? = null
+    private var selectedObservationSource: GeoJsonSource? = null
     private var wifiPointsSource: GeoJsonSource? = null
     private var cellPointsSource: GeoJsonSource? = null
     private var blePointsSource: GeoJsonSource? = null
@@ -69,6 +74,12 @@ class ClearGpsMapController {
     private var savedZones: List<SavedRiskZone> = emptyList()
     private var draftZone: List<ZonePoint> = emptyList()
     private var radioPoints: List<RadioPointRecord> = emptyList()
+    private var selectedObservations: List<RadioPointObservation> = emptyList()
+    private var selectedObservationId: Long? = null
+    private var selectedEvidenceCenter: RadioPointCenter? = null
+    private var zoneAnimator: ValueAnimator? = null
+    private var animatingZoneId: String? = null
+    private var zoneAnimationProgress = 1f
     private var tapMode: MapTapMode = MapTapMode.NONE
     private var mapReady = false
     private var cameraInitialized = false
@@ -80,6 +91,8 @@ class ClearGpsMapController {
     /** Multi-hit callback for overlapping radio records; the legacy callback remains supported. */
     var onRadioPointsTap: ((List<Long>) -> Unit)? = null
     var onRadioPointTap: ((Long) -> Unit)? = null
+    var onObservationTap: ((Long) -> Unit)? = null
+    var onZoneTap: ((String) -> Unit)? = null
 
     fun attach(
         mapView: MapView, context: Context,
@@ -161,36 +174,51 @@ class ClearGpsMapController {
                         }
                         true
                     } else {
-                        val renderedPoints = try {
-                            mapObject.queryRenderedFeatures(
-                                hitBounds,
-                                WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER
-                            )
-                        } catch (_: Exception) {
-                            emptyList()
-                        }
-                        val candidates = renderedPoints.mapNotNull { feature ->
-                            val pointId = feature.getStringProperty("pointId")?.toLongOrNull()
+                        val observationFeatures = try {
+                            mapObject.queryRenderedFeatures(hitBounds, OBSERVATION_POINTS_LAYER, SELECTED_OBSERVATION_LAYER)
+                        } catch (_: Exception) { emptyList() }
+                        val nearestObservation = observationFeatures.mapNotNull { feature ->
+                            val id = feature.getStringProperty("observationId")?.toLongOrNull()
                                 ?: return@mapNotNull null
                             val geometry = feature.geometry() as? Point ?: return@mapNotNull null
-                            val projected = mapObject.projection.toScreenLocation(
-                                LatLng(geometry.latitude(), geometry.longitude())
-                            )
-                            MapPointHitCandidate(pointId, projected.x, projected.y)
-                        }
-                        val selection = MapPointHitTestPolicy.selectNearest(
-                            candidates = candidates,
-                            tapX = screenPoint.x,
-                            tapY = screenPoint.y,
-                            density = density
-                        )
-                        val selectedIds = selection?.pointIds.orEmpty()
-                        if (selectedIds.isNotEmpty()) {
-                            val multiHit = onRadioPointsTap
-                            if (multiHit != null) multiHit(selectedIds)
-                            else onRadioPointTap?.invoke(selectedIds.first())
+                            val projected = mapObject.projection.toScreenLocation(LatLng(geometry.latitude(), geometry.longitude()))
+                            val dx = projected.x - screenPoint.x
+                            val dy = projected.y - screenPoint.y
+                            if (abs(dx) > hitRadiusPx || abs(dy) > hitRadiusPx) null else id to (dx * dx + dy * dy)
+                        }.minByOrNull { it.second }
+                        if (nearestObservation != null) {
+                            onObservationTap?.invoke(nearestObservation.first)
                             true
-                        } else false
+                        } else {
+                            val renderedPoints = try {
+                                mapObject.queryRenderedFeatures(hitBounds, WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER)
+                            } catch (_: Exception) { emptyList() }
+                            val candidates = renderedPoints.mapNotNull { feature ->
+                                val pointId = feature.getStringProperty("pointId")?.toLongOrNull()
+                                    ?: return@mapNotNull null
+                                val geometry = feature.geometry() as? Point ?: return@mapNotNull null
+                                val projected = mapObject.projection.toScreenLocation(LatLng(geometry.latitude(), geometry.longitude()))
+                                MapPointHitCandidate(pointId, projected.x, projected.y)
+                            }
+                            val selection = MapPointHitTestPolicy.selectNearest(candidates, screenPoint.x, screenPoint.y, density)
+                            val ids = selection?.pointIds.orEmpty()
+                            if (ids.isNotEmpty()) {
+                                val multiHit = onRadioPointsTap
+                                if (multiHit != null) multiHit(ids) else onRadioPointTap?.invoke(ids.first())
+                                true
+                            } else {
+                                val zoneFeatures = try {
+                                    mapObject.queryRenderedFeatures(hitBounds, ZONE_LABEL_LAYER, POLYGON_LAYER)
+                                } catch (_: Exception) { emptyList() }
+                                val zoneId = zoneFeatures.firstNotNullOfOrNull {
+                                    it.getStringProperty("zoneId")?.takeIf(String::isNotBlank)
+                                }
+                                if (zoneId != null) {
+                                    onZoneTap?.invoke(zoneId)
+                                    true
+                                } else false
+                            }
+                        }
                     }
                 }
             }
@@ -203,6 +231,7 @@ class ClearGpsMapController {
         if (attachedMapView !== mapView) return
         cancelCalculatedLocationAnimation()
         cancelAccuracyAnimation()
+        cancelZoneAnimation()
         val mapObject = map
         val clickListener = mapClickListener
         if (mapObject != null && clickListener != null) {
@@ -221,6 +250,8 @@ class ClearGpsMapController {
         onMapTap = null
         onRadioPointsTap = null
         onRadioPointTap = null
+        onObservationTap = null
+        onZoneTap = null
         locationSource = null
         calculatedLocationSource = null
         calculatedAccuracySource = null
@@ -229,6 +260,11 @@ class ClearGpsMapController {
         polygonSource = null
         lineSource = null
         zonePointsSource = null
+        zoneLabelsSource = null
+        selectedPointCenterSource = null
+        selectedPointAccuracySource = null
+        observationPointsSource = null
+        selectedObservationSource = null
         wifiPointsSource = null
         cellPointsSource = null
         blePointsSource = null
@@ -519,9 +555,120 @@ class ClearGpsMapController {
 
     fun updateZones(zones: List<SavedRiskZone>, draft: List<ZonePoint>) {
         if (savedZones == zones && draftZone == draft) return
+        val changed = zones.firstOrNull { zone ->
+            val old = savedZones.firstOrNull { it.id == zone.id }
+            old == null || old.points != zone.points
+        }
         savedZones = zones.toList()
         draftZone = draft.toList()
-        renderZones()
+        when {
+            zones.isEmpty() -> cancelZoneAnimation()
+            changed != null && mapReady && changed.enabled -> animateZoneInstall(changed)
+            else -> renderZones()
+        }
+    }
+
+    fun updateSelectedPointEvidence(
+        observations: List<RadioPointObservation>,
+        selectedId: Long?,
+        center: RadioPointCenter?
+    ) {
+        if (selectedObservations == observations && selectedObservationId == selectedId &&
+            selectedEvidenceCenter == center
+        ) return
+        selectedObservations = observations.toList()
+        selectedObservationId = selectedId
+        selectedEvidenceCenter = center
+        renderSelectedPointEvidence()
+    }
+
+    private fun cancelZoneAnimation() {
+        val old = zoneAnimator
+        zoneAnimator = null
+        animatingZoneId = null
+        zoneAnimationProgress = 1f
+        old?.cancel()
+    }
+
+    private fun animateZoneInstall(zone: SavedRiskZone) {
+        cancelZoneAnimation()
+        animatingZoneId = zone.id
+        zoneAnimationProgress = 0f
+        val animator = ValueAnimator.ofFloat(0f, 1f)
+        animator.duration = ZONE_INSTALL_ANIMATION_DURATION_MS
+        animator.interpolator = DecelerateInterpolator()
+        animator.addUpdateListener { animation ->
+            if (zoneAnimator === animator) {
+                zoneAnimationProgress = (animation.animatedValue as Float).coerceIn(0f, 1f)
+                renderZones()
+            }
+        }
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (zoneAnimator === animator) {
+                    zoneAnimationProgress = 1f
+                    animatingZoneId = null
+                    zoneAnimator = null
+                    renderZones()
+                }
+            }
+        })
+        zoneAnimator = animator
+        animator.start()
+    }
+
+    private fun zoneCenter(points: List<ZonePoint>): MapCoordinate? {
+        if (points.size < 3) return null
+        var x = 0.0
+        var y = 0.0
+        var z = 0.0
+        points.forEach { point ->
+            val lat = Math.toRadians(point.latitude)
+            val lon = Math.toRadians(point.longitude)
+            x += kotlin.math.cos(lat) * kotlin.math.cos(lon)
+            y += kotlin.math.cos(lat) * kotlin.math.sin(lon)
+            z += kotlin.math.sin(lat)
+        }
+        val horizontal = kotlin.math.sqrt(x * x + y * y)
+        if (!horizontal.isFinite() || (horizontal < 1e-12 && abs(z) < 1e-12)) return null
+        return MapCoordinate(Math.toDegrees(kotlin.math.atan2(z, horizontal)), Math.toDegrees(kotlin.math.atan2(y, x)))
+    }
+
+    private fun renderSelectedPointEvidence() {
+        if (!mapReady) return
+        val features = selectedObservations.asSequence()
+            .filter { observation ->
+                val lat = observation.latitude
+                val lon = observation.longitude
+                lat != null && lon != null && lat.isFinite() && lat in -90.0..90.0 &&
+                    lon.isFinite() && lon in -180.0..180.0
+            }
+            .take(MAX_SELECTED_OBSERVATIONS_ON_MAP)
+            .map { observation ->
+                Feature.fromGeometry(Point.fromLngLat(observation.longitude!!, observation.latitude!!)).apply {
+                    addStringProperty("observationId", observation.id.toString())
+                }
+            }.toList()
+        observationPointsSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
+        val selected = selectedObservations.firstOrNull { it.id == selectedObservationId }
+        val selectedFeature = selected?.let { observation ->
+            val lat = observation.latitude
+            val lon = observation.longitude
+            if (lat != null && lon != null && lat.isFinite() && lat in -90.0..90.0 &&
+                lon.isFinite() && lon in -180.0..180.0
+            ) Feature.fromGeometry(Point.fromLngLat(lon, lat)).apply {
+                addStringProperty("observationId", observation.id.toString())
+            } else null
+        }
+        selectedObservationSource?.setGeoJson(
+            selectedFeature?.let { FeatureCollection.fromFeatures(arrayOf(it)) } ?: emptyCollection()
+        )
+        val center = selectedEvidenceCenter?.let { MapCoordinate(it.latitude, it.longitude) }
+        selectedPointCenterSource?.setGeoJson(center?.let { pointCollection(it) } ?: emptyCollection())
+        selectedPointAccuracySource?.setGeoJson(
+            if (center != null) accuracyCollection(center, selectedEvidenceCenter?.accuracyMeters) else emptyCollection()
+        )
+        map?.triggerRepaint()
     }
 
     fun updateRadioPoints(points: List<RadioPointRecord>) {
@@ -558,6 +705,11 @@ class ClearGpsMapController {
         polygonSource = GeoJsonSource(POLYGON_SOURCE, emptyCollection())
         lineSource = GeoJsonSource(LINE_SOURCE, emptyCollection())
         zonePointsSource = GeoJsonSource(ZONE_POINTS_SOURCE, emptyCollection())
+        zoneLabelsSource = GeoJsonSource(ZONE_LABELS_SOURCE, emptyCollection())
+        selectedPointCenterSource = GeoJsonSource(SELECTED_POINT_CENTER_SOURCE, emptyCollection())
+        selectedPointAccuracySource = GeoJsonSource(SELECTED_POINT_ACCURACY_SOURCE, emptyCollection())
+        observationPointsSource = GeoJsonSource(OBSERVATION_POINTS_SOURCE, emptyCollection())
+        selectedObservationSource = GeoJsonSource(SELECTED_OBSERVATION_SOURCE, emptyCollection())
         val pointSourceOptions = GeoJsonOptions()
             .withCluster(true)
             .withClusterMaxZoom(14)
@@ -567,8 +719,11 @@ class ClearGpsMapController {
         blePointsSource = GeoJsonSource(BLE_POINTS_SOURCE, emptyCollection(), pointSourceOptions)
         beaconDbSource = GeoJsonSource(BEACONDB_SOURCE, emptyCollection())
         openCellIdSource = GeoJsonSource(OPENCELLID_SOURCE, emptyCollection(), pointSourceOptions)
-        listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource, polygonSource, lineSource, zonePointsSource,
-            wifiPointsSource, cellPointsSource, blePointsSource, beaconDbSource, openCellIdSource).forEach { style.addSource(it!!) }
+        listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource,
+            polygonSource, lineSource, zonePointsSource, zoneLabelsSource, selectedPointCenterSource,
+            selectedPointAccuracySource, observationPointsSource, selectedObservationSource,
+            wifiPointsSource, cellPointsSource, blePointsSource, beaconDbSource, openCellIdSource)
+            .forEach { style.addSource(it!!) }
 
         style.addLayer(FillLayer(POLYGON_LAYER, POLYGON_SOURCE).withProperties(
             PropertyFactory.fillColor("#E85D75"), PropertyFactory.fillOpacity(0.17f)
@@ -579,6 +734,30 @@ class ClearGpsMapController {
         style.addLayer(CircleLayer(ZONE_POINTS_LAYER, ZONE_POINTS_SOURCE).withProperties(
             PropertyFactory.circleRadius(4.5f), PropertyFactory.circleColor("#FFFFFF"),
             PropertyFactory.circleStrokeColor("#D63B56"), PropertyFactory.circleStrokeWidth(2f)
+        ))
+        style.addLayer(SymbolLayer(ZONE_LABEL_LAYER, ZONE_LABELS_SOURCE).withProperties(
+            PropertyFactory.textField("{zoneName}"), PropertyFactory.textSize(12f),
+            PropertyFactory.textColor("#8F1D35"), PropertyFactory.textHaloColor("#FFFFFF"),
+            PropertyFactory.textHaloWidth(2f), PropertyFactory.textAllowOverlap(true),
+            PropertyFactory.textIgnorePlacement(true)
+        ))
+        style.addLayer(FillLayer(SELECTED_POINT_ACCURACY_LAYER, SELECTED_POINT_ACCURACY_SOURCE).withProperties(
+            PropertyFactory.fillColor("#0EA5E9"), PropertyFactory.fillOpacity(0.10f)
+        ))
+        style.addLayer(LineLayer(SELECTED_POINT_ACCURACY_OUTLINE_LAYER, SELECTED_POINT_ACCURACY_SOURCE).withProperties(
+            PropertyFactory.lineColor("#0284C7"), PropertyFactory.lineWidth(2.2f), PropertyFactory.lineOpacity(0.9f)
+        ))
+        style.addLayer(CircleLayer(OBSERVATION_POINTS_LAYER, OBSERVATION_POINTS_SOURCE).withProperties(
+            PropertyFactory.circleRadius(5.5f), PropertyFactory.circleColor("#0D9488"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(1.5f)
+        ))
+        style.addLayer(CircleLayer(SELECTED_OBSERVATION_LAYER, SELECTED_OBSERVATION_SOURCE).withProperties(
+            PropertyFactory.circleRadius(9f), PropertyFactory.circleColor("#F59E0B"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(2.5f)
+        ))
+        style.addLayer(CircleLayer(SELECTED_POINT_CENTER_LAYER, SELECTED_POINT_CENTER_SOURCE).withProperties(
+            PropertyFactory.circleRadius(9f), PropertyFactory.circleColor("#2563EB"),
+            PropertyFactory.circleStrokeColor("#FFFFFF"), PropertyFactory.circleStrokeWidth(3f)
         ))
         style.addLayer(CircleLayer(WIFI_POINTS_LAYER, WIFI_POINTS_SOURCE).withProperties(
             PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#16A34A"),
@@ -684,6 +863,7 @@ class ClearGpsMapController {
         renderCalculatedLocation()
         renderAnchor()
         renderZones()
+        renderSelectedPointEvidence()
         renderRadioPoints()
         renderLookupLayers()
     }
@@ -730,18 +910,31 @@ class ClearGpsMapController {
         if (!mapReady) return
         val polygons = ArrayList<Feature>()
         val zoneLines = ArrayList<Feature>()
+        val labels = ArrayList<Feature>()
         savedZones.filter { it.enabled && layerVisibility.showRiskZones }.forEach { zone ->
-            val points = zone.points.map { Point.fromLngLat(it.longitude, it.latitude) }
+            val progress = if (zone.id == animatingZoneId) zoneAnimationProgress else 1f
+            val center = zoneCenter(zone.points)
+            val animated = if (center != null && progress < 1f) zone.points.map { point ->
+                interpolateCoordinate(center, MapCoordinate(point.latitude, point.longitude), progress.toDouble())
+                    .let { ZonePoint(it.latitude, it.longitude) }
+            } else zone.points
+            val points = animated.map { Point.fromLngLat(it.longitude, it.latitude) }
             if (points.size >= 3) {
                 val ring = points.toMutableList()
                 if (ring.first() != ring.last()) ring.add(ring.first())
-                polygons.add(Feature.fromGeometry(Polygon.fromLngLats(listOf(ring))))
+                polygons.add(Feature.fromGeometry(Polygon.fromLngLats(listOf(ring))).apply {
+                    addStringProperty("zoneId", zone.id)
+                    addStringProperty("zoneName", zone.name)
+                })
                 zoneLines.add(Feature.fromGeometry(LineString.fromLngLats(ring)))
-            } else if (points.size >= 2) {
-                zoneLines.add(Feature.fromGeometry(LineString.fromLngLats(points)))
-            }
+                center?.let { labels.add(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)).apply {
+                    addStringProperty("zoneId", zone.id)
+                    addStringProperty("zoneName", zone.name)
+                }) }
+            } else if (points.size >= 2) zoneLines.add(Feature.fromGeometry(LineString.fromLngLats(points)))
         }
         polygonSource?.setGeoJson(FeatureCollection.fromFeatures(polygons.toTypedArray()))
+        zoneLabelsSource?.setGeoJson(FeatureCollection.fromFeatures(labels.toTypedArray()))
         val draftPoints = draftZone.map { Point.fromLngLat(it.longitude, it.latitude) }
         if (draftPoints.size >= 2) zoneLines.add(Feature.fromGeometry(LineString.fromLngLats(draftPoints)))
         lineSource?.setGeoJson(FeatureCollection.fromFeatures(zoneLines.toTypedArray()))
@@ -838,6 +1031,11 @@ class ClearGpsMapController {
         private const val POLYGON_SOURCE = "cleargps-risk-polygon"
         private const val LINE_SOURCE = "cleargps-risk-line"
         private const val ZONE_POINTS_SOURCE = "cleargps-zone-points"
+        private const val ZONE_LABELS_SOURCE = "cleargps-zone-labels"
+        private const val SELECTED_POINT_CENTER_SOURCE = "cleargps-selected-point-center"
+        private const val SELECTED_POINT_ACCURACY_SOURCE = "cleargps-selected-point-accuracy"
+        private const val OBSERVATION_POINTS_SOURCE = "cleargps-observation-points"
+        private const val SELECTED_OBSERVATION_SOURCE = "cleargps-selected-observation"
         private const val WIFI_POINTS_SOURCE = "cleargps-wifi-points"
         private const val CELL_POINTS_SOURCE = "cleargps-cell-points"
         private const val BLE_POINTS_SOURCE = "cleargps-ble-points"
@@ -862,6 +1060,14 @@ class ClearGpsMapController {
         private const val POLYGON_LAYER = "cleargps-risk-polygon-layer"
         private const val LINE_LAYER = "cleargps-risk-line-layer"
         private const val ZONE_POINTS_LAYER = "cleargps-zone-points-layer"
+        private const val ZONE_LABEL_LAYER = "cleargps-zone-label-layer"
+        private const val SELECTED_POINT_CENTER_LAYER = "cleargps-selected-point-center-layer"
+        private const val SELECTED_POINT_ACCURACY_LAYER = "cleargps-selected-point-accuracy-layer"
+        private const val SELECTED_POINT_ACCURACY_OUTLINE_LAYER = "cleargps-selected-point-accuracy-outline-layer"
+        private const val OBSERVATION_POINTS_LAYER = "cleargps-observation-points-layer"
+        private const val SELECTED_OBSERVATION_LAYER = "cleargps-selected-observation-layer"
+        private const val MAX_SELECTED_OBSERVATIONS_ON_MAP = 2_000
+        private const val ZONE_INSTALL_ANIMATION_DURATION_MS = 460L
         private const val WIFI_POINTS_LAYER = "cleargps-wifi-points-layer"
         private const val CELL_POINTS_LAYER = "cleargps-cell-points-layer"
         private const val BLE_POINTS_LAYER = "cleargps-ble-points-layer"

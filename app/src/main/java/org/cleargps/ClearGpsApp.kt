@@ -156,6 +156,7 @@ import org.cleargps.core.SavedRiskZone
 import org.cleargps.core.ZonePoint
 import org.cleargps.core.ZoneGeometry
 import org.cleargps.core.ZoneStore
+import org.cleargps.core.SpoofZoneEditorPolicy
 import org.maplibre.android.maps.MapView
 import java.io.BufferedInputStream
 import java.text.DateFormat
@@ -404,6 +405,7 @@ fun ClearGpsApp(
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
+    var selectedObservationId by remember { mutableStateOf<Long?>(null) }
     var selectedMapPlacePoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
     var databaseDataSource by remember {
@@ -533,8 +535,7 @@ fun ClearGpsApp(
     var pendingSourceExportFileName by remember { mutableStateOf<String?>(null) }
     var showZoneNameDialog by remember { mutableStateOf(false) }
     var zoneName by remember { mutableStateOf("") }
-    var zoneToRename by remember { mutableStateOf<SavedRiskZone?>(null) }
-    var zoneRenameText by remember { mutableStateOf("") }
+    var zoneToEdit by remember { mutableStateOf<SavedRiskZone?>(null) }
     var showRadioOnlyInfo by remember { mutableStateOf(false) }
     var showMapLegend by remember { mutableStateOf(false) }
     var showMapLayers by remember { mutableStateOf(false) }
@@ -647,10 +648,36 @@ fun ClearGpsApp(
             selectedMapPoint = null
             selectedPointObservations = emptyList()
             selectedPointCenter = null
+            selectedObservationId = null
             val loaded = try {
                 withContext(Dispatchers.IO) {
                     val point = database.findPoint(pointId) ?: return@withContext null
-                    point to database.listObservations(point)
+                    val history = database.listObservations(point).toMutableList()
+                    // OpenCellID is attached only to a matching cached cell, never to Wi-Fi/BLE.
+                    if (point.type == "cell") {
+                        val key = OpenCellIdCellKey.fromRadioSignal(
+                            RadioSignal(type = "cell", identifier = point.identifier, rssi = point.rssi)
+                        )
+                        val external = key?.let { database.getOpenCellIdCell(it) }
+                            ?.takeIf { OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis()) }
+                        if (external?.latitude != null && external.longitude != null) {
+                            history.add(
+                                RadioPointObservation(
+                                    id = -point.id.coerceAtLeast(1L),
+                                    observedAt = external.checkedAtMillis,
+                                    latitude = external.latitude,
+                                    longitude = external.longitude,
+                                    accuracyMeters = external.rangeMeters?.toDouble() ?: 5_000.0,
+                                    rssi = -110,
+                                    frequency = 0,
+                                    positionSource = "OpenCellID",
+                                    sourceId = null,
+                                    sourceName = "OpenCellID · ${external.samples} samples"
+                                )
+                            )
+                        }
+                    }
+                    point to history.sortedByDescending { it.observedAt }
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -682,6 +709,7 @@ fun ClearGpsApp(
         selectedMapPoint = null
         selectedPointObservations = emptyList()
         selectedPointCenter = null
+        selectedObservationId = null
     }
 
     fun openRadioPointsAtMap(pointIds: List<Long>) {
@@ -697,6 +725,7 @@ fun ClearGpsApp(
             selectedMapPoint = null
             selectedPointObservations = emptyList()
             selectedPointCenter = null
+            selectedObservationId = null
             val loaded = try {
                 withContext(Dispatchers.IO) {
                     ids.mapNotNull { pointId -> database.findPoint(pointId) }
@@ -1435,6 +1464,91 @@ fun ClearGpsApp(
                 ).show()
             } catch (error: Exception) {
                 Toast.makeText(context, "Ошибка импорта: " + (error.message ?: "неизвестная ошибка"), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val exportSpoofZonesJsonLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val payload = withContext(Dispatchers.Default) {
+                    SpoofZoneExportCodec.encodeJson(zones.toList())
+                }
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                    output.bufferedWriter(Charsets.UTF_8).use { it.write(payload) }
+                }
+                Toast.makeText(context, "Зоны экспортированы в JSON. Сетевой запрос не выполнялся.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка JSON-экспорта зон: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val exportSpoofZonesGeoJsonLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/geo+json")
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val payload = withContext(Dispatchers.Default) {
+                    SpoofZoneExportCodec.encodeGeoJson(zones.toList())
+                }
+                withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "w")
+                        ?: throw IllegalStateException("Не удалось открыть файл для записи.")
+                    output.bufferedWriter(Charsets.UTF_8).use { it.write(payload) }
+                }
+                Toast.makeText(context, "Зоны экспортированы в GeoJSON. Сетевой запрос не выполнялся.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка GeoJSON-экспорта зон: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    val importSpoofZonesLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Не удалось открыть выбранный файл.")
+                    SpoofZoneExportCodec.readBounded(input)
+                }
+                val imported = withContext(Dispatchers.Default) { SpoofZoneExportCodec.decode(text) }
+                val merged = zones.toMutableList()
+                var added = 0
+                var duplicates = 0
+                var skippedLimit = 0
+                imported.forEach { candidate ->
+                    val isDuplicate = merged.any { current ->
+                        current.name == candidate.name &&
+                            current.enabled == candidate.enabled &&
+                            current.points == candidate.points
+                    }
+                    if (isDuplicate) {
+                        duplicates += 1
+                    } else if (merged.size >= SpoofZoneExportCodec.MAX_ZONES) {
+                        skippedLimit += 1
+                    } else {
+                        val safeCandidate = if (merged.any { it.id == candidate.id }) {
+                            candidate.copy(id = java.util.UUID.randomUUID().toString())
+                        } else candidate
+                        merged += safeCandidate
+                        added += 1
+                    }
+                }
+                withContext(Dispatchers.IO) { ZoneStore.saveAll(context, merged) }
+                zones = ZoneStore.loadAll(context)
+                mapController.updateZones(zones, draftZone)
+                Toast.makeText(
+                    context,
+                    "Импорт завершён: добавлено $added, уже были $duplicates, не помещено из-за лимита $skippedLimit. Существующие зоны сохранены.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Ошибка импорта зон: " + (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -2360,17 +2474,23 @@ fun ClearGpsApp(
     LaunchedEffect(zones, draftZone) {
         mapController.updateZones(zones, draftZone)
     }
-    val pointsToRender = remember(selectedMapPoint, selectedPointCenter, mapPointsRevision) {
-        val detailPoint = selectedMapPoint
-        val selectedCenter = selectedPointCenter
-        if (detailPoint != null) {
-            val lat = selectedCenter?.latitude ?: detailPoint.latitude
-            val lon = selectedCenter?.longitude ?: detailPoint.longitude
-            if (lat != null && lon != null) listOf(detailPoint.copy(
-                latitude = lat, longitude = lon,
-                accuracyMeters = selectedCenter?.accuracyMeters ?: detailPoint.accuracyMeters
-            )) else emptyList()
-        } else mapPoints
+    LaunchedEffect(selectedMapPoint?.id, selectedPointObservations, selectedObservationId, selectedPointCenter) {
+        val point = selectedMapPoint
+        val evidenceCenter = selectedPointCenter ?: point?.let {
+            val latitude = it.latitude
+            val longitude = it.longitude
+            if (latitude != null && longitude != null) {
+                RadioPointCenter(latitude, longitude, it.accuracyMeters ?: 1_000.0, 0)
+            } else null
+        }
+        mapController.updateSelectedPointEvidence(
+            observations = selectedPointObservations,
+            selectedId = selectedObservationId,
+            center = evidenceCenter
+        )
+    }
+    val pointsToRender = remember(selectedMapPoint, mapPointsRevision) {
+        if (selectedMapPoint != null) emptyList() else mapPoints
     }
     LaunchedEffect(pointsToRender) {
         mapController.updateRadioPoints(pointsToRender)
@@ -2404,6 +2524,19 @@ fun ClearGpsApp(
     SideEffect {
         mapController.onRadioPointsTap = { pointIds -> openRadioPointsAtMap(pointIds) }
         mapController.onRadioPointTap = { pointId -> openRadioPointDetails(pointId) }
+        mapController.onObservationTap = { observationId ->
+            selectedObservationId = observationId
+            selectedPointObservations.firstOrNull { it.id == observationId }?.let { observation ->
+                val latitude = observation.latitude
+                val longitude = observation.longitude
+                if (latitude != null && longitude != null) {
+                    mapController.focus(MapCoordinate(latitude, longitude), 17.0)
+                }
+            }
+        }
+        mapController.onZoneTap = { zoneId ->
+            zones.firstOrNull { it.id == zoneId }?.let { zoneToEdit = it }
+        }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
                 MapTapMode.PLACE_ANCHOR -> {
@@ -2487,12 +2620,12 @@ fun ClearGpsApp(
                 pendingSourceExportFileName = null
             }
             showExportOptions -> showExportOptions = false
-            selectedMapPoint != null -> selectedMapPoint = null
+            selectedMapPoint != null -> closeRadioPointDetails()
+            zoneToEdit != null -> zoneToEdit = null
             pointToEdit != null -> pointToEdit = null
             showDeleteAllDialog -> showDeleteAllDialog = false
             showRadioOnlyInfo -> showRadioOnlyInfo = false
             showZoneNameDialog -> showZoneNameDialog = false
-            zoneToRename != null -> zoneToRename = null
             mapTapMode != MapTapMode.NONE -> { mapTapMode = MapTapMode.NONE; draftZone = emptyList() }
             selectedTab != AppTab.HOME -> { navigateToTab(AppTab.HOME); backExitArmed = false }
             !backExitArmed -> {
@@ -2910,7 +3043,10 @@ fun ClearGpsApp(
                                     },
                                     typeFilter = pointTypeFilter,
                                     onTypeFilter = { pointTypeFilter = it },
-                                    selectedView = pointsView, onView = { pointsView = it }, onEdit = { openRadioPointDetails(it.id) },
+                                    selectedView = pointsView, onView = { pointsView = it }, onEdit = {
+                                        navigateToTab(AppTab.MAP)
+                                        openRadioPointDetails(it.id)
+                                    },
                                     onDelete = {
                                         database.deletePoint(it.id); refreshLocalUi()
                                         Toast.makeText(context, "Точка удалена локально", Toast.LENGTH_SHORT).show()
@@ -3069,7 +3205,10 @@ fun ClearGpsApp(
                                         zones = zones.map { if (it.id == zone.id) it.copy(enabled = enabled) else it }
                                         ZoneStore.saveAll(context, zones)
                                     },
-                                    onRename = { zone -> zoneToRename = zone; zoneRenameText = zone.name },
+                                    onEdit = { zone -> zoneToEdit = zone },
+                                    onExportJson = { exportSpoofZonesJsonLauncher.launch("ClearGPS-spoof-zones.json") },
+                                    onExportGeoJson = { exportSpoofZonesGeoJsonLauncher.launch("ClearGPS-spoof-zones.geojson") },
+                                    onImport = { importSpoofZonesLauncher.launch(arrayOf("application/json", "application/geo+json", "*/*")) },
                                     onDelete = { zone ->
                                         zones = zones.filterNot { it.id == zone.id }; ZoneStore.saveAll(context, zones)
                                         mapController.updateZones(zones, draftZone)
@@ -3392,6 +3531,36 @@ fun ClearGpsApp(
                     )
             )
         }
+        if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
+            RadioPointDetailsDialog(
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .fillMaxWidth().fillMaxHeight(0.70f)
+                    .padding(
+                        start = 8.dp,
+                        end = 8.dp,
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 82.dp
+                    ),
+                point = selectedMapPoint!!,
+                observations = selectedPointObservations,
+                center = selectedPointCenter,
+                selectedObservationId = selectedObservationId,
+                onDismiss = { closeRadioPointDetails() },
+                onObservationSelected = { observationId ->
+                    selectedObservationId = observationId
+                    selectedPointObservations.firstOrNull { it.id == observationId }?.let { observation ->
+                        val latitude = observation.latitude
+                        val longitude = observation.longitude
+                        if (latitude != null && longitude != null) {
+                            mapController.focus(MapCoordinate(latitude, longitude), 17.0)
+                        }
+                    }
+                },
+                onEdit = {
+                    pointToEdit = selectedMapPoint
+                    closeRadioPointDetails()
+                }
+            )
+        }
     }
 
     ClearGpsTheme(dark = mapIsDark) {
@@ -3405,19 +3574,6 @@ fun ClearGpsApp(
                 }
             )
         }
-        if (selectedMapPoint != null) {
-        RadioPointDetailsDialog(
-            point = selectedMapPoint!!,
-            observations = selectedPointObservations,
-            center = selectedPointCenter,
-            onDismiss = { closeRadioPointDetails() },
-            onEdit = {
-                pointToEdit = selectedMapPoint
-                closeRadioPointDetails()
-            }
-        )
-    }
-
     if (pointToEdit != null) {
         PointEditDialog(pointToEdit!!, onDismiss = { pointToEdit = null }, onSave = { label, ssid, notes, lat, lon, accuracy ->
             val saved = database.updatePoint(pointToEdit!!.id, label, ssid, notes, lat, lon, accuracy)
@@ -3447,21 +3603,18 @@ fun ClearGpsApp(
         )
     }
 
-    if (zoneToRename != null) {
-        AlertDialog(
-            onDismissRequest = { zoneToRename = null },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            textContentColor = MaterialTheme.colorScheme.onSurface,
-            title = { Text("Переименовать зону") },
-            text = { OutlinedTextField(value = zoneRenameText, onValueChange = { zoneRenameText = it.take(80) }, singleLine = true) },
-            confirmButton = {
-                TextButton(onClick = {
-                    val selected = zoneToRename!!
-                    zones = zones.map { if (it.id == selected.id) it.copy(name = zoneRenameText.trim().ifBlank { "Зона спуфинга" }) else it }
-                    ZoneStore.saveAll(context, zones); zoneToRename = null
-                }) { Text("Сохранить") }
-            },
-            dismissButton = { TextButton(onClick = { zoneToRename = null }) { Text("Отмена") } }
+    if (zoneToEdit != null) {
+        SpoofZoneEditorDialog(
+            zone = zoneToEdit!!,
+            onDismiss = { zoneToEdit = null },
+            onSave = { edited ->
+                zones = zones.map { if (it.id == edited.id) edited else it }
+                ZoneStore.saveAll(context, zones)
+                zones = ZoneStore.loadAll(context)
+                mapController.updateZones(zones, draftZone)
+                zoneToEdit = null
+                Toast.makeText(context, "Зона обновлена локально", Toast.LENGTH_SHORT).show()
+            }
         )
     }
 
@@ -5911,11 +6064,14 @@ private fun RadioPointPlaceSheet(
 
 @Composable
 private fun RadioPointDetailsDialog(
+    modifier: Modifier = Modifier,
     point: RadioPointRecord,
     observations: List<RadioPointObservation>,
     center: RadioPointCenter?,
+    selectedObservationId: Long?,
     onDismiss: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onObservationSelected: (Long) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val kind = when (point.type) {
@@ -5923,160 +6079,179 @@ private fun RadioPointDetailsDialog(
         "cell" -> "Сотовая вышка"
         else -> "Bluetooth LE"
     }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).padding(10.dp),
-            shape = RoundedCornerShape(28.dp),
-            color = colors.surfaceContainer,
-            tonalElevation = 5.dp
-        ) {
-            Column(
-                Modifier.fillMaxSize().padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+    Surface(
+        modifier = modifier.fillMaxWidth().fillMaxHeight(),
+
+                shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
+                color = colors.surfaceContainer,
+                tonalElevation = 7.dp
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        shape = CircleShape,
-                        color = when (point.type) {
-                            "wifi" -> Color(0xFFD7F5E1)
-                            "cell" -> Color(0xFFF1DFFF)
-                            else -> Color(0xFFFFE8BE)
-                        },
-                        modifier = Modifier.size(44.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                when (point.type) {
-                                    "wifi" -> Icons.Outlined.Wifi
-                                    "cell" -> Icons.Outlined.SignalCellularAlt
-                                    else -> Icons.Outlined.Bluetooth
-                                },
-                                contentDescription = null,
-                                tint = Color(0xFF263248)
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            point.ssid.ifBlank { point.label.ifBlank { kind } },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(kind + " · " + point.sightings + " записанных наблюдений",
-                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                    }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
-                    }
-                }
-                Divider(color = colors.outlineVariant)
-                LazyColumn(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                Column(
+                    Modifier.fillMaxSize().padding(horizontal = 15.dp, vertical = 13.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    item(key = "summary") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
-                            Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            color = colors.surfaceContainerHigh
+                            shape = CircleShape,
+                            color = when (point.type) {
+                                "wifi" -> Color(0xFFD7F5E1)
+                                "cell" -> Color(0xFFF1DFFF)
+                                else -> Color(0xFFFFE8BE)
+                            },
+                            modifier = Modifier.size(42.dp)
                         ) {
-                            Column(
-                                Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    when (point.type) {
+                                        "wifi" -> Icons.Outlined.Wifi
+                                        "cell" -> Icons.Outlined.SignalCellularAlt
+                                        else -> Icons.Outlined.Bluetooth
+                                    },
+                                    contentDescription = null,
+                                    tint = Color(0xFF263248)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(9.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                point.ssid.ifBlank { point.label.ifBlank { kind } },
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "$kind · ${point.sightings} записанных наблюдений",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
+                        }
+                    }
+                    Divider(color = colors.outlineVariant)
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        item(key = "summary") {
+                            Surface(
+                                Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(17.dp),
+                                color = colors.surfaceContainerHigh
                             ) {
-                                Text("Сведения о точке", style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold)
-                                Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
-                                if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
-                                Text("Последний сигнал в базе: " + point.rssi + " dBm · максимум: " + point.peakRssi + " dBm")
-                                if (point.frequency > 0) Text("Последняя частота: " + point.frequency + " MHz")
-                                Text("Источник сохранённой позиции: " + point.positionSource,
-                                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
-                                Divider(color = colors.outlineVariant)
-                                if (center != null) {
-                                    Text("Примерный центр наблюдений",
-                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
-                                    Text(String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
-                                        style = MaterialTheme.typography.titleMedium)
-                                    Text("По ${center.sampleCount} наблюдениям с координатами · ориентировочная погрешность ±${center.accuracyMeters.toInt()} м",
+                                Column(
+                                    Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Text("Сведения о сети", style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold)
+                                    Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
+                                    if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
+                                    Text("Последний сигнал в базе: ${point.rssi} dBm · максимум: ${point.peakRssi} dBm")
+                                    if (point.frequency > 0) Text("Последняя частота: ${point.frequency} MHz")
+                                    Text("Источник сохранённой позиции: " + point.positionSource,
                                         style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                    Text("Это центр мест, из которых сигнал записывался, а не точная триангуляция передатчика.",
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                } else if (point.latitude != null && point.longitude != null) {
-                                    Text("Сохранённая координата",
-                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
-                                    Text(String.format(Locale.US, "%.6f, %.6f", point.latitude, point.longitude),
-                                        style = MaterialTheme.typography.titleMedium)
-                                    Text("В истории пока нет координат для расчёта центра.",
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                    Text("Точность сохранённой позиции: ±${point.accuracyMeters?.toInt()?.toString() ?: "—"} м",
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                } else {
-                                    Text("Координаты пока неизвестны",
-                                        fontWeight = FontWeight.SemiBold, color = colors.primary)
-                                    Text("В наблюдениях нет сохранённых координат. Центр появится после записи точки с доступной геопозицией.",
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
+                                    Divider(color = colors.outlineVariant)
+                                    if (center != null) {
+                                        Text("Расчётный центр наблюдений", fontWeight = FontWeight.SemiBold,
+                                            color = colors.primary)
+                                        Text(String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
+                                            style = MaterialTheme.typography.titleMedium)
+                                        Text(
+                                            "По ${center.sampleCount} наблюдениям с координатами · ориентировочная погрешность ±${center.accuracyMeters.toInt()} м",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colors.onSurfaceVariant
+                                        )
+                                        Text(
+                                            "Сила сигнала и точность наблюдений учитываются с разными весами; удалённые выбросы исключаются. Это оценка места наблюдения сигнала, а не точная триангуляция передатчика.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colors.onSurfaceVariant
+                                        )
+                                    } else if (point.latitude != null && point.longitude != null) {
+                                        Text("Сохранённая координата", fontWeight = FontWeight.SemiBold,
+                                            color = colors.primary)
+                                        Text(String.format(Locale.US, "%.6f, %.6f", point.latitude, point.longitude),
+                                            style = MaterialTheme.typography.titleMedium)
+                                        Text("Истории с координатами пока недостаточно для расчёта центра.",
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                        Text("Точность сохранённой позиции: ±${point.accuracyMeters?.toInt()?.toString() ?: "—"} м",
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    } else {
+                                        Text("Координаты пока неизвестны", fontWeight = FontWeight.SemiBold,
+                                            color = colors.primary)
+                                        Text("В наблюдениях нет сохранённых координат. Центр появится после записи точки с доступной геопозицией.",
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    }
                                 }
                             }
                         }
-                    }
-                    item(key = "observations-title") {
-                        Text("Все наблюдения (${observations.size})",
-                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(top = 4.dp))
-                        Text("История хранится локально; последние записи идут первыми.",
-                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                    }
-                    if (observations.isEmpty()) {
-                        item(key = "observations-empty") {
-                            EmptyState("Истории пока нет",
-                                "У импортированных точек может быть сохранена позиция, но отсутствовать история отдельных наблюдений.")
+                        item(key = "observations-title") {
+                            Text("Наблюдения на карте (${observations.size})",
+                                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(top = 3.dp))
+                            Text(
+                                "Нажми строку или маркер на карте, чтобы перейти к координате наблюдения. Внешняя запись OpenCellID показывается отдельно и имеет меньший вес.",
+                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                            )
                         }
-                    } else {
-                        items(observations, key = { it.id }) { observation ->
-                            RadioPointObservationRow(observation)
+                        if (observations.isEmpty()) {
+                            item(key = "observations-empty") {
+                                EmptyState("Истории пока нет",
+                                    "У импортированных точек может быть сохранена позиция, но отсутствовать история отдельных наблюдений.")
+                            }
+                        } else {
+                            items(observations, key = { it.id }) { observation ->
+                                RadioPointObservationRow(
+                                    observation = observation,
+                                    selected = observation.id == selectedObservationId,
+                                    onClick = { onObservationSelected(observation.id) }
+                                )
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(15.dp)
+                        ) { Text("Закрыть") }
+                        FilledTonalButton(
+                            onClick = onEdit,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(15.dp)
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Редактировать")
                         }
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(15.dp)
-                    ) { Text("Закрыть") }
-                    FilledTonalButton(
-                        onClick = onEdit,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(15.dp)
-                    ) {
-                        Icon(Icons.Outlined.Edit, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Редактировать")
-                    }
-                }
-            }
-        }
     }
 }
 
 @Composable
-private fun RadioPointObservationRow(observation: RadioPointObservation) {
+private fun RadioPointObservationRow(
+    observation: RadioPointObservation,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
     val colors = MaterialTheme.colorScheme
     Surface(
-        Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = colors.surfaceContainerHigh
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(15.dp),
+        color = if (selected) colors.secondaryContainer else colors.surfaceContainerHigh
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.History, contentDescription = null, tint = colors.primary)
+                Icon(
+                    if (selected) Icons.Outlined.Place else Icons.Outlined.History,
+                    contentDescription = null,
+                    tint = if (selected) colors.onSecondaryContainer else colors.primary
+                )
                 Spacer(Modifier.width(7.dp))
                 Text(dateTime(observation.observedAt), fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f))
@@ -6098,10 +6273,105 @@ private fun RadioPointObservationRow(observation: RadioPointObservation) {
             }
             Text("Источник позиции: " + observation.positionSource,
                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-            Text("Импортированная база: " + (observation.sourceName?.takeIf { it.isNotBlank() } ?: "не указана"),
+            Text("Источник данных: " + (observation.sourceName?.takeIf { it.isNotBlank() } ?: "локальное наблюдение"),
                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
         }
     }
+}
+
+@Composable
+private fun SpoofZoneEditorDialog(
+    zone: SavedRiskZone,
+    onDismiss: () -> Unit,
+    onSave: (SavedRiskZone) -> Unit
+) {
+    val initial = remember(zone.id) {
+        SpoofZoneEditorPolicy.parameters(zone)
+            ?: SpoofZoneEditorPolicy.parameters(
+                zone.copy(points = zone.points.take(3))
+            )
+    }
+    var name by remember(zone.id) { mutableStateOf(zone.name) }
+    var latitude by remember(zone.id) {
+        mutableStateOf(initial?.latitude?.let { String.format(Locale.US, "%.6f", it) }.orEmpty())
+    }
+    var longitude by remember(zone.id) {
+        mutableStateOf(initial?.longitude?.let { String.format(Locale.US, "%.6f", it) }.orEmpty())
+    }
+    var radius by remember(zone.id) {
+        mutableStateOf(initial?.radiusMeters?.toInt()?.toString() ?: "500")
+    }
+    var enabled by remember(zone.id) { mutableStateOf(zone.enabled) }
+    var error by remember(zone.id) { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        title = { Text("Редактор зоны") },
+        text = {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(80) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Название") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = latitude,
+                    onValueChange = { latitude = it.take(24) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Широта центра") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = longitude,
+                    onValueChange = { longitude = it.take(24) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Долгота центра") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = radius,
+                    onValueChange = { radius = it.filter { char -> char.isDigit() }.take(6) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Радиус, м") },
+                    singleLine = true
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Зона активна", modifier = Modifier.weight(1f))
+                    Switch(checked = enabled, onCheckedChange = { enabled = it })
+                }
+                Text(
+                    "При сохранении зона будет построена как окружность с указанным центром и радиусом. Текущий полигон преобразуется в ближайшую описывающую окружность.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val lat = latitude.trim().replace(',', '.').toDoubleOrNull()
+                val lon = longitude.trim().replace(',', '.').toDoubleOrNull()
+                val meters = radius.toDoubleOrNull()
+                val zoneName = name.trim()
+                try {
+                    require(zoneName.isNotBlank()) { "Укажи название зоны." }
+                    require(lat != null && lon != null && meters != null) { "Проверь координаты и радиус." }
+                    val points = SpoofZoneEditorPolicy.circlePoints(lat, lon, meters)
+                    onSave(zone.copy(name = zoneName, points = points, enabled = enabled))
+                } catch (validation: IllegalArgumentException) {
+                    error = validation.message ?: "Некорректные параметры зоны."
+                }
+            }) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
 }
 
 @Composable
@@ -6115,7 +6385,8 @@ private fun ZonesScreen(
     onAirportExclusions: (String) -> Unit, onAirportCatalogOnlineEnabled: (Boolean) -> Unit,
     onRefreshAirportCatalog: () -> Unit,
     onStartDraw: () -> Unit, onSaveDraft: () -> Unit,
-    onToggle: (SavedRiskZone, Boolean) -> Unit, onRename: (SavedRiskZone) -> Unit,
+    onToggle: (SavedRiskZone, Boolean) -> Unit, onEdit: (SavedRiskZone) -> Unit,
+    onExportJson: () -> Unit, onExportGeoJson: () -> Unit, onImport: () -> Unit,
     onDelete: (SavedRiskZone) -> Unit, onCancelDraw: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -6215,6 +6486,20 @@ private fun ZonesScreen(
                 style = MaterialTheme.typography.labelMedium, color = colors.primary)
             TextButton(onClick = onCancelDraw) { Text("Отменить рисунок") }
         }
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+            Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Обмен зонами (локальные файлы)", fontWeight = FontWeight.SemiBold)
+                Text("Отдельный экспорт и импорт JSON / GeoJSON. Импорт добавляет зоны к существующим, совпадения пропускаются.",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
+                    FilledTonalButton(onClick = onExportJson, modifier = Modifier.weight(1f)) { Text("Экспорт JSON") }
+                    FilledTonalButton(onClick = onExportGeoJson, modifier = Modifier.weight(1f)) { Text("Экспорт GeoJSON") }
+                }
+                OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
+                    Text("Импорт JSON / GeoJSON")
+                }
+            }
+        }
         if (zones.isEmpty()) EmptyState("Зон ещё нет", "Создай полигон вокруг места, где GNSS ведёт себя подозрительно.")
         zones.forEach { zone ->
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(17.dp), color = colors.surfaceContainerHigh) {
@@ -6229,8 +6514,8 @@ private fun ZonesScreen(
                         Switch(checked = zone.enabled, onCheckedChange = { onToggle(zone, it) })
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = { onRename(zone) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
-                            Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(4.dp)); Text("Название")
+                        OutlinedButton(onClick = { onEdit(zone) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
+                            Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(4.dp)); Text("Редактировать")
                         }
                         OutlinedButton(onClick = { onDelete(zone) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp)) {
                             Icon(Icons.Outlined.DeleteOutline, null); Spacer(Modifier.width(4.dp)); Text("Удалить")
