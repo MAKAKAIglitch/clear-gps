@@ -127,7 +127,8 @@ internal fun RadioRefinementScreen(
                     if (runningProvider == "beacondb") "Уточнение BeaconDB…" else "Запустить BeaconDB",
                     modifier = Modifier.padding(start = 8.dp)
                 )
-            }            RefinementSlider(
+            }
+            RefinementSlider(
                 label = "Пауза между запросами",
                 value = beaconIntervalMinutes,
                 valueLabel = "$beaconIntervalMinutes мин",
@@ -209,7 +210,8 @@ internal fun RadioRefinementScreen(
                     if (runningProvider == "opencellid") "Уточнение OpenCellID…" else "Запустить OpenCellID",
                     modifier = Modifier.padding(start = 8.dp)
                 )
-            }            Text(
+            }
+            Text(
                 "Лимит Clear GPS для уточнения локальной базы — не более 10 попыток за UTC-день, включая фоновое уточнение. Официальная квота OpenCellID — 1 000 API-кредитов на пользователя в сутки; сервер может ограничить запросы раньше.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant
