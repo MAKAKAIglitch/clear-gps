@@ -139,6 +139,11 @@ class LocalRadioDatabaseUndoTest {
         val seed = seedData()
         UNDO_TABLES.forEach { table -> sqlite.execSQL("DROP TABLE $table") }
         sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_radio_time")
+        sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_import_dedupe")
+        // Recreate the real v7 schema: later migrations must add these objects.
+        sqlite.execSQL("DROP TABLE IF EXISTS radio_auto_refinement_attempts")
+        sqlite.execSQL("DROP TABLE IF EXISTS radio_auto_refinements")
+        sqlite.execSQL("DROP TABLE IF EXISTS opencellid_cells")
         sqlite.version = 7
         database.close()
 
@@ -147,7 +152,13 @@ class LocalRadioDatabaseUndoTest {
 
         assertEquals(12, sqlite.version)
         UNDO_TABLES.forEach { table -> assertTrue("missing migrated table $table", tableExists(table)) }
+        assertTrue("missing OpenCellID catalogue", tableExists("opencellid_cells"))
+        assertTrue("missing automatic refinement table", tableExists("radio_auto_refinements"))
+        assertTrue("missing automatic refinement attempt table", tableExists("radio_auto_refinement_attempts"))
         assertTrue("missing radio-key/time index", indexExists("radio_obs_radio_time"))
+        assertTrue("missing import-deduplication index", indexExists("radio_obs_import_dedupe"))
+        assertTrue("missing automatic-refinement lookup index", indexExists("radio_auto_refinement_lookup"))
+        assertTrue("missing refinement backoff index", indexExists("radio_auto_refinement_attempts_next"))
         assertTrue("write-ahead logging should be enabled", sqlite.isWriteAheadLoggingEnabled)
         assertEquals(1, countRows("radio_observations", "id = ?", seed.observationId.toString()))
         assertEquals(1, countRows("radio_points", "id = ?", seed.pointId.toString()))

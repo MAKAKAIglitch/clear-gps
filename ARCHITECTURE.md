@@ -65,7 +65,7 @@ BeaconDB contributes only the coordinate in the current in-memory lookup result;
 
 ## Local radio database and provenance
 
-`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **11**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
+`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **12**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
 
 Core tables and catalogues:
 
@@ -75,9 +75,11 @@ Core tables and catalogues:
 - `scan_history` — bounded scan history;
 - `radio_source_segment_settings` — per-source/day/radio-type enablement and trust weights;
 - `opencellid_cells` — separate read-only catalogue of estimated cell positions; it is not mixed into local training observations;
+- `radio_auto_refinements` — independently deletable BeaconDB/OpenCellID coordinate batches, separate from measured `radio_observations` and detector training;
+- `radio_auto_refinement_attempts` — provider/fingerprint retry and backoff state for automatic refinement;
 - `radio_deletion_undo` and its `*_keys`, `*_points`, `*_observations`, `*_history` and `*_segments` tables — short-lived snapshots for undoing scoped deletions.
 
-Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, and the OpenCellID checked-time index. Migrations are additive: version 10 adds the isolated OpenCellID catalogue; version 11 adds the composite import-deduplication index. Existing points, observations and scan history are preserved by these upgrades.
+Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, the OpenCellID checked-time index, and lookup/backoff indexes for automatic refinement. Migrations are additive: version 10 adds the isolated OpenCellID catalogue; version 11 adds the composite import-deduplication index; version 12 adds independently stored, deletable automatic-refinement batches and attempt/backoff state. Existing points, observations and scan history are preserved by these upgrades.
 
 Storage limits are independent:
 
