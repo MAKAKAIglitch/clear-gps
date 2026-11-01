@@ -132,7 +132,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
@@ -413,9 +412,11 @@ fun ClearGpsApp(
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
+    var mapViewportTopInWindowPx by remember { mutableStateOf(0) }
     var mapViewportBottomInWindowPx by remember { mutableStateOf(0) }
     var detailsSheetTopInWindowPx by remember { mutableStateOf(0) }
     var mapHeaderHeightPx by remember { mutableStateOf(0) }
+    var mapHeaderBottomInWindowPx by remember { mutableStateOf(0) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
     var selectedPointFocusRequest by remember { mutableStateOf(0) }
@@ -2667,12 +2668,7 @@ fun ClearGpsApp(
     ClearGpsTheme(dark = mapIsDark) {
         val colors = MaterialTheme.colorScheme
         BoxWithConstraints(
-            Modifier.fillMaxSize()
-                .onGloballyPositioned { coordinates ->
-                    mapViewportBottomInWindowPx =
-                        (coordinates.positionInWindow().y + coordinates.size.height).roundToInt()
-                }
-                .background(colors.background)
+            Modifier.fillMaxSize().background(colors.background)
         ) {
             // Keep the target height available during the exit animation; the visibility
             // transition itself slides the panel off-screen rather than removing it abruptly.
@@ -2684,14 +2680,13 @@ fun ClearGpsApp(
             }
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-            val detailsViewportTopPx =
-                mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
-            val detailsViewportBottomPx =
-                if (detailsSheetTopInWindowPx > 0 && mapViewportBottomInWindowPx > detailsSheetTopInWindowPx) {
-                    mapViewportBottomInWindowPx - detailsSheetTopInWindowPx
-                } else {
-                    0
-                }
+            val detailsViewportInsets = MapViewportInsetsPolicy.calculate(
+                mapTopInWindowPx = mapViewportTopInWindowPx,
+                mapBottomInWindowPx = mapViewportBottomInWindowPx,
+                headerBottomInWindowPx = mapHeaderBottomInWindowPx,
+                sheetTopInWindowPx = detailsSheetTopInWindowPx,
+                topGapPx = with(LocalDensity.current) { 12.dp.roundToPx() }
+            )
             val mapHeaderHeightDp = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
             val navigationBottomInset =
                 WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -2716,11 +2711,15 @@ fun ClearGpsApp(
                 // The sheet reports its top edge on every animation frame. Wait until
                 // its position stabilizes, then update viewport padding and fit all samples
                 // in a single camera animation instead of moving the camera frame by frame.
-                snapshotFlow { detailsViewportTopPx to detailsViewportBottomPx }
-                    .filter { (top, bottom) -> top > 0 && bottom > 0 }
+                snapshotFlow { detailsViewportInsets }
+                    .filter { it != null }
                     .debounce(180)
-                    .collect { (top, bottom) ->
-                        mapController.setViewportPadding(top, bottom)
+                    .collect { insets ->
+                        val viewportInsets = insets ?: return@collect
+                        mapController.setViewportPadding(
+                            viewportInsets.topPx,
+                            viewportInsets.bottomPx
+                        )
                         val observationCoordinates = selectedPointObservations.mapNotNull { observation ->
                             val latitude = observation.latitude ?: return@mapNotNull null
                             val longitude = observation.longitude ?: return@mapNotNull null
@@ -2751,7 +2750,12 @@ fun ClearGpsApp(
                             mapController.attach(view, viewContext, mapIsDark, mapSourceMode == MapSourceMode.OFFLINE)
                         }
                     },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize()
+                        .onGloballyPositioned { coordinates ->
+                            val mapTop = coordinates.positionInWindow().y.roundToInt()
+                            mapViewportTopInWindowPx = mapTop
+                            mapViewportBottomInWindowPx = mapTop + coordinates.size.height
+                        },
                     onRelease = { view ->
                         mapController.detach(view)
                         onMapViewDisposed(view)
@@ -2762,12 +2766,16 @@ fun ClearGpsApp(
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
                 if (selectedTab != AppTab.HOME) {
                 Column(
-                    Modifier.onSizeChanged { size ->
-                        if (selectedTab == AppTab.MAP) mapHeaderHeightPx = size.height
-                    }
-                        .fillMaxWidth()
+                    Modifier.fillMaxWidth()
                         .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 7.dp)
-                        .padding(horizontal = 12.dp),
+                        .padding(horizontal = 12.dp)
+                        .onGloballyPositioned { coordinates ->
+                            if (selectedTab == AppTab.MAP) {
+                                mapHeaderHeightPx = coordinates.size.height
+                                mapHeaderBottomInWindowPx =
+                                    (coordinates.positionInWindow().y + coordinates.size.height).roundToInt()
+                            }
+                        },
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     HeaderCard(
@@ -6218,6 +6226,8 @@ private fun RadioPointDetailsSheet(
                     .padding(bottom = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+            // Keep the former bottom-sheet handle's vertical breathing room without drawing a handle.
+            Spacer(Modifier.height(28.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
