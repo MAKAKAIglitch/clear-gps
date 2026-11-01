@@ -712,6 +712,16 @@ fun ClearGpsApp(
             selectedMapPoint = point
             selectedPointObservations = observations
             selectedPointCenter = center
+
+            // Focus as soon as the record is loaded; the sheet-layout effect refines
+            // the camera target after its final visible viewport has been measured.
+            val latitude = point.latitude
+            val longitude = point.longitude
+            val focus = center?.let { MapCoordinate(it.latitude, it.longitude) }
+                ?: if (latitude != null && longitude != null) {
+                    MapCoordinate(latitude, longitude)
+                } else null
+            if (focus != null) mapController.focus(focus, 16.0)
         }
     }
 
@@ -734,12 +744,15 @@ fun ClearGpsApp(
             return
         }
 
+        mapController.clearPendingFocus()
         scope.launch {
             selectedMapPlacePoints = emptyList()
             selectedMapPoint = null
             selectedPointObservations = emptyList()
             selectedPointCenter = null
             selectedObservationId = null
+            detailsSheetTopInWindowPx = 0
+            mapController.setViewportPadding(0, 0)
             val loaded = try {
                 withContext(Dispatchers.IO) {
                     ids.mapNotNull { pointId -> database.findPoint(pointId) }
@@ -758,7 +771,17 @@ fun ClearGpsApp(
             when (loaded.size) {
                 0 -> Unit
                 1 -> openRadioPointDetails(loaded.single().id)
-                else -> selectedMapPlacePoints = loaded
+                else -> {
+                    selectedMapPlacePoints = loaded
+                    // Co-located markers open a place list rather than the details sheet,
+                    // so there is no sheet effect to move the camera for this tap.
+                    val nearest = loaded.first()
+                    val latitude = nearest.latitude
+                    val longitude = nearest.longitude
+                    if (latitude != null && longitude != null) {
+                        mapController.focus(MapCoordinate(latitude, longitude), 15.5)
+                    }
+                }
             }
         }
     }
