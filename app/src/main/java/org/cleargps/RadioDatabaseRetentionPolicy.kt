@@ -6,7 +6,8 @@ package org.cleargps
  */
 internal object RadioDatabaseRetentionPolicy {
     const val DEFAULT_LIMIT = 20_000
-    val LIMIT_OPTIONS = listOf(5_000, 10_000, 20_000, 50_000)
+    const val MAX_LIMIT = 450_000
+    val LIMIT_OPTIONS = listOf(5_000, 10_000, 20_000, 50_000, 100_000, 250_000, MAX_LIMIT)
 
     fun normalizeLimit(requested: Int): Int =
         LIMIT_OPTIONS.firstOrNull { it == requested } ?: DEFAULT_LIMIT
@@ -18,6 +19,9 @@ internal object RadioDatabaseRetentionPolicy {
         5_000 -> "5 тыс."
         10_000 -> "10 тыс."
         20_000 -> "20 тыс."
-        else -> "50 тыс."
+        50_000 -> "50 тыс."
+        100_000 -> "100 тыс."
+        250_000 -> "250 тыс."
+        else -> "450 тыс."
     }
 }
