@@ -24,7 +24,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.cleargps.core.LocationFilterEngine
-import org.cleargps.core.LocationFilterEngine
 import java.time.Instant
 import java.time.ZoneOffset
 
