@@ -40,6 +40,16 @@ class OpenCellIdUsageBudgetTest {
             OpenCellIdUsageBudget.tryStartBatch(context, now + 15L * 60L * 1_000L))
     }
 
+    @Test fun manualRefinementMayChooseItsBatchCooldownWithoutChangingDefaultCooldown() {
+        val now = 1_800_000_000_000L
+        assertEquals(OpenCellIdBudgetBlock.NONE,
+            OpenCellIdUsageBudget.tryStartBatch(context, now, minimumIntervalMillis = 60_000L))
+        assertEquals(OpenCellIdBudgetBlock.COOLDOWN,
+            OpenCellIdUsageBudget.tryStartBatch(context, now + 59_999L, minimumIntervalMillis = 60_000L))
+        assertEquals(OpenCellIdBudgetBlock.NONE,
+            OpenCellIdUsageBudget.tryStartBatch(context, now + 60_000L, minimumIntervalMillis = 60_000L))
+    }
+
     @Test fun serverQuotaBlockPersistsUntilNextUtcDay() {
         val now = 1_800_000_000_000L
         assertEquals(OpenCellIdBudgetBlock.NONE, OpenCellIdUsageBudget.tryStartBatch(context, now))

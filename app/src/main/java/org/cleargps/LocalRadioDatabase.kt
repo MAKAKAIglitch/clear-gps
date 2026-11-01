@@ -2122,47 +2122,92 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
      * The result estimates where the handset saw the BSSIDs; it is never interpreted as AP
      * coordinates and is persisted only in the separate, deletable auto-refinement table.
      */
-    fun loadBeaconDbRefinementSnapshot(
+    /**
+     * Select several coherent, recent local Wi-Fi scans for manual BeaconDB refinement.
+     * Each group represents one scan timestamp; APs from different places are never mixed.
+     */
+    fun loadBeaconDbRefinementSnapshots(
         nowMillis: Long = System.currentTimeMillis(),
         maxAgeMillis: Long = 7L * 24L * 60L * 60L * 1_000L,
-        limit: Int = 32
-    ): List<BeaconDbRefinementCandidate> {
+        maxGroups: Int = 100,
+        limitPerGroup: Int = 32
+    ): List<List<BeaconDbRefinementCandidate>> {
         val db = readableDatabase
         val oldest = (nowMillis - maxAgeMillis.coerceAtLeast(0L)).coerceAtLeast(0L)
-        val scanAt = db.rawQuery(
+        val scanTimes = ArrayList<Long>()
+        db.rawQuery(
             """
             SELECT o.observed_at
             FROM radio_observations o
             JOIN radio_sources s ON s.id = o.source_id
             JOIN radio_points p ON p.radio_type = o.radio_type AND p.identifier = o.identifier
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = o.radio_type
             WHERE s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.radio_type = 'wifi'
               AND o.observed_at BETWEEN ? AND ?
               AND p.position_source <> 'manual-edit'
-              AND TRIM(p.ssid) <> '' AND LOWER(p.ssid) NOT IN ('<unknown ssid>', '0x')
-              AND LOWER(p.ssid) NOT LIKE '%_nomap'
             GROUP BY o.observed_at
             HAVING COUNT(DISTINCT o.identifier) >= 2
             ORDER BY MIN(p.sightings) ASC, MAX(COALESCE(p.accuracy, 0)) DESC, o.observed_at DESC
-            LIMIT 1
+            LIMIT ?
             """.trimIndent(),
-            arrayOf(oldest.toString(), nowMillis.toString())
-        ).use { if (it.moveToFirst()) it.getLong(0) else null } ?: return emptyList()
+            arrayOf(oldest.toString(), nowMillis.toString(), maxGroups.coerceIn(1, 100).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) scanTimes.add(cursor.getLong(0))
+        }
+        return scanTimes.mapNotNull { scanAt ->
+            loadBeaconDbRefinementSnapshotAt(
+                scanAtMillis = scanAt,
+                nowMillis = nowMillis,
+                oldestAllowedMillis = oldest,
+                limit = limitPerGroup
+            ).takeIf { it.size >= 2 }
+        }
+    }
 
+    /** Compatibility wrapper used by the existing background path: choose one best scan. */
+    fun loadBeaconDbRefinementSnapshot(
+        nowMillis: Long = System.currentTimeMillis(),
+        maxAgeMillis: Long = 7L * 24L * 60L * 60L * 1_000L,
+        limit: Int = 32
+    ): List<BeaconDbRefinementCandidate> =
+        loadBeaconDbRefinementSnapshots(
+            nowMillis = nowMillis,
+            maxAgeMillis = maxAgeMillis,
+            maxGroups = 100,
+            limitPerGroup = limit
+        ).firstOrNull().orEmpty()
+
+    private fun loadBeaconDbRefinementSnapshotAt(
+        scanAtMillis: Long,
+        nowMillis: Long,
+        oldestAllowedMillis: Long,
+        limit: Int
+    ): List<BeaconDbRefinementCandidate> {
+        if (scanAtMillis !in oldestAllowedMillis..nowMillis) return emptyList()
         val result = ArrayList<BeaconDbRefinementCandidate>()
-        db.rawQuery(
+        readableDatabase.rawQuery(
             """
             SELECT o.identifier, o.rssi, o.frequency, p.ssid, p.sightings, p.accuracy, o.observed_at
             FROM radio_observations o
             JOIN radio_sources s ON s.id = o.source_id
             JOIN radio_points p ON p.radio_type = o.radio_type AND p.identifier = o.identifier
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = o.radio_type
             WHERE s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.radio_type = 'wifi' AND o.observed_at = ?
               AND p.position_source <> 'manual-edit'
             ORDER BY p.sightings ASC, COALESCE(p.accuracy, 0) DESC, o.rssi DESC
             LIMIT ?
             """.trimIndent(),
-            arrayOf(scanAt.toString(), limit.coerceIn(2, 64).toString())
+            arrayOf(scanAtMillis.toString(), limit.coerceIn(2, 64).toString())
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 val ssid = cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty()
@@ -2184,13 +2229,21 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         return result.distinctBy { it.identifier }.take(limit.coerceIn(2, 64))
     }
 
-    /** Cellular candidates from the existing local database, ordered from least to most observed. */
     fun listOpenCellIdRefinementCandidates(limit: Int = 100): List<RadioPointRecord> {
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
-            "SELECT * FROM radio_points WHERE radio_type = 'cell' " +
-                "AND position_source <> 'manual-edit' " +
-                "ORDER BY sightings ASC, COALESCE(accuracy, 0) DESC, last_seen DESC LIMIT ?",
+            "SELECT p.* FROM radio_points p WHERE p.radio_type = 'cell' " +
+                "AND p.position_source <> 'manual-edit' " +
+                "AND EXISTS (SELECT 1 FROM radio_observations o " +
+                "JOIN radio_sources s ON s.id = o.source_id " +
+                "LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id " +
+                "AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime') " +
+                "AND sg.radio_type = o.radio_type " +
+                "WHERE o.radio_type = p.radio_type AND o.identifier = p.identifier " +
+                "AND s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0 " +
+                "AND (sg.enabled IS NULL OR sg.enabled = 1) " +
+                "AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)) " +
+                "ORDER BY p.sightings ASC, COALESCE(p.accuracy, 0) DESC, p.last_seen DESC LIMIT ?",
             arrayOf(limit.coerceIn(1, 500).toString())
         ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
         return result

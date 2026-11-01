@@ -82,6 +82,23 @@ class BackgroundRefinementPolicyTest {
         assertTrue(OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, nextUtcDay))
     }
 
+    @Test fun manualOpenCellIdIntervalIsConfigurableButDailyCapIsShared() {
+        val context = RuntimeEnvironment.getApplication()
+        context.deleteSharedPreferences("opencellid_local_database_budget")
+        val start = Instant.parse("2026-11-01T00:00:00Z").toEpochMilli()
+        val oneMinute = 60_000L
+
+        assertTrue(OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, start, oneMinute))
+        assertFalse(OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, start + oneMinute - 1L, oneMinute))
+        repeat(9) { index ->
+            val at = start + (index + 1L) * oneMinute
+            assertTrue(OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, at, oneMinute))
+        }
+        assertEquals(10, OpenCellIdLocalDbAutoLookupBudget.requestsUsedToday(context, start + 9L * oneMinute))
+        assertFalse(OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, start + 10L * oneMinute, oneMinute))
+        context.deleteSharedPreferences("opencellid_local_database_budget")
+    }
+
     @Test fun passiveCaptureAcceptsOnlyFreshTrustedGpsLocations() {
         assertTrue(PassiveRadioCapturePolicy.acceptsFix(
             "gps", false, 8f, 5_000L, false, true

@@ -49,14 +49,19 @@ internal object OpenCellIdUsageBudget {
     }
 
     @Synchronized
-    fun tryStartBatch(context: Context, nowMillis: Long = System.currentTimeMillis()): OpenCellIdBudgetBlock {
+    fun tryStartBatch(
+        context: Context,
+        nowMillis: Long = System.currentTimeMillis(),
+        minimumIntervalMillis: Long = BATCH_COOLDOWN_MILLIS
+    ): OpenCellIdBudgetBlock {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val today = utcDay(nowMillis)
         ensureDay(prefs, today)
         if (prefs.getBoolean(KEY_SERVER_LIMIT, false)) return OpenCellIdBudgetBlock.SERVER_LIMIT
         if (prefs.getInt(KEY_USED, 0) >= DAILY_APP_BUDGET) return OpenCellIdBudgetBlock.DAILY_BUDGET
         val lastBatch = prefs.getLong(KEY_LAST_BATCH, 0L)
-        if (lastBatch > 0L && (nowMillis < lastBatch || nowMillis - lastBatch < BATCH_COOLDOWN_MILLIS)) {
+        val requiredInterval = minimumIntervalMillis.coerceAtLeast(60_000L)
+        if (lastBatch > 0L && (nowMillis < lastBatch || nowMillis - lastBatch < requiredInterval)) {
             return OpenCellIdBudgetBlock.COOLDOWN
         }
         check(prefs.edit().putLong(KEY_LAST_BATCH, nowMillis).commit()) {

@@ -750,6 +750,19 @@ class RadioGeolocationRepository(private val context: Context) {
                             result.fromCache -> "BeaconDB: получен кэш, локальное уточнение не записано"
                             else -> "BeaconDB: " + result.message
                         }
+                        if (!result.fromCache) {
+                            val eventStatus = when {
+                                saved > 0 -> "success"
+                                zoneBlocked || result.message.contains("429") -> "warning"
+                                else -> "info"
+                            }
+                            val eventMessage = when {
+                                saved > 0 -> "Фоновое уточнение BeaconDB: координатная оценка получена; локальных Wi-Fi-точек уточнено: $saved."
+                                zoneBlocked -> "Фоновое уточнение BeaconDB: ответ отклонён из-за зоны исключения."
+                                else -> "Фоновое уточнение BeaconDB: ${result.message}"
+                            }
+                            RadioRefinementEventStore.append(context, "BeaconDB", eventStatus, eventMessage)
+                        }
                     }
                 }
             }
@@ -846,6 +859,19 @@ class RadioGeolocationRepository(private val context: Context) {
                                     "zone_blocked" -> "OpenCellID: результат исключён по зоне"
                                     else -> response.message
                                 }
+                                val eventStatus = when (outcome) {
+                                    "found" -> "success"
+                                    "rate_limited", "zone_blocked" -> "warning"
+                                    else -> "info"
+                                }
+                                val eventMessage = when (outcome) {
+                                    "found" -> "Фоновое уточнение OpenCellID: координаты сотовой ячейки найдены и сохранены в отдельной партии."
+                                    "not_found" -> "Фоновое уточнение OpenCellID: ячейка не найдена; отрицательный результат сохранён в кэше."
+                                    "rate_limited" -> "Фоновое уточнение OpenCellID остановлено серверной квотой."
+                                    "zone_blocked" -> "Фоновое уточнение OpenCellID: координата отклонена из-за зоны исключения."
+                                    else -> "Фоновое уточнение OpenCellID: ${response.message}"
+                                }
+                                RadioRefinementEventStore.append(context, "OpenCellID", eventStatus, eventMessage)
                             }
                         }
                         OpenCellIdBudgetBlock.DAILY_BUDGET -> cellStatus = "OpenCellID: дневной лимит исчерпан"

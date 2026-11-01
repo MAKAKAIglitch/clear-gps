@@ -137,14 +137,19 @@ internal object OpenCellIdLocalDbAutoLookupBudget {
     private const val KEY_LAST_ATTEMPT = "last_attempt_at"
 
     @Synchronized
-    fun tryReserve(context: Context, nowMillis: Long = System.currentTimeMillis()): Boolean {
+    fun tryReserve(
+        context: Context,
+        nowMillis: Long = System.currentTimeMillis(),
+        minimumIntervalMillis: Long = MIN_REQUEST_INTERVAL_MILLIS
+    ): Boolean {
         val preferences = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val day = Instant.ofEpochMilli(nowMillis).atZone(ZoneOffset.UTC).toLocalDate().toString()
         val storedDay = preferences.getString(KEY_DAY, null)
         val count = if (storedDay == day) preferences.getInt(KEY_COUNT, 0) else 0
         val last = if (storedDay == day) preferences.getLong(KEY_LAST_ATTEMPT, 0L) else 0L
+        val requiredInterval = minimumIntervalMillis.coerceAtLeast(60_000L)
         if (count >= MAX_REQUESTS_PER_UTC_DAY) return false
-        if (last > 0L && (nowMillis < last || nowMillis - last < MIN_REQUEST_INTERVAL_MILLIS)) return false
+        if (last > 0L && (nowMillis < last || nowMillis - last < requiredInterval)) return false
 
         return preferences.edit()
             .putString(KEY_DAY, day)
