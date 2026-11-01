@@ -491,6 +491,9 @@ fun ClearGpsApp(
     var openCellIdLookupJob by remember { mutableStateOf<Job?>(null) }
     var openCellIdRequestToken by remember { mutableStateOf(0) }
     var monitorEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)) }
+    var autoRadioFallbackActive by remember {
+        mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_AUTO_RADIO_FALLBACK_ACTIVE, false))
+    }
     var mockEnabled by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)) }
     var mockOutputActive by remember { mutableStateOf(prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)) }
     var publishLowAccuracy by remember {
@@ -2310,6 +2313,8 @@ fun ClearGpsApp(
         refreshLocalUi()
         while (true) {
             monitorEnabled = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
+            autoRadioFallbackActive = monitorEnabled &&
+                prefs.getBoolean(LocationMonitorService.KEY_AUTO_RADIO_FALLBACK_ACTIVE, false)
             mockEnabled = prefs.getBoolean(LocationMonitorService.KEY_MOCK_ENABLED, false)
             mockOutputActive = prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
             val outputCoordinate = readPublishedMockCoordinate(prefs)
@@ -2502,22 +2507,15 @@ fun ClearGpsApp(
     fun centerMapOnCurrentPosition() {
         val shouldRefreshRadio = ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter(
             positionModeKey = positionMode.key,
-            hasActiveAndroidLocation = activeLocation != null
+            hasActiveAndroidLocation = activeLocation != null,
+            autoRadioFallbackActive = autoRadioFallbackActive
         )
         if (!shouldRefreshRadio) {
             mapController.focusPrimary()
             return
         }
-        if (!hasAnyLocationPermission(context)) {
-            Toast.makeText(
-                context,
-                "Для обновления радио-позиции разреши Clear GPS доступ к геолокации.",
-                Toast.LENGTH_LONG
-            ).show()
-            mapController.focusPrimary()
-            return
-        }
         pendingRadioMapCenterAfterScan = true
+        // Reuse the regular scan permission flow; pending focus completes after a fresh scan.
         startScan(recording)
     }
 
@@ -2526,13 +2524,15 @@ fun ClearGpsApp(
         monitoring = monitorEnabled,
         positionModeKey = positionMode.key,
         hasActiveAndroidLocation = activeLocation != null,
-        hasLocationPermission = hasAnyLocationPermission(context)
+        hasLocationPermission = hasAnyLocationPermission(context),
+        autoRadioFallbackActive = autoRadioFallbackActive
     )
     LaunchedEffect(
         shouldRunForegroundRadioSearch,
         appVisible,
         monitorEnabled,
         positionMode.key,
+        autoRadioFallbackActive,
         useWifi,
         useCells,
         useBle,

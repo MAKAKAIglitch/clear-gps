@@ -13,10 +13,11 @@ internal object ForegroundRadioPositionSearchPolicy {
 
     fun shouldRefreshMapCenter(
         positionModeKey: String,
-        hasActiveAndroidLocation: Boolean
+        hasActiveAndroidLocation: Boolean,
+        autoRadioFallbackActive: Boolean = false
     ): Boolean = when (positionModeKey) {
         RADIO_MODE, LEGACY_RADIO_MODE -> true
-        AUTO_MODE -> !hasActiveAndroidLocation
+        AUTO_MODE -> autoRadioFallbackActive || !hasActiveAndroidLocation
         else -> false
     }
 
@@ -25,12 +26,13 @@ internal object ForegroundRadioPositionSearchPolicy {
         monitoring: Boolean,
         positionModeKey: String,
         hasActiveAndroidLocation: Boolean,
-        hasLocationPermission: Boolean
+        hasLocationPermission: Boolean,
+        autoRadioFallbackActive: Boolean = false
     ): Boolean =
         appVisible &&
             !monitoring &&
             hasLocationPermission &&
-            shouldRefreshMapCenter(positionModeKey, hasActiveAndroidLocation)
+            shouldRefreshMapCenter(positionModeKey, hasActiveAndroidLocation, autoRadioFallbackActive)
 
     fun shouldUseOpenCellIdFallback(
         hasCurrentEstimate: Boolean,

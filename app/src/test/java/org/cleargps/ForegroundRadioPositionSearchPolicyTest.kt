@@ -85,7 +85,20 @@ class ForegroundRadioPositionSearchPolicyTest {
     fun mapCentreRefreshesRadioOnlyOrAutoFallbackButNotGpsOrHealthyAuto() {
         assertTrue(ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter("radio", true))
         assertTrue(ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter("auto", false))
-        assertFalse(ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter("auto", true))
+        assertTrue(
+            ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter(
+                positionModeKey = "auto",
+                hasActiveAndroidLocation = true,
+                autoRadioFallbackActive = true
+            )
+        )
+        assertFalse(
+            ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter(
+                positionModeKey = "auto",
+                hasActiveAndroidLocation = true,
+                autoRadioFallbackActive = false
+            )
+        )
         assertFalse(ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter("gps", false))
     }
 

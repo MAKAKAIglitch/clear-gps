@@ -781,6 +781,7 @@ class LocationMonitorService : Service(), LocationListener {
                     autoRadioMotionAnchor = null
                     autoRadioPositionFusionEngine.reset()
                 }
+                prefs.edit().putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, false).apply()
             } else if (gpsAcquisitionStartedAtElapsedMs <= 0L) {
                 gpsAcquisitionStartedAtElapsedMs = SystemClock.elapsedRealtime()
             }
@@ -810,6 +811,9 @@ class LocationMonitorService : Service(), LocationListener {
                     .apply()
             }
             activePositionMode = nextPositionMode
+            prefs.edit()
+                .putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, isAutoRadioFallbackActive())
+                .apply()
             startAutoRadioDatabaseRefreshLoop()
             // IMU may adjust a short prediction, but never creates a position anchor or trust signal.
             barometerReader?.start()
@@ -1528,6 +1532,9 @@ class LocationMonitorService : Service(), LocationListener {
                     )
                 )
                 autoPositionModeState = transition.state
+                prefs.edit()
+                    .putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, transition.state.mode == AutoPositionMode.GPS_RADIO)
+                    .apply()
                 when (transition.action) {
                     AutoPositionAction.ENTER_RADIO -> enterAutoRadioFallback()
                     AutoPositionAction.START_GPS_PROBE -> startAutoGpsProbe()
@@ -1542,6 +1549,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun enterAutoRadioFallback() {
         if (!isAutoRadioFallbackActive()) return
+        prefs.edit().putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, true).apply()
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
         unregisterGnssStatus()
         radioFusionJob?.cancel()
@@ -1613,6 +1621,7 @@ class LocationMonitorService : Service(), LocationListener {
     }
 
     private fun resumeAutoGpsAfterProbe() {
+        prefs.edit().putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, false).apply()
         val probeFix = lastGpsProbeLocation?.let { Location(it) }
         lastGpsProbeLocation = null
         try { manager.removeUpdates(this) } catch (_: SecurityException) {}
@@ -2044,6 +2053,7 @@ class LocationMonitorService : Service(), LocationListener {
         // shared position flag here so the UI cannot claim GPS is active after service death.
         prefs.edit()
             .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, false)
             .putBoolean(KEY_HAS_OUTPUT, false)
             .putString(KEY_SOURCE, "NONE")
             .remove(KEY_LAT)
@@ -2763,6 +2773,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val EXTRA_BEACONDB_ACCURACY = "beacondb_accuracy"
         const val PREFS = "clear_gps"
         const val KEY_MONITORING = "monitoring"
+        const val KEY_AUTO_RADIO_FALLBACK_ACTIVE = "auto_radio_fallback_active"
         const val KEY_MOCK_ENABLED = "mock_enabled"
         const val KEY_MOCK_OUTPUT_ACTIVE = "mock_output_active"
         const val KEY_MOCK_LAST_PUBLISHED_ELAPSED_MS = "mock_last_published_elapsed_ms"
