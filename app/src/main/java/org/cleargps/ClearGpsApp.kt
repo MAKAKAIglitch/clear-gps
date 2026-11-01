@@ -173,8 +173,8 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class AppTab { HOME, MAP, POINTS, REFINEMENT, ZONES, OBD2, SETTINGS }
-private enum class PointsView { POINTS, HISTORY, SOURCES }
+private enum class AppTab { HOME, MAP, POINTS, ZONES, OBD2, SETTINGS }
+private enum class PointsView { POINTS, HISTORY, SOURCES, REFINEMENT }
 private const val RADIO_POINT_LIST_LIMIT = 5_000
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
@@ -2805,8 +2805,8 @@ fun ClearGpsApp(
             .toList()
         mapController.updateOpenCellIdPoints(coordinates)
     }
-    LaunchedEffect(selectedTab) {
-        if (selectedTab == AppTab.REFINEMENT) {
+    LaunchedEffect(selectedTab, pointsView) {
+        if (selectedTab == AppTab.POINTS && pointsView == PointsView.REFINEMENT) {
             while (true) {
                 radioRefinementEvents = RadioRefinementEventStore.read(context)
                 openCellIdRefinementRequestsUsedToday = OpenCellIdLocalDbAutoLookupBudget.requestsUsedToday(context)
@@ -3525,25 +3525,24 @@ fun ClearGpsApp(
                                     },
                                     onBeaconDbLookup = { startBeaconDbLookup() },
                                     onPublishBeaconDbLocation = { publishBeaconDbEstimateAsMock() },
-                                    onOpenBeaconDbSettings = { navigateToTab(AppTab.SETTINGS) }
-                                )
-                                AppTab.REFINEMENT -> RadioRefinementScreen(
-                                    beaconConsentEnabled = beaconDbEnabled,
-                                    beaconAutoEnabled = beaconDbAutoRefinementEnabled,
-                                    openCellIdEnabled = openCellIdEnabled,
-                                    openCellIdAutoEnabled = openCellIdLocalDbAutoLookupEnabled,
-                                    openCellIdKeyConfigured = openCellIdKeyConfigured,
-                                    openCellIdKeyInput = openCellIdKeyInput,
-                                    beaconIntervalMinutes = beaconRefinementIntervalMinutes,
-                                    beaconMaxRequests = beaconRefinementMaxRequests,
-                                    openCellIdIntervalMinutes = openCellIdRefinementIntervalMinutes,
-                                    openCellIdMaxRequests = openCellIdRefinementMaxRequests,
-                                    openCellIdRequestsUsedToday = openCellIdRefinementRequestsUsedToday,
-                                    isRunning = radioRefinementBusy,
-                                    runningProvider = radioRefinementRunningProvider,
-                                    statusMessage = radioRefinementStatus,
-                                    events = radioRefinementEvents,
-                                    onBeaconConsent = { enabled ->
+                                    onOpenBeaconDbSettings = { navigateToTab(AppTab.SETTINGS) },
+                                    refinementContent = { RadioRefinementScreen(
+                                        beaconConsentEnabled = beaconDbEnabled,
+                                        beaconAutoEnabled = beaconDbAutoRefinementEnabled,
+                                        openCellIdEnabled = openCellIdEnabled,
+                                        openCellIdAutoEnabled = openCellIdLocalDbAutoLookupEnabled,
+                                        openCellIdKeyConfigured = openCellIdKeyConfigured,
+                                        openCellIdKeyInput = openCellIdKeyInput,
+                                        beaconIntervalMinutes = beaconRefinementIntervalMinutes,
+                                        beaconMaxRequests = beaconRefinementMaxRequests,
+                                        openCellIdIntervalMinutes = openCellIdRefinementIntervalMinutes,
+                                        openCellIdMaxRequests = openCellIdRefinementMaxRequests,
+                                        openCellIdRequestsUsedToday = openCellIdRefinementRequestsUsedToday,
+                                        isRunning = radioRefinementBusy,
+                                        runningProvider = radioRefinementRunningProvider,
+                                        statusMessage = radioRefinementStatus,
+                                        events = radioRefinementEvents,
+                                        onBeaconConsent = { enabled ->
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, enabled).apply()
                                         beaconDbEnabled = enabled
                                         if (!enabled && radioRefinementRunningProvider == "beacondb") stopRadioRefinement()
@@ -3553,35 +3552,35 @@ fun ClearGpsApp(
                                         beaconDbLoading = false
                                         beaconDbLookupResult = null
                                         beaconDbMessage = if (enabled) {
-                                            "Сетевые запросы BeaconDB разрешены после отдельного согласия."
+                                        "Сетевые запросы BeaconDB разрешены после отдельного согласия."
                                         } else {
-                                            "Новые запросы BeaconDB выключены; ранее сохранённые автоуточнения не удалены."
+                                        "Новые запросы BeaconDB выключены; ранее сохранённые автоуточнения не удалены."
                                         }
-                                    },
-                                    onBeaconAutoEnabled = { enabled ->
+                                        },
+                                        onBeaconAutoEnabled = { enabled ->
                                         beaconDbAutoRefinementEnabled = enabled
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, enabled).apply()
                                         if (!enabled) scope.launch {
-                                            withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("beacondb") }
-                                            refreshLocalUiInCurrentCoroutine()
+                                        withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("beacondb") }
+                                        refreshLocalUiInCurrentCoroutine()
                                         }
-                                    },
-                                    onBeaconInterval = { value ->
+                                        },
+                                        onBeaconInterval = { value ->
                                         beaconRefinementIntervalMinutes = value.coerceIn(1, 15)
                                         refinementSettingsPrefs.edit().putInt(
-                                            RadioRefinementSettings.KEY_BEACON_INTERVAL_MINUTES,
-                                            beaconRefinementIntervalMinutes
+                                        RadioRefinementSettings.KEY_BEACON_INTERVAL_MINUTES,
+                                        beaconRefinementIntervalMinutes
                                         ).apply()
-                                    },
-                                    onBeaconMaxRequests = { value ->
+                                        },
+                                        onBeaconMaxRequests = { value ->
                                         beaconRefinementMaxRequests = value.coerceIn(1, 10)
                                         refinementSettingsPrefs.edit().putInt(
-                                            RadioRefinementSettings.KEY_BEACON_MAX_REQUESTS,
-                                            beaconRefinementMaxRequests
+                                        RadioRefinementSettings.KEY_BEACON_MAX_REQUESTS,
+                                        beaconRefinementMaxRequests
                                         ).apply()
-                                    },
-                                    onStartBeaconDb = { startBeaconDbLocalRefinement() },
-                                    onOpenCellIdEnabled = { enabled ->
+                                        },
+                                        onStartBeaconDb = { startBeaconDbLocalRefinement() },
+                                        onOpenCellIdEnabled = { enabled ->
                                         openCellIdEnabled = enabled
                                         OpenCellIdKeyStore.setEnabled(context, enabled)
                                         if (!enabled && radioRefinementRunningProvider == "opencellid") stopRadioRefinement()
@@ -3590,44 +3589,46 @@ fun ClearGpsApp(
                                         openCellIdLookupJob = null
                                         openCellIdLoading = false
                                         openCellIdMessage = if (enabled) {
-                                            "Ручные и разрешённые фоновые lookup OpenCellID включены."
+                                        "Ручные и разрешённые фоновые lookup OpenCellID включены."
                                         } else {
-                                            "Новые запросы OpenCellID выключены."
+                                        "Новые запросы OpenCellID выключены."
                                         }
-                                    },
-                                    onOpenCellIdAutoEnabled = { enabled ->
+                                        },
+                                        onOpenCellIdAutoEnabled = { enabled ->
                                         openCellIdLocalDbAutoLookupEnabled = enabled
                                         prefs.edit().putBoolean(
-                                            ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, enabled
+                                        ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, enabled
                                         ).apply()
                                         if (!enabled) scope.launch {
-                                            withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("opencellid") }
-                                            refreshLocalUiInCurrentCoroutine()
+                                        withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("opencellid") }
+                                        refreshLocalUiInCurrentCoroutine()
                                         }
-                                    },
-                                    onOpenCellIdKeyInput = { openCellIdKeyInput = it },
-                                    onSaveOpenCellIdKey = { saveOpenCellIdApiKey() },
-                                    onForgetOpenCellIdKey = { forgetOpenCellIdApiKey() },
-                                    onOpenCellIdInterval = { value ->
+                                        },
+                                        onOpenCellIdKeyInput = { openCellIdKeyInput = it },
+                                        onSaveOpenCellIdKey = { saveOpenCellIdApiKey() },
+                                        onForgetOpenCellIdKey = { forgetOpenCellIdApiKey() },
+                                        onOpenCellIdInterval = { value ->
                                         openCellIdRefinementIntervalMinutes = value.coerceIn(1, 15)
                                         refinementSettingsPrefs.edit().putInt(
-                                            RadioRefinementSettings.KEY_OPENCELLID_INTERVAL_MINUTES,
-                                            openCellIdRefinementIntervalMinutes
+                                        RadioRefinementSettings.KEY_OPENCELLID_INTERVAL_MINUTES,
+                                        openCellIdRefinementIntervalMinutes
                                         ).apply()
-                                    },
-                                    onOpenCellIdMaxRequests = { value ->
+                                        },
+                                        onOpenCellIdMaxRequests = { value ->
                                         openCellIdRefinementMaxRequests = value.coerceIn(1, 10)
                                         refinementSettingsPrefs.edit().putInt(
-                                            RadioRefinementSettings.KEY_OPENCELLID_MAX_REQUESTS,
-                                            openCellIdRefinementMaxRequests
+                                        RadioRefinementSettings.KEY_OPENCELLID_MAX_REQUESTS,
+                                        openCellIdRefinementMaxRequests
                                         ).apply()
-                                    },
-                                    onStartOpenCellId = { startOpenCellIdLocalRefinement() },
-                                    onStop = { stopRadioRefinement() },
-                                    onClearEvents = {
-                                        RadioRefinementEventStore.clear(context)
-                                        radioRefinementEvents = emptyList()
-                                    }
+                                        },
+                                        onStartOpenCellId = { startOpenCellIdLocalRefinement() },
+                                        onStop = { stopRadioRefinement() },
+                                        onClearEvents = {
+                                            RadioRefinementEventStore.clear(context)
+                                            radioRefinementEvents = emptyList()
+                                        },
+                                        embeddedInDatabase = true
+                                        ) }
                                 )
                                 AppTab.ZONES -> ZonesScreen(
                                     zones = zones, draftZone = draftZone, mapTapMode = mapTapMode,
@@ -3998,8 +3999,6 @@ fun ClearGpsApp(
                                 icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Карта", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { navigateToTab(AppTab.POINTS) },
                                 icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
-                            NavigationBarItem(selected = selectedTab == AppTab.REFINEMENT, onClick = { navigateToTab(AppTab.REFINEMENT) },
-                                icon = { Icon(Icons.Outlined.Refresh, null) }, label = { Text("Уточнение", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
                                 icon = { Icon(Icons.Outlined.Shield, null) }, label = { Text("Зоны", maxLines = 1) })
                             NavigationBarItem(selected = selectedTab == AppTab.OBD2, onClick = { navigateToTab(AppTab.OBD2) },
@@ -4052,8 +4051,6 @@ fun ClearGpsApp(
                         icon = { Icon(Icons.Outlined.Map, null) }, label = { Text("Карта", maxLines = 1) })
                     NavigationBarItem(selected = selectedTab == AppTab.POINTS, onClick = { navigateToTab(AppTab.POINTS) },
                         icon = { Icon(Icons.Outlined.Storage, null) }, label = { Text("База", maxLines = 1) })
-                    NavigationBarItem(selected = selectedTab == AppTab.REFINEMENT, onClick = { navigateToTab(AppTab.REFINEMENT) },
-                        icon = { Icon(Icons.Outlined.Refresh, null) }, label = { Text("Уточнение", maxLines = 1) })
                     NavigationBarItem(selected = selectedTab == AppTab.ZONES, onClick = { navigateToTab(AppTab.ZONES) },
                         icon = { Icon(Icons.Outlined.Shield, null) }, label = { Text("Зоны", maxLines = 1) })
                     NavigationBarItem(selected = selectedTab == AppTab.OBD2, onClick = { navigateToTab(AppTab.OBD2) },
@@ -5480,6 +5477,7 @@ private fun DatabaseScreen(
     beaconDbResult: BeaconDbLookupResult?, beaconDbMessage: String,
     onDataSource: (DatabaseDataSource) -> Unit, onBeaconDbLookup: () -> Unit,
     onPublishBeaconDbLocation: () -> Unit, onOpenBeaconDbSettings: () -> Unit,
+    refinementContent: @Composable () -> Unit,
     openCellIdRecords: List<OpenCellIdCellRecord>, openCellIdKeyConfigured: Boolean,
     openCellIdKeyInput: String, openCellIdEnabled: Boolean, openCellIdLoading: Boolean,
     openCellIdMessage: String, onOpenCellIdKeyInput: (String) -> Unit,
@@ -5580,6 +5578,7 @@ private fun DatabaseScreen(
             }
             IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Refresh, "Обновить список") }
         }
+        if (selectedView != PointsView.REFINEMENT) {
         Surface(
             Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = colors.surfaceContainer
         ) {
@@ -5608,10 +5607,20 @@ private fun DatabaseScreen(
                 }
             }
         }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AssistChip(onClick = { onView(PointsView.POINTS) }, label = { Text("Точки") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
             AssistChip(onClick = { onView(PointsView.HISTORY) }, label = { Text("История") }, leadingIcon = { Icon(Icons.Outlined.History, null) })
             AssistChip(onClick = { onView(PointsView.SOURCES) }, label = { Text("Источники") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
+            AssistChip(
+                onClick = { onView(PointsView.REFINEMENT) },
+                label = { Text("Уточнение") },
+                leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                    containerColor = if (selectedView == PointsView.REFINEMENT) colors.secondaryContainer else colors.surfaceVariant,
+                    labelColor = if (selectedView == PointsView.REFINEMENT) colors.onSecondaryContainer else colors.onSurfaceVariant
+                )
+            )
         }
         if (selectedView == PointsView.POINTS) {
             OutlinedTextField(value = searchQuery, onValueChange = onSearch, singleLine = true,
@@ -5634,6 +5643,7 @@ private fun DatabaseScreen(
                 }
             }
         }
+        if (selectedView != PointsView.REFINEMENT) {
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
             FilledTonalButton(onClick = onImport, modifier = Modifier.weight(1f), shape = RoundedCornerShape(15.dp)) {
                 Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Импорт CSV / SQLite")
@@ -5647,8 +5657,10 @@ private fun DatabaseScreen(
             PointsView.POINTS -> "SSID и BSSID хранятся только локально. Нажми на точку на карте для просмотра подробностей или редактирования."
             PointsView.HISTORY -> "Хранятся последние 500 сканирований. История остаётся на устройстве."
             PointsView.SOURCES -> "Импортированные источники можно отключать, изменять доверие, экспортировать или удалять. Всё хранится локально."
+            PointsView.REFINEMENT -> "Ручное и фоновое уточнение координат уже сохранённых Wi-Fi-точек и сотовых ячеек через BeaconDB и OpenCellID."
         }, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
 
+        }
         if (selectedView == PointsView.POINTS) {
             if (filteredPoints.isEmpty()) {
                 if (points.isEmpty()) EmptyState("Точек пока нет", "Включи запись на карте или импортируй WiGLE CSV.")
@@ -5684,7 +5696,7 @@ private fun DatabaseScreen(
                     }
                 }
             }
-        } else {
+        } else if (selectedView == PointsView.SOURCES) {
             val sourceFilterPolicy = RadioSourceFilterPolicy(
                 sourceNameQuery = sourceNameFilter,
                 dateQuery = sourceDateFilter,
@@ -5774,6 +5786,9 @@ private fun DatabaseScreen(
                     }
                 }
             }
+        }
+        } else {
+            refinementContent()
         }
         val autoRefinementPendingDeletion = pendingDeleteAutoRefinement
         if (autoRefinementPendingDeletion != null) {
@@ -7881,7 +7896,6 @@ private fun HeaderCard(
                         AppTab.HOME -> "Мониторинг и диагностика GNSS"
                         AppTab.MAP -> "Карта · слои и точки"
                         AppTab.POINTS -> "Радиоточки и история"
-                        AppTab.REFINEMENT -> "BeaconDB / OpenCellID · локальное уточнение"
                         AppTab.ZONES -> "Зоны аномалий"
                         AppTab.OBD2 -> "Автопараметры · только чтение"
                         AppTab.SETTINGS -> "Источники и приватность"

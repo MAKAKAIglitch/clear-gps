@@ -68,11 +68,17 @@ internal fun RadioRefinementScreen(
     onOpenCellIdMaxRequests: (Int) -> Unit,
     onStartOpenCellId: () -> Unit,
     onStop: () -> Unit,
-    onClearEvents: () -> Unit
+    onClearEvents: () -> Unit,
+    embeddedInDatabase: Boolean = false
 ) {
     val colors = MaterialTheme.colorScheme
+    val screenModifier = if (embeddedInDatabase) {
+        Modifier.fillMaxWidth().padding(vertical = 8.dp)
+    } else {
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp)
+    }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(14.dp),
+        screenModifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
