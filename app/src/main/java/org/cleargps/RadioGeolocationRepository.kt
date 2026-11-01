@@ -647,6 +647,7 @@ class RadioGeolocationRepository(private val context: Context) {
 
         val storedStatus = refreshStoredRadioDatabasesAutomatically(beaconEnabled, openCellIdEnabled)
         return listOf(beaconStatus, openCellIdStatus, storedStatus)
+            .filterNotNull()
             .filter { it.isNotBlank() }
             .takeIf { it.isNotEmpty() }
             ?.joinToString("; ")
