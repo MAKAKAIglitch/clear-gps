@@ -83,7 +83,7 @@ class PowerPolicyTest {
     fun thresholdIsClampedToSupportedRange() {
         val tooLow = PowerPolicy.evaluate(
             PowerTask.OPTIONAL_BACKGROUND, defaults.copy(lowBatteryThresholdPercent = -10),
-            PowerEnvironment(5, false, true, false)
+            PowerEnvironment(6, false, true, false)
         )
         val tooHigh = PowerPolicy.evaluate(
             PowerTask.OPTIONAL_BACKGROUND, defaults.copy(lowBatteryThresholdPercent = 90),

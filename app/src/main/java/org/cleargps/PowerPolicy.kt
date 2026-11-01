@@ -41,10 +41,10 @@ internal object PowerPolicy {
         environment: PowerEnvironment
     ): PowerPolicyDecision {
         if (task == PowerTask.ACTIVE_FIX) return PowerPolicyDecision(true)
-        if (environment.isCharging) return PowerPolicyDecision(true)
         if (environment.systemPowerSaveMode) {
             return PowerPolicyDecision(false, PowerBlockReason.SYSTEM_POWER_SAVE)
         }
+        if (environment.isCharging) return PowerPolicyDecision(true)
         if (!settings.appSaverEnabled) return PowerPolicyDecision(true)
 
         val threshold = settings.lowBatteryThresholdPercent.coerceIn(
