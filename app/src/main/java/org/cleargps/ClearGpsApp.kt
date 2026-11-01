@@ -3530,15 +3530,22 @@ fun ClearGpsApp(
                             88.dp
                     )
             )
+    }
+    }
+
+    ClearGpsTheme(dark = mapIsDark) {
+        if (selectedMapPlacePoints.isNotEmpty()) {
+            RadioPointPlaceSheet(
+                points = selectedMapPlacePoints,
+                onDismiss = { selectedMapPlacePoints = emptyList() },
+                onSelect = { point ->
+                    selectedMapPlacePoints = emptyList()
+                    openRadioPointDetails(point.id)
+                }
+            )
+        }
         if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
-            RadioPointDetailsDialog(
-                modifier = Modifier.align(Alignment.BottomCenter)
-                    .fillMaxWidth().fillMaxHeight(0.70f)
-                    .padding(
-                        start = 8.dp,
-                        end = 8.dp,
-                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 82.dp
-                    ),
+            RadioPointDetailsSheet(
                 point = selectedMapPoint!!,
                 observations = selectedPointObservations,
                 center = selectedPointCenter,
@@ -3557,20 +3564,6 @@ fun ClearGpsApp(
                 onEdit = {
                     pointToEdit = selectedMapPoint
                     closeRadioPointDetails()
-                }
-            )
-        }
-    }
-    }
-
-    ClearGpsTheme(dark = mapIsDark) {
-        if (selectedMapPlacePoints.isNotEmpty()) {
-            RadioPointPlaceSheet(
-                points = selectedMapPlacePoints,
-                onDismiss = { selectedMapPlacePoints = emptyList() },
-                onSelect = { point ->
-                    selectedMapPlacePoints = emptyList()
-                    openRadioPointDetails(point.id)
                 }
             )
         }
@@ -6062,9 +6055,9 @@ private fun RadioPointPlaceSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RadioPointDetailsDialog(
-    modifier: Modifier = Modifier,
+private fun RadioPointDetailsSheet(
     point: RadioPointRecord,
     observations: List<RadioPointObservation>,
     center: RadioPointCenter?,
@@ -6079,160 +6072,212 @@ private fun RadioPointDetailsDialog(
         "cell" -> "Сотовая вышка"
         else -> "Bluetooth LE"
     }
-    Surface(
-        modifier = modifier.fillMaxWidth().fillMaxHeight(),
+    val pointIcon = when (point.type) {
+        "wifi" -> Icons.Outlined.Wifi
+        "cell" -> Icons.Outlined.SignalCellularAlt
+        else -> Icons.Outlined.Bluetooth
+    }
+    val iconContainer = when (point.type) {
+        "wifi" -> colors.primaryContainer
+        "cell" -> colors.secondaryContainer
+        else -> colors.tertiaryContainer
+    }
+    val iconTint = when (point.type) {
+        "wifi" -> colors.onPrimaryContainer
+        "cell" -> colors.onSecondaryContainer
+        else -> colors.onTertiaryContainer
+    }
 
-                shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
-                color = colors.surfaceContainer,
-                tonalElevation = 7.dp
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    ) {
+        Column(
+            Modifier.fillMaxWidth()
+                .heightIn(max = 760.dp)
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
-                    Modifier.fillMaxSize().padding(horizontal = 15.dp, vertical = 13.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = iconContainer,
+                    modifier = Modifier.size(44.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = when (point.type) {
-                                "wifi" -> Color(0xFFD7F5E1)
-                                "cell" -> Color(0xFFF1DFFF)
-                                else -> Color(0xFFFFE8BE)
-                            },
-                            modifier = Modifier.size(42.dp)
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            pointIcon,
+                            contentDescription = kind,
+                            tint = iconTint,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        point.ssid.ifBlank { point.label.ifBlank { kind } },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "$kind · ${point.sightings} записанных наблюдений",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
+                }
+            }
+            Divider(color = colors.outlineVariant)
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                item(key = "summary") {
+                    Surface(
+                        Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = colors.surfaceContainerHigh
+                    ) {
+                        Column(
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    when (point.type) {
-                                        "wifi" -> Icons.Outlined.Wifi
-                                        "cell" -> Icons.Outlined.SignalCellularAlt
-                                        else -> Icons.Outlined.Bluetooth
-                                    },
-                                    contentDescription = null,
-                                    tint = Color(0xFF263248)
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(9.dp))
-                        Column(Modifier.weight(1f)) {
                             Text(
-                                point.ssid.ifBlank { point.label.ifBlank { kind } },
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                "Сведения о сети",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
                             )
+                            Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
+                            if (point.type == "wifi") {
+                                Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
+                            }
+                            Text("Последний сигнал в базе: ${point.rssi} dBm · максимум: ${point.peakRssi} dBm")
+                            if (point.frequency > 0) Text("Последняя частота: ${point.frequency} MHz")
                             Text(
-                                "$kind · ${point.sightings} записанных наблюдений",
+                                "Источник сохранённой позиции: " + point.positionSource,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant
                             )
-                        }
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
-                        }
-                    }
-                    Divider(color = colors.outlineVariant)
-                    LazyColumn(
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
-                        item(key = "summary") {
-                            Surface(
-                                Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(17.dp),
-                                color = colors.surfaceContainerHigh
-                            ) {
-                                Column(
-                                    Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Text("Сведения о сети", style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.SemiBold)
-                                    Text("MAC / ID: " + point.identifier, style = MaterialTheme.typography.bodySmall)
-                                    if (point.type == "wifi") Text("SSID: " + point.ssid.ifBlank { "неизвестен" })
-                                    Text("Последний сигнал в базе: ${point.rssi} dBm · максимум: ${point.peakRssi} dBm")
-                                    if (point.frequency > 0) Text("Последняя частота: ${point.frequency} MHz")
-                                    Text("Источник сохранённой позиции: " + point.positionSource,
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                    if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
-                                    Divider(color = colors.outlineVariant)
-                                    if (center != null) {
-                                        Text("Расчётный центр наблюдений", fontWeight = FontWeight.SemiBold,
-                                            color = colors.primary)
-                                        Text(String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
-                                            style = MaterialTheme.typography.titleMedium)
-                                        Text(
-                                            "По ${center.sampleCount} наблюдениям с координатами · ориентировочная погрешность ±${center.accuracyMeters.toInt()} м",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colors.onSurfaceVariant
-                                        )
-                                        Text(
-                                            "Сила сигнала и точность наблюдений учитываются с разными весами; удалённые выбросы исключаются. Это оценка места наблюдения сигнала, а не точная триангуляция передатчика.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colors.onSurfaceVariant
-                                        )
-                                    } else if (point.latitude != null && point.longitude != null) {
-                                        Text("Сохранённая координата", fontWeight = FontWeight.SemiBold,
-                                            color = colors.primary)
-                                        Text(String.format(Locale.US, "%.6f, %.6f", point.latitude, point.longitude),
-                                            style = MaterialTheme.typography.titleMedium)
-                                        Text("Истории с координатами пока недостаточно для расчёта центра.",
-                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                        Text("Точность сохранённой позиции: ±${point.accuracyMeters?.toInt()?.toString() ?: "—"} м",
-                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                    } else {
-                                        Text("Координаты пока неизвестны", fontWeight = FontWeight.SemiBold,
-                                            color = colors.primary)
-                                        Text("В наблюдениях нет сохранённых координат. Центр появится после записи точки с доступной геопозицией.",
-                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                    }
-                                }
-                            }
-                        }
-                        item(key = "observations-title") {
-                            Text("Наблюдения на карте (${observations.size})",
-                                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(top = 3.dp))
-                            Text(
-                                "Нажми строку или маркер на карте, чтобы перейти к координате наблюдения. Внешняя запись OpenCellID показывается отдельно и имеет меньший вес.",
-                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
-                            )
-                        }
-                        if (observations.isEmpty()) {
-                            item(key = "observations-empty") {
-                                EmptyState("Истории пока нет",
-                                    "У импортированных точек может быть сохранена позиция, но отсутствовать история отдельных наблюдений.")
-                            }
-                        } else {
-                            items(observations, key = { it.id }) { observation ->
-                                RadioPointObservationRow(
-                                    observation = observation,
-                                    selected = observation.id == selectedObservationId,
-                                    onClick = { onObservationSelected(observation.id) }
+                            if (point.notes.isNotBlank()) Text("Заметки: " + point.notes)
+                            Divider(color = colors.outlineVariant)
+                            if (center != null) {
+                                Text(
+                                    "Расчётный центр наблюдений",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.primary
+                                )
+                                Text(
+                                    String.format(Locale.US, "%.6f, %.6f", center.latitude, center.longitude),
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    "По ${center.sampleCount} наблюдениям с координатами · ориентировочная погрешность ±${center.accuracyMeters.toInt()} м",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                                Text(
+                                    "Сила сигнала и точность наблюдений учитываются с разными весами; удалённые выбросы исключаются. Это оценка места наблюдения сигнала, а не точная триангуляция передатчика.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            } else if (point.latitude != null && point.longitude != null) {
+                                Text(
+                                    "Сохранённая координата",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.primary
+                                )
+                                Text(
+                                    String.format(Locale.US, "%.6f, %.6f", point.latitude, point.longitude),
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    "Истории с координатами пока недостаточно для расчёта центра.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                                Text(
+                                    "Точность сохранённой позиции: ±${point.accuracyMeters?.toInt()?.toString() ?: "—"} м",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            } else {
+                                Text(
+                                    "Координаты пока неизвестны",
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.primary
+                                )
+                                Text(
+                                    "В наблюдениях нет сохранённых координат. Центр появится после записи точки с доступной геопозицией.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
                                 )
                             }
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(15.dp)
-                        ) { Text("Закрыть") }
-                        FilledTonalButton(
-                            onClick = onEdit,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(15.dp)
-                        ) {
-                            Icon(Icons.Outlined.Edit, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Редактировать")
-                        }
+                }
+                item(key = "observations-title") {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            "Наблюдения на карте (${observations.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 3.dp)
+                        )
+                        Text(
+                            "Нажми строку или маркер на карте, чтобы перейти к координате наблюдения. Внешняя запись OpenCellID показывается отдельно и имеет меньший вес.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
                     }
                 }
+                if (observations.isEmpty()) {
+                    item(key = "observations-empty") {
+                        EmptyState(
+                            "Истории пока нет",
+                            "У импортированных точек может быть сохранена позиция, но отсутствовать история отдельных наблюдений."
+                        )
+                    }
+                } else {
+                    items(observations, key = { it.id }) { observation ->
+                        RadioPointObservationRow(
+                            observation = observation,
+                            selected = observation.id == selectedObservationId,
+                            onClick = { onObservationSelected(observation.id) }
+                        )
+                    }
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) { Text("Закрыть") }
+                FilledTonalButton(
+                    onClick = onEdit,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Outlined.Edit, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Редактировать")
+                }
+            }
+        }
     }
 }
-
 @Composable
 private fun RadioPointObservationRow(
     observation: RadioPointObservation,
