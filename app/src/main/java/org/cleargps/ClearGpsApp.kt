@@ -2659,7 +2659,10 @@ fun ClearGpsApp(
                     .coerceAtLeast(260.dp)
                     .coerceAtMost(760.dp)
             } else {
-                260.dp.coerceAtMost(maxHeight * 0.40f)
+                (maxHeight * 0.50f)
+                    .coerceAtLeast(292.dp)
+                    .coerceAtMost(520.dp)
+                    .coerceAtMost(maxHeight * 0.62f)
             }
             val detailsPanelHeight by animateDpAsState(
                 targetValue = detailsPanelHeightTarget,
@@ -6168,13 +6171,13 @@ private fun RadioPointDetailsPanel(
         },
         shape = BottomSheetDefaults.ExpandedShape,
         color = BottomSheetDefaults.ContainerColor,
-        tonalElevation = 0.dp,
+        tonalElevation = BottomSheetDefaults.Elevation,
         shadowElevation = BottomSheetDefaults.Elevation
     ) {
         Column(
             Modifier.fillMaxSize()
                 .padding(horizontal = 16.dp)
-                .padding(bottom = 12.dp),
+                .padding(bottom = 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             BottomSheetDefaults.DragHandle(
@@ -6186,8 +6189,10 @@ private fun RadioPointDetailsPanel(
                             totalDrag += dragAmount
                         },
                         onDragEnd = {
-                            if (totalDrag < -36f && !expanded) onExpandedChange(true)
-                            if (totalDrag > 36f && expanded) onExpandedChange(false)
+                            when {
+                                totalDrag > 48f -> onDismiss()
+                                totalDrag < -48f && !expanded -> onExpandedChange(true)
+                            }
                             totalDrag = 0f
                         },
                         onDragCancel = { totalDrag = 0f }
@@ -6233,7 +6238,7 @@ private fun RadioPointDetailsPanel(
             }
             Divider(color = colors.outlineVariant)
             LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth().heightIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 item(key = "summary") {
