@@ -23,6 +23,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -88,6 +89,7 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.FilledTonalButton
@@ -2651,11 +2653,16 @@ fun ClearGpsApp(
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             val navigationBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            val detailsPanelHeight = if (selectedPointSheetExpanded) {
-                (maxHeight * 0.62f).coerceAtMost(520.dp)
+            val detailsPanelHeightTarget = if (selectedPointSheetExpanded) {
+                (maxHeight * 0.56f).coerceAtMost(470.dp)
             } else {
-                292.dp.coerceAtMost(maxHeight * 0.44f)
+                260.dp.coerceAtMost(maxHeight * 0.40f)
             }
+            val detailsPanelHeight by animateDpAsState(
+                targetValue = detailsPanelHeightTarget,
+                animationSpec = tween(220),
+                label = "radioPointDetailsPanelHeight"
+            )
             val detailsPanelBottomOffset = navigationBottomInset + 88.dp
             val detailsViewportTopPx = mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
             val detailsViewportBottomPx = with(LocalDensity.current) {
@@ -2664,26 +2671,33 @@ fun ClearGpsApp(
 
             LaunchedEffect(
                 selectedTab,
+                selectedMapPoint != null,
+                detailsPanelHeight,
+                mapHeaderHeightPx
+            ) {
+                if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
+                    mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
+                } else {
+                    mapController.setViewportPadding(0, 0)
+                }
+            }
+
+            LaunchedEffect(
+                selectedTab,
                 selectedMapPoint?.id,
                 selectedMapPoint?.latitude,
                 selectedMapPoint?.longitude,
                 selectedPointCenter?.latitude,
-                selectedPointCenter?.longitude,
-                selectedPointSheetExpanded,
-                detailsPanelHeight,
-                mapHeaderHeightPx
+                selectedPointCenter?.longitude
             ) {
                 val point = selectedMapPoint
                 if (selectedTab == AppTab.MAP && point != null) {
-                    mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
                     val focus = selectedPointCenter?.let {
                         MapCoordinate(it.latitude, it.longitude)
                     } ?: if (point.latitude != null && point.longitude != null) {
                         MapCoordinate(point.latitude, point.longitude)
                     } else null
                     if (focus != null) mapController.focus(focus, 16.0)
-                } else {
-                    mapController.setViewportPadding(0, 0)
                 }
             }
 
@@ -3574,7 +3588,6 @@ fun ClearGpsApp(
                 RadioPointDetailsPanel(
                     modifier = Modifier.align(Alignment.BottomCenter)
                         .padding(bottom = detailsPanelBottomOffset)
-                        .padding(horizontal = 6.dp)
                         .fillMaxWidth()
                         .height(detailsPanelHeight),
                     point = selectedMapPoint!!,
@@ -6102,6 +6115,7 @@ private fun RadioPointPlaceSheet(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RadioPointDetailsPanel(
     modifier: Modifier = Modifier,
@@ -6117,7 +6131,7 @@ private fun RadioPointDetailsPanel(
 ) {
     val colors = MaterialTheme.colorScheme
     val kind = when (point.type) {
-        "wifi" -> "Wi-Fi"
+        "wifi" -> "Wi‑Fi"
         "cell" -> "Сотовая вышка"
         else -> "Bluetooth LE"
     }
@@ -6139,49 +6153,39 @@ private fun RadioPointDetailsPanel(
 
     Surface(
         modifier = modifier.pointerInput(Unit) {
-            // Claim hit testing only inside the panel bounds; child buttons and list gestures
-            // still receive events, while the MapView below cannot steal panel touches.
+            // A hit target only within the panel: the map receives gestures everywhere above it.
             awaitPointerEventScope {
                 while (true) awaitPointerEvent()
             }
         },
-        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
-        color = colors.surfaceContainer,
-        tonalElevation = 4.dp,
-        shadowElevation = 12.dp
+        shape = BottomSheetDefaults.ExpandedShape,
+        color = BottomSheetDefaults.ContainerColor,
+        tonalElevation = 0.dp,
+        shadowElevation = BottomSheetDefaults.Elevation
     ) {
         Column(
             Modifier.fillMaxSize()
                 .padding(horizontal = 16.dp)
-                .padding(bottom = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Box(
-                modifier = Modifier.fillMaxWidth()
-                    .height(25.dp)
-                    .pointerInput(expanded) {
-                        var totalDrag = 0f
-                        detectVerticalDragGestures(
-                            onVerticalDrag = { change, dragAmount ->
-                                change.consume()
-                                totalDrag += dragAmount
-                            },
-                            onDragEnd = {
-                                if (totalDrag < -36f && !expanded) onExpandedChange(true)
-                                if (totalDrag > 36f && expanded) onExpandedChange(false)
-                                totalDrag = 0f
-                            },
-                            onDragCancel = { totalDrag = 0f }
-                        )
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    modifier = Modifier.width(34.dp).height(4.dp),
-                    shape = RoundedCornerShape(50),
-                    color = colors.outlineVariant
-                ) {}
-            }
+            BottomSheetDefaults.DragHandle(
+                modifier = Modifier.align(Alignment.CenterHorizontally).pointerInput(expanded) {
+                    var totalDrag = 0f
+                    detectVerticalDragGestures(
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            totalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            if (totalDrag < -36f && !expanded) onExpandedChange(true)
+                            if (totalDrag > 36f && expanded) onExpandedChange(false)
+                            totalDrag = 0f
+                        },
+                        onDragCancel = { totalDrag = 0f }
+                    )
+                }
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -6213,12 +6217,6 @@ private fun RadioPointDetailsPanel(
                         "$kind · ${point.sightings} записанных наблюдений",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { onExpandedChange(!expanded) }) {
-                    Icon(
-                        if (expanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
-                        contentDescription = if (expanded) "Свернуть панель" else "Развернуть панель"
                     )
                 }
                 IconButton(onClick = onDismiss) {
