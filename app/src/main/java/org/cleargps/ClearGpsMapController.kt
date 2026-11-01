@@ -718,7 +718,11 @@ class ClearGpsMapController {
     }
 
     fun focus(coordinate: MapCoordinate, zoom: Double = 15.5) {
-        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), zoom))
+        // newLatLngZoom accounts for the persistent padding of the visible map area.
+        map?.easeCamera(
+            CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), zoom),
+            460
+        )
     }
 
     private fun installLayers(style: Style) {

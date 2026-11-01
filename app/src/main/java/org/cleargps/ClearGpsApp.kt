@@ -127,18 +127,22 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -151,6 +155,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import org.cleargps.core.FilterState
 import org.cleargps.core.RiskFeedbackCodec
 import org.cleargps.core.RiskFeedbackLabel
@@ -406,7 +411,8 @@ fun ClearGpsApp(
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
-    var selectedPointSheetExpanded by remember { mutableStateOf(false) }
+    var mapViewportBottomInWindowPx by remember { mutableStateOf(0) }
+    var detailsSheetTopInWindowPx by remember { mutableStateOf(0) }
     var mapHeaderHeightPx by remember { mutableStateOf(0) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
@@ -651,7 +657,8 @@ fun ClearGpsApp(
         scope.launch {
             selectedMapPlacePoints = emptyList()
             selectedMapPoint = null
-            selectedPointSheetExpanded = false
+            detailsSheetTopInWindowPx = 0
+            mapController.setViewportPadding(0, 0)
             selectedPointObservations = emptyList()
             selectedPointCenter = null
             selectedObservationId = null
@@ -711,7 +718,8 @@ fun ClearGpsApp(
         selectedPointObservations = emptyList()
         selectedPointCenter = null
         selectedObservationId = null
-        selectedPointSheetExpanded = false
+        detailsSheetTopInWindowPx = 0
+        mapController.setViewportPadding(0, 0)
     }
 
     fun openRadioPointsAtMap(pointIds: List<Long>) {
@@ -2641,7 +2649,14 @@ fun ClearGpsApp(
 
     ClearGpsTheme(dark = mapIsDark) {
         val colors = MaterialTheme.colorScheme
-        BoxWithConstraints(Modifier.fillMaxSize().background(colors.background)) {
+        BoxWithConstraints(
+            Modifier.fillMaxSize()
+                .onGloballyPositioned { coordinates ->
+                    mapViewportBottomInWindowPx =
+                        (coordinates.positionInWindow().y + coordinates.size.height).roundToInt()
+                }
+                .background(colors.background)
+        ) {
             // Keep the target height available during the exit animation; the visibility
             // transition itself slides the panel off-screen rather than removing it abruptly.
             val panelMaxHeight = if (selectedTab == AppTab.MAP) {
@@ -2652,42 +2667,27 @@ fun ClearGpsApp(
             }
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-            val navigationBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-            val detailsPanelHeightTarget = if (selectedPointSheetExpanded) {
-                val headerHeight = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
-                (maxHeight - headerHeight - navigationBottomInset - 14.dp)
-                    .coerceAtLeast(260.dp)
-                    .coerceAtMost(760.dp)
-            } else {
-                // Keep the initial sheet close to 400 dp while adapting to short windows.
-                400.dp.coerceAtMost(maxHeight * 0.62f)
-            }
-            val detailsPanelHeight by animateDpAsState(
-                targetValue = detailsPanelHeightTarget,
-                animationSpec = tween(220),
-                label = "radioPointDetailsPanelHeight"
-            )
-            val detailsPanelBottomOffset by animateDpAsState(
-                // The details surface is drawn after NavigationBar, so it intentionally covers the tabs.
-                targetValue = navigationBottomInset,
-                animationSpec = tween(220),
-                label = "radioPointDetailsBottomOffset"
-            )
-            val detailsViewportTopPx = mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
-            val detailsViewportBottomPx = with(LocalDensity.current) {
-                (detailsPanelHeight + detailsPanelBottomOffset).roundToPx()
-            }
+            val detailsViewportTopPx =
+                mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
+            val detailsViewportBottomPx =
+                (mapViewportBottomInWindowPx - detailsSheetTopInWindowPx).coerceAtLeast(0)
+            val mapHeaderHeightDp = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
+            val navigationBottomInset =
+                WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            // Keep a visible map strip even when the user fully expands the sheet.
+            val detailsSheetMaxHeight = (maxHeight - mapHeaderHeightDp - navigationBottomInset - 112.dp)
+                .coerceAtLeast(220.dp)
+                .coerceAtMost(700.dp)
 
             LaunchedEffect(
                 selectedTab,
-                selectedMapPoint != null,
-                detailsPanelHeight,
-                detailsPanelBottomOffset,
-                mapHeaderHeightPx
+                selectedMapPoint?.id,
+                detailsViewportTopPx,
+                detailsViewportBottomPx
             ) {
-                if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
+                if (selectedTab == AppTab.MAP && selectedMapPoint != null && detailsViewportBottomPx > 0) {
                     mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
-                } else {
+                } else if (selectedTab != AppTab.MAP || selectedMapPoint == null) {
                     mapController.setViewportPadding(0, 0)
                 }
             }
@@ -2707,7 +2707,11 @@ fun ClearGpsApp(
                     } ?: if (point.latitude != null && point.longitude != null) {
                         MapCoordinate(point.latitude, point.longitude)
                     } else null
-                    if (focus != null) mapController.focus(focus, 16.0)
+                    if (focus != null) {
+                        snapshotFlow { detailsViewportBottomPx }.first { it > 0 }
+                        mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
+                        mapController.focus(focus, 16.0)
+                    }
                 }
             }
 
@@ -3595,17 +3599,13 @@ fun ClearGpsApp(
                     )
             )
             if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
-                RadioPointDetailsPanel(
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                        .padding(bottom = detailsPanelBottomOffset)
-                        .fillMaxWidth()
-                        .height(detailsPanelHeight),
+                RadioPointDetailsSheet(
+                    maxSheetHeight = detailsSheetMaxHeight,
+                    onSheetTopInWindowChanged = { detailsSheetTopInWindowPx = it },
                     point = selectedMapPoint!!,
                     observations = selectedPointObservations,
                     center = selectedPointCenter,
                     selectedObservationId = selectedObservationId,
-                    expanded = selectedPointSheetExpanded,
-                    onExpandedChange = { selectedPointSheetExpanded = it },
                     onDismiss = { closeRadioPointDetails() },
                     onObservationSelected = { observationId ->
                         selectedObservationId = observationId
@@ -6127,14 +6127,13 @@ private fun RadioPointPlaceSheet(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RadioPointDetailsPanel(
-    modifier: Modifier = Modifier,
+private fun RadioPointDetailsSheet(
+    maxSheetHeight: Dp,
+    onSheetTopInWindowChanged: (Int) -> Unit,
     point: RadioPointRecord,
     observations: List<RadioPointObservation>,
     center: RadioPointCenter?,
     selectedObservationId: Long?,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
     onObservationSelected: (Long) -> Unit
@@ -6161,43 +6160,29 @@ private fun RadioPointDetailsPanel(
         else -> colors.onTertiaryContainer
     }
 
-    Surface(
-        modifier = modifier.pointerInput(Unit) {
-            // A hit target only within the panel: the map receives gestures everywhere above it.
-            awaitPointerEventScope {
-                while (true) awaitPointerEvent()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
+        dragHandle = {
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .height(32.dp)
+                    .onGloballyPositioned { coordinates ->
+                        onSheetTopInWindowChanged(coordinates.positionInWindow().y.roundToInt())
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                BottomSheetDefaults.DragHandle()
             }
-        },
-        shape = BottomSheetDefaults.ExpandedShape,
-        color = BottomSheetDefaults.ContainerColor,
-        tonalElevation = BottomSheetDefaults.Elevation,
-        shadowElevation = BottomSheetDefaults.Elevation
+        }
     ) {
         Column(
-            Modifier.fillMaxSize()
+            Modifier.fillMaxWidth()
+                .heightIn(max = maxSheetHeight)
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            BottomSheetDefaults.DragHandle(
-                modifier = Modifier.align(Alignment.CenterHorizontally).pointerInput(expanded) {
-                    var totalDrag = 0f
-                    detectVerticalDragGestures(
-                        onVerticalDrag = { change, dragAmount ->
-                            change.consume()
-                            totalDrag += dragAmount
-                        },
-                        onDragEnd = {
-                            when {
-                                totalDrag > 48f -> onDismiss()
-                                totalDrag < -48f && !expanded -> onExpandedChange(true)
-                            }
-                            totalDrag = 0f
-                        },
-                        onDragCancel = { totalDrag = 0f }
-                    )
-                }
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -6237,7 +6222,7 @@ private fun RadioPointDetailsPanel(
             }
             Divider(color = colors.outlineVariant)
             LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth().heightIn(max = 520.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 item(key = "summary") {
