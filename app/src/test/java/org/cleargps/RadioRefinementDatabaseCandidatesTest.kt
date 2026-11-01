@@ -99,6 +99,13 @@ class RadioRefinementDatabaseCandidatesTest {
         addWifiPointOnly("a8:bb:cc:dd:ee:26", "Manual", now - 1_000L, localSourceId, 52.0001, 5.0001, "manual-edit")
 
         val selection = database!!.loadBeaconDbManualRefinementSelection(nowMillis = now, maxGroups = 10)
+        println(
+            "BeaconDB nearby selection: total=${selection.totalWifiPoints}, " +
+                "fresh=${selection.freshLocatedWifiPoints}, usable=${selection.usableStoredWifiPoints}, " +
+                "recent=${selection.recentScanGroupCount}, stored=${selection.storedPointGroupCount}, " +
+                "nearby=${selection.nearbyGroupCount}, largest=${selection.largestNearbyGroupSize}, " +
+                "groups=${selection.groups.map { group -> group.map { it.identifier } }}"
+        )
 
         assertEquals(0, selection.recentScanGroupCount)
         assertEquals(0, selection.storedPointGroupCount)
