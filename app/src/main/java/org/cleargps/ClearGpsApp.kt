@@ -2680,13 +2680,7 @@ fun ClearGpsApp(
             }
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-            val detailsViewportInsets = MapViewportInsetsPolicy.calculate(
-                mapTopInWindowPx = mapViewportTopInWindowPx,
-                mapBottomInWindowPx = mapViewportBottomInWindowPx,
-                headerBottomInWindowPx = mapHeaderBottomInWindowPx,
-                sheetTopInWindowPx = detailsSheetTopInWindowPx,
-                topGapPx = with(LocalDensity.current) { 12.dp.roundToPx() }
-            )
+            val detailsViewportTopGapPx = with(LocalDensity.current) { 12.dp.roundToPx() }
             val mapHeaderHeightDp = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
             val navigationBottomInset =
                 WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -2711,7 +2705,15 @@ fun ClearGpsApp(
                 // The sheet reports its top edge on every animation frame. Wait until
                 // its position stabilizes, then update viewport padding and fit all samples
                 // in a single camera animation instead of moving the camera frame by frame.
-                snapshotFlow { detailsViewportInsets }
+                snapshotFlow {
+                    MapViewportInsetsPolicy.calculate(
+                        mapTopInWindowPx = mapViewportTopInWindowPx,
+                        mapBottomInWindowPx = mapViewportBottomInWindowPx,
+                        headerBottomInWindowPx = mapHeaderBottomInWindowPx,
+                        sheetTopInWindowPx = detailsSheetTopInWindowPx,
+                        topGapPx = detailsViewportTopGapPx
+                    )
+                }
                     .filter { it != null }
                     .debounce(180)
                     .collect { insets ->
