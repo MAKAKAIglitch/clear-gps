@@ -36,18 +36,12 @@ data class BeaconDbWifiAccessPoint(
 ) {
     val identifier: String get() = macAddress.lowercase(Locale.ROOT)
 
-    fun isValid(): Boolean {
-        val name = ssid?.trim().orEmpty()
-        val hiddenOrUnknown = name.isBlank() ||
-            name.equals("<unknown ssid>", ignoreCase = true) ||
-            name.equals("0x", ignoreCase = true)
-        return BeaconDbProtocol.isMacAddress(macAddress) &&
+    fun isValid(): Boolean =
+        BeaconDbProtocol.isMacAddress(macAddress) &&
+            BeaconDbProtocol.isUsableWifiSsid(ssid) &&
             signalStrength in -128..0 &&
             (ageMillis == null || ageMillis >= 0L) &&
-            (frequencyMhz == null || frequencyMhz in 2_000..8_000) &&
-            !hiddenOrUnknown &&
-            !name.endsWith("_nomap", ignoreCase = true)
-    }
+            (frequencyMhz == null || frequencyMhz in 2_000..8_000)
 }
 
 /** Only globally administered unicast BLE MACs are used; private/random addresses are excluded. */
@@ -122,6 +116,17 @@ internal object BeaconDbProtocol {
 
     fun isMacAddress(value: String): Boolean =
         value.matches(Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$"))
+
+    /**
+     * SSID is never sent to BeaconDB. Permit missing/unknown local SSIDs so they do not
+     * block a valid BSSID lookup; only an explicitly known opt-out (_nomap) is excluded.
+     */
+    fun isUsableWifiSsid(value: String?): Boolean {
+        val name = value?.trim().orEmpty()
+        return !name.endsWith("_nomap", ignoreCase = true) &&
+            !name.equals("<hidden>", ignoreCase = true) &&
+            !name.equals("<hidden ssid>", ignoreCase = true)
+    }
 
     fun isStableBeaconAddress(value: String): Boolean {
         if (!isMacAddress(value)) return false

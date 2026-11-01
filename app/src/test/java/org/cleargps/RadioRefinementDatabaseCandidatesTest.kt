@@ -53,6 +53,7 @@ class RadioRefinementDatabaseCandidatesTest {
         addWifi("aa:bb:cc:dd:ee:03", "<unknown ssid>", firstScan, localSourceId)
         addWifi("aa:bb:cc:dd:ee:04", "Guest_nomap", firstScan, localSourceId)
         addWifi("aa:bb:cc:dd:ee:05", "Manual", firstScan, localSourceId, positionSource = "manual-edit")
+        addWifi("aa:bb:cc:dd:ee:06", "ImportedManual", firstScan, localSourceId, positionSource = "imported-manual-edit")
 
         addWifi("aa:bb:cc:dd:ee:11", "Office-1", secondScan, localSourceId)
         addWifi("aa:bb:cc:dd:ee:12", "Office-2", secondScan, localSourceId)
@@ -60,11 +61,160 @@ class RadioRefinementDatabaseCandidatesTest {
         val groups = database!!.loadBeaconDbRefinementSnapshots(nowMillis = now, maxGroups = 10)
 
         assertEquals(2, groups.size)
-        assertEquals(2, groups[0].size)
+        assertEquals(3, groups[0].size)
         assertEquals(2, groups[1].size)
-        assertEquals(setOf("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"), groups[0].map { it.identifier }.toSet())
+        assertEquals(
+            setOf("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "aa:bb:cc:dd:ee:03"),
+            groups[0].map { it.identifier }.toSet()
+        )
         assertEquals(setOf("aa:bb:cc:dd:ee:11", "aa:bb:cc:dd:ee:12"), groups[1].map { it.identifier }.toSet())
-        assertFalse(groups.flatten().any { it.identifier.endsWith(":03") || it.identifier.endsWith(":04") || it.identifier.endsWith(":05") })
+        assertFalse(groups.flatten().any {
+            it.identifier.endsWith(":04") || it.identifier.endsWith(":05") || it.identifier.endsWith(":06")
+        })
+    }
+
+    @Test
+    fun manualBeaconDbSelectionFallsBackToNearbyStoredPointsWhenNoRecentScanBatchExists() {
+        openDatabase()
+        val localSourceId = database!!.listRadioSources().single { it.kind == "local" }.id
+        val importedSourceId = sqlite!!.insertOrThrow(
+            "radio_sources",
+            null,
+            ContentValues().apply {
+                put("kind", "wigle")
+                put("name", "Imported Wi-Fi test source")
+                put("created_at", System.currentTimeMillis())
+                put("last_seen", System.currentTimeMillis())
+                put("enabled", 1)
+                put("trust_weight", 1.0)
+                put("fingerprint", "test-nearby-wifi-import")
+            }
+        )
+        val now = System.currentTimeMillis()
+        addWifiPointOnly("a8:bb:cc:dd:ee:21", "Nearby-local", now - 5_000L, localSourceId, 52.0000, 5.0000)
+        addWifiPointOnly("a8:bb:cc:dd:ee:22", "Nearby-imported", now - 8_000L, importedSourceId, 52.0002, 5.0002, "wigle-import")
+        addWifiPointOnly("a8:bb:cc:dd:ee:23", "Far-away", now - 4_000L, localSourceId, 52.1000, 5.1000)
+        addWifiPointOnly("a8:bb:cc:dd:ee:24", "<unknown ssid>", now - 3_000L, localSourceId, 52.0001, 5.0001)
+        addWifiPointOnly("a8:bb:cc:dd:ee:25", "Owner_nomap", now - 2_000L, localSourceId, 52.0001, 5.0001)
+        addWifiPointOnly("a8:bb:cc:dd:ee:26", "Manual", now - 1_000L, localSourceId, 52.0001, 5.0001, "manual-edit")
+
+        val selection = database!!.loadBeaconDbManualRefinementSelection(nowMillis = now, maxGroups = 10)
+
+        assertEquals(0, selection.recentScanGroupCount)
+        assertEquals(0, selection.storedPointGroupCount)
+        assertEquals(1, selection.nearbyGroupCount)
+        assertEquals(3, selection.largestNearbyGroupSize)
+        assertEquals(6, selection.totalWifiPoints)
+        assertEquals(5, selection.freshLocatedWifiPoints)
+        assertEquals(4, selection.usableStoredWifiPoints)
+        assertEquals(1, selection.groups.size)
+        assertEquals(
+            setOf("a8:bb:cc:dd:ee:21", "a8:bb:cc:dd:ee:22", "a8:bb:cc:dd:ee:24"),
+            selection.groups.single().map { it.identifier }.toSet()
+        )
+        assertTrue(selection.groups.single().all { it.selectionKind == "nearby-database" })
+    }
+
+    @Test
+    fun manualBeaconDbStoredPointFallbackDoesNotMergeDifferentSources() {
+        openDatabase()
+        val localSourceId = database!!.listRadioSources().single { it.kind == "local" }.id
+        val importedSourceId = sqlite!!.insertOrThrow(
+            "radio_sources",
+            null,
+            ContentValues().apply {
+                put("kind", "wigle")
+                put("name", "Separate stored-point source")
+                put("created_at", System.currentTimeMillis())
+                put("last_seen", System.currentTimeMillis())
+                put("enabled", 1)
+                put("trust_weight", 1.0)
+                put("fingerprint", "test-separate-stored-point-source")
+            }
+        )
+        val sharedLastSeen = System.currentTimeMillis() - 10_000L
+        addWifiPointSnapshotOnly("a8:bb:cc:dd:ee:51", "Local", sharedLastSeen, localSourceId)
+        addWifiPointSnapshotOnly("a8:bb:cc:dd:ee:52", "Imported", sharedLastSeen, importedSourceId)
+
+        val selection = database!!.loadBeaconDbManualRefinementSelection(
+            nowMillis = System.currentTimeMillis(),
+            maxGroups = 10
+        )
+
+        assertEquals(0, selection.recentScanGroupCount)
+        assertEquals(0, selection.storedPointGroupCount)
+        assertEquals(0, selection.nearbyGroupCount)
+        assertTrue(selection.groups.isEmpty())
+    }
+
+    @Test
+    fun manualBeaconDbSelectionRebuildsGroupFromStoredPointsWhenObservationHistoryIsMissing() {
+        openDatabase()
+        val localSourceId = database!!.listRadioSources().single { it.kind == "local" }.id
+        val now = System.currentTimeMillis()
+        val sharedLastSeen = now - 15_000L
+        addWifiPointSnapshotOnly("a8:bb:cc:dd:ee:41", "", sharedLastSeen, localSourceId)
+        addWifiPointSnapshotOnly("a8:bb:cc:dd:ee:42", "<unknown ssid>", sharedLastSeen, localSourceId)
+        addWifiPointSnapshotOnly("a8:bb:cc:dd:ee:43", "Known network", sharedLastSeen, localSourceId)
+
+        val selection = database!!.loadBeaconDbManualRefinementSelection(nowMillis = now, maxGroups = 10)
+
+        assertEquals(0, selection.recentScanGroupCount)
+        assertEquals(1, selection.storedPointGroupCount)
+        assertEquals(0, selection.nearbyGroupCount)
+        assertEquals(0, selection.freshLocatedWifiPoints)
+        assertEquals(0, selection.usableStoredWifiPoints)
+        assertEquals(1, selection.groups.size)
+        assertEquals(
+            setOf("a8:bb:cc:dd:ee:41", "a8:bb:cc:dd:ee:42", "a8:bb:cc:dd:ee:43"),
+            selection.groups.single().map { it.identifier }.toSet()
+        )
+        assertTrue(selection.groups.single().all { it.selectionKind == "stored-snapshot" })
+    }
+
+    @Test
+    fun beaconDbRefinementNeverOverwritesImportedManualCoordinate() {
+        openDatabase()
+        val localSourceId = database!!.listRadioSources().single { it.kind == "local" }.id
+        val now = System.currentTimeMillis()
+        val identifier = "a8:bb:cc:dd:ee:31"
+        addWifiPointOnly(
+            identifier, "Imported manual", now, localSourceId, 52.0000, 5.0000,
+            positionSource = "imported-manual-edit"
+        )
+
+        val saved = database!!.saveAutoRefinementBatch(
+            provider = "beacondb",
+            sourceName = "BeaconDB test",
+            fingerprint = "beacondb-test-imported-manual",
+            trustWeight = 0.20,
+            records = listOf(
+                RadioAutoRefinementRecord(
+                    provider = "beacondb",
+                    radioType = "wifi",
+                    identifier = identifier,
+                    latitude = 52.0010,
+                    longitude = 5.0010,
+                    accuracyMeters = 250.0,
+                    observedAtMillis = now
+                )
+            )
+        )
+        val source = sqlite!!.rawQuery(
+            "SELECT position_source FROM radio_points WHERE identifier = ?",
+            arrayOf(identifier)
+        ).use { cursor ->
+            check(cursor.moveToFirst())
+            cursor.getString(0)
+        }
+
+        assertEquals(0, saved)
+        assertEquals("imported-manual-edit", source)
+        val refinementCount = sqlite!!.rawQuery(
+            "SELECT COUNT(*) FROM radio_auto_refinements WHERE identifier = ?",
+            arrayOf(identifier)
+        ).use { cursor -> check(cursor.moveToFirst()); cursor.getInt(0) }
+        assertEquals(0, refinementCount)
     }
 
     @Test
@@ -88,12 +238,14 @@ class RadioRefinementDatabaseCandidatesTest {
         addCell("lte:262:01:100:1001", localSourceId, positionSource = "local-observation")
         addCell("lte:262:01:100:1002", importedSourceId, positionSource = "wigle-import", addLocalObservation = false)
         addCell("lte:262:01:100:1003", localSourceId, positionSource = "manual-edit")
+        addCell("lte:262:01:100:1004", localSourceId, positionSource = "imported-manual-edit")
         val candidates = database!!.listOpenCellIdRefinementCandidates()
 
         assertEquals(1, candidates.size)
         assertEquals("lte:262:01:100:1001", candidates.single().identifier)
         assertFalse(candidates.any { it.identifier.endsWith("1002") })
         assertFalse(candidates.any { it.identifier.endsWith("1003") })
+        assertFalse(candidates.any { it.identifier.endsWith("1004") })
     }
 
     @Test
@@ -178,6 +330,63 @@ class RadioRefinementDatabaseCandidatesTest {
             put("observed_at", observedAt)
             put("position_source", positionSource)
             put("source_id", sourceId)
+        })
+    }
+
+    private fun addWifiPointSnapshotOnly(
+        identifier: String,
+        ssid: String,
+        lastSeen: Long,
+        sourceId: Long
+    ) {
+        sqlite!!.insertOrThrow("radio_points", null, ContentValues().apply {
+            put("radio_type", "wifi")
+            put("identifier", identifier)
+            put("label", ssid)
+            put("ssid", ssid)
+            put("notes", "")
+            putNull("latitude")
+            putNull("longitude")
+            putNull("accuracy")
+            put("last_rssi", -58)
+            put("peak_rssi", -52)
+            put("frequency", 2_412)
+            put("first_seen", lastSeen)
+            put("last_seen", lastSeen)
+            put("sightings", 1)
+            put("position_source", "unlocated")
+            put("source_id", sourceId)
+            putNull("position_observed_at")
+        })
+    }
+
+    private fun addWifiPointOnly(
+        identifier: String,
+        ssid: String,
+        observedAt: Long,
+        sourceId: Long,
+        latitude: Double,
+        longitude: Double,
+        positionSource: String = "android-location"
+    ) {
+        sqlite!!.insertOrThrow("radio_points", null, ContentValues().apply {
+            put("radio_type", "wifi")
+            put("identifier", identifier)
+            put("label", ssid)
+            put("ssid", ssid)
+            put("notes", "")
+            put("latitude", latitude)
+            put("longitude", longitude)
+            put("accuracy", 80.0)
+            put("last_rssi", -55)
+            put("peak_rssi", -50)
+            put("frequency", 2_412)
+            put("first_seen", observedAt)
+            put("last_seen", observedAt)
+            put("sightings", 2)
+            put("position_source", positionSource)
+            put("source_id", sourceId)
+            put("position_observed_at", observedAt)
         })
     }
 

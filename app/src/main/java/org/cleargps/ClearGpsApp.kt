@@ -5608,19 +5608,51 @@ private fun DatabaseScreen(
             }
         }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(onClick = { onView(PointsView.POINTS) }, label = { Text("Точки") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
-            AssistChip(onClick = { onView(PointsView.HISTORY) }, label = { Text("История") }, leadingIcon = { Icon(Icons.Outlined.History, null) })
-            AssistChip(onClick = { onView(PointsView.SOURCES) }, label = { Text("Источники") }, leadingIcon = { Icon(Icons.Outlined.Storage, null) })
-            AssistChip(
-                onClick = { onView(PointsView.REFINEMENT) },
-                label = { Text("Уточнение") },
-                leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
-                colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
-                    containerColor = if (selectedView == PointsView.REFINEMENT) colors.secondaryContainer else colors.surfaceVariant,
-                    labelColor = if (selectedView == PointsView.REFINEMENT) colors.onSecondaryContainer else colors.onSurfaceVariant
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { onView(PointsView.POINTS) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Точки", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Outlined.Storage, null) },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                        containerColor = if (selectedView == PointsView.POINTS) colors.secondaryContainer else colors.surfaceVariant,
+                        labelColor = if (selectedView == PointsView.POINTS) colors.onSecondaryContainer else colors.onSurfaceVariant
+                    )
                 )
-            )
+                AssistChip(
+                    onClick = { onView(PointsView.HISTORY) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("История", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Outlined.History, null) },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                        containerColor = if (selectedView == PointsView.HISTORY) colors.secondaryContainer else colors.surfaceVariant,
+                        labelColor = if (selectedView == PointsView.HISTORY) colors.onSecondaryContainer else colors.onSurfaceVariant
+                    )
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = { onView(PointsView.SOURCES) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Источники", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Outlined.Storage, null) },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                        containerColor = if (selectedView == PointsView.SOURCES) colors.secondaryContainer else colors.surfaceVariant,
+                        labelColor = if (selectedView == PointsView.SOURCES) colors.onSecondaryContainer else colors.onSurfaceVariant
+                    )
+                )
+                AssistChip(
+                    onClick = { onView(PointsView.REFINEMENT) },
+                    modifier = Modifier.weight(1f),
+                    label = { Text("Уточнение", maxLines = 1) },
+                    leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                    colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                        containerColor = if (selectedView == PointsView.REFINEMENT) colors.secondaryContainer else colors.surfaceVariant,
+                        labelColor = if (selectedView == PointsView.REFINEMENT) colors.onSecondaryContainer else colors.onSurfaceVariant
+                    )
+                )
+            }
         }
         if (selectedView == PointsView.POINTS) {
             OutlinedTextField(value = searchQuery, onValueChange = onSearch, singleLine = true,

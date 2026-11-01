@@ -127,6 +127,8 @@ internal class RadioRefinementCoordinator(context: Context) {
         val maxRequests = RadioRefinementSettings.maxRequests(requestedMaxRequests)
         val intervalMillis = RadioRefinementSettings.intervalMillis(intervalMinutes)
         var attempted = 0
+        var processed = 0
+        var cached = 0
         var refined = 0
         var skipped = 0
         var lastReason = ""
@@ -154,17 +156,37 @@ internal class RadioRefinementCoordinator(context: Context) {
             return RadioRefinementRunSummary(0, 0, 0, 0, message)
         }
 
-        val groups = withContext(Dispatchers.IO) {
-            database.loadBeaconDbRefinementSnapshots(maxGroups = 100, limitPerGroup = 32)
+        val selection = withContext(Dispatchers.IO) {
+            database.loadBeaconDbManualRefinementSelection(maxGroups = 100, limitPerGroup = 32)
         }
+        val groups = selection.groups
         if (groups.isEmpty()) {
-            val message = "В локальной базе нет подходящих недавних Wi-Fi-выборок: нужны минимум два BSSID с известным SSID."
+            val message = buildString {
+                append("Не удалось собрать пару пригодных Wi-Fi BSSID. В локальной базе всего ")
+                    .append(selection.totalWifiPoints).append(" Wi-Fi-точек; свежих точек с доверенными координатами — ")
+                    .append(selection.freshLocatedWifiPoints).append(", пригодных по BSSID/RSSI/SSID — ")
+                    .append(selection.usableStoredWifiPoints).append(". ")
+                append("Недавних совместных сканов: ").append(selection.recentScanGroupCount)
+                    .append("; групп одного источника с общей временной меткой в списке точек: ").append(selection.storedPointGroupCount)
+                    .append("; ближайшая группа по координатам: ").append(selection.largestNearbyGroupSize)
+                    .append(" (нужно минимум 2 точки в радиусе 500 м). ")
+                append("Неизвестный SSID допускается, так как SSID не отправляется; явно известные скрытые и _nomap сети исключаются.")
+            }
             emit("info", message)
             return RadioRefinementRunSummary(0, 0, 0, 0, message)
         }
 
         for (candidates in groups) {
-            if (attempted >= maxRequests) break
+            if (processed >= maxRequests) break
+            val selectionKind = candidates.firstOrNull()?.selectionKind
+            val selectionDescription = when (selectionKind) {
+                "stored-snapshot" ->
+                    "Восстановлена общая выборка одного источника из сохранённых точек с одинаковым временем последнего наблюдения: ${candidates.size} BSSID."
+                "nearby-database" ->
+                    "Подобраны ${candidates.size} близких BSSID по координатам локальной базы (кластер до 500 м)."
+                else ->
+                    "Использована одна недавняя совместная Wi-Fi-выборка (${candidates.size} BSSID)."
+            }
             if (!preferences.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) ||
                 CrashLoopGuard.isSafeModeActive(appContext)
             ) {
@@ -208,12 +230,13 @@ internal class RadioRefinementCoordinator(context: Context) {
             }
 
             val result = BeaconDbClient.lookup(appContext, request, unsupportedCellCount = 0)
+            processed++
             if (result.fromCache) {
+                cached++
                 skipped++
-                emit("info", "Использован временный ответ BeaconDB из памяти; новый сетевой запрос и запись автоуточнения не выполнялись.")
-                continue
+            } else {
+                attempted++
             }
-            attempted++
 
             val coordinate = result.coordinate
             val zoneBlocked = coordinate?.let {
@@ -228,9 +251,19 @@ internal class RadioRefinementCoordinator(context: Context) {
                 withContext(Dispatchers.IO) {
                     database.saveAutoRefinementBatch(
                         provider = "beacondb",
-                        sourceName = "BeaconDB · ручное уточнение · $now",
+                        sourceName = when (selectionKind) {
+                            "nearby-database" -> "BeaconDB · ручной кластер локальной БД · $now"
+                            "stored-snapshot" -> "BeaconDB · восстановленная выборка локальной БД · $now"
+                            else -> "BeaconDB · ручное уточнение · $now"
+                        },
                         fingerprint = "beacondb-auto-refined-v1:manual:${identity.take(24)}:$now",
-                        trustWeight = BeaconDbAutoRefinementPolicy.SOURCE_TRUST_WEIGHT,
+                        // Reconstructed point snapshots are weaker than detailed observations;
+                        // spatial clusters assembled from stored coordinates are weaker still.
+                        trustWeight = when (selectionKind) {
+                            "nearby-database" -> 0.10
+                            "stored-snapshot" -> 0.15
+                            else -> BeaconDbAutoRefinementPolicy.SOURCE_TRUST_WEIGHT
+                        },
                         records = candidates.map { candidate ->
                             RadioAutoRefinementRecord(
                                 provider = "beacondb",
@@ -261,15 +294,20 @@ internal class RadioRefinementCoordinator(context: Context) {
             if (saved > 0) {
                 refined += saved
                 val accuracyText = String.format(java.util.Locale.US, "%.0f", coordinate!!.accuracyMeters)
+                val cacheNote = if (result.fromCache) {
+                    "Использована подходящая оценка из памяти; повторный сетевой запрос не отправлялся. "
+                } else ""
                 emit(
                     "success",
-                    "Найдена оценка места съёмки: уточнено Wi-Fi-точек: $saved; заявленная погрешность около $accuracyText м. Это координата радиовыборки, не точное место каждого роутера."
+                    "$cacheNote$selectionDescription Найдена оценка места съёмки: уточнено Wi-Fi-точек: $saved; заявленная погрешность около $accuracyText м. Это оценка области радиосреды, не точное место каждого роутера."
                 )
             } else {
                 val message = when {
                     zoneBlocked -> "Ответ BeaconDB отклонён: координата попала в зону исключения."
                     coordinate != null && !acceptable -> "Ответ BeaconDB отклонён: погрешность превышает локальный предел 5 км."
-                    else -> "BeaconDB: ${result.message}"
+                    else -> if (result.fromCache) {
+                        "Кэшированная оценка BeaconDB не содержит пригодных координат; база не изменена. $selectionDescription"
+                    } else "BeaconDB: ${result.message} $selectionDescription"
                 }
                 lastReason = message
                 emit(if (outcome == "rate_limited") "warning" else "info", message)
@@ -279,13 +317,17 @@ internal class RadioRefinementCoordinator(context: Context) {
                 lastReason = "BeaconDB ограничила частоту запросов; оставшаяся очередь остановлена."
                 break
             }
-            if (attempted < maxRequests) delay(intervalMillis)
+            if (processed < maxRequests) delay(intervalMillis)
         }
 
         val message = buildString {
-            append("BeaconDB: запросов выполнено ").append(attempted)
+            append("BeaconDB: сетевых запросов выполнено ").append(attempted)
+            append("; использовано оценок из памяти ").append(cached)
             append("; локальных Wi-Fi-точек уточнено ").append(refined)
             append("; пропущено ").append(skipped).append('.')
+            append(" Групп недавних сканов: ").append(selection.recentScanGroupCount)
+            append("; групп сохранённых точек с общей временной меткой: ").append(selection.storedPointGroupCount)
+            append("; пространственных групп локальной базы: ").append(selection.nearbyGroupCount).append('.')
             if (lastReason.isNotBlank()) append(' ').append(lastReason)
             else if (attempted == 0) append(" Подходящих новых выборок для запроса не осталось.")
         }

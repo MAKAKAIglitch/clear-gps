@@ -92,7 +92,7 @@ internal fun RadioRefinementScreen(
 
         RefinementProviderCard(
             title = "BeaconDB · Wi-Fi",
-            subtitle = "Обрабатывает группы из одной недавней локальной Wi-Fi-выборки. Один запрос может уточнить несколько BSSID одновременно.",
+            subtitle = "Сначала использует свежий совместный скан; если история урезана — восстанавливает группу BSSID одного источника с одинаковым временем последнего наблюдения, а затем пробует ближайшие точки с координатами (до 500 м).",
             icon = { Icon(Icons.Outlined.Wifi, null, tint = colors.primary) }
         ) {
             RefinementSwitchRow(
@@ -113,11 +113,21 @@ internal fun RadioRefinementScreen(
                 color = colors.onSurfaceVariant
             )
             Text(
-                "Для ручного запуска нужны явное сетевое согласие и подтверждённая Wi-Fi-сеть. В запрос уходят BSSID, RSSI, возраст и частота; SSID и GPS-координаты не отправляются. BeaconDB не получает точное положение каждого роутера — она оценивает место съёмки набора сигналов.",
+                "Для ручного запуска нужны явное сетевое согласие и подтверждённая Wi-Fi-сеть. Порядок подбора: общий недавний скан, затем сохранённые BSSID одного источника с одинаковой меткой последнего наблюдения, затем близкие точки с доверенными координатами (до 500 м). В запрос уходят только BSSID, RSSI, возраст и частота; SSID и GPS-координаты не отправляются. Неизвестный SSID не мешает lookup; явно известные скрытые сети и _nomap исключаются. Ответ BeaconDB — оценка области радиосреды, а не координата конкретного роутера.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant
             )
-            RefinementSlider(
+            FilledTonalButton(
+                onClick = onStartBeaconDb,
+                enabled = !isRunning && beaconConsentEnabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Outlined.Refresh, null)
+                Text(
+                    if (runningProvider == "beacondb") "Уточнение BeaconDB…" else "Запустить BeaconDB",
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }            RefinementSlider(
                 label = "Пауза между запросами",
                 value = beaconIntervalMinutes,
                 valueLabel = "$beaconIntervalMinutes мин",
@@ -136,17 +146,7 @@ internal fun RadioRefinementScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.onSurfaceVariant
             )
-            FilledTonalButton(
-                onClick = onStartBeaconDb,
-                enabled = !isRunning && beaconConsentEnabled,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Outlined.Refresh, null)
-                Text(
-                    if (runningProvider == "beacondb") "Уточнение BeaconDB…" else "Запустить ручное уточнение",
-                    modifier = Modifier.padding(start = 8.dp)
-                )
-            }
+
         }
 
         RefinementProviderCard(
@@ -198,7 +198,18 @@ internal fun RadioRefinementScreen(
                     }
                 }
             }
-            Text(
+            FilledTonalButton(
+                onClick = onStartOpenCellId,
+                enabled = !isRunning && openCellIdEnabled && openCellIdKeyConfigured &&
+                    openCellIdRequestsUsedToday < OpenCellIdLocalDbAutoLookupBudget.MAX_REQUESTS_PER_UTC_DAY,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Outlined.Refresh, null)
+                Text(
+                    if (runningProvider == "opencellid") "Уточнение OpenCellID…" else "Запустить OpenCellID",
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }            Text(
                 "Лимит Clear GPS для уточнения локальной базы — не более 10 попыток за UTC-день, включая фоновое уточнение. Официальная квота OpenCellID — 1 000 API-кредитов на пользователя в сутки; сервер может ограничить запросы раньше.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant
@@ -222,18 +233,7 @@ internal fun RadioRefinementScreen(
                 steps = RadioRefinementSettings.MAX_REQUESTS_PER_RUN - 2,
                 onValueChange = onOpenCellIdMaxRequests
             )
-            FilledTonalButton(
-                onClick = onStartOpenCellId,
-                enabled = !isRunning && openCellIdEnabled && openCellIdKeyConfigured &&
-                    openCellIdRequestsUsedToday < OpenCellIdLocalDbAutoLookupBudget.MAX_REQUESTS_PER_UTC_DAY,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Outlined.Refresh, null)
-                Text(
-                    if (runningProvider == "opencellid") "Уточнение OpenCellID…" else "Запустить ручное уточнение",
-                    modifier = Modifier.padding(start = 8.dp)
-                )
-            }
+
         }
 
         if (isRunning) {

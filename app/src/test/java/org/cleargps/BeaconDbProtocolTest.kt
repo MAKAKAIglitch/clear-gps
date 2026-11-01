@@ -57,15 +57,24 @@ class BeaconDbProtocolTest {
     }
 
     @Test
-    fun hiddenUnknownAndNomapWifiAreFiltered() {
-        val valid = BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:04", -44, ssid = "VisibleNetwork")
+    fun missingSsidDoesNotBlockBeaconDbLookupButKnownNomapAndHiddenAreExcluded() {
         val normalized = BeaconDbRequest(wifiAccessPoints = listOf(
             BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:01", -40, ssid = ""),
             BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:02", -41, ssid = "<unknown ssid>"),
             BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:03", -42, ssid = "MyNetwork_nomap"),
-            valid
+            BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:04", -43, ssid = "<hidden ssid>"),
+            BeaconDbWifiAccessPoint("aa:bb:cc:dd:ee:05", -44, ssid = "VisibleNetwork")
         )).normalized()
-        assertEquals(listOf("aa:bb:cc:dd:ee:04"), normalized.wifiAccessPoints.map { it.identifier })
+        assertEquals(
+            listOf("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "aa:bb:cc:dd:ee:05"),
+            normalized.wifiAccessPoints.map { it.identifier }
+        )
+        val body = JSONObject(BeaconDbProtocol.buildRequestBody(normalized))
+        val points = body.getJSONArray("wifiAccessPoints")
+        assertEquals(3, points.length())
+        assertTrue(body.toString().contains("aa:bb:cc:dd:ee:01"))
+        assertFalse(body.toString().contains("<unknown ssid>"))
+        assertFalse(body.toString().contains("VisibleNetwork"))
     }
 
     @Test

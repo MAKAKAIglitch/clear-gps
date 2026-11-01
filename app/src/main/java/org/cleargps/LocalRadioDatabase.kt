@@ -45,7 +45,21 @@ data class BeaconDbRefinementCandidate(
     val ssid: String,
     val observedAtMillis: Long,
     val sightings: Int,
-    val accuracyMeters: Double?
+    val accuracyMeters: Double?,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val selectionKind: String = "recent-scan"
+)
+
+data class BeaconDbRefinementSelection(
+    val groups: List<List<BeaconDbRefinementCandidate>>,
+    val totalWifiPoints: Int,
+    val freshLocatedWifiPoints: Int,
+    val usableStoredWifiPoints: Int,
+    val recentScanGroupCount: Int,
+    val storedPointGroupCount: Int,
+    val nearbyGroupCount: Int,
+    val largestNearbyGroupSize: Int
 )
 
 data class RadioAutoRefinementRecord(
@@ -2149,7 +2163,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
               AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.radio_type = 'wifi'
               AND o.observed_at BETWEEN ? AND ?
-              AND p.position_source <> 'manual-edit'
+              AND p.position_source NOT IN ('manual-edit', 'imported-manual-edit')
             GROUP BY o.observed_at
             HAVING COUNT(DISTINCT o.identifier) >= 2
             ORDER BY MIN(p.sightings) ASC, MAX(COALESCE(p.accuracy, 0)) DESC, o.observed_at DESC
@@ -2167,6 +2181,301 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 limit = limitPerGroup
             ).takeIf { it.size >= 2 }
         }
+    }
+
+    /**
+     * Manual refinement can use either a coherent recent scan or a spatial cluster of Wi-Fi
+     * points already stored in the database. This fallback is manual-only; background refinement
+     * still requires a fresh simultaneous scan.
+     *
+     * Stored points are eligible only when their coordinates are recent, have a known trusted
+     * origin and form a compact cluster. Arbitrary BSSIDs from unrelated places are never mixed.
+     */
+    fun loadBeaconDbManualRefinementSelection(
+        nowMillis: Long = System.currentTimeMillis(),
+        recentScanMaxAgeMillis: Long = 7L * 24L * 60L * 60L * 1_000L,
+        storedPointMaxAgeMillis: Long = 30L * 24L * 60L * 60L * 1_000L,
+        maxGroups: Int = 100,
+        limitPerGroup: Int = 32
+    ): BeaconDbRefinementSelection {
+        val recentGroups = loadBeaconDbRefinementSnapshots(
+            nowMillis = nowMillis,
+            maxAgeMillis = recentScanMaxAgeMillis,
+            maxGroups = maxGroups,
+            limitPerGroup = limitPerGroup
+        )
+        val storedPointGroups = loadBeaconDbStoredPointSnapshots(
+            nowMillis = nowMillis,
+            maxAgeMillis = recentScanMaxAgeMillis,
+            maxGroups = maxGroups,
+            limitPerGroup = limitPerGroup
+        )
+        val db = readableDatabase
+        val totalWifiPoints = db.rawQuery(
+            "SELECT COUNT(*) FROM radio_points WHERE radio_type = 'wifi'",
+            null
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+        val oldest = (nowMillis - storedPointMaxAgeMillis.coerceAtLeast(0L)).coerceAtLeast(0L)
+        val locatedRows = ArrayList<BeaconDbRefinementCandidate>()
+        var freshLocatedCandidateCount = 0
+        db.rawQuery(
+            """
+            SELECT p.identifier, p.last_rssi, p.frequency,
+                   COALESCE(NULLIF(p.ssid, ''), NULLIF(p.label, ''), '') AS wifi_ssid,
+                   p.last_seen, p.sightings, p.accuracy, p.latitude, p.longitude
+            FROM radio_points p
+            LEFT JOIN radio_sources s ON s.id = p.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+              AND sg.day_key = strftime(
+                  '%Y-%m-%d', COALESCE(p.position_observed_at, p.last_seen) / 1000,
+                  'unixepoch', 'localtime'
+              )
+              AND sg.radio_type = p.radio_type
+            WHERE p.radio_type = 'wifi'
+              AND p.last_seen BETWEEN ? AND ?
+              AND COALESCE(p.position_observed_at, p.last_seen) BETWEEN ? AND ?
+              AND p.latitude BETWEEN -90.0 AND 90.0
+              AND p.longitude BETWEEN -180.0 AND 180.0
+              AND p.accuracy BETWEEN 1.0 AND 1000.0
+              AND p.position_source IN (
+                  'android-location', 'passive-gps', 'wigle-import',
+                  'neostumbler-import', 'strongest-signal-sample'
+              )
+              AND (s.id IS NULL OR (
+                  s.kind IN ('local', 'wigle', 'custom')
+                  AND s.enabled = 1 AND s.trust_weight > 0
+              ))
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+            ORDER BY p.sightings ASC, p.accuracy DESC, p.last_seen DESC, p.last_rssi DESC
+            LIMIT 1000
+            """.trimIndent(),
+            arrayOf(
+                oldest.toString(), nowMillis.toString(),
+                oldest.toString(), nowMillis.toString()
+            )
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()
+                val ssid = cursor.getString(cursor.getColumnIndexOrThrow("wifi_ssid")).orEmpty()
+                val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("last_rssi"))
+                val latitudeIndex = cursor.getColumnIndexOrThrow("latitude")
+                val longitudeIndex = cursor.getColumnIndexOrThrow("longitude")
+                val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
+                if (cursor.isNull(latitudeIndex) || cursor.isNull(longitudeIndex) || cursor.isNull(accuracyIndex)) continue
+                freshLocatedCandidateCount++
+                if (!BeaconDbProtocol.isMacAddress(identifier) ||
+                    !BeaconDbProtocol.isUsableWifiSsid(ssid) ||
+                    rssi !in -128..-10
+                ) continue
+                locatedRows.add(
+                    BeaconDbRefinementCandidate(
+                        identifier = identifier,
+                        rssi = rssi,
+                        frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                        ssid = ssid,
+                        observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen")),
+                        sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")),
+                        accuracyMeters = cursor.getDouble(accuracyIndex),
+                        latitude = cursor.getDouble(latitudeIndex),
+                        longitude = cursor.getDouble(longitudeIndex),
+                        selectionKind = "nearby-database"
+                    )
+                )
+            }
+        }
+        val distinctLocatedRows = locatedRows.distinctBy { it.identifier.lowercase(Locale.ROOT) }
+        val nearby = groupNearbyBeaconDbPoints(
+            candidates = distinctLocatedRows,
+            maxGroups = maxGroups,
+            limitPerGroup = limitPerGroup
+        )
+        val knownGroupKeys = recentGroups.mapTo(mutableSetOf()) { group ->
+            group.map { it.identifier.lowercase(Locale.ROOT) }.sorted().joinToString("|")
+        }
+        val distinctStoredPointGroups = storedPointGroups.filter { group ->
+            knownGroupKeys.add(group.map { it.identifier.lowercase(Locale.ROOT) }.sorted().joinToString("|"))
+        }
+        val distinctNearbyGroups = nearby.groups.filter { group ->
+            knownGroupKeys.add(group.map { it.identifier.lowercase(Locale.ROOT) }.sorted().joinToString("|"))
+        }
+        val selectedGroups = (recentGroups + distinctStoredPointGroups + distinctNearbyGroups)
+            .take(maxGroups.coerceIn(1, 100))
+        return BeaconDbRefinementSelection(
+            groups = selectedGroups,
+            totalWifiPoints = totalWifiPoints,
+            freshLocatedWifiPoints = freshLocatedCandidateCount,
+            usableStoredWifiPoints = distinctLocatedRows.size,
+            recentScanGroupCount = recentGroups.size,
+            storedPointGroupCount = distinctStoredPointGroups.size,
+            nearbyGroupCount = distinctNearbyGroups.size,
+            largestNearbyGroupSize = nearby.largestGroupSize
+        )
+    }
+
+    /**
+     * Rebuild scan-like groups from radio_points when detailed radio_observations have already
+     * been pruned. recordScan writes one identical last_seen timestamp for all radios in a scan,
+     * so a shared timestamp is a conservative, local-only indication that those BSSIDs were
+     * captured together. This also supports imported records that preserve the sample timestamp.
+     */
+    private fun loadBeaconDbStoredPointSnapshots(
+        nowMillis: Long,
+        maxAgeMillis: Long,
+        maxGroups: Int,
+        limitPerGroup: Int
+    ): List<List<BeaconDbRefinementCandidate>> {
+        val oldest = (nowMillis - maxAgeMillis.coerceAtLeast(0L)).coerceAtLeast(0L)
+        val db = readableDatabase
+        data class StoredPointScanKey(val sourceId: Long?, val lastSeen: Long)
+        val scanGroups = ArrayList<StoredPointScanKey>()
+        db.rawQuery(
+            """
+            SELECT p.source_id, p.last_seen
+            FROM radio_points p
+            LEFT JOIN radio_sources s ON s.id = p.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', p.last_seen / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = p.radio_type
+            WHERE p.radio_type = 'wifi'
+              AND p.last_seen BETWEEN ? AND ?
+              AND p.position_source NOT IN ('manual-edit', 'imported-manual-edit')
+              AND (s.id IS NULL OR (
+                  s.kind IN ('local', 'wigle', 'custom')
+                  AND s.enabled = 1 AND s.trust_weight > 0
+              ))
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+            GROUP BY p.source_id, p.last_seen
+            HAVING COUNT(DISTINCT p.identifier) >= 2
+            ORDER BY p.last_seen DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(oldest.toString(), nowMillis.toString(), maxGroups.coerceIn(1, 100).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val sourceId = if (cursor.isNull(0)) null else cursor.getLong(0)
+                scanGroups.add(StoredPointScanKey(sourceId, cursor.getLong(1)))
+            }
+        }
+
+        return scanGroups.mapNotNull { scanGroup ->
+            val candidates = ArrayList<BeaconDbRefinementCandidate>()
+            val sourcePredicate = if (scanGroup.sourceId == null) {
+                "p.source_id IS NULL"
+            } else {
+                "p.source_id = ?"
+            }
+            val queryArgs = if (scanGroup.sourceId == null) {
+                arrayOf(scanGroup.lastSeen.toString(), limitPerGroup.coerceIn(2, 64).toString())
+            } else {
+                arrayOf(
+                    scanGroup.lastSeen.toString(),
+                    scanGroup.sourceId.toString(),
+                    limitPerGroup.coerceIn(2, 64).toString()
+                )
+            }
+            db.rawQuery(
+                """
+                SELECT p.identifier, p.last_rssi, p.frequency,
+                       COALESCE(NULLIF(p.ssid, ''), NULLIF(p.label, ''), '') AS wifi_ssid,
+                       p.last_seen, p.sightings, p.accuracy
+                FROM radio_points p
+                LEFT JOIN radio_sources s ON s.id = p.source_id
+                LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+                  AND sg.day_key = strftime('%Y-%m-%d', p.last_seen / 1000, 'unixepoch', 'localtime')
+                  AND sg.radio_type = p.radio_type
+                WHERE p.radio_type = 'wifi'
+                  AND p.last_seen = ?
+                  AND $sourcePredicate
+                  AND p.position_source NOT IN ('manual-edit', 'imported-manual-edit')
+                  AND (s.id IS NULL OR (
+                      s.kind IN ('local', 'wigle', 'custom')
+                      AND s.enabled = 1 AND s.trust_weight > 0
+                  ))
+                  AND (sg.enabled IS NULL OR sg.enabled = 1)
+                  AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                ORDER BY p.sightings ASC, COALESCE(p.accuracy, 0) DESC, p.last_rssi DESC
+                LIMIT ?
+                """.trimIndent(),
+                queryArgs
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()
+                    val ssid = cursor.getString(cursor.getColumnIndexOrThrow("wifi_ssid")).orEmpty()
+                    val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("last_rssi"))
+                    if (!BeaconDbProtocol.isMacAddress(identifier) ||
+                        !BeaconDbProtocol.isUsableWifiSsid(ssid) ||
+                        rssi !in -128..-10
+                    ) continue
+                    val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
+                    candidates.add(
+                        BeaconDbRefinementCandidate(
+                            identifier = identifier,
+                            rssi = rssi,
+                            frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                            ssid = ssid,
+                            observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen")),
+                            sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")),
+                            accuracyMeters = if (cursor.isNull(accuracyIndex)) null else cursor.getDouble(accuracyIndex),
+                            selectionKind = "stored-snapshot"
+                        )
+                    )
+                }
+            }
+            candidates.distinctBy { it.identifier.lowercase(Locale.ROOT) }
+                .take(limitPerGroup.coerceIn(2, 64))
+                .takeIf { it.size >= 2 }
+        }
+    }
+
+    private data class NearbyBeaconDbGroups(
+        val groups: List<List<BeaconDbRefinementCandidate>>,
+        val largestGroupSize: Int
+    )
+
+    private fun groupNearbyBeaconDbPoints(
+        candidates: List<BeaconDbRefinementCandidate>,
+        maxGroups: Int,
+        limitPerGroup: Int
+    ): NearbyBeaconDbGroups {
+        val remaining = candidates.toMutableList()
+        val groups = ArrayList<List<BeaconDbRefinementCandidate>>()
+        var largestGroupSize = 0
+        val maxDistanceMeters = 500.0
+        val boundedLimit = limitPerGroup.coerceIn(2, 64)
+
+        while (remaining.size >= 2 && groups.size < maxGroups.coerceIn(1, 100)) {
+            var bestCluster: List<BeaconDbRefinementCandidate> = emptyList()
+            remaining.forEach { anchor ->
+                val latitude = anchor.latitude ?: return@forEach
+                val longitude = anchor.longitude ?: return@forEach
+                val cluster = remaining.filter { candidate ->
+                    val candidateLatitude = candidate.latitude ?: return@filter false
+                    val candidateLongitude = candidate.longitude ?: return@filter false
+                    radioDistanceMeters(latitude, longitude, candidateLatitude, candidateLongitude) <= maxDistanceMeters
+                }
+                if (cluster.size > largestGroupSize) largestGroupSize = cluster.size
+                if (cluster.size > bestCluster.size) bestCluster = cluster
+            }
+            if (bestCluster.size < 2) break
+
+            val ordered = bestCluster.distinctBy { it.identifier.lowercase(Locale.ROOT) }
+                .sortedWith(
+                    compareBy<BeaconDbRefinementCandidate> { it.sightings }
+                        .thenByDescending { it.accuracyMeters ?: 0.0 }
+                        .thenByDescending { it.observedAtMillis }
+                        .thenByDescending { it.rssi }
+                )
+            if (ordered.size < 2) break
+            val selected = ordered.take(boundedLimit)
+            groups.add(selected)
+            val selectedIdentifiers = selected.mapTo(HashSet()) {
+                it.identifier.lowercase(Locale.ROOT)
+            }
+            remaining.removeAll { it.identifier.lowercase(Locale.ROOT) in selectedIdentifiers }
+        }
+        return NearbyBeaconDbGroups(groups, largestGroupSize)
     }
 
     /** Compatibility wrapper used by the existing background path: choose one best scan. */
@@ -2203,21 +2512,24 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
               AND (sg.enabled IS NULL OR sg.enabled = 1)
               AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.radio_type = 'wifi' AND o.observed_at = ?
-              AND p.position_source <> 'manual-edit'
+              AND p.position_source NOT IN ('manual-edit', 'imported-manual-edit')
             ORDER BY p.sightings ASC, COALESCE(p.accuracy, 0) DESC, o.rssi DESC
             LIMIT ?
             """.trimIndent(),
             arrayOf(scanAtMillis.toString(), limit.coerceIn(2, 64).toString())
         ).use { cursor ->
             while (cursor.moveToNext()) {
+                val identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty()
                 val ssid = cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty()
-                if (ssid.isBlank() || ssid.equals("<unknown ssid>", true) ||
-                    ssid.equals("0x", true) || ssid.endsWith("_nomap", true)
+                val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi"))
+                if (!BeaconDbProtocol.isMacAddress(identifier) ||
+                    !BeaconDbProtocol.isUsableWifiSsid(ssid) ||
+                    rssi !in -128..-10
                 ) continue
                 val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
                 result.add(BeaconDbRefinementCandidate(
-                    identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
-                    rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                    identifier = identifier,
+                    rssi = rssi,
                     frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
                     ssid = ssid,
                     observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
@@ -2233,7 +2545,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
             "SELECT p.* FROM radio_points p WHERE p.radio_type = 'cell' " +
-                "AND p.position_source <> 'manual-edit' " +
+                "AND p.position_source NOT IN ('manual-edit', 'imported-manual-edit') " +
                 "AND EXISTS (SELECT 1 FROM radio_observations o " +
                 "JOIN radio_sources s ON s.id = o.source_id " +
                 "LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id " +
@@ -2332,7 +2644,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             clearAllRadioDeletionUndo(db)
             val candidates = normalized.filter { record ->
                 val point = findPoint(db, record.radioType, record.identifier)
-                point != null && point.positionSource != "manual-edit"
+                point != null &&
+                    !point.positionSource.equals("manual-edit", ignoreCase = true) &&
+                    !point.positionSource.equals("imported-manual-edit", ignoreCase = true)
             }
             if (candidates.isEmpty()) return 0
 
