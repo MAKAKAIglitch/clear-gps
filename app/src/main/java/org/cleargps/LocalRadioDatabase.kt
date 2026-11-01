@@ -2242,7 +2242,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             )
             db.execSQL(
                 "DELETE FROM radio_auto_refinement_attempts WHERE rowid NOT IN " +
-                    "(SELECT rowid FROM radio_auto_refinement_attempts ORDER BY last_attempt_at DESC LIMIT 2_000)"
+                    "(SELECT rowid FROM radio_auto_refinement_attempts ORDER BY last_attempt_at DESC LIMIT 2000)"
             )
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
