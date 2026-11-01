@@ -468,7 +468,9 @@ class RadioGeolocationRepository(private val context: Context) {
                     lastSuccessAtMillis = autoPrefs.getLong(KEY_BEACON_SUCCESS_AT, 0L)
                 )
                 val now = System.currentTimeMillis()
-                if (ExternalRadioDatabaseRefreshPolicy.shouldRequestBeaconDb(state, identity, now)) {
+                if (ExternalRadioDatabaseRefreshPolicy.shouldRequestBeaconDb(state, identity, now) &&
+                    PowerPolicy.canRunOptionalBackground(context)
+                ) {
                     val savedAttempt = autoPrefs.edit()
                         .putString(KEY_BEACON_IDENTITY, identity)
                         .putLong(KEY_BEACON_ATTEMPT_AT, now)
@@ -499,7 +501,8 @@ class RadioGeolocationRepository(private val context: Context) {
         if (openCellIdEnabled &&
             prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
             prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
-            OpenCellIdKeyStore.isEnabled(context)
+            OpenCellIdKeyStore.isEnabled(context) &&
+            PowerPolicy.canRunOptionalBackground(context)
         ) {
             val apiKey = OpenCellIdKeyStore.read(context)
             if (!apiKey.isNullOrBlank()) {
@@ -522,7 +525,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 if (staleCells.isNotEmpty() &&
                     prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
                     prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
-                    OpenCellIdKeyStore.isEnabled(context)
+                    OpenCellIdKeyStore.isEnabled(context) &&
+                    PowerPolicy.canRunOptionalBackground(context)
                 ) {
                     when (OpenCellIdUsageBudget.tryStartBatch(context)) {
                         OpenCellIdBudgetBlock.NONE -> {

@@ -87,7 +87,7 @@ class PowerPolicyTest {
         )
         val tooHigh = PowerPolicy.evaluate(
             PowerTask.OPTIONAL_BACKGROUND, defaults.copy(lowBatteryThresholdPercent = 90),
-            PowerEnvironment(51, false, true, false)
+            PowerEnvironment(50, false, true, false)
         )
         assertTrue(tooLow.allowed)
         assertFalse(tooHigh.allowed)
