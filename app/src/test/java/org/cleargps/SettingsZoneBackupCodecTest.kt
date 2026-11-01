@@ -37,25 +37,69 @@ class SettingsZoneBackupCodecTest {
         assertEquals(original, SettingsZoneBackupCodec.decode(SettingsZoneBackupCodec.encode(original)))
     }
 
-    @Test fun v2BackupRoundTripsEcoProfile() {
-        val original = snapshot().copy(batteryProfile = BatteryProfile.ECO.key)
+    @Test fun v3BackupRoundTripsPowerPolicySettings() {
+        val original = snapshot().copy(
+            batteryProfile = BatteryProfile.ECO.key,
+            powerSavingEnabled = false,
+            lowBatteryThresholdPercent = 35
+        )
         assertEquals(original, SettingsZoneBackupCodec.decode(SettingsZoneBackupCodec.encode(original)))
     }
 
-    @Test fun v1BackupRemainsReadableAndDefaultsToNormalProfile() {
-        val original = snapshot()
+    @Test fun v2BackupRemainsReadableAndDefaultsPowerPolicySettings() {
+        val original = snapshot().copy(
+            batteryProfile = BatteryProfile.ECO.key,
+            powerSavingEnabled = false,
+            lowBatteryThresholdPercent = 35
+        )
+        val v2 = SettingsZoneBackupCodec.encode(original)
+            .lineSequence()
+            .filterNot {
+                it.startsWith("S|powerSavingEnabled|") ||
+                    it.startsWith("S|lowBatteryThresholdPercent|")
+            }
+            .joinToString("\n", postfix = "\n")
+            .replaceFirst(SettingsZoneBackupCodec.HEADER, SettingsZoneBackupCodec.VERSION_2_HEADER)
+
+        assertEquals(
+            original.copy(
+                powerSavingEnabled = true,
+                lowBatteryThresholdPercent = PowerPolicy.DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT
+            ),
+            SettingsZoneBackupCodec.decode(v2)
+        )
+    }
+
+    @Test fun v1BackupRemainsReadableAndDefaultsBatteryAndPowerPolicySettings() {
+        val original = snapshot().copy(
+            powerSavingEnabled = false,
+            lowBatteryThresholdPercent = 35
+        )
         val v1 = SettingsZoneBackupCodec.encode(original)
             .lineSequence()
-            .filterNot { it.startsWith("S|batteryProfile|") }
+            .filterNot {
+                it.startsWith("S|batteryProfile|") ||
+                    it.startsWith("S|powerSavingEnabled|") ||
+                    it.startsWith("S|lowBatteryThresholdPercent|")
+            }
             .joinToString("\n", postfix = "\n")
             .replaceFirst(SettingsZoneBackupCodec.HEADER, SettingsZoneBackupCodec.LEGACY_HEADER)
 
-        assertEquals(original.copy(batteryProfile = BatteryProfile.NORMAL.key), SettingsZoneBackupCodec.decode(v1))
+        assertEquals(
+            original.copy(
+                batteryProfile = BatteryProfile.NORMAL.key,
+                powerSavingEnabled = true,
+                lowBatteryThresholdPercent = PowerPolicy.DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT
+            ),
+            SettingsZoneBackupCodec.decode(v1)
+        )
     }
 
-    @Test fun settingsBackupRejectsUnknownBatteryProfile() {
-        val invalid = snapshot().copy(batteryProfile = "turbo")
-        assertNotNull(runCatching { SettingsZoneBackupCodec.encode(invalid) }.exceptionOrNull())
+    @Test fun settingsBackupRejectsUnknownBatteryProfileAndInvalidPowerThreshold() {
+        val invalidProfile = snapshot().copy(batteryProfile = "turbo")
+        val invalidThreshold = snapshot().copy(lowBatteryThresholdPercent = 51)
+        assertNotNull(runCatching { SettingsZoneBackupCodec.encode(invalidProfile) }.exceptionOrNull())
+        assertNotNull(runCatching { SettingsZoneBackupCodec.encode(invalidThreshold) }.exceptionOrNull())
     }
 
     @Test fun rejectsUnsupportedVersionAndMissingFooter() {

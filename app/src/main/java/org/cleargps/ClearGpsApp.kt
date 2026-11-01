@@ -453,6 +453,20 @@ fun ClearGpsApp(
     var batteryProfile by remember {
         mutableStateOf(BatteryProfile.fromKey(prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)))
     }
+    var powerSavingEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_POWER_SAVING_ENABLED, true))
+    }
+    var lowBatteryThresholdPercent by remember {
+        mutableStateOf(
+            prefs.getInt(
+                ClearGpsPreferences.KEY_LOW_BATTERY_THRESHOLD_PERCENT,
+                PowerPolicy.DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT
+            ).coerceIn(
+                PowerPolicy.MIN_LOW_BATTERY_THRESHOLD_PERCENT,
+                PowerPolicy.MAX_LOW_BATTERY_THRESHOLD_PERCENT
+            )
+        )
+    }
     var recording by remember {
         mutableStateOf(!positionMode.gpsOnly && prefs.getBoolean(ClearGpsPreferences.KEY_RECORDING, false))
     }
@@ -1626,6 +1640,8 @@ fun ClearGpsApp(
                     scanIntervalSeconds = scanIntervalSeconds,
                     adaptiveScan = adaptiveScan,
                     batteryProfile = batteryProfile.key,
+                    powerSavingEnabled = powerSavingEnabled,
+                    lowBatteryThresholdPercent = lowBatteryThresholdPercent,
                     useWifi = useWifi,
                     useCells = useCells,
                     useBle = useBle,
@@ -1674,6 +1690,8 @@ fun ClearGpsApp(
                         .putInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, snapshot.scanIntervalSeconds)
                         .putBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, snapshot.adaptiveScan)
                         .putString(ClearGpsPreferences.KEY_BATTERY_PROFILE, snapshot.batteryProfile)
+                        .putBoolean(ClearGpsPreferences.KEY_POWER_SAVING_ENABLED, snapshot.powerSavingEnabled)
+                        .putInt(ClearGpsPreferences.KEY_LOW_BATTERY_THRESHOLD_PERCENT, snapshot.lowBatteryThresholdPercent)
                         .putBoolean(ClearGpsPreferences.KEY_USE_WIFI, snapshot.useWifi)
                         .putBoolean(ClearGpsPreferences.KEY_USE_CELLS, snapshot.useCells)
                         .putBoolean(ClearGpsPreferences.KEY_USE_BLE, snapshot.useBle)
@@ -1685,6 +1703,8 @@ fun ClearGpsApp(
                 scanIntervalSeconds = snapshot.scanIntervalSeconds
                 adaptiveScan = snapshot.adaptiveScan
                 batteryProfile = BatteryProfile.fromKey(snapshot.batteryProfile)
+                powerSavingEnabled = snapshot.powerSavingEnabled
+                lowBatteryThresholdPercent = snapshot.lowBatteryThresholdPercent
                 useWifi = snapshot.useWifi
                 useCells = snapshot.useCells
                 useBle = snapshot.useBle
@@ -3530,6 +3550,8 @@ fun ClearGpsApp(
                                     manualFallbackEnabled = manualFallbackEnabled,
                                     mapSource = mapSourceMode, scanIntervalSeconds = scanIntervalSeconds, adaptiveScan = adaptiveScan,
                                     batteryProfile = batteryProfile,
+                                    powerSavingEnabled = powerSavingEnabled,
+                                    lowBatteryThresholdPercent = lowBatteryThresholdPercent,
                                     publishLowAccuracy = publishLowAccuracy,
                                     onPublishLowAccuracy = { enabled ->
                                         publishLowAccuracy = enabled
@@ -3614,6 +3636,21 @@ fun ClearGpsApp(
                                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
                                             else context.startService(intent)
                                         }
+                                    },
+                                    onPowerSavingEnabled = { enabled ->
+                                        powerSavingEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_POWER_SAVING_ENABLED, enabled).apply()
+                                    },
+                                    onLowBatteryThresholdPercent = { value ->
+                                        val normalized = value.coerceIn(
+                                            PowerPolicy.MIN_LOW_BATTERY_THRESHOLD_PERCENT,
+                                            PowerPolicy.MAX_LOW_BATTERY_THRESHOLD_PERCENT
+                                        )
+                                        lowBatteryThresholdPercent = normalized
+                                        prefs.edit().putInt(
+                                            ClearGpsPreferences.KEY_LOW_BATTERY_THRESHOLD_PERCENT,
+                                            normalized
+                                        ).apply()
                                     },
                                     onWifi = { useWifi = it; saveUseFlags() },
                                     onCells = { useCells = it; saveUseFlags() },
@@ -6829,10 +6866,13 @@ private fun SettingsScreen(
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
     onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean, batteryProfile: BatteryProfile,
+    powerSavingEnabled: Boolean, lowBatteryThresholdPercent: Int,
     publishLowAccuracy: Boolean, onPublishLowAccuracy: (Boolean) -> Unit,
     onMode: (PositionMode) -> Unit, onMapTheme: (MapThemeMode) -> Unit, onMapSource: (MapSourceMode) -> Unit,
     onScanInterval: (Int) -> Unit, onScanIntervalFinished: () -> Unit,
     onAdaptiveScan: (Boolean) -> Unit, onBatteryProfile: (BatteryProfile) -> Unit,
+    onPowerSavingEnabled: (Boolean) -> Unit,
+    onLowBatteryThresholdPercent: (Int) -> Unit,
     onWifi: (Boolean) -> Unit, onCells: (Boolean) -> Unit, onBle: (Boolean) -> Unit,
     onShowPoints: (Boolean) -> Unit, onManualFallback: (Boolean) -> Unit, onManualAnchor: () -> Unit,
     onClearData: () -> Unit, onOpenLocationSettings: () -> Unit,
@@ -6848,6 +6888,9 @@ private fun SettingsScreen(
     var showDeviceCapabilities by remember { mutableStateOf(false) }
     var pendingDiagnosticLogMaxKb by remember(diagnosticLogMaxKb) { mutableStateOf(diagnosticLogMaxKb.toFloat()) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
+    var pendingLowBatteryThreshold by remember(lowBatteryThresholdPercent) {
+        mutableStateOf(lowBatteryThresholdPercent.toFloat())
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -7032,6 +7075,42 @@ private fun SettingsScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
+                    Divider(color = colors.outlineVariant)
+                    SettingSwitch(
+                        "Энергосбережение необязательных фоновых задач",
+                        "Включено по умолчанию. На батарее при выключенном экране или заряде на уровне порога и ниже ставит на паузу обновление внешних радиокаталогов, дополнительные радиоснимки реплея и DEM-диагностику. Активный GPS/радиофикс не отключается. Системный режим энергосбережения Android также учитывается.",
+                        powerSavingEnabled,
+                        onPowerSavingEnabled
+                    )
+                    if (powerSavingEnabled) {
+                        Text(
+                            "Порог низкого заряда: ${pendingLowBatteryThreshold.roundToInt()}%",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Slider(
+                            value = pendingLowBatteryThreshold,
+                            onValueChange = { pendingLowBatteryThreshold = it },
+                            onValueChangeFinished = {
+                                val selectedThreshold = (pendingLowBatteryThreshold / 5f)
+                                    .roundToInt().times(5).coerceIn(
+                                        PowerPolicy.MIN_LOW_BATTERY_THRESHOLD_PERCENT,
+                                        PowerPolicy.MAX_LOW_BATTERY_THRESHOLD_PERCENT
+                                    )
+                                pendingLowBatteryThreshold = selectedThreshold.toFloat()
+                                if (selectedThreshold != lowBatteryThresholdPercent) {
+                                    onLowBatteryThresholdPercent(selectedThreshold)
+                                }
+                            },
+                            valueRange = PowerPolicy.MIN_LOW_BATTERY_THRESHOLD_PERCENT.toFloat()..PowerPolicy.MAX_LOW_BATTERY_THRESHOLD_PERCENT.toFloat(),
+                            steps = 8,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "По умолчанию 20%. При подключённом питании необязательные задачи возобновляются. Порог ограничен диапазоном 5–50%.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
                     Divider(color = colors.outlineVariant)
                     SettingSwitch(
                         "Публиковать позицию даже при очень плохой точности",

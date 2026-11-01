@@ -1141,25 +1141,27 @@ class LocationMonitorService : Service(), LocationListener {
                 recording = GnssReplayRecorder.isRecording(this@LocationMonitorService),
                 positionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
             )) {
-                try {
-                    val observations = repository.captureReplaySnapshot(
-                        useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
-                        useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
-                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
-                    )
-                    if (observations > 0) {
+                if (PowerPolicy.canRunOptionalBackground(this@LocationMonitorService)) {
+                    try {
+                        val observations = repository.captureReplaySnapshot(
+                            useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
+                            useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
+                            useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                        )
+                        if (observations > 0) {
+                            DiagnosticLogStore.log(
+                                this@LocationMonitorService, "REPLAY_RADIO",
+                                "Captured $observations radio observations for local replay"
+                            )
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
                         DiagnosticLogStore.log(
                             this@LocationMonitorService, "REPLAY_RADIO",
-                            "Captured $observations radio observations for local replay"
+                            "Radio replay sample skipped: ${error.javaClass.simpleName}", "WARN"
                         )
                     }
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    DiagnosticLogStore.log(
-                        this@LocationMonitorService, "REPLAY_RADIO",
-                        "Radio replay sample skipped: ${error.javaClass.simpleName}", "WARN"
-                    )
                 }
                 if (!GnssReplayRadioCapturePolicy.shouldCapture(
                     monitoring = prefs.getBoolean(KEY_MONITORING, false),
@@ -2577,6 +2579,7 @@ class LocationMonitorService : Service(), LocationListener {
      * It deliberately does not compare vertical datums or contribute to the live risk score.
      */
     private fun scheduleSrtmDiagnosticSample(location: Location) {
+        if (!PowerPolicy.canRunOptionalBackground(this)) return
         val nowNanos = SystemClock.elapsedRealtimeNanos()
         if (demSampleJob?.isActive == true) return
         if (!SrtmElevationDiagnosticSamplingPolicy.shouldSample(

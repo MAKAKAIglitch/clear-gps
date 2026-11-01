@@ -390,7 +390,8 @@ class RadioGeolocationRepository(private val context: Context) {
      */
     suspend fun refreshExternalDatabasesAutomatically(): String? {
         if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
-            CrashLoopGuard.isSafeModeActive(context)
+            CrashLoopGuard.isSafeModeActive(context) ||
+            !PowerPolicy.canRunOptionalBackground(context)
         ) return null
 
         spoofZoneService.refreshPolicy()
@@ -476,7 +477,8 @@ class RadioGeolocationRepository(private val context: Context) {
                         prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
                         prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&
                         prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
-                        !CrashLoopGuard.isSafeModeActive(context)
+                        !CrashLoopGuard.isSafeModeActive(context) &&
+                        PowerPolicy.canRunOptionalBackground(context)
                     ) {
                         val result = BeaconDbClient.lookup(
                             context, request,
@@ -531,7 +533,8 @@ class RadioGeolocationRepository(private val context: Context) {
                             for (cell in batch) {
                                 if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
                                     !prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) ||
-                                    !OpenCellIdKeyStore.isEnabled(context)
+                                    !OpenCellIdKeyStore.isEnabled(context) ||
+                                    !PowerPolicy.canRunOptionalBackground(context)
                                 ) break
                                 if (!OpenCellIdUsageBudget.reserveRequest(context)) {
                                     stoppedMessage = "local daily quota reached"

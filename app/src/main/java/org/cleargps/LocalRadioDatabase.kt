@@ -341,6 +341,8 @@ object ClearGpsPreferences {
     const val KEY_SCAN_INTERVAL_SECONDS = "scan_interval_seconds"
     const val KEY_ADAPTIVE_SCAN = "adaptive_scan_enabled"
     const val KEY_BATTERY_PROFILE = "battery_profile"
+    const val KEY_POWER_SAVING_ENABLED = "power_saving_enabled"
+    const val KEY_LOW_BATTERY_THRESHOLD_PERCENT = "low_battery_threshold_percent"
     const val KEY_MAP_SOURCE = "map_source_mode"
     const val KEY_MAP_RADIO_POINT_LIMIT = "map_radio_point_limit"
     const val KEY_LAST_LAT = "radio_last_lat"
