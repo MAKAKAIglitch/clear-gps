@@ -178,6 +178,7 @@ private enum class PointsView { POINTS, HISTORY, SOURCES }
 private const val RADIO_POINT_LIST_LIMIT = 5_000
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
+    PASSIVE("passive", "Пассивная запись"),
     BEACONDB("beacondb", "BeaconDB · оценка"),
     OPENCELLID("opencellid", "OpenCellID · соты")
 }
@@ -498,6 +499,15 @@ fun ClearGpsApp(
     var openCellIdKeyConfigured by remember { mutableStateOf(OpenCellIdKeyStore.hasKey(context)) }
     var openCellIdKeyInput by remember { mutableStateOf("") }
     var openCellIdEnabled by remember { mutableStateOf(OpenCellIdKeyStore.isEnabled(context)) }
+    var beaconDbAutoRefinementEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false))
+    }
+    var openCellIdLocalDbAutoLookupEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, false))
+    }
+    var passiveRadioCaptureEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, false))
+    }
     var openCellIdLoading by remember { mutableStateOf(false) }
     var openCellIdMessage by remember {
         mutableStateOf("OpenCellID выключен. Сохрани личный API-ключ и отдельно разреши ручные запросы.")
@@ -3567,6 +3577,55 @@ fun ClearGpsApp(
                                     detailedLogging = detailedLogging,
                                     diagnosticLogMaxKb = diagnosticLogMaxKb,
                                     beaconDbEnabled = beaconDbEnabled,
+                                    beaconDbAutoRefinementEnabled = beaconDbAutoRefinementEnabled,
+                                    openCellIdLocalDbAutoLookupEnabled = openCellIdLocalDbAutoLookupEnabled,
+                                    passiveRadioCaptureEnabled = passiveRadioCaptureEnabled,
+                                    onBeaconDbAutoRefinementEnabled = { enabled ->
+                                        beaconDbAutoRefinementEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, enabled).apply()
+                                        if (!enabled) scope.launch {
+                                            withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("beacondb") }
+                                            refreshLocalUiInCurrentCoroutine()
+                                        }
+                                    },
+                                    onOpenCellIdLocalDbAutoLookupEnabled = { enabled ->
+                                        openCellIdLocalDbAutoLookupEnabled = enabled
+                                        prefs.edit().putBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, enabled).apply()
+                                        if (!enabled) scope.launch {
+                                            withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("opencellid") }
+                                            refreshLocalUiInCurrentCoroutine()
+                                        }
+                                    },
+                                    onPassiveRadioCaptureEnabled = { enabled ->
+                                        val permitted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+                                            PackageManager.PERMISSION_GRANTED
+                                        if (enabled && !permitted) {
+                                            Toast.makeText(context, "Для пассивной записи необходимо разрешение точной геолокации.", Toast.LENGTH_LONG).show()
+                                            passiveRadioCaptureEnabled = false
+                                            prefs.edit().putBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, false).apply()
+                                        } else {
+                                            passiveRadioCaptureEnabled = enabled
+                                            prefs.edit().putBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, enabled).apply()
+                                            val serviceIntent = Intent(context, PassiveRadioCaptureService::class.java)
+                                                .setAction(if (enabled) PassiveRadioCaptureService.ACTION_START else PassiveRadioCaptureService.ACTION_STOP)
+                                            runCatching {
+                                                if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                    context.startForegroundService(serviceIntent)
+                                                } else if (enabled) {
+                                                    context.startService(serviceIntent)
+                                                } else {
+                                                    context.stopService(Intent(context, PassiveRadioCaptureService::class.java))
+                                                }
+                                            }.onFailure { error ->
+                                                if (enabled) {
+                                                    passiveRadioCaptureEnabled = false
+                                                    prefs.edit().putBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, false).apply()
+                                                }
+                                                Toast.makeText(context, "Не удалось изменить пассивную запись: " +
+                                                    (error.message ?: error.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
                                     onBeaconDbEnabled = { enabled ->
                                         prefs.edit().putBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, enabled).apply()
                                         // Disabling future network requests does not discard an already
@@ -5178,6 +5237,7 @@ private fun DatabaseScreen(
     val colors = MaterialTheme.colorScheme
     val databaseScrollState = rememberScrollState()
     var pendingDeleteSource by remember { mutableStateOf<RadioSourceRecord?>(null) }
+    var pendingPassiveSourceDeletion by remember { mutableStateOf<RadioSourceRecord?>(null) }
     var pendingDeleteSourceDay by remember { mutableStateOf<RadioSourceDayRecord?>(null) }
     var expandedSourceIds by remember { mutableStateOf(emptySet<Long>()) }
     var expandedSourceDayKeys by remember { mutableStateOf(emptySet<String>()) }
@@ -5516,6 +5576,66 @@ private fun DatabaseScreen(
                 }
             )
         }
+        } else if (dataSource == DatabaseDataSource.PASSIVE) {
+            val passiveSources = sources.filter { it.name.startsWith("Clear GPS · пассивная запись ·") }
+                .sortedByDescending { it.createdAt }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("Пассивная радиобаза", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Записи появляются только когда другое приложение уже получает GPS. Clear GPS не запускает собственный GPS-запрос. Каждая UTC-дата — отдельный источник; выключение/удаление партии пересчитывает координаты из оставшихся источников.",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                )
+                if (passiveSources.isEmpty()) {
+                    EmptyState("Пассивных записей пока нет", "Включи пассивный сбор в настройках и используй приложение, которое само получает GPS.")
+                } else {
+                    passiveSources.forEach { source ->
+                        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp), color = colors.surfaceContainerHigh) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(source.name, fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            source.radioCount.toString() + " радиоточек · " +
+                                                source.observationCount + " наблюдений · " +
+                                                dateTime(source.createdAt),
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                                        )
+                                    }
+                                    Switch(checked = source.enabled, onCheckedChange = { onSetSourceEnabled(source, it) })
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { onExportSource(source) }, modifier = Modifier.weight(1f)) {
+                                        Icon(Icons.Outlined.ImportExport, null); Spacer(Modifier.width(5.dp)); Text("Экспорт")
+                                    }
+                                    OutlinedButton(onClick = { pendingPassiveSourceDeletion = source }, modifier = Modifier.weight(1f)) {
+                                        Icon(Icons.Outlined.DeleteOutline, null); Spacer(Modifier.width(5.dp)); Text("Удалить день")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            val passivePending = pendingPassiveSourceDeletion
+            if (passivePending != null) {
+                AlertDialog(
+                    onDismissRequest = { pendingPassiveSourceDeletion = null },
+                    title = { Text("Удалить пассивную запись?") },
+                    text = {
+                        Text("Будет удалена только дневная партия «" + passivePending.name +
+                            "». Ручные координаты и другие дни сохраняются; затронутые точки пересчитываются.")
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            pendingPassiveSourceDeletion = null
+                            onDeleteSource(passivePending)
+                        }) { Text("Удалить день") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingPassiveSourceDeletion = null }) { Text("Отмена") }
+                    }
+                )
+            }
         } else if (dataSource == DatabaseDataSource.BEACONDB) {
             BeaconDbDatabaseContent(
                 modifier = Modifier.fillMaxWidth(),
@@ -5584,7 +5704,12 @@ private fun RadioSourceRow(
                         "Тип: " + when (source.kind) {
                             "local" -> "локальная запись"
                             "wigle" -> "WiGLE"
-                            "custom" -> "импорт Clear GPS / SQLite"
+                            "custom" -> when {
+                                source.name.startsWith("Clear GPS · пассивная запись ·") -> "пассивная запись"
+                                source.name.startsWith("BeaconDB · автоуточнение ·") -> "автоуточнение BeaconDB"
+                                source.name.startsWith("OpenCellID · автоуточнение ·") -> "автоуточнение OpenCellID"
+                                else -> "импорт Clear GPS / SQLite"
+                            }
                             "beacondb" -> "BeaconDB"
                             else -> source.kind
                         },
@@ -6862,7 +6987,14 @@ private fun SettingsScreen(
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
     wifiSsidBlacklist: String, onWifiSsidBlacklist: (String) -> Unit,
     detailedLogging: Boolean, diagnosticLogMaxKb: Int,
-    beaconDbEnabled: Boolean, onBeaconDbEnabled: (Boolean) -> Unit,
+    beaconDbEnabled: Boolean,
+    beaconDbAutoRefinementEnabled: Boolean,
+    openCellIdLocalDbAutoLookupEnabled: Boolean,
+    passiveRadioCaptureEnabled: Boolean,
+    onBeaconDbAutoRefinementEnabled: (Boolean) -> Unit,
+    onOpenCellIdLocalDbAutoLookupEnabled: (Boolean) -> Unit,
+    onPassiveRadioCaptureEnabled: (Boolean) -> Unit,
+    onBeaconDbEnabled: (Boolean) -> Unit,
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
     onViewDiagnosticLogs: () -> Unit, onClearDiagnosticLogs: () -> Unit,
     mapSource: MapSourceMode, scanIntervalSeconds: Int, adaptiveScan: Boolean, batteryProfile: BatteryProfile,
@@ -6908,17 +7040,36 @@ private fun SettingsScreen(
                     onBeaconDbEnabled
                 )
                 Text(
-                    "Включение не запускает запросы автоматически. BeaconDB вызывается только кнопкой во вкладке «База».",
+                    "Сетевой поиск требует отдельного согласия выше и включённого мониторинга. Автоуточнение берёт одну недавнюю радиовыборку из локальной базы и сохраняет результат отдельной удаляемой партией; SSID и GPS-координаты не отправляются.",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant
+                )
+                SettingSwitch(
+                    "Автоматически уточнять локальные Wi‑Fi-точки через BeaconDB",
+                    "По умолчанию выключено. Требуется отдельно разрешить запросы BeaconDB выше. При включении — не чаще одного запроса за 5 минут, только по подтверждённой Wi‑Fi-сети, при заряде не ниже 60% и температуре аккумулятора не выше 37 °C. Результат имеет низкий вес доверия и хранится отдельной удаляемой партией.",
+                    beaconDbAutoRefinementEnabled,
+                    onBeaconDbAutoRefinementEnabled
                 )
                 Divider(color = colors.outlineVariant)
                 Text("OpenCellID",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "OpenCellID не вызывается автоматически. Личный API-ключ и разрешение ручных запросов настраиваются во вкладке «База → OpenCellID». По HTTPS отправляются только текущие идентификаторы сотовых ячеек и ключ; периодические сканы используют готовый локальный кэш. Clear GPS ограничивает себя 100 попытками в UTC-день, не более 3 новых ячеек за пакет и с паузой 15 минут.",
+                    "Личный API-ключ и разрешение ручных запросов настраиваются во вкладке «База → OpenCellID». Включённый ниже режим отдельно ищет уже сохранённые сотовые точки: не более 10 запросов за UTC-день, с паузой минимум 2 ч 30 мин. Автоматические координаты хранятся в отдельной удаляемой партии.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.onSurfaceVariant
+                )
+                SettingSwitch(
+                    "Автоматически уточнять локальные сотовые точки через OpenCellID",
+                    "По умолчанию выключено. Требуются сохранённый личный API-ключ, включённый OpenCellID и разрешение сетевых запросов. Запрашиваются только сотовые идентификаторы, уже находящиеся в локальной базе; дневной лимит — 10 попыток.",
+                    openCellIdLocalDbAutoLookupEnabled,
+                    onOpenCellIdLocalDbAutoLookupEnabled
+                )
+                Divider(color = colors.outlineVariant)
+                SettingSwitch(
+                    "Пассивно собирать Clear GPS DB",
+                    "По умолчанию выключено. Сервис слушает только PASSIVE_PROVIDER и получает GPS-фиксы, уже запрошенные другими приложениями; Clear GPS не включает и не запрашивает GPS. Принимаются свежие немоковые фиксы с точностью до 10 м вне аэропортов и зон спуфинга. Wi‑Fi и iBeacon/Eddystone UID записываются после перемещения от 30 м, соты — от 200 м. Каждые сутки создаётся отдельная удаляемая партия.",
+                    passiveRadioCaptureEnabled,
+                    onPassiveRadioCaptureEnabled
                 )
             }
         }

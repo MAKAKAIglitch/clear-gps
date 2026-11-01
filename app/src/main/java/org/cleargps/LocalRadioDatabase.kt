@@ -38,6 +38,33 @@ data class RadioSignal(
     val observedAtElapsedRealtimeNanos: Long? = null
 )
 
+data class BeaconDbRefinementCandidate(
+    val identifier: String,
+    val rssi: Int,
+    val frequency: Int,
+    val ssid: String,
+    val observedAtMillis: Long,
+    val sightings: Int,
+    val accuracyMeters: Double?
+)
+
+data class RadioAutoRefinementRecord(
+    val provider: String,
+    val radioType: String,
+    val identifier: String,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val observedAtMillis: Long
+)
+
+data class RadioAutoRefinementAttempt(
+    val attempts: Int,
+    val lastAttemptAtMillis: Long,
+    val nextAllowedAtMillis: Long,
+    val status: String
+)
+
 data class RadioPointRecord(
     val id: Long, val type: String, val identifier: String, val label: String, val ssid: String, val notes: String,
     val latitude: Double?, val longitude: Double?, val accuracyMeters: Double?,
@@ -381,6 +408,9 @@ object ClearGpsPreferences {
     const val KEY_AIRPORT_RADIUS_METERS = "airport_avoidance_radius_m"
     const val KEY_AIRPORT_EXCLUSIONS = "airport_avoidance_exclusions"
     const val KEY_AIRPORT_CATALOG_ONLINE_ENABLED = "airport_catalog_online_enabled"
+    const val KEY_BEACONDB_AUTO_REFINEMENT_ENABLED = "beacondb_auto_refinement_enabled"
+    const val KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED = "opencellid_local_db_auto_lookup_enabled"
+    const val KEY_PASSIVE_RADIO_CAPTURE_ENABLED = "passive_radio_capture_enabled"
 }
 
 object ManualLocationStore {
@@ -823,6 +853,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         createRadioSourcesTable(db)
         createOpenCellIdCellsTable(db)
         createRadioSourceSegmentSettingsTable(db)
+        createRadioAutoRefinementTables(db)
         ensureLocalSource(db)
         db.execSQL("""
             CREATE TABLE radio_points (
@@ -940,6 +971,10 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             db.execSQL("CREATE INDEX IF NOT EXISTS radio_obs_import_dedupe " +
                 "ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         }
+        if (oldVersion < 12) {
+            // Independent, deletable estimates stay outside radio_observations and detector training.
+            createRadioAutoRefinementTables(db)
+        }
     }
 
     /**
@@ -1019,21 +1054,27 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     fun recordScan(
         signals: List<RadioSignal>, reference: RadioReference?, estimate: RadioEstimate?,
         mode: String, wifiCount: Int, cellCount: Int, bleCount: Int, shouldRecord: Boolean,
-        allowRadioWrite: Boolean = true
+        allowRadioWrite: Boolean = true,
+        sourceIdOverride: Long? = null
     ): Int {
         val db = writableDatabase
         val now = System.currentTimeMillis()
         val localSourceId = if (shouldRecord && allowRadioWrite) {
             // A blocked zone/airport scan must not mutate radio points or invalidate an undo action.
             clearAllRadioDeletionUndo(db)
-            ensureLocalSource(db).also { sourceId ->
-                db.update(
-                    "radio_sources",
-                    ContentValues().apply { put("last_seen", now) },
-                    "id = ?",
-                    arrayOf(sourceId.toString())
-                )
-            }
+            val sourceId = sourceIdOverride ?: ensureLocalSource(db)
+            val exists = db.rawQuery(
+                "SELECT 1 FROM radio_sources WHERE id = ?",
+                arrayOf(sourceId.toString())
+            ).use { it.moveToFirst() }
+            require(exists) { "Источник записи не найден." }
+            db.update(
+                "radio_sources",
+                ContentValues().apply { put("last_seen", now) },
+                "id = ?",
+                arrayOf(sourceId.toString())
+            )
+            sourceId
         } else {
             -1L
         }
@@ -1101,6 +1142,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 // Keep only recent detail rows at the user's configured cap. Summary points and
                 // coordinates remain intact after their detailed observation history is trimmed.
                 pruneObservations(db, observationRetentionLimit())
+                prunePassiveObservations(db)
             }
 
             val history = ContentValues().apply {
@@ -1403,6 +1445,36 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS opencellid_checked_at " +
                 "ON opencellid_cells(checked_at DESC)"
+        )
+    }
+
+    private fun createRadioAutoRefinementTables(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE radio_auto_refinements (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                "source_id INTEGER NOT NULL REFERENCES radio_sources(id) ON DELETE CASCADE, " +
+                "provider TEXT NOT NULL CHECK(provider IN ('beacondb','opencellid')), " +
+                "radio_type TEXT NOT NULL CHECK(radio_type IN ('wifi','cell','ble')), " +
+                "identifier TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, " +
+                "accuracy REAL NOT NULL, observed_at INTEGER NOT NULL, " +
+                "UNIQUE(source_id, radio_type, identifier), " +
+                "CHECK(latitude BETWEEN -90 AND 90), CHECK(longitude BETWEEN -180 AND 180), " +
+                "CHECK(accuracy > 0))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_auto_refinement_lookup " +
+                "ON radio_auto_refinements(radio_type, identifier, observed_at DESC)"
+        )
+        db.execSQL(
+            "CREATE TABLE radio_auto_refinement_attempts (" +
+                "provider TEXT NOT NULL CHECK(provider IN ('beacondb','opencellid')), " +
+                "fingerprint TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, " +
+                "last_attempt_at INTEGER NOT NULL, next_allowed_at INTEGER NOT NULL, " +
+                "status TEXT NOT NULL, PRIMARY KEY(provider, fingerprint))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_auto_refinement_attempts_next " +
+                "ON radio_auto_refinement_attempts(provider, next_allowed_at)"
         )
     }
 
@@ -2045,14 +2117,274 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         ) != -1L
     }
 
+    /**
+     * Select a single coherent, recently recorded local Wi-Fi scan for BeaconDB geolocation.
+     * The result estimates where the handset saw the BSSIDs; it is never interpreted as AP
+     * coordinates and is persisted only in the separate, deletable auto-refinement table.
+     */
+    fun loadBeaconDbRefinementSnapshot(
+        nowMillis: Long = System.currentTimeMillis(),
+        maxAgeMillis: Long = 7L * 24L * 60L * 60L * 1_000L,
+        limit: Int = 32
+    ): List<BeaconDbRefinementCandidate> {
+        val db = readableDatabase
+        val oldest = (nowMillis - maxAgeMillis.coerceAtLeast(0L)).coerceAtLeast(0L)
+        val scanAt = db.rawQuery(
+            """
+            SELECT o.observed_at
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            JOIN radio_points p ON p.radio_type = o.radio_type AND p.identifier = o.identifier
+            WHERE s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND o.radio_type = 'wifi'
+              AND o.observed_at BETWEEN ? AND ?
+              AND p.position_source <> 'manual-edit'
+              AND TRIM(p.ssid) <> '' AND LOWER(p.ssid) NOT IN ('<unknown ssid>', '0x')
+              AND LOWER(p.ssid) NOT LIKE '%_nomap'
+            GROUP BY o.observed_at
+            HAVING COUNT(DISTINCT o.identifier) >= 2
+            ORDER BY MIN(p.sightings) ASC, MAX(COALESCE(p.accuracy, 0)) DESC, o.observed_at DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(oldest.toString(), nowMillis.toString())
+        ).use { if (it.moveToFirst()) it.getLong(0) else null } ?: return emptyList()
+
+        val result = ArrayList<BeaconDbRefinementCandidate>()
+        db.rawQuery(
+            """
+            SELECT o.identifier, o.rssi, o.frequency, p.ssid, p.sightings, p.accuracy, o.observed_at
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            JOIN radio_points p ON p.radio_type = o.radio_type AND p.identifier = o.identifier
+            WHERE s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND o.radio_type = 'wifi' AND o.observed_at = ?
+              AND p.position_source <> 'manual-edit'
+            ORDER BY p.sightings ASC, COALESCE(p.accuracy, 0) DESC, o.rssi DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(scanAt.toString(), limit.coerceIn(2, 64).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val ssid = cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty()
+                if (ssid.isBlank() || ssid.equals("<unknown ssid>", true) ||
+                    ssid.equals("0x", true) || ssid.endsWith("_nomap", true)
+                ) continue
+                val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
+                result.add(BeaconDbRefinementCandidate(
+                    identifier = cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty(),
+                    rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")),
+                    frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")),
+                    ssid = ssid,
+                    observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    sightings = cursor.getInt(cursor.getColumnIndexOrThrow("sightings")),
+                    accuracyMeters = if (cursor.isNull(accuracyIndex)) null else cursor.getDouble(accuracyIndex)
+                ))
+            }
+        }
+        return result.distinctBy { it.identifier }.take(limit.coerceIn(2, 64))
+    }
+
+    /** Cellular candidates from the existing local database, ordered from least to most observed. */
+    fun listOpenCellIdRefinementCandidates(limit: Int = 100): List<RadioPointRecord> {
+        val result = ArrayList<RadioPointRecord>()
+        readableDatabase.rawQuery(
+            "SELECT * FROM radio_points WHERE radio_type = 'cell' " +
+                "AND position_source <> 'manual-edit' " +
+                "ORDER BY sightings ASC, COALESCE(accuracy, 0) DESC, last_seen DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 500).toString())
+        ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
+        return result
+    }
+
+    fun getAutoRefinementAttempt(provider: String, fingerprint: String): RadioAutoRefinementAttempt? {
+        require(provider == "beacondb" || provider == "opencellid")
+        return readableDatabase.rawQuery(
+            "SELECT attempts, last_attempt_at, next_allowed_at, status " +
+                "FROM radio_auto_refinement_attempts WHERE provider = ? AND fingerprint = ?",
+            arrayOf(provider, fingerprint.take(160))
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else RadioAutoRefinementAttempt(
+                attempts = cursor.getInt(0),
+                lastAttemptAtMillis = cursor.getLong(1),
+                nextAllowedAtMillis = cursor.getLong(2),
+                status = cursor.getString(3).orEmpty()
+            )
+        }
+    }
+
+    fun recordAutoRefinementAttempt(
+        provider: String,
+        fingerprint: String,
+        nowMillis: Long,
+        nextAllowedAtMillis: Long,
+        status: String
+    ) {
+        require(provider == "beacondb" || provider == "opencellid")
+        require(fingerprint.isNotBlank() && nowMillis >= 0L && nextAllowedAtMillis >= nowMillis)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val key = fingerprint.take(160)
+            val previous = db.rawQuery(
+                "SELECT attempts FROM radio_auto_refinement_attempts WHERE provider = ? AND fingerprint = ?",
+                arrayOf(provider, key)
+            ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+            val values = ContentValues().apply {
+                put("provider", provider)
+                put("fingerprint", key)
+                put("attempts", previous + 1)
+                put("last_attempt_at", nowMillis)
+                put("next_allowed_at", nextAllowedAtMillis)
+                put("status", status.take(40))
+            }
+            db.insertWithOnConflict(
+                "radio_auto_refinement_attempts", null, values, SQLiteDatabase.CONFLICT_REPLACE
+            )
+            db.execSQL(
+                "DELETE FROM radio_auto_refinement_attempts WHERE rowid NOT IN " +
+                    "(SELECT rowid FROM radio_auto_refinement_attempts ORDER BY last_attempt_at DESC LIMIT 2_000)"
+            )
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    /**
+     * Stores an independently deletable result batch. These rows are not observations and
+     * never enter the fingerprint-learning history. Manual coordinates are immutable.
+     */
+    fun saveAutoRefinementBatch(
+        provider: String,
+        sourceName: String,
+        fingerprint: String,
+        trustWeight: Double,
+        records: List<RadioAutoRefinementRecord>
+    ): Int {
+        require(provider == "beacondb" || provider == "opencellid")
+        require(sourceName.isNotBlank() && fingerprint.isNotBlank())
+        val normalized = records.asSequence()
+            .filter { it.provider == provider && it.radioType in VALID_TYPES }
+            .filter {
+                it.latitude.isFinite() && it.latitude in -90.0..90.0 &&
+                    it.longitude.isFinite() && it.longitude in -180.0..180.0 &&
+                    it.accuracyMeters.isFinite() && it.accuracyMeters in 1.0..100_000.0 &&
+                    it.observedAtMillis > 0L
+            }
+            .distinctBy { it.radioType + "|" + it.identifier }
+            .toList()
+        if (normalized.isEmpty()) return 0
+
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            clearAllRadioDeletionUndo(db)
+            val candidates = normalized.filter { record ->
+                val point = findPoint(db, record.radioType, record.identifier)
+                point != null && point.positionSource != "manual-edit"
+            }
+            if (candidates.isEmpty()) return 0
+
+            val batchKey = fingerprint.take(100)
+            val sourceId = db.rawQuery(
+                "SELECT id FROM radio_sources WHERE fingerprint = ?",
+                arrayOf(batchKey)
+            ).use { if (it.moveToFirst()) it.getLong(0) else null } ?: run {
+                val now = System.currentTimeMillis()
+                val values = ContentValues().apply {
+                    put("kind", if (provider == "beacondb") "beacondb" else "custom")
+                    put("name", sourceName.take(120))
+                    put("created_at", now)
+                    put("last_seen", now)
+                    put("enabled", 1)
+                    put("trust_weight", RadioSourceTrustPolicy.normalizeWeight(trustWeight))
+                    put("fingerprint", batchKey)
+                }
+                db.insertOrThrow("radio_sources", null, values)
+            }
+            var inserted = 0
+            val affected = LinkedHashSet<Pair<String, String>>()
+            candidates.forEach { record ->
+                val canonical = canonicalIdentifier(record.identifier)
+                val values = ContentValues().apply {
+                    put("source_id", sourceId)
+                    put("provider", provider)
+                    put("radio_type", record.radioType)
+                    put("identifier", canonical)
+                    put("latitude", record.latitude)
+                    put("longitude", record.longitude)
+                    put("accuracy", record.accuracyMeters)
+                    put("observed_at", record.observedAtMillis)
+                }
+                if (db.insertWithOnConflict(
+                        "radio_auto_refinements", null, values, SQLiteDatabase.CONFLICT_IGNORE
+                    ) != -1L
+                ) {
+                    inserted++
+                    affected.add(record.radioType to canonical)
+                }
+            }
+            if (inserted > 0) {
+                db.update(
+                    "radio_sources", ContentValues().apply { put("last_seen", System.currentTimeMillis()) },
+                    "id = ?", arrayOf(sourceId.toString())
+                )
+                affected.forEach { (type, identifier) -> rebuildRadioPointPosition(db, type, identifier) }
+            }
+            db.setTransactionSuccessful()
+            return inserted
+        } finally { db.endTransaction() }
+    }
+
+    /** One source record per UTC day makes passive observations removable as a single batch. */
+    fun getOrCreatePassiveCaptureSource(dayKey: String): Long {
+        require(dayKey.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")))
+        val fingerprint = "clear-gps-passive-v1:$dayKey"
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val existing = db.rawQuery(
+                "SELECT id FROM radio_sources WHERE fingerprint = ?",
+                arrayOf(fingerprint)
+            ).use { if (it.moveToFirst()) it.getLong(0) else null }
+            val id = existing ?: run {
+                val now = System.currentTimeMillis()
+                db.insertOrThrow("radio_sources", null, ContentValues().apply {
+                    put("kind", "custom")
+                    put("name", "Clear GPS · пассивная запись · $dayKey")
+                    put("created_at", now)
+                    put("last_seen", now)
+                    put("enabled", 1)
+                    put("trust_weight", 1.0)
+                    put("fingerprint", fingerprint)
+                })
+            }
+            db.setTransactionSuccessful()
+            return id
+        } finally { db.endTransaction() }
+    }
+
+    fun deleteAutoRefinementBatches(provider: String): Int {
+        require(provider == "beacondb" || provider == "opencellid")
+        val prefix = if (provider == "beacondb") "beacondb-auto-refined-v1:%"
+            else "opencellid-auto-refined-v1:%"
+        val ids = ArrayList<Long>()
+        readableDatabase.rawQuery(
+            "SELECT id FROM radio_sources WHERE fingerprint LIKE ?",
+            arrayOf(prefix)
+        ).use { cursor -> while (cursor.moveToNext()) ids.add(cursor.getLong(0)) }
+        return ids.count { deleteRadioSource(it) }
+    }
+
     fun listRadioSources(): List<RadioSourceRecord> {
         val result = ArrayList<RadioSourceRecord>()
         readableDatabase.rawQuery(
             "SELECT s.id, s.kind, s.name, s.created_at, s.last_seen, s.enabled, s.trust_weight, " +
-                "(SELECT COUNT(*) FROM radio_observations o WHERE o.source_id = s.id) AS observations, " +
+                "((SELECT COUNT(*) FROM radio_observations o WHERE o.source_id = s.id) + " +
+                "(SELECT COUNT(*) FROM radio_auto_refinements a WHERE a.source_id = s.id)) AS observations, " +
                 "((SELECT COUNT(DISTINCT o.radio_type || ':' || o.identifier) FROM radio_observations o WHERE o.source_id = s.id) + " +
+                "(SELECT COUNT(DISTINCT a.radio_type || ':' || a.identifier) FROM radio_auto_refinements a WHERE a.source_id = s.id) + " +
                 "(SELECT COUNT(*) FROM radio_points p WHERE p.source_id = s.id AND NOT EXISTS " +
-                "(SELECT 1 FROM radio_observations o WHERE o.source_id = s.id AND o.radio_type = p.radio_type AND o.identifier = p.identifier))) AS radios " +
+                "(SELECT 1 FROM radio_observations o WHERE o.source_id = s.id AND o.radio_type = p.radio_type AND o.identifier = p.identifier) " +
+                "AND NOT EXISTS (SELECT 1 FROM radio_auto_refinements a WHERE a.source_id = s.id AND a.radio_type = p.radio_type AND a.identifier = p.identifier))) AS radios " +
                 "FROM radio_sources s ORDER BY CASE WHEN s.kind = 'local' THEN 0 ELSE 1 END, s.created_at DESC, s.id DESC",
             null
         ).use { cursor ->
@@ -2159,8 +2491,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         val result = LinkedHashSet<Pair<String, String>>()
         db.rawQuery(
             "SELECT radio_type, identifier FROM radio_points WHERE source_id = ? " +
-                "UNION SELECT radio_type, identifier FROM radio_observations WHERE source_id = ?",
-            arrayOf(sourceId.toString(), sourceId.toString())
+                "UNION SELECT radio_type, identifier FROM radio_observations WHERE source_id = ? " +
+                "UNION SELECT radio_type, identifier FROM radio_auto_refinements WHERE source_id = ?",
+            arrayOf(sourceId.toString(), sourceId.toString(), sourceId.toString())
         ).use { cursor ->
             while (cursor.moveToNext()) result.add(cursor.getString(0).orEmpty() to cursor.getString(1).orEmpty())
         }
@@ -2210,6 +2543,26 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                     cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
                     cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty(),
                     cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")))
+            }
+        }
+        db.rawQuery(
+            "SELECT a.latitude, a.longitude, a.accuracy, a.provider, a.source_id, a.observed_at " +
+                "FROM radio_auto_refinements a JOIN radio_sources s ON s.id = a.source_id " +
+                "WHERE a.radio_type = ? AND a.identifier = ? AND s.enabled = 1 AND s.trust_weight > 0 " +
+                "AND a.observed_at <= ?",
+            arrayOf(type, identifier, System.currentTimeMillis().toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val ai = cursor.getColumnIndexOrThrow("accuracy")
+                val provider = cursor.getString(cursor.getColumnIndexOrThrow("provider")).orEmpty()
+                addCandidate(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("latitude")),
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("longitude")),
+                    if (cursor.isNull(ai)) null else cursor.getDouble(ai),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
+                    if (provider == "beacondb") "beacondb-auto-refined" else "opencellid-auto-refined",
+                    cursor.getLong(cursor.getColumnIndexOrThrow("observed_at"))
+                )
             }
         }
         val best = candidates.minWithOrNull(
@@ -2354,6 +2707,17 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 "(SELECT id FROM radio_observations ORDER BY observed_at DESC, id DESC LIMIT $limit)"
         )
         return (before - countObservations(db)).coerceAtLeast(0)
+    }
+
+    private fun prunePassiveObservations(db: SQLiteDatabase) {
+        db.execSQL(
+            "DELETE FROM radio_observations WHERE source_id IN " +
+                "(SELECT id FROM radio_sources WHERE fingerprint LIKE 'clear-gps-passive-v1:%') " +
+                "AND id NOT IN (SELECT o.id FROM radio_observations o " +
+                "JOIN radio_sources s ON s.id = o.source_id " +
+                "WHERE s.fingerprint LIKE 'clear-gps-passive-v1:%' " +
+                "ORDER BY o.observed_at DESC, o.id DESC LIMIT $PASSIVE_OBSERVATION_HARD_LIMIT)"
+        )
     }
 
     private fun countObservations(db: SQLiteDatabase): Int =
@@ -3518,7 +3882,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 11
+        private const val DB_VERSION = 12
+        private const val PASSIVE_OBSERVATION_HARD_LIMIT = 500_000
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
         private const val DEFAULT_IMPORTED_ACCURACY_METERS = 250.0

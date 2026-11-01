@@ -7,7 +7,7 @@ import android.os.BatteryManager
 import android.os.PowerManager
 import kotlin.math.roundToInt
 
-internal enum class PowerTask { ACTIVE_FIX, OPTIONAL_BACKGROUND }
+internal enum class PowerTask { ACTIVE_FIX, OPTIONAL_BACKGROUND, PASSIVE_CAPTURE }
 internal enum class PowerBlockReason { SYSTEM_POWER_SAVE, LOW_BATTERY, SCREEN_OFF }
 
 internal data class PowerPolicySettings(
@@ -56,13 +56,25 @@ internal object PowerPolicy {
         if (battery != null && battery <= threshold) {
             return PowerPolicyDecision(false, PowerBlockReason.LOW_BATTERY)
         }
-        if (!environment.isInteractive) {
+        if (task == PowerTask.OPTIONAL_BACKGROUND && !environment.isInteractive) {
             return PowerPolicyDecision(false, PowerBlockReason.SCREEN_OFF)
         }
         return PowerPolicyDecision(true)
     }
 
-    fun optionalBackgroundDecision(context: Context): PowerPolicyDecision {
+    fun optionalBackgroundDecision(context: Context): PowerPolicyDecision =
+        evaluateFromDevice(context, PowerTask.OPTIONAL_BACKGROUND)
+
+    fun passiveCaptureDecision(context: Context): PowerPolicyDecision =
+        evaluateFromDevice(context, PowerTask.PASSIVE_CAPTURE)
+
+    fun canRunOptionalBackground(context: Context): Boolean =
+        runCatching { optionalBackgroundDecision(context).allowed }.getOrDefault(false)
+
+    fun canRunPassiveCapture(context: Context): Boolean =
+        runCatching { passiveCaptureDecision(context).allowed }.getOrDefault(false)
+
+    private fun evaluateFromDevice(context: Context, task: PowerTask): PowerPolicyDecision {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
         val batteryIntent = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -82,7 +94,7 @@ internal object PowerPolicy {
         val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
 
         return evaluate(
-            task = PowerTask.OPTIONAL_BACKGROUND,
+            task = task,
             settings = PowerPolicySettings(
                 appSaverEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_POWER_SAVING_ENABLED, true),
                 lowBatteryThresholdPercent = prefs.getInt(
@@ -98,7 +110,4 @@ internal object PowerPolicy {
             )
         )
     }
-
-    fun canRunOptionalBackground(context: Context): Boolean =
-        runCatching { optionalBackgroundDecision(context).allowed }.getOrDefault(false)
 }

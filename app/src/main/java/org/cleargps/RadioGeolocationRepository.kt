@@ -388,6 +388,74 @@ class RadioGeolocationRepository(private val context: Context) {
      * bounded memory cache. OpenCellID records are persisted in the separate SQLite table.
      * Neither response is written into local training fingerprints.
      */
+    suspend fun capturePassiveRadioSnapshot(
+        location: android.location.Location,
+        sourceId: Long,
+        useWifi: Boolean,
+        useCells: Boolean,
+        useBle: Boolean
+    ): Set<String> = scanMutex.withLock {
+        if (!prefs.getBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, false) ||
+            !PowerPolicy.canRunPassiveCapture(context) ||
+            CrashLoopGuard.isSafeModeActive(context)
+        ) return@withLock emptySet()
+
+        spoofZoneService.refreshPolicy()
+        if (spoofZoneService.assess(
+                location.latitude, location.longitude, location.accuracy.toDouble()
+            ).blocksRadioData
+        ) return@withLock emptySet()
+
+        val snapshot = withContext(Dispatchers.Main.immediate) {
+            collectSnapshot(
+                useWifi = useWifi,
+                useCells = useCells,
+                useBle = useBle,
+                refreshCellInfo = false,
+                passiveBleOnly = true
+            )
+        }
+        val filtered = snapshot.signals.filter { signal ->
+            when (signal.type) {
+                "wifi" -> useWifi && signal.rssi >= PassiveRadioCapturePolicy.WIFI_MIN_RSSI_DBM
+                "cell" -> useCells && signal.rssi >= PassiveRadioCapturePolicy.CELL_MIN_RSSI_DBM
+                "ble" -> useBle && signal.rssi >= PassiveRadioCapturePolicy.BLE_MIN_RSSI_DBM &&
+                    (signal.identifier.startsWith("ibeacon:", true) ||
+                        signal.identifier.startsWith("eddystone-uid:", true))
+                else -> false
+            }
+        }.distinctBy { it.type + "|" + it.identifier }
+        if (filtered.isEmpty()) return@withLock emptySet()
+
+        val reference = RadioReference(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = location.accuracy.toDouble(),
+            source = "passive-gps"
+        )
+        val recorded = withContext(Dispatchers.IO) {
+            database.recordScan(
+                signals = filtered,
+                reference = reference,
+                estimate = null,
+                mode = "passive",
+                wifiCount = filtered.count { it.type == "wifi" },
+                cellCount = filtered.count { it.type == "cell" },
+                bleCount = filtered.count { it.type == "ble" },
+                shouldRecord = true,
+                allowRadioWrite = true,
+                sourceIdOverride = sourceId
+            )
+        }
+        if (recorded <= 0) emptySet() else filtered.map { it.type }.toSet()
+    }
+
+    /**
+     * Updates approved external radio sources while location monitoring is active.
+     * BeaconDB returns a geolocation estimate (not a downloadable database) kept in its
+     * bounded memory cache. OpenCellID records are persisted in the separate SQLite table.
+     * Neither response is written into local training fingerprints.
+     */
     suspend fun refreshExternalDatabasesAutomatically(): String? {
         if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
             CrashLoopGuard.isSafeModeActive(context) ||
@@ -445,7 +513,7 @@ class RadioGeolocationRepository(private val context: Context) {
                 )
             }
         }
-        if (snapshot.signals.isEmpty()) return null
+        // Stored database refinement also runs when no fresh radio scan is available.
 
         var beaconStatus = ""
         if (beaconEnabled) {
@@ -577,10 +645,215 @@ class RadioGeolocationRepository(private val context: Context) {
             }
         }
 
-        return listOf(beaconStatus, openCellIdStatus)
+        val storedStatus = refreshStoredRadioDatabasesAutomatically(beaconEnabled, openCellIdEnabled)
+        return listOf(beaconStatus, openCellIdStatus, storedStatus)
             .filter { it.isNotBlank() }
             .takeIf { it.isNotEmpty() }
             ?.joinToString("; ")
+    }
+
+    private suspend fun refreshStoredRadioDatabasesAutomatically(
+        beaconEnabled: Boolean,
+        openCellIdEnabled: Boolean
+    ): String? {
+        if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
+            CrashLoopGuard.isSafeModeActive(context) ||
+            !PowerPolicy.canRunOptionalBackground(context) ||
+            !NetworkAccessPolicy.hasValidatedInternet(context)
+        ) return null
+
+        var beaconStatus = ""
+        if (beaconEnabled &&
+            prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+            BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
+        ) {
+            val candidates = withContext(Dispatchers.IO) { database.loadBeaconDbRefinementSnapshot() }
+            val now = System.currentTimeMillis()
+            val request = BeaconDbRequest(wifiAccessPoints = candidates.map { candidate ->
+                BeaconDbWifiAccessPoint(
+                    macAddress = candidate.identifier,
+                    signalStrength = candidate.rssi,
+                    ageMillis = (now - candidate.observedAtMillis).coerceAtLeast(0L),
+                    frequencyMhz = candidate.frequency.takeIf { it > 0 },
+                    ssid = candidate.ssid
+                )
+            }).normalized()
+            if (request.canLookup() && candidates.size >= 2 &&
+                prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+                prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&
+                prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+                !CrashLoopGuard.isSafeModeActive(context) &&
+                PowerPolicy.canRunOptionalBackground(context) &&
+                BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
+            ) {
+                val identity = BeaconDbProtocol.identityFingerprint(request)
+                val autoPrefs = context.getSharedPreferences(AUTO_REFRESH_PREFS, Context.MODE_PRIVATE)
+                val globalLast = autoPrefs.getLong(KEY_BEACON_ATTEMPT_AT, 0L)
+                val previous = withContext(Dispatchers.IO) {
+                    database.getAutoRefinementAttempt("beacondb", identity)
+                }
+                if (BeaconDbAutoRefinementPolicy.mayAttempt(now, globalLast, previous?.nextAllowedAtMillis ?: 0L)) {
+                    val reserved = autoPrefs.edit().putLong(KEY_BEACON_ATTEMPT_AT, now).commit()
+                    if (reserved &&
+                        prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+                        prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
+                        prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+                        !CrashLoopGuard.isSafeModeActive(context) &&
+                        PowerPolicy.canRunOptionalBackground(context) &&
+                        BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
+                    ) {
+                        val result = BeaconDbClient.lookup(context, request, 0)
+                        val coordinate = result.coordinate
+                        val zoneBlocked = coordinate?.let {
+                            spoofZoneService.refreshPolicy()
+                            spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
+                        } == true
+                        val acceptable = coordinate != null &&
+                            coordinate.accuracyMeters in 1.0..BeaconDbAutoRefinementPolicy.MAX_ACCEPTED_ACCURACY_METERS &&
+                            !zoneBlocked && !result.fromCache
+                        val saved = if (acceptable && coordinate != null) {
+                            withContext(Dispatchers.IO) {
+                                database.saveAutoRefinementBatch(
+                                    provider = "beacondb",
+                                    sourceName = "BeaconDB · автоуточнение · " + now,
+                                    fingerprint = "beacondb-auto-refined-v1:" + identity.take(32) + ":" + now,
+                                    trustWeight = BeaconDbAutoRefinementPolicy.SOURCE_TRUST_WEIGHT,
+                                    records = candidates.map { candidate ->
+                                        RadioAutoRefinementRecord(
+                                            provider = "beacondb", radioType = "wifi",
+                                            identifier = candidate.identifier,
+                                            latitude = coordinate.latitude,
+                                            longitude = coordinate.longitude,
+                                            accuracyMeters = coordinate.accuracyMeters,
+                                            observedAtMillis = candidate.observedAtMillis
+                                        )
+                                    }
+                                )
+                            }
+                        } else 0
+                        val outcome = when {
+                            saved > 0 -> "success"
+                            result.message.contains("429") || result.message.contains("огранич", true) -> "rate_limited"
+                            else -> "failure"
+                        }
+                        val next = BeaconDbAutoRefinementPolicy.nextAllowedAt(now, (previous?.attempts ?: 0) + 1, outcome)
+                        withContext(Dispatchers.IO) {
+                            database.recordAutoRefinementAttempt("beacondb", identity, now, next, outcome)
+                        }
+                        beaconStatus = when {
+                            saved > 0 -> "BeaconDB: обновлено локальных Wi-Fi-точек: " + saved
+                            zoneBlocked -> "BeaconDB: результат отклонён зоной исключения"
+                            result.fromCache -> "BeaconDB: получен кэш, локальное уточнение не записано"
+                            else -> "BeaconDB: " + result.message
+                        }
+                    }
+                }
+            }
+        }
+
+        var cellStatus = ""
+        val cellAuto = prefs.getBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, false)
+        if (openCellIdEnabled && cellAuto &&
+            OpenCellIdKeyStore.hasKey(context) && OpenCellIdKeyStore.isEnabled(context) &&
+            prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true) &&
+            !CrashLoopGuard.isSafeModeActive(context) && PowerPolicy.canRunOptionalBackground(context)
+        ) {
+            val rows = withContext(Dispatchers.IO) { database.listOpenCellIdRefinementCandidates(100) }
+            val apiKey = OpenCellIdKeyStore.read(context)
+            if (!apiKey.isNullOrBlank() && rows.isNotEmpty()) {
+                val now = System.currentTimeMillis()
+                var pending: Triple<RadioPointRecord, OpenCellIdCellKey, String>? = null
+                for (point in rows) {
+                    val cell = OpenCellIdCellKey.fromRadioSignal(
+                        RadioSignal("cell", point.identifier, point.rssi)
+                    ) ?: continue
+                    val fingerprint = cell.radio + ":" + cell.mcc + ":" + cell.mnc + ":" + cell.area + ":" + cell.cellId
+                    val attempt = withContext(Dispatchers.IO) {
+                        database.getAutoRefinementAttempt("opencellid", fingerprint)
+                    }
+                    if (attempt != null && now < attempt.nextAllowedAtMillis) continue
+                    val cached = withContext(Dispatchers.IO) { database.getOpenCellIdCell(cell) }
+                    if (!OpenCellIdLookupPolicy.shouldLookup(cached, now)) continue
+                    pending = Triple(point, cell, fingerprint)
+                    break
+                }
+                if (pending != null &&
+                    prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
+                    prefs.getBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, false) &&
+                    OpenCellIdKeyStore.isEnabled(context) && OpenCellIdKeyStore.hasKey(context) &&
+                    !CrashLoopGuard.isSafeModeActive(context) &&
+                    PowerPolicy.canRunOptionalBackground(context) &&
+                    NetworkAccessPolicy.hasValidatedInternet(context)
+                ) {
+                    when (OpenCellIdUsageBudget.tryStartBatch(context)) {
+                        OpenCellIdBudgetBlock.NONE -> {
+                            if (OpenCellIdLocalDbAutoLookupBudget.tryReserve(context, now) &&
+                                OpenCellIdUsageBudget.reserveRequest(context, now)
+                            ) {
+                                val (point, cell, fingerprint) = pending
+                                val response = OpenCellIdClient.lookup(context, apiKey, cell)
+                                if (response.status == OpenCellIdLookupStatus.RATE_LIMITED) {
+                                    OpenCellIdUsageBudget.markServerLimitReached(context)
+                                }
+                                val resultRecord = response.record
+                                val outcome = when (response.status) {
+                                    OpenCellIdLookupStatus.FOUND -> {
+                                        val lat = resultRecord?.latitude
+                                        val lon = resultRecord?.longitude
+                                        if (lat != null && lon != null) {
+                                            spoofZoneService.refreshPolicy()
+                                            val accuracy = (resultRecord.rangeMeters ?: 5_000)
+                                                .toDouble().coerceIn(1.0, 100_000.0)
+                                            if (!spoofZoneService.assess(lat, lon, accuracy).blocksRadioData) {
+                                                val count = withContext(Dispatchers.IO) {
+                                                    database.saveAutoRefinementBatch(
+                                                        provider = "opencellid",
+                                                        sourceName = "OpenCellID · автоуточнение · " + now,
+                                                        fingerprint = "opencellid-auto-refined-v1:" + fingerprint + ":" + now,
+                                                        trustWeight = 0.35,
+                                                        records = listOf(RadioAutoRefinementRecord(
+                                                            provider = "opencellid", radioType = "cell",
+                                                            identifier = point.identifier,
+                                                            latitude = lat, longitude = lon,
+                                                            accuracyMeters = accuracy,
+                                                            observedAtMillis = resultRecord.checkedAtMillis
+                                                        ))
+                                                    )
+                                                }
+                                                if (count > 0) "found" else "failure"
+                                            } else "zone_blocked"
+                                        } else "failure"
+                                    }
+                                    OpenCellIdLookupStatus.NOT_FOUND -> "not_found"
+                                    OpenCellIdLookupStatus.RATE_LIMITED -> "rate_limited"
+                                    else -> "failure"
+                                }
+                                val attempts = withContext(Dispatchers.IO) {
+                                    database.getAutoRefinementAttempt("opencellid", fingerprint)?.attempts ?: 0
+                                }
+                                val next = OpenCellIdLocalDbAutoLookupPolicy.nextAllowedAt(now, attempts + 1, outcome)
+                                withContext(Dispatchers.IO) {
+                                    database.recordAutoRefinementAttempt("opencellid", fingerprint, now, next, outcome)
+                                }
+                                cellStatus = when (outcome) {
+                                    "found" -> "OpenCellID: уточнена локальная сотовая точка"
+                                    "not_found" -> "OpenCellID: эта ячейка не найдена"
+                                    "rate_limited" -> "OpenCellID: серверная квота ограничила запрос"
+                                    "zone_blocked" -> "OpenCellID: результат исключён по зоне"
+                                    else -> response.message
+                                }
+                            }
+                        }
+                        OpenCellIdBudgetBlock.DAILY_BUDGET -> cellStatus = "OpenCellID: дневной лимит исчерпан"
+                        OpenCellIdBudgetBlock.SERVER_LIMIT -> cellStatus = "OpenCellID: серверная квота временно закрыта"
+                        OpenCellIdBudgetBlock.COOLDOWN -> Unit
+                    }
+                }
+            }
+        }
+        return listOf(beaconStatus, cellStatus).filter { it.isNotBlank() }
+            .takeIf { it.isNotEmpty() }?.joinToString("; ")
     }
 
     /**
@@ -705,14 +978,15 @@ class RadioGeolocationRepository(private val context: Context) {
         useWifi: Boolean,
         useCells: Boolean,
         useBle: Boolean,
-        refreshCellInfo: Boolean = false
+        refreshCellInfo: Boolean = false,
+        passiveBleOnly: Boolean = false
     ): ScanSnapshot = coroutineScope {
         // The modem query is asynchronous on Android 10+; collect it concurrently with Wi-Fi/BLE.
         val wifiTask = async {
             if (useWifi) collectWifi() else TimedRadioSignals(emptyList(), null)
         }
         val bleTask = async {
-            if (useBle) collectBluetooth() else TimedRadioSignals(emptyList(), null)
+            if (useBle) collectBluetooth(passiveBleOnly) else TimedRadioSignals(emptyList(), null)
         }
         val cellsTask = async {
             if (useCells) collectCells(forceRefresh = refreshCellInfo)
@@ -1028,7 +1302,7 @@ class RadioGeolocationRepository(private val context: Context) {
         return CellObservation(type, mcc, mnc, area, id, rssi)
     }
 
-    private suspend fun collectBluetooth(): TimedRadioSignals {
+    private suspend fun collectBluetooth(passiveBleOnly: Boolean = false): TimedRadioSignals {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             DiagnosticLogStore.log(context, "RADIO_BLE", "BLE пропущен: нет разрешения точной геолокации")
             return TimedRadioSignals(emptyList(), null)
@@ -1152,16 +1426,21 @@ class RadioGeolocationRepository(private val context: Context) {
                             is BleBeaconFrame.RuuviTelemetry -> "ruuvi-rawv2"
                         }
                     }.toSet()
-                    val protocolIdentities = buildList {
-                        frames.filterIsInstance<BleBeaconFrame.StableIdentity>()
-                            .mapTo(this) { it.identifier }
-                        frames.filterIsInstance<BleBeaconFrame.RuuviTelemetry>()
-                            .mapNotNullTo(this) { it.identifier }
+                    val stableIdentities = frames.filterIsInstance<BleBeaconFrame.StableIdentity>()
+                    val protocolIdentities = if (passiveBleOnly) {
+                        stableIdentities.filter { it.protocol == "ibeacon" || it.protocol == "eddystone-uid" }
+                            .map { it.identifier }
+                    } else {
+                        buildList {
+                            stableIdentities.mapTo(this) { it.identifier }
+                            frames.filterIsInstance<BleBeaconFrame.RuuviTelemetry>()
+                                .mapNotNullTo(this) { it.identifier }
+                        }
                     }.distinct()
 
                     val identifiers = if (protocolIdentities.isNotEmpty()) {
                         protocolIdentities
-                    } else if (Build.VERSION.SDK_INT >= 35 &&
+                    } else if (!passiveBleOnly && Build.VERSION.SDK_INT >= 35 &&
                         context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
                             PackageManager.PERMISSION_GRANTED
                     ) {
