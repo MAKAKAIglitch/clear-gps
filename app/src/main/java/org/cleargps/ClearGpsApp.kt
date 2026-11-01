@@ -2654,7 +2654,10 @@ fun ClearGpsApp(
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
             val navigationBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             val detailsPanelHeightTarget = if (selectedPointSheetExpanded) {
-                (maxHeight * 0.56f).coerceAtMost(470.dp)
+                val headerHeight = with(LocalDensity.current) { mapHeaderHeightPx.toDp() }
+                (maxHeight - headerHeight - navigationBottomInset - 14.dp)
+                    .coerceAtLeast(260.dp)
+                    .coerceAtMost(760.dp)
             } else {
                 260.dp.coerceAtMost(maxHeight * 0.40f)
             }
@@ -2663,7 +2666,11 @@ fun ClearGpsApp(
                 animationSpec = tween(220),
                 label = "radioPointDetailsPanelHeight"
             )
-            val detailsPanelBottomOffset = navigationBottomInset + 88.dp
+            val detailsPanelBottomOffset by animateDpAsState(
+                targetValue = navigationBottomInset + if (selectedPointSheetExpanded) 0.dp else 88.dp,
+                animationSpec = tween(220),
+                label = "radioPointDetailsBottomOffset"
+            )
             val detailsViewportTopPx = mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
             val detailsViewportBottomPx = with(LocalDensity.current) {
                 (detailsPanelHeight + detailsPanelBottomOffset).roundToPx()
@@ -2673,6 +2680,7 @@ fun ClearGpsApp(
                 selectedTab,
                 selectedMapPoint != null,
                 detailsPanelHeight,
+                detailsPanelBottomOffset,
                 mapHeaderHeightPx
             ) {
                 if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
