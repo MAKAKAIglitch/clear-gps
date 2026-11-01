@@ -2233,7 +2233,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
               AND sg.radio_type = p.radio_type
             WHERE p.radio_type = 'wifi'
               AND p.last_seen BETWEEN ? AND ?
-              AND COALESCE(p.position_observed_at, p.last_seen) BETWEEN ? AND ?
+              AND COALESCE(p.position_observed_at, p.last_seen) BETWEEN CAST(? AS INTEGER) AND CAST(? AS INTEGER)
               AND p.latitude BETWEEN -90.0 AND 90.0
               AND p.longitude BETWEEN -180.0 AND 180.0
               AND p.accuracy BETWEEN 1.0 AND 1000.0
