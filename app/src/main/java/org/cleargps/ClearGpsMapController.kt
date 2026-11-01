@@ -83,6 +83,8 @@ class ClearGpsMapController {
     private var tapMode: MapTapMode = MapTapMode.NONE
     private var mapReady = false
     private var cameraInitialized = false
+    private data class PendingCameraFocus(val coordinate: MapCoordinate, val zoom: Double)
+    private var pendingCameraFocus: PendingCameraFocus? = null
     private var viewportTopPaddingPx = 0
     private var viewportBottomPaddingPx = 0
     private var darkMode = false
@@ -335,19 +337,35 @@ class ClearGpsMapController {
             installLayers(style)
             mapReady = true
             renderAll()
+            val queuedFocus = pendingCameraFocus
             if (!cameraInitialized) {
-                val start = primaryLocation
+                val start = queuedFocus?.coordinate
+                    ?: primaryLocation
                     ?: calculatedLocation
                     ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
                     ?: radioPoints.firstOrNull()?.let { MapCoordinate(it.latitude!!, it.longitude!!) }
                 if (start != null) {
-                    mapObject.cameraPosition = CameraPosition.Builder().target(LatLng(start.latitude, start.longitude)).zoom(14.0).build()
+                    val startZoom = queuedFocus?.zoom ?: 14.0
+                    mapObject.cameraPosition = CameraPosition.Builder()
+                        .target(LatLng(start.latitude, start.longitude))
+                        .zoom(startZoom)
+                        .build()
                     cameraInitialized = true
                 } else {
                     mapObject.cameraPosition = CameraPosition.Builder().target(LatLng(20.0, 0.0)).zoom(2.2).build()
                 }
             }
             applyViewportPadding(mapObject)
+            if (queuedFocus != null && pendingCameraFocus == queuedFocus) {
+                pendingCameraFocus = null
+                mapObject.easeCamera(
+                    CameraUpdateFactory.newLatLngZoom(
+                        LatLng(queuedFocus.coordinate.latitude, queuedFocus.coordinate.longitude),
+                        queuedFocus.zoom
+                    ),
+                    460
+                )
+            }
         }
     }
 
@@ -718,11 +736,22 @@ class ClearGpsMapController {
     }
 
     fun focus(coordinate: MapCoordinate, zoom: Double = 15.5) {
+        if (!isValidCoordinate(coordinate) || !zoom.isFinite()) return
+        val mapObject = map
+        if (!mapReady || mapObject == null) {
+            // A newly opened MapView may still be loading its style; keep the most recent target.
+            pendingCameraFocus = PendingCameraFocus(coordinate, zoom)
+            return
+        }
         // newLatLngZoom accounts for the persistent padding of the visible map area.
-        map?.easeCamera(
+        mapObject.easeCamera(
             CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), zoom),
             460
         )
+    }
+
+    fun clearPendingFocus() {
+        pendingCameraFocus = null
     }
 
     private fun installLayers(style: Style) {

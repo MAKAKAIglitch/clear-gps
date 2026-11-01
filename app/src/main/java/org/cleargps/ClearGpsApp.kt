@@ -656,6 +656,7 @@ fun ClearGpsApp(
     }
 
     fun openRadioPointDetails(pointId: Long) {
+        mapController.clearPendingFocus()
         scope.launch {
             selectedMapPlacePoints = emptyList()
             selectedMapPoint = null
@@ -715,6 +716,7 @@ fun ClearGpsApp(
     }
 
     fun closeRadioPointDetails() {
+        mapController.clearPendingFocus()
         selectedMapPlacePoints = emptyList()
         selectedMapPoint = null
         selectedPointObservations = emptyList()
