@@ -89,7 +89,6 @@ import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.FilledTonalButton
@@ -691,7 +690,7 @@ fun ClearGpsApp(
                             )
                         }
                     }
-                    point to history.sortedByDescending { it.observedAt }
+                    point to RadioObservationSortPolicy.strongestFirst(history)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -3629,6 +3628,7 @@ fun ClearGpsApp(
             )
             if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
                 RadioPointDetailsSheet(
+                    modifier = Modifier.align(Alignment.BottomCenter),
                     maxSheetHeight = detailsSheetMaxHeight,
                     onSheetTopInWindowChanged = { detailsSheetTopInWindowPx = it },
                     point = selectedMapPoint!!,
@@ -6154,9 +6154,9 @@ private fun RadioPointPlaceSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RadioPointDetailsSheet(
+    modifier: Modifier = Modifier,
     maxSheetHeight: Dp,
     onSheetTopInWindowChanged: (Int) -> Unit,
     point: RadioPointRecord,
@@ -6189,29 +6189,35 @@ private fun RadioPointDetailsSheet(
         else -> colors.onTertiaryContainer
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
-        scrimColor = Color.Transparent,
-        dragHandle = {
-            Box(
-                modifier = Modifier.fillMaxWidth()
-                    .onGloballyPositioned { coordinates ->
-                        onSheetTopInWindowChanged(coordinates.positionInWindow().y.roundToInt())
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                BottomSheetDefaults.DragHandle()
-            }
-        }
+    // This is a non-modal bottom panel rather than a full-screen modal sheet.
+    // Only the visible card consumes touches, so MapLibre remains interactive above it.
+    AnimatedVisibility(
+        visible = true,
+        modifier = modifier,
+        enter = slideInVertically(
+            initialOffsetY = { fullHeight -> fullHeight },
+            animationSpec = tween(220)
+        ) + fadeIn(animationSpec = tween(180)),
+        label = "radio-point-details-panel"
     ) {
-        Column(
-            Modifier.fillMaxWidth()
+        Surface(
+            modifier = Modifier.fillMaxWidth()
                 .heightIn(max = maxSheetHeight)
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .onGloballyPositioned { coordinates ->
+                    onSheetTopInWindowChanged(coordinates.positionInWindow().y.roundToInt())
+                },
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            color = colors.surfaceContainerLow,
+            tonalElevation = 1.dp,
+            shadowElevation = 8.dp
         ) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .heightIn(max = maxSheetHeight)
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
