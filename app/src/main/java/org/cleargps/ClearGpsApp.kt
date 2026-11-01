@@ -6397,6 +6397,7 @@ private fun RadioPointDetailsSheet(
         }
     }
 }
+}
 @Composable
 private fun RadioPointObservationRow(
     observation: RadioPointObservation,
