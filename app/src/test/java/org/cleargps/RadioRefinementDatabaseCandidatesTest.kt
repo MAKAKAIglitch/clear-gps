@@ -102,7 +102,13 @@ class RadioRefinementDatabaseCandidatesTest {
 
         assertEquals(0, selection.recentScanGroupCount)
         assertEquals(0, selection.storedPointGroupCount)
-        assertEquals(1, selection.nearbyGroupCount)
+        assertEquals(
+            "Nearby-group diagnostics: fresh=${selection.freshLocatedWifiPoints}, " +
+                "usable=${selection.usableStoredWifiPoints}, " +
+                "largest=${selection.largestNearbyGroupSize}, groups=${selection.groups.map { group -> group.map { it.identifier } }}",
+            1,
+            selection.nearbyGroupCount
+        )
         assertEquals(3, selection.largestNearbyGroupSize)
         assertEquals(6, selection.totalWifiPoints)
         assertEquals(5, selection.freshLocatedWifiPoints)
