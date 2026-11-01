@@ -2681,7 +2681,7 @@ fun ClearGpsApp(
             val navigationBottomInset =
                 WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             // Keep a visible map strip even when the user fully expands the sheet.
-            val detailsSheetMaxHeight = (maxHeight - mapHeaderHeightDp - navigationBottomInset - 112.dp)
+            val detailsSheetMaxHeight = (maxHeight - mapHeaderHeightDp - navigationBottomInset - 160.dp)
                 .coerceAtLeast(220.dp)
                 .coerceAtMost(700.dp)
 
@@ -6175,7 +6175,6 @@ private fun RadioPointDetailsSheet(
         dragHandle = {
             Box(
                 modifier = Modifier.fillMaxWidth()
-                    .height(32.dp)
                     .onGloballyPositioned { coordinates ->
                         onSheetTopInWindowChanged(coordinates.positionInWindow().y.roundToInt())
                     },
