@@ -155,6 +155,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -418,6 +419,7 @@ fun ClearGpsApp(
     var mapHeaderHeightPx by remember { mutableStateOf(0) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
+    var selectedPointFocusRequest by remember { mutableStateOf(0) }
     var selectedObservationId by remember { mutableStateOf<Long?>(null) }
     var selectedMapPlacePoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
@@ -658,13 +660,9 @@ fun ClearGpsApp(
     fun openRadioPointDetails(pointId: Long) {
         mapController.clearPendingFocus()
         scope.launch {
+            // Keep the current detail sheet and map layers in place while the next record
+            // loads. Removing them here caused a close/reopen animation and a visible map flash.
             selectedMapPlacePoints = emptyList()
-            selectedMapPoint = null
-            detailsSheetTopInWindowPx = 0
-            mapController.setViewportPadding(0, 0)
-            selectedPointObservations = emptyList()
-            selectedPointCenter = null
-            selectedObservationId = null
             val loaded = try {
                 withContext(Dispatchers.IO) {
                     val point = database.findPoint(pointId) ?: return@withContext null
@@ -712,16 +710,8 @@ fun ClearGpsApp(
             selectedMapPoint = point
             selectedPointObservations = observations
             selectedPointCenter = center
-
-            // Focus as soon as the record is loaded; the sheet-layout effect refines
-            // the camera target after its final visible viewport has been measured.
-            val latitude = point.latitude
-            val longitude = point.longitude
-            val focus = center?.let { MapCoordinate(it.latitude, it.longitude) }
-                ?: if (latitude != null && longitude != null) {
-                    MapCoordinate(latitude, longitude)
-                } else null
-            if (focus != null) mapController.focus(focus, 16.0)
+            selectedObservationId = null
+            selectedPointFocusRequest += 1
         }
     }
 
@@ -773,14 +763,18 @@ fun ClearGpsApp(
                 1 -> openRadioPointDetails(loaded.single().id)
                 else -> {
                     selectedMapPlacePoints = loaded
-                    // Co-located markers open a place list rather than the details sheet,
-                    // so there is no sheet effect to move the camera for this tap.
-                    val nearest = loaded.first()
-                    val latitude = nearest.latitude
-                    val longitude = nearest.longitude
-                    if (latitude != null && longitude != null) {
-                        mapController.focus(MapCoordinate(latitude, longitude), 15.5)
+                    val coordinates = loaded.mapNotNull { point ->
+                        val latitude = point.latitude ?: return@mapNotNull null
+                        val longitude = point.longitude ?: return@mapNotNull null
+                        MapCoordinate(latitude, longitude)
                     }
+                    val density = context.resources.displayMetrics.density
+                        .takeIf { it.isFinite() && it > 0f } ?: 1f
+                    mapController.fitCoordinates(
+                        coordinates,
+                        paddingPx = (24f * density).roundToInt(),
+                        durationMs = 950
+                    )
                 }
             }
         }
@@ -2486,12 +2480,10 @@ fun ClearGpsApp(
     LaunchedEffect(mapSourceMode) {
         mapController.setOfflineMode(mapSourceMode == MapSourceMode.OFFLINE)
     }
-    LaunchedEffect(selectedMapPoint != null, showRadioPointsOnMap, positionMode.gpsOnly) {
-        // Radio markers are hidden in GPS-only mode so the map does not imply they contribute
-        // to the current fix. They remain available in the database and radio modes.
-        mapController.setShowRadioPoints(
-            !positionMode.gpsOnly && (selectedMapPoint != null || showRadioPointsOnMap)
-        )
+    LaunchedEffect(showRadioPointsOnMap, positionMode.gpsOnly) {
+        // Keep the user's layer visibility unchanged when a details sheet is opened;
+        // forcing every radio marker visible during selection can rebuild thousands of features.
+        mapController.setShowRadioPoints(!positionMode.gpsOnly && showRadioPointsOnMap)
     }
     LaunchedEffect(mapPrimaryCoordinate, mapPrimaryAccuracy) {
         mapController.updatePrimary(mapPrimaryCoordinate, mapPrimaryAccuracy)
@@ -2526,11 +2518,10 @@ fun ClearGpsApp(
             center = evidenceCenter
         )
     }
-    val pointsToRender = remember(selectedMapPoint, mapPointsRevision) {
-        if (selectedMapPoint != null) emptyList() else mapPoints
-    }
-    LaunchedEffect(pointsToRender) {
-        mapController.updateRadioPoints(pointsToRender)
+    // Keep the full marker layer stable while a point sheet opens. Clearing/rebuilding
+    // thousands of features on every selection caused an avoidable visual hitch.
+    LaunchedEffect(mapPoints) {
+        mapController.updateRadioPoints(mapPoints)
     }
     LaunchedEffect(mapLayerVisibility) {
         mapController.setLayerVisibility(mapLayerVisibility)
@@ -2709,44 +2700,48 @@ fun ClearGpsApp(
             val detailsSheetMaxHeight = (maxHeight - mapHeaderHeightDp - navigationBottomInset - 160.dp)
                 .coerceAtLeast(220.dp)
                 .coerceAtMost(450.dp)
+            val mapPointFitPaddingPx = with(LocalDensity.current) { 24.dp.roundToPx() }
 
             LaunchedEffect(
                 selectedTab,
                 selectedMapPoint?.id,
-                detailsViewportTopPx,
-                detailsViewportBottomPx
-            ) {
-                if (selectedTab == AppTab.MAP && selectedMapPoint != null && detailsViewportBottomPx > 0) {
-                    mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
-                } else if (selectedTab != AppTab.MAP || selectedMapPoint == null) {
-                    mapController.setViewportPadding(0, 0)
-                }
-            }
-
-            LaunchedEffect(
-                selectedTab,
-                selectedMapPoint?.id,
-                selectedMapPoint?.latitude,
-                selectedMapPoint?.longitude,
-                selectedPointCenter?.latitude,
-                selectedPointCenter?.longitude
+                selectedPointFocusRequest,
+                selectedPointObservations
             ) {
                 val point = selectedMapPoint
-                if (selectedTab == AppTab.MAP && point != null) {
-                    val focus = selectedPointCenter?.let {
-                        MapCoordinate(it.latitude, it.longitude)
-                    } ?: if (point.latitude != null && point.longitude != null) {
-                        MapCoordinate(point.latitude, point.longitude)
-                    } else null
-                    if (focus != null) {
-                        snapshotFlow { detailsViewportBottomPx }
-                            .filter { it > 0 }
-                            .debounce(120)
-                            .first()
-                        mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
-                        mapController.focus(focus, 16.0)
-                    }
+                if (selectedTab != AppTab.MAP || point == null) {
+                    mapController.setViewportPadding(0, 0)
+                    return@LaunchedEffect
                 }
+
+                // The sheet reports its top edge on every animation frame. Wait until
+                // its position stabilizes, then update viewport padding and fit all samples
+                // in a single camera animation instead of moving the camera frame by frame.
+                snapshotFlow { detailsViewportTopPx to detailsViewportBottomPx }
+                    .filter { (top, bottom) -> top > 0 && bottom > 0 }
+                    .debounce(180)
+                    .collect { (top, bottom) ->
+                        mapController.setViewportPadding(top, bottom)
+                        val observationCoordinates = selectedPointObservations.mapNotNull { observation ->
+                            val latitude = observation.latitude ?: return@mapNotNull null
+                            val longitude = observation.longitude ?: return@mapNotNull null
+                            MapCoordinate(latitude, longitude)
+                        }
+                        val coordinates = if (observationCoordinates.isNotEmpty()) {
+                            observationCoordinates
+                        } else {
+                            val latitude = point.latitude
+                            val longitude = point.longitude
+                            if (latitude != null && longitude != null) {
+                                listOf(MapCoordinate(latitude, longitude))
+                            } else emptyList()
+                        }
+                        mapController.fitCoordinates(
+                            coordinates,
+                            paddingPx = mapPointFitPaddingPx,
+                            durationMs = 950
+                        )
+                    }
             }
 
             if (selectedTab == AppTab.MAP) {

@@ -12,6 +12,7 @@ import org.cleargps.core.ZonePoint
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -84,7 +85,13 @@ class ClearGpsMapController {
     private var mapReady = false
     private var cameraInitialized = false
     private data class PendingCameraFocus(val coordinate: MapCoordinate, val zoom: Double)
+    private data class PendingCameraFit(
+        val coordinates: List<MapCoordinate>,
+        val paddingPx: Int,
+        val durationMs: Int
+    )
     private var pendingCameraFocus: PendingCameraFocus? = null
+    private var pendingCameraFit: PendingCameraFit? = null
     private var viewportTopPaddingPx = 0
     private var viewportBottomPaddingPx = 0
     private var darkMode = false
@@ -338,14 +345,21 @@ class ClearGpsMapController {
             mapReady = true
             renderAll()
             val queuedFocus = pendingCameraFocus
+            val queuedFit = pendingCameraFit
             if (!cameraInitialized) {
+                val fitCenter = queuedFit?.let { request ->
+                    MapObservationBoundsPolicy.calculate(request.coordinates)?.let {
+                        MapCoordinate(it.centerLatitude, it.centerLongitude)
+                    }
+                }
                 val start = queuedFocus?.coordinate
+                    ?: fitCenter
                     ?: primaryLocation
                     ?: calculatedLocation
                     ?: manualAnchor?.let { MapCoordinate(it.latitude, it.longitude) }
                     ?: radioPoints.firstOrNull()?.let { MapCoordinate(it.latitude!!, it.longitude!!) }
                 if (start != null) {
-                    val startZoom = queuedFocus?.zoom ?: 14.0
+                    val startZoom = queuedFocus?.zoom ?: if (queuedFit != null) 10.0 else 14.0
                     mapObject.cameraPosition = CameraPosition.Builder()
                         .target(LatLng(start.latitude, start.longitude))
                         .zoom(startZoom)
@@ -365,6 +379,8 @@ class ClearGpsMapController {
                     ),
                     460
                 )
+            } else if (queuedFit != null && pendingCameraFit == queuedFit) {
+                if (applyCameraFit(mapObject, queuedFit)) pendingCameraFit = null
             }
         }
     }
@@ -737,12 +753,14 @@ class ClearGpsMapController {
 
     fun focus(coordinate: MapCoordinate, zoom: Double = 15.5) {
         if (!isValidCoordinate(coordinate) || !zoom.isFinite()) return
+        pendingCameraFit = null
         val mapObject = map
         if (!mapReady || mapObject == null) {
             // A newly opened MapView may still be loading its style; keep the most recent target.
             pendingCameraFocus = PendingCameraFocus(coordinate, zoom)
             return
         }
+        pendingCameraFocus = null
         // newLatLngZoom accounts for the persistent padding of the visible map area.
         mapObject.easeCamera(
             CameraUpdateFactory.newLatLngZoom(LatLng(coordinate.latitude, coordinate.longitude), zoom),
@@ -750,8 +768,67 @@ class ClearGpsMapController {
         )
     }
 
+    /**
+     * Fits all supplied measurement coordinates into the map viewport. Unlike centre
+     * estimation, this intentionally includes spatial outliers so no recorded place
+     * is clipped. The easing duration is longer than a point focus to make zoom changes
+     * readable instead of snapping to a fixed zoom level.
+     */
+    fun fitCoordinates(
+        coordinates: List<MapCoordinate>,
+        paddingPx: Int = 24,
+        durationMs: Int = CAMERA_FIT_ANIMATION_DURATION_MS
+    ) {
+        val validCoordinates = coordinates.asSequence()
+            .filter(::isValidCoordinate)
+            .distinct()
+            .toList()
+        if (validCoordinates.isEmpty()) return
+
+        pendingCameraFocus = null
+        val request = PendingCameraFit(
+            coordinates = validCoordinates,
+            paddingPx = paddingPx.coerceAtLeast(0),
+            durationMs = durationMs.coerceAtLeast(1)
+        )
+        pendingCameraFit = request
+        val mapObject = map
+        if (!mapReady || mapObject == null) return
+        if (applyCameraFit(mapObject, request) && pendingCameraFit == request) {
+            pendingCameraFit = null
+        }
+    }
+
+    private fun applyCameraFit(mapObject: MapLibreMap, request: PendingCameraFit): Boolean {
+        val mapView = attachedMapView ?: return false
+        if (mapView.width <= 0 || mapView.height <= 0) return false
+        val bounds = MapObservationBoundsPolicy.calculate(request.coordinates) ?: return false
+        val mapBounds = try {
+            LatLngBounds.from(bounds.north, bounds.east, bounds.south, bounds.west)
+        } catch (_: IllegalArgumentException) {
+            return false
+        }
+        val padding = request.paddingPx
+        val fittedCamera = try {
+            mapObject.getCameraForLatLngBounds(
+                mapBounds,
+                intArrayOf(padding, padding, padding, padding)
+            )
+        } catch (_: IllegalArgumentException) {
+            null
+        } ?: return false
+
+        mapObject.easeCamera(
+            CameraUpdateFactory.newCameraPosition(fittedCamera),
+            request.durationMs,
+            true
+        )
+        return true
+    }
+
     fun clearPendingFocus() {
         pendingCameraFocus = null
+        pendingCameraFit = null
     }
 
     private fun installLayers(style: Style) {
@@ -1126,6 +1203,7 @@ class ClearGpsMapController {
         private const val SELECTED_OBSERVATION_LAYER = "cleargps-selected-observation-layer"
         private const val MAX_SELECTED_OBSERVATIONS_ON_MAP = 2_000
         private const val ZONE_INSTALL_ANIMATION_DURATION_MS = 460L
+        private const val CAMERA_FIT_ANIMATION_DURATION_MS = 950
         private const val WIFI_POINTS_LAYER = "cleargps-wifi-points-layer"
         private const val CELL_POINTS_LAYER = "cleargps-cell-points-layer"
         private const val BLE_POINTS_LAYER = "cleargps-ble-points-layer"
