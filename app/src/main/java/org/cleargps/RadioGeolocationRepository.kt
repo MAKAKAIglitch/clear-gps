@@ -665,7 +665,7 @@ class RadioGeolocationRepository(private val context: Context) {
 
         var beaconStatus = ""
         if (beaconEnabled &&
-            prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+            prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, true) &&
             NetworkAccessPolicy.hasValidatedWifi(context) &&
             BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
         ) {
@@ -684,7 +684,7 @@ class RadioGeolocationRepository(private val context: Context) {
                 prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
                 prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
                 prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true) &&
-                prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+                prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, true) &&
                 !CrashLoopGuard.isSafeModeActive(context) &&
                 PowerPolicy.canRunOptionalBackground(context) &&
                 BeaconDbAutoRefinementPolicy.canRun(BeaconDbRefinementEnvironmentReader.current(context))
@@ -700,7 +700,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     if (reserved &&
                         prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) &&
                         prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_LOOKUP_ENABLED, false) &&
-                        prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false) &&
+                        prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, true) &&
                         !CrashLoopGuard.isSafeModeActive(context) &&
                         PowerPolicy.canRunOptionalBackground(context) &&
                         NetworkAccessPolicy.hasValidatedWifi(context) &&

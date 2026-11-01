@@ -500,7 +500,7 @@ fun ClearGpsApp(
     var openCellIdKeyInput by remember { mutableStateOf("") }
     var openCellIdEnabled by remember { mutableStateOf(OpenCellIdKeyStore.isEnabled(context)) }
     var beaconDbAutoRefinementEnabled by remember {
-        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, false))
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_BEACONDB_AUTO_REFINEMENT_ENABLED, true))
     }
     var openCellIdLocalDbAutoLookupEnabled by remember {
         mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, false))
