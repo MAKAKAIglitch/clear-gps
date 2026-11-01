@@ -83,6 +83,8 @@ class ClearGpsMapController {
     private var tapMode: MapTapMode = MapTapMode.NONE
     private var mapReady = false
     private var cameraInitialized = false
+    private var viewportTopPaddingPx = 0
+    private var viewportBottomPaddingPx = 0
     private var darkMode = false
     private var offlineMode = false
     private var showRadioPoints = true
@@ -246,6 +248,8 @@ class ClearGpsMapController {
         attachedMapView = null
         mapReady = false
         cameraInitialized = false
+        viewportTopPaddingPx = 0
+        viewportBottomPaddingPx = 0
         tapMode = MapTapMode.NONE
         onMapTap = null
         onRadioPointsTap = null
@@ -343,7 +347,28 @@ class ClearGpsMapController {
                     mapObject.cameraPosition = CameraPosition.Builder().target(LatLng(20.0, 0.0)).zoom(2.2).build()
                 }
             }
+            applyViewportPadding(mapObject)
         }
+    }
+
+    private fun applyViewportPadding(mapObject: MapLibreMap) {
+        mapObject.moveCamera(
+            CameraUpdateFactory.paddingTo(
+                0.0,
+                viewportTopPaddingPx.toDouble(),
+                0.0,
+                viewportBottomPaddingPx.toDouble()
+            )
+        )
+    }
+
+    fun setViewportPadding(topInsetPx: Int, bottomInsetPx: Int) {
+        val top = topInsetPx.coerceAtLeast(0)
+        val bottom = bottomInsetPx.coerceAtLeast(0)
+        if (viewportTopPaddingPx == top && viewportBottomPaddingPx == bottom) return
+        viewportTopPaddingPx = top
+        viewportBottomPaddingPx = bottom
+        if (mapReady) map?.let(::applyViewportPadding)
     }
 
     fun setTapMode(mode: MapTapMode) { tapMode = mode }

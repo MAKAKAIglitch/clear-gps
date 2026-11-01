@@ -130,6 +130,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
@@ -403,6 +404,8 @@ fun ClearGpsApp(
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
+    var selectedPointSheetExpanded by remember { mutableStateOf(false) }
+    var mapHeaderHeightPx by remember { mutableStateOf(0) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
     var selectedObservationId by remember { mutableStateOf<Long?>(null) }
@@ -646,6 +649,7 @@ fun ClearGpsApp(
         scope.launch {
             selectedMapPlacePoints = emptyList()
             selectedMapPoint = null
+            selectedPointSheetExpanded = false
             selectedPointObservations = emptyList()
             selectedPointCenter = null
             selectedObservationId = null
@@ -696,11 +700,6 @@ fun ClearGpsApp(
             selectedMapPoint = point
             selectedPointObservations = observations
             selectedPointCenter = center
-            val focus = center?.let { MapCoordinate(it.latitude, it.longitude) }
-                ?: if (point.latitude != null && point.longitude != null) {
-                    MapCoordinate(point.latitude, point.longitude)
-                } else null
-            if (focus != null) mapController.focus(focus, 16.0)
         }
     }
 
@@ -710,6 +709,7 @@ fun ClearGpsApp(
         selectedPointObservations = emptyList()
         selectedPointCenter = null
         selectedObservationId = null
+        selectedPointSheetExpanded = false
     }
 
     fun openRadioPointsAtMap(pointIds: List<Long>) {
@@ -2650,6 +2650,43 @@ fun ClearGpsApp(
             }
             val panelBottomOffset = 0.dp
             val panelHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
+            val navigationBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val detailsPanelHeight = if (selectedPointSheetExpanded) {
+                (maxHeight * 0.62f).coerceAtMost(520.dp)
+            } else {
+                292.dp.coerceAtMost(maxHeight * 0.44f)
+            }
+            val detailsPanelBottomOffset = navigationBottomInset + 88.dp
+            val detailsViewportTopPx = mapHeaderHeightPx + with(LocalDensity.current) { 12.dp.roundToPx() }
+            val detailsViewportBottomPx = with(LocalDensity.current) {
+                (detailsPanelHeight + detailsPanelBottomOffset).roundToPx()
+            }
+
+            LaunchedEffect(
+                selectedTab,
+                selectedMapPoint?.id,
+                selectedMapPoint?.latitude,
+                selectedMapPoint?.longitude,
+                selectedPointCenter?.latitude,
+                selectedPointCenter?.longitude,
+                selectedPointSheetExpanded,
+                detailsPanelHeight,
+                mapHeaderHeightPx
+            ) {
+                val point = selectedMapPoint
+                if (selectedTab == AppTab.MAP && point != null) {
+                    mapController.setViewportPadding(detailsViewportTopPx, detailsViewportBottomPx)
+                    val focus = selectedPointCenter?.let {
+                        MapCoordinate(it.latitude, it.longitude)
+                    } ?: if (point.latitude != null && point.longitude != null) {
+                        MapCoordinate(point.latitude, point.longitude)
+                    } else null
+                    if (focus != null) mapController.focus(focus, 16.0)
+                } else {
+                    mapController.setViewportPadding(0, 0)
+                }
+            }
+
             if (selectedTab == AppTab.MAP) {
                 AndroidView(
                     factory = { viewContext ->
@@ -2669,7 +2706,10 @@ fun ClearGpsApp(
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
                 if (selectedTab != AppTab.HOME) {
                 Column(
-                    Modifier.fillMaxWidth()
+                    Modifier.onSizeChanged { size ->
+                        if (selectedTab == AppTab.MAP) mapHeaderHeightPx = size.height
+                    }
+                        .fillMaxWidth()
                         .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 7.dp)
                         .padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -3530,6 +3570,36 @@ fun ClearGpsApp(
                             88.dp
                     )
             )
+            if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
+                RadioPointDetailsPanel(
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .padding(bottom = detailsPanelBottomOffset)
+                        .padding(horizontal = 6.dp)
+                        .fillMaxWidth()
+                        .height(detailsPanelHeight),
+                    point = selectedMapPoint!!,
+                    observations = selectedPointObservations,
+                    center = selectedPointCenter,
+                    selectedObservationId = selectedObservationId,
+                    expanded = selectedPointSheetExpanded,
+                    onExpandedChange = { selectedPointSheetExpanded = it },
+                    onDismiss = { closeRadioPointDetails() },
+                    onObservationSelected = { observationId ->
+                        selectedObservationId = observationId
+                        selectedPointObservations.firstOrNull { it.id == observationId }?.let { observation ->
+                            val latitude = observation.latitude
+                            val longitude = observation.longitude
+                            if (latitude != null && longitude != null) {
+                                mapController.focus(MapCoordinate(latitude, longitude), 17.0)
+                            }
+                        }
+                    },
+                    onEdit = {
+                        pointToEdit = selectedMapPoint
+                        closeRadioPointDetails()
+                    }
+                )
+            }
     }
     }
 
@@ -3541,29 +3611,6 @@ fun ClearGpsApp(
                 onSelect = { point ->
                     selectedMapPlacePoints = emptyList()
                     openRadioPointDetails(point.id)
-                }
-            )
-        }
-        if (selectedTab == AppTab.MAP && selectedMapPoint != null) {
-            RadioPointDetailsSheet(
-                point = selectedMapPoint!!,
-                observations = selectedPointObservations,
-                center = selectedPointCenter,
-                selectedObservationId = selectedObservationId,
-                onDismiss = { closeRadioPointDetails() },
-                onObservationSelected = { observationId ->
-                    selectedObservationId = observationId
-                    selectedPointObservations.firstOrNull { it.id == observationId }?.let { observation ->
-                        val latitude = observation.latitude
-                        val longitude = observation.longitude
-                        if (latitude != null && longitude != null) {
-                            mapController.focus(MapCoordinate(latitude, longitude), 17.0)
-                        }
-                    }
-                },
-                onEdit = {
-                    pointToEdit = selectedMapPoint
-                    closeRadioPointDetails()
                 }
             )
         }
@@ -6055,20 +6102,22 @@ private fun RadioPointPlaceSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RadioPointDetailsSheet(
+private fun RadioPointDetailsPanel(
+    modifier: Modifier = Modifier,
     point: RadioPointRecord,
     observations: List<RadioPointObservation>,
     center: RadioPointCenter?,
     selectedObservationId: Long?,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
     onObservationSelected: (Long) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val kind = when (point.type) {
-        "wifi" -> "Wi‑Fi"
+        "wifi" -> "Wi-Fi"
         "cell" -> "Сотовая вышка"
         else -> "Bluetooth LE"
     }
@@ -6088,17 +6137,45 @@ private fun RadioPointDetailsSheet(
         else -> colors.onTertiaryContainer
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        color = colors.surfaceContainer,
+        tonalElevation = 4.dp,
+        shadowElevation = 12.dp
     ) {
         Column(
-            Modifier.fillMaxWidth()
-                .heightIn(max = 760.dp)
+            Modifier.fillMaxSize()
                 .padding(horizontal = 16.dp)
-                .padding(bottom = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .height(25.dp)
+                    .pointerInput(expanded) {
+                        var totalDrag = 0f
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { change, dragAmount ->
+                                change.consume()
+                                totalDrag += dragAmount
+                            },
+                            onDragEnd = {
+                                if (totalDrag < -36f && !expanded) onExpandedChange(true)
+                                if (totalDrag > 36f && expanded) onExpandedChange(false)
+                                totalDrag = 0f
+                            },
+                            onDragCancel = { totalDrag = 0f }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier.width(34.dp).height(4.dp),
+                    shape = RoundedCornerShape(50),
+                    color = colors.outlineVariant
+                ) {}
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -6132,13 +6209,19 @@ private fun RadioPointDetailsSheet(
                         color = colors.onSurfaceVariant
                     )
                 }
+                IconButton(onClick = { onExpandedChange(!expanded) }) {
+                    Icon(
+                        if (expanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                        contentDescription = if (expanded) "Свернуть панель" else "Развернуть панель"
+                    )
+                }
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Outlined.Close, contentDescription = "Закрыть подробности")
                 }
             }
             Divider(color = colors.outlineVariant)
             LazyColumn(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 item(key = "summary") {
