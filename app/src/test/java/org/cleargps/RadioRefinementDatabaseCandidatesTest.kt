@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -20,6 +21,17 @@ class RadioRefinementDatabaseCandidatesTest {
     private val testDatabaseName = "radio_refinement_candidates_${System.nanoTime()}.sqlite"
     private var database: LocalRadioDatabase? = null
     private var sqlite: SQLiteDatabase? = null
+
+    @Before
+    fun setUp() {
+        val databaseFile = context.getDatabasePath(testDatabaseName)
+        val databaseDirectory = databaseFile.parentFile
+            ?: error("Robolectric did not provide a database directory")
+        check(databaseDirectory.isDirectory || databaseDirectory.mkdirs()) {
+            "Could not create Robolectric database directory: ${databaseDirectory.absolutePath}"
+        }
+        context.deleteDatabase(testDatabaseName)
+    }
 
     @After
     fun tearDown() {
@@ -117,6 +129,10 @@ class RadioRefinementDatabaseCandidatesTest {
     }
 
     private fun openDatabase(): SQLiteDatabase {
+        val databaseFile = context.getDatabasePath(testDatabaseName)
+        check(databaseFile.parentFile?.isDirectory == true) {
+            "Robolectric database directory is missing: ${databaseFile.absolutePath}"
+        }
         val value = LocalRadioDatabase(context, testDatabaseName)
         database = value
         sqlite = value.writableDatabase
