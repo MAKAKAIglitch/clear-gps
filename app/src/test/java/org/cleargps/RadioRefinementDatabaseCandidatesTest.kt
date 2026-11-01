@@ -136,6 +136,74 @@ class RadioRefinementDatabaseCandidatesTest {
             }
         }
         println("BeaconDB raw point diagnostics: now=$now rows=$rawRows")
+        val oldest = (now - 30L * 24L * 60L * 60L * 1_000L).coerceAtLeast(0L)
+        val predicateRows = sqlite!!.rawQuery(
+            """
+            SELECT p.identifier,
+                   CASE WHEN p.last_seen BETWEEN ? AND ? THEN 1 ELSE 0 END AS seen_ok,
+                   CASE WHEN COALESCE(p.position_observed_at, p.last_seen) BETWEEN ? AND ? THEN 1 ELSE 0 END AS position_time_ok,
+                   CASE WHEN p.latitude BETWEEN -90.0 AND 90.0 THEN 1 ELSE 0 END AS latitude_ok,
+                   CASE WHEN p.longitude BETWEEN -180.0 AND 180.0 THEN 1 ELSE 0 END AS longitude_ok,
+                   CASE WHEN p.accuracy BETWEEN 1.0 AND 1000.0 THEN 1 ELSE 0 END AS accuracy_ok,
+                   CASE WHEN p.position_source IN (
+                       'android-location', 'passive-gps', 'wigle-import',
+                       'neostumbler-import', 'strongest-signal-sample'
+                   ) THEN 1 ELSE 0 END AS origin_ok,
+                   CASE WHEN s.id IS NULL OR (
+                       s.kind IN ('local', 'wigle', 'custom')
+                       AND s.enabled = 1 AND s.trust_weight > 0
+                   ) THEN 1 ELSE 0 END AS source_ok,
+                   CASE WHEN sg.enabled IS NULL OR sg.enabled = 1 THEN 1 ELSE 0 END AS segment_enabled_ok,
+                   CASE WHEN sg.trust_weight IS NULL OR sg.trust_weight > 0 THEN 1 ELSE 0 END AS segment_trust_ok,
+                   CASE WHEN
+                       p.last_seen BETWEEN ? AND ?
+                       AND COALESCE(p.position_observed_at, p.last_seen) BETWEEN ? AND ?
+                       AND p.latitude BETWEEN -90.0 AND 90.0
+                       AND p.longitude BETWEEN -180.0 AND 180.0
+                       AND p.accuracy BETWEEN 1.0 AND 1000.0
+                       AND p.position_source IN (
+                           'android-location', 'passive-gps', 'wigle-import',
+                           'neostumbler-import', 'strongest-signal-sample'
+                       )
+                       AND (s.id IS NULL OR (
+                           s.kind IN ('local', 'wigle', 'custom')
+                           AND s.enabled = 1 AND s.trust_weight > 0
+                       ))
+                       AND (sg.enabled IS NULL OR sg.enabled = 1)
+                       AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                   THEN 1 ELSE 0 END AS accepted
+            FROM radio_points p
+            LEFT JOIN radio_sources s ON s.id = p.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+              AND sg.day_key = strftime(
+                  '%Y-%m-%d', COALESCE(p.position_observed_at, p.last_seen) / 1000,
+                  'unixepoch', 'localtime'
+              )
+              AND sg.radio_type = p.radio_type
+            WHERE p.radio_type = 'wifi'
+            ORDER BY p.identifier
+            """,
+            arrayOf(
+                oldest.toString(), now.toString(),
+                oldest.toString(), now.toString(),
+                oldest.toString(), now.toString(),
+                oldest.toString(), now.toString()
+            )
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        "${cursor.getString(0)} seen=${cursor.getInt(1)} " +
+                            "positionTime=${cursor.getInt(2)} latitude=${cursor.getInt(3)} " +
+                            "longitude=${cursor.getInt(4)} accuracy=${cursor.getInt(5)} " +
+                            "origin=${cursor.getInt(6)} source=${cursor.getInt(7)} " +
+                            "segmentEnabled=${cursor.getInt(8)} segmentTrust=${cursor.getInt(9)} " +
+                            "accepted=${cursor.getInt(10)}"
+                    )
+                }
+            }
+        }
+        println("BeaconDB SQL predicate diagnostics: oldest=$oldest now=$now rows=$predicateRows")
         val selection = database!!.loadBeaconDbManualRefinementSelection(nowMillis = now, maxGroups = 10)
         println(
             "BeaconDB nearby selection: total=${selection.totalWifiPoints}, " +
