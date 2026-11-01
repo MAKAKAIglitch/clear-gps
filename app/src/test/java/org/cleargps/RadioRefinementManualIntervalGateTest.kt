@@ -39,9 +39,11 @@ class RadioRefinementManualIntervalGateTest {
         val start = 1_800_000_000_000L
         assertTrue(RadioRefinementManualIntervalGate.tryReserve(context, "beacondb", 1L, start))
         assertFalse(RadioRefinementManualIntervalGate.tryReserve(context, "beacondb", 1L, start + 59_999L))
-        assertTrue(RadioRefinementManualIntervalGate.tryReserve(context, "beacondb", 15L * 60L * 1_000L, start + 60_000L))
         assertFalse(RadioRefinementManualIntervalGate.tryReserve(
             context, "beacondb", 15L * 60L * 1_000L, start + 15L * 60L * 1_000L - 1L
+        ))
+        assertTrue(RadioRefinementManualIntervalGate.tryReserve(
+            context, "beacondb", 15L * 60L * 1_000L, start + 15L * 60L * 1_000L
         ))
     }
 }

@@ -17,13 +17,14 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class RadioRefinementDatabaseCandidatesTest {
     private val context by lazy { RuntimeEnvironment.getApplication() }
+    private val testDatabaseName = "radio_refinement_candidates_${System.nanoTime()}.sqlite"
     private var database: LocalRadioDatabase? = null
     private var sqlite: SQLiteDatabase? = null
 
     @After
     fun tearDown() {
         database?.close()
-        context.deleteDatabase(DB_NAME)
+        context.deleteDatabase(testDatabaseName)
     }
 
     @Test
@@ -116,7 +117,7 @@ class RadioRefinementDatabaseCandidatesTest {
     }
 
     private fun openDatabase(): SQLiteDatabase {
-        val value = LocalRadioDatabase(context, DB_NAME)
+        val value = LocalRadioDatabase(context, testDatabaseName)
         database = value
         sqlite = value.writableDatabase
         return sqlite!!
@@ -208,7 +209,4 @@ class RadioRefinementDatabaseCandidatesTest {
         return now
     }
 
-    companion object {
-        private const val DB_NAME = "radio_refinement_candidates_test.sqlite"
-    }
 }
