@@ -458,6 +458,9 @@ fun ClearGpsApp(
     }
     var scanBusy by remember { mutableStateOf(false) }
     var explicitRadioScanJob by remember { mutableStateOf<Job?>(null) }
+    var lastRadioScanHadFreshEstimate by remember { mutableStateOf(false) }
+    var pendingRadioMapCenterAfterScan by remember { mutableStateOf(false) }
+    var pendingRadioMapCenterWaitJob by remember { mutableStateOf<Job?>(null) }
     var scanMessage by remember {
         mutableStateOf("Сканирование локальное. Запиши радиоточки на известном месте, чтобы затем ориентироваться по ним без GPS.")
     }
@@ -822,10 +825,12 @@ fun ClearGpsApp(
         if (positionMode.gpsOnly) {
             // Hard guard: no route to RadioGeolocationRepository from GPS-only mode,
             // including stale callbacks that fire after the user changes mode.
+            lastRadioScanHadFreshEstimate = false
             scanMessage = "Радиосканирование отключено в режиме GPS."
             lookupPhase = LookupPhase.IDLE
         } else if (!scanBusy) {
             scanBusy = true
+            lastRadioScanHadFreshEstimate = false
             lookupPhase = LookupPhase.SCANNING
             scanMessage = if (recordNow) "Сохраняю наблюдения в локальную SQLite-базу…" else "Сканирую Wi‑Fi, мобильные соты и Bluetooth LE…"
             try {
@@ -862,6 +867,7 @@ fun ClearGpsApp(
                     reference = if (insideRiskZone) null else reference,
                     mode = positionMode.key, useWifi = useWifi, useCells = useCells, useBle = useBle
                 )
+                lastRadioScanHadFreshEstimate = result.estimate != null
                 wifiCount = result.wifiCount
                 cellCount = result.cellCount
                 bleCount = result.beaconCount
@@ -897,10 +903,12 @@ fun ClearGpsApp(
                 // radio/GPS scan failure, and never launch a new remembered scope from here.
                 throw cancelled
             } catch (error: SecurityException) {
+                lastRadioScanHadFreshEstimate = false
                 DiagnosticLogStore.log(context, "RADIO_UI", "Сканирование отклонено Android: ${error.message ?: "SecurityException"}", "ERROR")
                 scanMessage = "Android запретил сканирование. Проверь разрешения и системные настройки геолокации."
                 lookupPhase = LookupPhase.ERROR
             } catch (error: Exception) {
+                lastRadioScanHadFreshEstimate = false
                 DiagnosticLogStore.log(context, "RADIO_UI", "Ошибка локального сканирования: ${error.javaClass.simpleName}: ${error.message ?: "без описания"}", "ERROR")
                 scanMessage = "Ошибка локального сканирования: " + (error.message ?: "неизвестная ошибка")
                 lookupPhase = LookupPhase.ERROR
@@ -910,30 +918,47 @@ fun ClearGpsApp(
         }
     }
 
+    fun completePendingRadioMapCenter() {
+        if (!pendingRadioMapCenterAfterScan) return
+        pendingRadioMapCenterAfterScan = false
+        val estimateCoordinate = currentRadioEstimate?.let {
+            MapCoordinate(it.latitude, it.longitude)
+        }
+        val coordinate = if (positionMode.usesRadio && mockOutputActive) {
+            publishedMockCoordinate ?: estimateCoordinate
+        } else {
+            estimateCoordinate
+        }
+        if (coordinate != null) mapController.focus(coordinate, 15.0)
+        else mapController.focusPrimary()
+    }
+
+    fun waitForCurrentRadioScanAndCenter() {
+        if (pendingRadioMapCenterWaitJob?.isActive == true) return
+        pendingRadioMapCenterWaitJob = scope.launch {
+            while (scanBusy || explicitRadioScanJob?.isActive == true) delay(100L)
+            completePendingRadioMapCenter()
+            pendingRadioMapCenterWaitJob = null
+        }
+    }
+
     fun launchRadioScan(recordNow: Boolean, afterScan: (() -> Unit)? = null) {
         if (positionMode.gpsOnly) {
+            pendingRadioMapCenterAfterScan = false
             scanMessage = "Радиосканирование отключено в режиме GPS."
             lookupPhase = LookupPhase.IDLE
             return
         }
-        if (scanBusy || explicitRadioScanJob?.isActive == true) return
-        explicitRadioScanJob = scope.launch {
-            performScan(recordNow)
-            afterScan?.invoke()
+        if (scanBusy || explicitRadioScanJob?.isActive == true) {
+            if (pendingRadioMapCenterAfterScan) waitForCurrentRadioScanAndCenter()
+            return
         }
-    }
-
-    // Selecting radio-only immediately calculates an estimate from the local radio database.
-    // This effect never asks Android for a location fix; it only scans radio identifiers.
-    LaunchedEffect(positionMode, useWifi, useCells, useBle, hasAnyLocationPermission(context), monitorEnabled) {
-        // When the foreground service is active it owns periodic radio scans; avoid a second
-        // UI scan competing for the same Android Wi-Fi/BLE scan budget.
-        if (positionMode.usesRadio && !monitorEnabled && hasAnyLocationPermission(context)) {
-            // A scan may still be finishing from the previous mode. Wait rather than silently
-            // skipping the first radio lookup when scanBusy is already true.
-            while (scanBusy && positionMode.usesRadio) delay(100L)
-            if (positionMode.usesRadio && hasAnyLocationPermission(context)) {
-                performScan(false)
+        explicitRadioScanJob = scope.launch {
+            try {
+                performScan(recordNow)
+                afterScan?.invoke()
+            } finally {
+                completePendingRadioMapCenter()
             }
         }
     }
@@ -1043,6 +1068,7 @@ fun ClearGpsApp(
                 Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             }
         } else if (positionMode.gpsOnly) {
+            pendingRadioMapCenterAfterScan = false
             scanMessage = "Радиосканирование отключено в режиме GPS."
             lookupPhase = LookupPhase.IDLE
         } else if (result.values.any { it }) {
@@ -1053,6 +1079,7 @@ fun ClearGpsApp(
                 launchRadioScan(pendingRecordScan)
             }
         } else {
+            pendingRadioMapCenterAfterScan = false
             scanMessage = "Без разрешения геолокации Android ограничивает сканирование Wi‑Fi и сотовых сетей."
             lookupPhase = LookupPhase.ERROR
         }
@@ -2472,6 +2499,94 @@ fun ClearGpsApp(
         else -> null
     }
 
+    fun centerMapOnCurrentPosition() {
+        val shouldRefreshRadio = ForegroundRadioPositionSearchPolicy.shouldRefreshMapCenter(
+            positionModeKey = positionMode.key,
+            hasActiveAndroidLocation = activeLocation != null
+        )
+        if (!shouldRefreshRadio) {
+            mapController.focusPrimary()
+            return
+        }
+        if (!hasAnyLocationPermission(context)) {
+            Toast.makeText(
+                context,
+                "Для обновления радио-позиции разреши Clear GPS доступ к геолокации.",
+                Toast.LENGTH_LONG
+            ).show()
+            mapController.focusPrimary()
+            return
+        }
+        pendingRadioMapCenterAfterScan = true
+        startScan(recording)
+    }
+
+    val shouldRunForegroundRadioSearch = ForegroundRadioPositionSearchPolicy.shouldSearch(
+        appVisible = appVisible,
+        monitoring = monitorEnabled,
+        positionModeKey = positionMode.key,
+        hasActiveAndroidLocation = activeLocation != null,
+        hasLocationPermission = hasAnyLocationPermission(context)
+    )
+    LaunchedEffect(
+        shouldRunForegroundRadioSearch,
+        appVisible,
+        monitorEnabled,
+        positionMode.key,
+        useWifi,
+        useCells,
+        useBle,
+        openCellIdPositionSourceEnabled,
+        openCellIdEnabled,
+        openCellIdKeyConfigured,
+        hasAnyLocationPermission(context)
+    ) {
+        if (!shouldRunForegroundRadioSearch) return@LaunchedEffect
+
+        // The service owns scheduled scans while monitoring is on. This foreground loop is
+        // only for an open app with monitoring off and a selected radio position source.
+        while (shouldRunForegroundRadioSearch && appVisible && !monitorEnabled &&
+            hasAnyLocationPermission(context)
+        ) {
+            while (scanBusy && appVisible && !monitorEnabled) delay(100L)
+            if (!appVisible || monitorEnabled || !hasAnyLocationPermission(context)) break
+
+            // Periodic position searches never save a new radio observation/fingerprint (R5).
+            performScan(false)
+
+            val shouldFallbackToOpenCellId =
+                ForegroundRadioPositionSearchPolicy.shouldUseOpenCellIdFallback(
+                    hasCurrentEstimate = lastRadioScanHadFreshEstimate,
+                    useCells = useCells,
+                    sourceEnabled = openCellIdPositionSourceEnabled,
+                    networkEnabled = openCellIdEnabled && OpenCellIdKeyStore.isEnabled(context),
+                    apiKeyAvailable = openCellIdKeyConfigured && OpenCellIdKeyStore.hasKey(context),
+                    fineLocationGranted = hasFineLocationPermission(context),
+                    safeMode = CrashLoopGuard.isSafeModeActive(context)
+                )
+            if (shouldFallbackToOpenCellId) {
+                // OpenCellID uses its existing separate key, cache, three-lookups-per-batch,
+                // 15-minute cooldown and 100-attempt UTC-day budget.
+                startOpenCellIdLookup()
+                while ((openCellIdLoading || openCellIdLookupJob?.isActive == true) &&
+                    appVisible && !monitorEnabled
+                ) {
+                    delay(100L)
+                }
+                if (appVisible && !monitorEnabled && hasAnyLocationPermission(context)) {
+                    while (scanBusy && appVisible && !monitorEnabled) delay(100L)
+                    if (appVisible && !monitorEnabled) {
+                        // Re-run the read-only position estimate against the newly cached cells.
+                        performScan(false)
+                    }
+                }
+            }
+
+            if (!appVisible || monitorEnabled) break
+            delay(ForegroundRadioPositionSearchPolicy.INTERVAL_MILLIS)
+        }
+    }
+
     // Update MapLibre only when its actual inputs change. Re-running every map layer update
     // after unrelated UI state changes was rebuilding GeoJSON and causing visible stutter.
     LaunchedEffect(mapIsDark) {
@@ -2786,7 +2901,7 @@ fun ClearGpsApp(
                         monitorEnabled = monitorEnabled,
                         filterState = filterState,
                         riskScore = riskScore,
-                        onCenter = { mapController.focusPrimary() },
+                        onCenter = { centerMapOnCurrentPosition() },
                         onSettings = {
                              if (selectedTab == AppTab.MAP) showMapLayers = true
                              else navigateToTab(AppTab.SETTINGS)
@@ -3606,7 +3721,7 @@ fun ClearGpsApp(
                     bottom = panelBottomOffset + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 88.dp),
                 shape = CircleShape, color = colors.primaryContainer, shadowElevation = 6.dp
             ) {
-                IconButton(onClick = { mapController.focusPrimary() }, modifier = Modifier.size(50.dp)) {
+                IconButton(onClick = { centerMapOnCurrentPosition() }, modifier = Modifier.size(50.dp)) {
                     Icon(Icons.Outlined.MyLocation, "Центрировать карту", tint = colors.onPrimaryContainer)
                 }
             }
