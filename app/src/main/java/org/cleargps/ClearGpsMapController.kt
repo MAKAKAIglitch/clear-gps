@@ -4,6 +4,7 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.RectF
 import android.location.Location
 import android.view.animation.DecelerateInterpolator
 import org.cleargps.core.SavedRiskZone
@@ -76,6 +77,8 @@ class ClearGpsMapController {
     private var showRadioPoints = true
     private val maxRadioPoints = RadioMapPointLimitPolicy.MAX_LIMIT
     var onMapTap: ((Double, Double) -> Boolean)? = null
+    /** Multi-hit callback for overlapping radio records; the legacy callback remains supported. */
+    var onRadioPointsTap: ((List<Long>) -> Unit)? = null
     var onRadioPointTap: ((Long) -> Unit)? = null
 
     fun attach(
@@ -95,37 +98,97 @@ class ClearGpsMapController {
                     onMapTap?.invoke(point.latitude, point.longitude) ?: false
                 } else {
                     val screenPoint = mapObject.projection.toScreenLocation(point)
-                    fun expandCluster(source: GeoJsonSource?, layerId: String): Boolean {
-                        val cluster = try {
-                            mapObject.queryRenderedFeatures(screenPoint, layerId).firstOrNull()
-                        } catch (_: Exception) { null } ?: return false
-                        val expansionZoom = try {
-                            source?.getClusterExpansionZoom(cluster)
-                        } catch (_: Exception) { null } ?: return false
-                        mapObject.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(
-                                point,
-                                (expansionZoom.toDouble() + 0.5).coerceAtMost(20.0)
-                            )
-                        )
-                        return true
+                    val density = context.resources.displayMetrics.density
+                        .takeIf { it.isFinite() && it > 0f } ?: 1f
+                    val hitRadiusPx = MapPointHitTestPolicy.MIN_TARGET_SIZE_DP * density / 2f
+                    val hitBounds = RectF(
+                        screenPoint.x - hitRadiusPx,
+                        screenPoint.y - hitRadiusPx,
+                        screenPoint.x + hitRadiusPx,
+                        screenPoint.y + hitRadiusPx
+                    )
+
+                    // Clusters take priority over individual features and expand around the
+                    // cluster's actual center, not around the user's finger offset.
+                    val clusterLayers = listOf(
+                        wifiPointsSource to WIFI_CLUSTERS_LAYER,
+                        cellPointsSource to CELL_CLUSTERS_LAYER,
+                        blePointsSource to BLE_CLUSTERS_LAYER,
+                        openCellIdSource to OPENCELLID_CLUSTERS_LAYER
+                    )
+                    var nearestClusterSource: GeoJsonSource? = null
+                    var nearestClusterFeature: Feature? = null
+                    var nearestClusterCoordinate: LatLng? = null
+                    var nearestClusterDistanceSquared = Float.POSITIVE_INFINITY
+                    for ((source, layerId) in clusterLayers) {
+                        if (source == null) continue
+                        val renderedClusters = try {
+                            mapObject.queryRenderedFeatures(hitBounds, layerId)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        for (feature in renderedClusters) {
+                            val geometry = feature.geometry() as? Point ?: continue
+                            val coordinate = LatLng(geometry.latitude(), geometry.longitude())
+                            val projected = mapObject.projection.toScreenLocation(coordinate)
+                            val dx = projected.x - screenPoint.x
+                            val dy = projected.y - screenPoint.y
+                            val distanceSquared = dx * dx + dy * dy
+                            if (abs(dx) <= hitRadiusPx && abs(dy) <= hitRadiusPx &&
+                                distanceSquared < nearestClusterDistanceSquared
+                            ) {
+                                nearestClusterSource = source
+                                nearestClusterFeature = feature
+                                nearestClusterCoordinate = coordinate
+                                nearestClusterDistanceSquared = distanceSquared
+                            }
+                        }
                     }
-                    val clusterExpanded =
-                        expandCluster(wifiPointsSource, WIFI_CLUSTERS_LAYER) ||
-                        expandCluster(cellPointsSource, CELL_CLUSTERS_LAYER) ||
-                        expandCluster(blePointsSource, BLE_CLUSTERS_LAYER) ||
-                        expandCluster(openCellIdSource, OPENCELLID_CLUSTERS_LAYER)
-                    if (clusterExpanded) {
+
+                    if (nearestClusterFeature != null && nearestClusterCoordinate != null) {
+                        val expansionZoom = try {
+                            nearestClusterSource?.getClusterExpansionZoom(nearestClusterFeature!!)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (expansionZoom != null) {
+                            mapObject.animateCamera(
+                                CameraUpdateFactory.newLatLngZoom(
+                                    nearestClusterCoordinate!!,
+                                    (expansionZoom.toDouble() + 0.5).coerceAtMost(20.0)
+                                )
+                            )
+                        }
                         true
                     } else {
-                        val hit = try {
+                        val renderedPoints = try {
                             mapObject.queryRenderedFeatures(
-                                screenPoint,
+                                hitBounds,
                                 WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER
-                            ).firstNotNullOfOrNull { feature -> feature.getStringProperty("pointId")?.toLongOrNull() }
-                        } catch (_: Exception) { null }
-                        if (hit != null) {
-                            onRadioPointTap?.invoke(hit)
+                            )
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        val candidates = renderedPoints.mapNotNull { feature ->
+                            val pointId = feature.getStringProperty("pointId")?.toLongOrNull()
+                                ?: return@mapNotNull null
+                            val geometry = feature.geometry() as? Point ?: return@mapNotNull null
+                            val projected = mapObject.projection.toScreenLocation(
+                                LatLng(geometry.latitude(), geometry.longitude())
+                            )
+                            MapPointHitCandidate(pointId, projected.x, projected.y)
+                        }
+                        val selection = MapPointHitTestPolicy.selectNearest(
+                            candidates = candidates,
+                            tapX = screenPoint.x,
+                            tapY = screenPoint.y,
+                            density = density
+                        )
+                        val selectedIds = selection?.pointIds.orEmpty()
+                        if (selectedIds.isNotEmpty()) {
+                            val multiHit = onRadioPointsTap
+                            if (multiHit != null) multiHit(selectedIds)
+                            else onRadioPointTap?.invoke(selectedIds.first())
                             true
                         } else false
                     }
@@ -156,6 +219,7 @@ class ClearGpsMapController {
         cameraInitialized = false
         tapMode = MapTapMode.NONE
         onMapTap = null
+        onRadioPointsTap = null
         onRadioPointTap = null
         locationSource = null
         calculatedLocationSource = null

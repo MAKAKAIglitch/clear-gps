@@ -404,6 +404,7 @@ fun ClearGpsApp(
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var selectedPointObservations by remember { mutableStateOf(emptyList<RadioPointObservation>()) }
     var selectedPointCenter by remember { mutableStateOf<RadioPointCenter?>(null) }
+    var selectedMapPlacePoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var showRadioPointsOnMap by remember { mutableStateOf(true) }
     var databaseDataSource by remember {
         mutableStateOf(
@@ -642,6 +643,7 @@ fun ClearGpsApp(
 
     fun openRadioPointDetails(pointId: Long) {
         scope.launch {
+            selectedMapPlacePoints = emptyList()
             selectedMapPoint = null
             selectedPointObservations = emptyList()
             selectedPointCenter = null
@@ -676,9 +678,46 @@ fun ClearGpsApp(
     }
 
     fun closeRadioPointDetails() {
+        selectedMapPlacePoints = emptyList()
         selectedMapPoint = null
         selectedPointObservations = emptyList()
         selectedPointCenter = null
+    }
+
+    fun openRadioPointsAtMap(pointIds: List<Long>) {
+        val ids = pointIds.asSequence().filter { it > 0L }.distinct().toList()
+        if (ids.isEmpty()) return
+        if (ids.size == 1) {
+            openRadioPointDetails(ids.single())
+            return
+        }
+
+        scope.launch {
+            selectedMapPlacePoints = emptyList()
+            selectedMapPoint = null
+            selectedPointObservations = emptyList()
+            selectedPointCenter = null
+            val loaded = try {
+                withContext(Dispatchers.IO) {
+                    ids.mapNotNull { pointId -> database.findPoint(pointId) }
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: android.database.sqlite.SQLiteException) {
+                Toast.makeText(
+                    context,
+                    "Не удалось открыть список точек: ошибка локальной базы данных.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+
+            when (loaded.size) {
+                0 -> Unit
+                1 -> openRadioPointDetails(loaded.single().id)
+                else -> selectedMapPlacePoints = loaded
+            }
+        }
     }
 
     fun saveUseFlags() {
@@ -2363,6 +2402,7 @@ fun ClearGpsApp(
     }
     // Lightweight callback assignments keep handlers fresh without triggering map rendering.
     SideEffect {
+        mapController.onRadioPointsTap = { pointIds -> openRadioPointsAtMap(pointIds) }
         mapController.onRadioPointTap = { pointId -> openRadioPointDetails(pointId) }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
@@ -3355,6 +3395,16 @@ fun ClearGpsApp(
     }
 
     ClearGpsTheme(dark = mapIsDark) {
+        if (selectedMapPlacePoints.isNotEmpty()) {
+            RadioPointPlaceSheet(
+                points = selectedMapPlacePoints,
+                onDismiss = { selectedMapPlacePoints = emptyList() },
+                onSelect = { point ->
+                    selectedMapPlacePoints = emptyList()
+                    openRadioPointDetails(point.id)
+                }
+            )
+        }
         if (selectedMapPoint != null) {
         RadioPointDetailsDialog(
             point = selectedMapPoint!!,
@@ -5769,6 +5819,94 @@ private fun PointEditDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RadioPointPlaceSheet(
+    points: List<RadioPointRecord>,
+    onDismiss: () -> Unit,
+    onSelect: (RadioPointRecord) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Что здесь", style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold)
+                    Text(
+                        "В одном месте найдено объектов: ${points.size}. Выбери нужную запись.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Закрыть список объектов")
+                }
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                items(points, key = { it.id }) { point ->
+                    val kind = when (point.type) {
+                        "wifi" -> "Wi‑Fi"
+                        "cell" -> "Сотовая вышка"
+                        else -> "Bluetooth LE"
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(point) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = colors.surfaceContainerHigh
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                when (point.type) {
+                                    "wifi" -> Icons.Outlined.Wifi
+                                    "cell" -> Icons.Outlined.SignalCellularAlt
+                                    else -> Icons.Outlined.Bluetooth
+                                },
+                                contentDescription = null,
+                                tint = colors.primary
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    point.ssid.ifBlank { point.label.ifBlank { kind } },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    "$kind · ${point.identifier}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Text(
+                                "${point.sightings} наблюд.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
