@@ -2683,7 +2683,7 @@ fun ClearGpsApp(
             // Keep a visible map strip even when the user fully expands the sheet.
             val detailsSheetMaxHeight = (maxHeight - mapHeaderHeightDp - navigationBottomInset - 160.dp)
                 .coerceAtLeast(220.dp)
-                .coerceAtMost(700.dp)
+                .coerceAtMost(450.dp)
 
             LaunchedEffect(
                 selectedTab,
