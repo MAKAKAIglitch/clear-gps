@@ -681,20 +681,26 @@ class LocationMonitorService : Service(), LocationListener {
         val repository = RadioGeolocationRepository(applicationContext)
         autoRadioDatabaseRefreshJob = serviceScope.launch {
             while (isActive && prefs.getBoolean(KEY_MONITORING, false)) {
-                try {
-                    repository.refreshExternalDatabasesAutomatically()?.let { summary ->
-                        DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_DATABASE_AUTO", summary)
+                val optionalWorkAllowed = PowerPolicy.canRunOptionalBackground(this@LocationMonitorService)
+                if (optionalWorkAllowed) {
+                    try {
+                        repository.refreshExternalDatabasesAutomatically()?.let { summary ->
+                            DiagnosticLogStore.log(this@LocationMonitorService, "RADIO_DATABASE_AUTO", summary)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        DiagnosticLogStore.log(
+                            this@LocationMonitorService, "RADIO_DATABASE_AUTO",
+                            "Automatic database refresh skipped: ${error.javaClass.simpleName}", "WARN"
+                        )
                     }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    DiagnosticLogStore.log(
-                        this@LocationMonitorService, "RADIO_DATABASE_AUTO",
-                        "Automatic database refresh skipped: ${error.javaClass.simpleName}", "WARN"
-                    )
                 }
                 if (!prefs.getBoolean(KEY_MONITORING, false)) break
-                delay(ExternalRadioDatabaseRefreshPolicy.CHECK_INTERVAL_MILLIS)
+                delay(
+                    if (optionalWorkAllowed) ExternalRadioDatabaseRefreshPolicy.CHECK_INTERVAL_MILLIS
+                    else PowerPolicy.PAUSED_OPTIONAL_WORK_RECHECK_INTERVAL_MILLIS
+                )
             }
             autoRadioDatabaseRefreshJob = null
         }
@@ -1141,7 +1147,8 @@ class LocationMonitorService : Service(), LocationListener {
                 recording = GnssReplayRecorder.isRecording(this@LocationMonitorService),
                 positionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
             )) {
-                if (PowerPolicy.canRunOptionalBackground(this@LocationMonitorService)) {
+                val optionalWorkAllowed = PowerPolicy.canRunOptionalBackground(this@LocationMonitorService)
+                if (optionalWorkAllowed) {
                     try {
                         val observations = repository.captureReplaySnapshot(
                             useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
@@ -1168,14 +1175,15 @@ class LocationMonitorService : Service(), LocationListener {
                     recording = GnssReplayRecorder.isRecording(this@LocationMonitorService),
                     positionMode = prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") ?: "auto"
                 )) break
-                delay(
+                val replayIntervalMillis = if (optionalWorkAllowed) {
                     GnssReplayRadioCapturePolicy.intervalMillis(
                         BatteryProfilePolicy.profiledIntervalSeconds(
                             prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15),
                             BatteryProfile.fromKey(prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key))
                         )
                     )
-                )
+                } else PowerPolicy.PAUSED_OPTIONAL_WORK_RECHECK_INTERVAL_MILLIS
+                delay(replayIntervalMillis)
             }
         }
     }

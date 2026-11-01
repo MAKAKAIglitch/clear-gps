@@ -34,6 +34,7 @@ internal object PowerPolicy {
     const val DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT = 20
     const val MIN_LOW_BATTERY_THRESHOLD_PERCENT = 5
     const val MAX_LOW_BATTERY_THRESHOLD_PERCENT = 50
+    const val PAUSED_OPTIONAL_WORK_RECHECK_INTERVAL_MILLIS = 60_000L
 
     fun evaluate(
         task: PowerTask,
@@ -99,5 +100,5 @@ internal object PowerPolicy {
     }
 
     fun canRunOptionalBackground(context: Context): Boolean =
-        optionalBackgroundDecision(context).allowed
+        runCatching { optionalBackgroundDecision(context).allowed }.getOrDefault(false)
 }
