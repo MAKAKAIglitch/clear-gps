@@ -13,12 +13,13 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class RadioRefinementDatabaseCandidatesTest {
     private val context by lazy { RuntimeEnvironment.getApplication() }
-    private val testDatabaseName = "radio_refinement_candidates_${System.nanoTime()}.sqlite"
+    private val testDatabaseName = "rr_${UUID.randomUUID().toString().take(12)}.db"
     private var database: LocalRadioDatabase? = null
     private var sqlite: SQLiteDatabase? = null
 
