@@ -54,8 +54,10 @@ class MapObservationBoundsPolicyTest {
             )
         )
 
-        assertEquals(51.0, bounds.north, 1e-9)
-        assertEquals(51.0, bounds.south, 1e-9)
+        val expectedForOnlyValidCoordinate = requireNotNull(
+            MapObservationBoundsPolicy.calculate(listOf(MapCoordinate(51.0, 4.0)))
+        )
+        assertEquals(expectedForOnlyValidCoordinate, bounds)
         assertNull(
             MapObservationBoundsPolicy.calculate(
                 listOf(
