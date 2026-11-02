@@ -23,7 +23,7 @@ class LocalRadioDatabaseWifiNetworkGroupTest {
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        // Each test gets an independent in-memory database.
+        // These tests cover grouping behavior, not file-backed WAL behavior.
         database = LocalRadioDatabase(context, null)
     }
 
