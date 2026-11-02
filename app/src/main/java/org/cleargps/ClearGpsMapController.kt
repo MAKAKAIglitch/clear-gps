@@ -58,6 +58,7 @@ class ClearGpsMapController {
     private var openCellIdSource: GeoJsonSource? = null
     private var cellSitesSource: GeoJsonSource? = null
     private var cellSiteUncertaintySource: GeoJsonSource? = null
+    private var cellSiteSectorsSource: GeoJsonSource? = null
     private var layerVisibility: MapLayerVisibility = MapLayerVisibility()
     private var beaconDbCoordinate: MapCoordinate? = null
     private var openCellIdCoordinates: List<MapCoordinate> = emptyList()
@@ -78,6 +79,7 @@ class ClearGpsMapController {
     private var draftZone: List<ZonePoint> = emptyList()
     private var radioPoints: List<RadioPointRecord> = emptyList()
     private var cellSites: List<CellSiteRecord> = emptyList()
+    private var cellSiteSectors: List<CellSiteSectorRecord> = emptyList()
     private var selectedObservations: List<RadioPointObservation> = emptyList()
     private var selectedObservationId: Long? = null
     private var selectedEvidenceCenter: RadioPointCenter? = null
@@ -322,6 +324,7 @@ class ClearGpsMapController {
         openCellIdSource = null
         cellSitesSource = null
         cellSiteUncertaintySource = null
+        cellSiteSectorsSource = null
     }
 
     fun setDarkMode(dark: Boolean) {
@@ -370,6 +373,20 @@ class ClearGpsMapController {
                     site.confidenceScore.isFinite() && site.confidenceScore in 0.0..1.0
             }
             .take(MAX_CELL_SITES_ON_MAP)
+            .toList()
+        renderCellSites()
+    }
+
+    fun updateCellSiteSectors(sectors: List<CellSiteSectorRecord>) {
+        cellSiteSectors = sectors.asSequence()
+            .filter { sector ->
+                sector.azimuthDegrees.isFinite() && sector.azimuthDegrees in 0.0..<360.0 &&
+                    sector.widthDegrees.isFinite() && sector.widthDegrees in 1.0..180.0 &&
+                    sector.confidenceScore >= 0.60 && sector.sampleCount >= 18 &&
+                    sector.modelDirectionSpreadDegrees in 0.0..30.0 &&
+                    sector.receiverProfileId.isNotBlank() && sector.frequencyKeys.isNotEmpty()
+            }
+            .take(MAX_CELL_SECTORS_ON_MAP)
             .toList()
         renderCellSites()
     }
@@ -917,11 +934,12 @@ class ClearGpsMapController {
         openCellIdSource = GeoJsonSource(OPENCELLID_SOURCE, emptyCollection(), pointSourceOptions)
         cellSitesSource = GeoJsonSource(CELL_SITES_SOURCE, emptyCollection(), pointSourceOptions)
         cellSiteUncertaintySource = GeoJsonSource(CELL_SITE_UNCERTAINTY_SOURCE, emptyCollection())
+        cellSiteSectorsSource = GeoJsonSource(CELL_SITE_SECTORS_SOURCE, emptyCollection())
         listOf(locationSource, calculatedLocationSource, calculatedAccuracySource, accuracySource, anchorSource,
             polygonSource, lineSource, zonePointsSource, zoneLabelsSource, selectedPointCenterSource,
             selectedPointAccuracySource, observationPointsSource, selectedObservationSource,
             wifiPointsSource, cellPointsSource, blePointsSource, beaconDbSource, openCellIdSource,
-            cellSitesSource, cellSiteUncertaintySource)
+            cellSitesSource, cellSiteUncertaintySource, cellSiteSectorsSource)
             .forEach { style.addSource(it!!) }
 
         style.addLayer(FillLayer(POLYGON_LAYER, POLYGON_SOURCE).withProperties(
@@ -1019,6 +1037,12 @@ class ClearGpsMapController {
         ))
         style.addLayer(LineLayer(CELL_SITE_UNCERTAINTY_OUTLINE_LAYER, CELL_SITE_UNCERTAINTY_SOURCE).withProperties(
             PropertyFactory.lineColor("#2563EB"), PropertyFactory.lineWidth(1.5f), PropertyFactory.lineOpacity(0.8f)
+        ))
+        style.addLayer(FillLayer(CELL_SITE_SECTORS_LAYER, CELL_SITE_SECTORS_SOURCE).withProperties(
+            PropertyFactory.fillColor("#0D9488"), PropertyFactory.fillOpacity(0.16f)
+        ))
+        style.addLayer(LineLayer(CELL_SITE_SECTORS_OUTLINE_LAYER, CELL_SITE_SECTORS_SOURCE).withProperties(
+            PropertyFactory.lineColor("#0F766E"), PropertyFactory.lineWidth(1.8f), PropertyFactory.lineOpacity(0.88f)
         ))
         style.addLayer(CircleLayer(CELL_SITES_LAYER, CELL_SITES_SOURCE).withProperties(
             PropertyFactory.circleRadius(8f), PropertyFactory.circleColor("#2563EB"),
@@ -1201,9 +1225,54 @@ class ClearGpsMapController {
             }
         } else emptyList()
         val uncertainty = if (visible) cellSites.mapNotNull(::cellSiteUncertaintyFeature) else emptyList()
+        val siteById = cellSites.associateBy { it.id }
+        val sectors = if (visible && layerVisibility.showCellSectors) {
+            cellSiteSectors.mapNotNull { sector ->
+                siteById[sector.siteId]?.let { site -> cellSiteSectorFeature(site, sector) }
+            }
+        } else emptyList()
         cellSitesSource?.setGeoJson(FeatureCollection.fromFeatures(markers.toTypedArray()))
         cellSiteUncertaintySource?.setGeoJson(FeatureCollection.fromFeatures(uncertainty.toTypedArray()))
+        cellSiteSectorsSource?.setGeoJson(FeatureCollection.fromFeatures(sectors.toTypedArray()))
         map?.triggerRepaint()
+    }
+
+    private fun cellSiteSectorFeature(site: CellSiteRecord, sector: CellSiteSectorRecord): Feature? {
+        if (sector.sampleCount < 18 || sector.confidenceScore < 0.60 ||
+            sector.modelDirectionSpreadDegrees > 30.0 || sector.receiverProfileId.isBlank()
+        ) return null
+        val width = sector.widthDegrees.takeIf { it.isFinite() && it in 1.0..180.0 } ?: return null
+        val radiusMeters = CELL_SECTOR_DRAW_LENGTH_METERS.toDouble()
+        val halfWidth = width / 2.0
+        val segments = (width / 4.0).toInt().coerceIn(8, 36)
+        val ring = ArrayList<Point>(segments + 3)
+        ring.add(Point.fromLngLat(site.longitude, site.latitude))
+        for (step in 0..segments) {
+            val bearing = Math.toRadians(sector.azimuthDegrees - halfWidth + width * step / segments)
+            val angular = radiusMeters / EARTH_RADIUS_METERS
+            val lat0 = Math.toRadians(site.latitude)
+            val lon0 = Math.toRadians(site.longitude)
+            val latitude = kotlin.math.asin(
+                kotlin.math.sin(lat0) * kotlin.math.cos(angular) +
+                    kotlin.math.cos(lat0) * kotlin.math.sin(angular) * kotlin.math.cos(bearing)
+            )
+            val longitude = lon0 + kotlin.math.atan2(
+                kotlin.math.sin(bearing) * kotlin.math.sin(angular) * kotlin.math.cos(lat0),
+                kotlin.math.cos(angular) - kotlin.math.sin(lat0) * kotlin.math.sin(latitude)
+            )
+            ring.add(Point.fromLngLat(
+                ((Math.toDegrees(longitude) + 540.0) % 360.0) - 180.0,
+                Math.toDegrees(latitude)
+            ))
+        }
+        ring.add(ring.first())
+        return Feature.fromGeometry(Polygon.fromLngLats(listOf(ring))).apply {
+            addStringProperty("siteId", site.id.toString())
+            addStringProperty("identity", sector.identity.stableKey)
+            addStringProperty("azimuth", sector.azimuthDegrees.toString())
+            addStringProperty("width", sector.widthDegrees.toString())
+            addStringProperty("samples", sector.sampleCount.toString())
+        }
     }
 
     private fun cellSiteUncertaintyFeature(site: CellSiteRecord): Feature? {
@@ -1305,6 +1374,7 @@ class ClearGpsMapController {
         private const val OPENCELLID_SOURCE = "cleargps-opencellid-cells"
         private const val CELL_SITES_SOURCE = "cleargps-cell-sites"
         private const val CELL_SITE_UNCERTAINTY_SOURCE = "cleargps-cell-site-uncertainty"
+        private const val CELL_SITE_SECTORS_SOURCE = "cleargps-cell-site-sectors"
         private const val BEACONDB_LAYER = "cleargps-beacondb-estimate-layer"
         private const val OPENCELLID_LAYER = "cleargps-opencellid-cells-layer"
         private const val OPENCELLID_CLUSTERS_LAYER = "cleargps-opencellid-clusters-layer"
@@ -1314,6 +1384,10 @@ class ClearGpsMapController {
         private const val CELL_SITE_CLUSTER_COUNT_LAYER = "cleargps-cell-site-cluster-count-layer"
         private const val CELL_SITE_UNCERTAINTY_LAYER = "cleargps-cell-site-uncertainty-layer"
         private const val CELL_SITE_UNCERTAINTY_OUTLINE_LAYER = "cleargps-cell-site-uncertainty-outline-layer"
+        private const val CELL_SITE_SECTORS_LAYER = "cleargps-cell-site-sectors-layer"
+        private const val CELL_SITE_SECTORS_OUTLINE_LAYER = "cleargps-cell-site-sectors-outline-layer"
+        private const val MAX_CELL_SECTORS_ON_MAP = 4_000
+        private const val CELL_SECTOR_DRAW_LENGTH_METERS = 500
         private const val MAX_CELL_SITES_ON_MAP = 2_000
         private const val MAX_OPEN_CELL_ID_MAP_POINTS = 2_000
         private const val LOCATION_HALO_LAYER = "cleargps-location-halo"
