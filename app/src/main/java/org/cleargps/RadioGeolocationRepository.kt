@@ -1384,8 +1384,8 @@ class RadioGeolocationRepository(private val context: Context) {
                     val plmn = cellPlmn(
                         id.mccString,
                         id.mncString,
-                        id.mcc,
-                        id.mnc,
+                        legacyMcc = -1,
+                        legacyMnc = -1,
                         stringMncAvailable = true
                     ) ?: return null
                     val strength = info.cellSignalStrength
