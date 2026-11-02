@@ -241,7 +241,7 @@ class LocalRadioDatabaseImportTest {
         assertEquals(1, countRows("radio_observations", "radio_type = ?", "wifi"))
         assertEquals(1, countRows("radio_observations", "radio_type = ?", "cell"))
         assertEquals(1, countRows("radio_observations", "radio_type = ?", "ble"))
-        assertEquals(1, countRows("radio_points", "identifier = ?", "lte:262:1:123:456789"))
+        assertEquals(1, countRows("radio_points", "identifier = ?", "lte:26201:123:456789"))
         assertEquals("neostumbler-import", readPointPositionSource("aa:bb:cc:dd:ee:01"))
     }
 
