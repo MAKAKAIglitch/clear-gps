@@ -7,6 +7,7 @@ import org.cleargps.cell.CellSiteGroup
 import org.cleargps.cell.CellSiteGroupingConfig
 import org.cleargps.cell.CellSiteIntelligenceEngine
 import org.cleargps.cell.CellSiteIntelligenceResult
+import org.cleargps.cell.CellSiteEvidenceBundle
 
 /**
  * Shared read path for the local radio-point dataset.
@@ -86,6 +87,15 @@ internal class RadioRepository(
             nowMillis = nowMillis
         )
 
+    fun loadOpenStreetMapCellSiteEvidence(
+        groups: Collection<CellSiteGroup>,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<CellSiteEvidenceBundle> =
+        OpenStreetMapCellSiteEvidenceAdapter.toEvidenceBundles(
+            groups = groups,
+            objects = database.listCachedOpenStreetMapCellSiteObjects(nowMillis = nowMillis, limit = 2_000)
+        )
+
     fun calculateCellSites(
         evidence: List<CellSiteEvidenceBundle>,
         estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
@@ -123,9 +133,21 @@ internal class RadioRepository(
     ): CellSiteIntelligenceResult {
         require(nowMillis >= 0L)
         val identities = database.listCellIdentitiesWithObservationHistory()
-        val evidence = loadOpenCellIdCellSiteEvidence(identities, nowMillis)
+        val openCellIdEvidence = loadOpenCellIdCellSiteEvidence(identities, nowMillis)
+        val preliminary = calculateCellSites(openCellIdEvidence, estimatorConfig, groupingConfig)
+        val osmEvidence = loadOpenStreetMapCellSiteEvidence(preliminary.groups, nowMillis)
+        val combinedEvidence = (openCellIdEvidence + osmEvidence)
+            .groupBy { it.identity.stableKey }
+            .values
+            .map { bundles ->
+                CellSiteEvidenceBundle(
+                    identity = bundles.first().identity,
+                    evidence = bundles.flatMap { it.evidence }.distinctBy { it.evidenceId }
+                )
+            }
+            .sortedBy { it.identity.stableKey }
         return calculateAndSaveCellSites(
-            evidence = evidence,
+            evidence = combinedEvidence,
             estimatorConfig = estimatorConfig,
             groupingConfig = groupingConfig,
             calculatedAtMillis = nowMillis

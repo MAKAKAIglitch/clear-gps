@@ -106,11 +106,14 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(16, sqlite!!.version)
+        assertEquals(17, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertTrue(tableExists("cell_sites"))
         assertTrue(tableExists("cell_site_links"))
         assertTrue(tableExists("cell_site_batches"))
+        assertTrue(tableExists("cell_osm_queue"))
+        assertTrue(tableExists("cell_osm_objects"))
+        assertTrue(tableExists("cell_osm_attempts"))
         assertFalse(queryHasRow("PRAGMA foreign_key_check"))
         assertEquals(1, countRows("radio_points", "LOWER(identifier) = ?", WIGLE_ID))
         assertEquals(2, database!!.observationCount())
@@ -331,11 +334,14 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(16, sqlite!!.version)
+        assertEquals(17, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertTrue(tableExists("cell_sites"))
         assertTrue(tableExists("cell_site_links"))
         assertTrue(tableExists("cell_site_batches"))
+        assertTrue(tableExists("cell_osm_queue"))
+        assertTrue(tableExists("cell_osm_objects"))
+        assertTrue(tableExists("cell_osm_attempts"))
         assertFalse(queryHasRow("PRAGMA foreign_key_check"))
         assertEquals(3, database!!.pointCount())
         assertEquals(3, database!!.observationCount())

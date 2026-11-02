@@ -137,6 +137,28 @@ data class CellSiteBatchRecord(
     val removedCount: Int
 )
 
+data class OpenStreetMapCellSiteQueueTask(
+    val id: Long,
+    val requestKey: String,
+    val siteStableKey: String,
+    val latitude: Double,
+    val longitude: Double,
+    val radiusMeters: Int,
+    val status: String,
+    val attemptCount: Int,
+    val createdAtMillis: Long,
+    val nextAttemptAtMillis: Long,
+    val lastAttemptAtMillis: Long?,
+    val lastHttpStatus: Int?,
+    val lastMessage: String
+)
+
+data class OpenStreetMapCellSiteEnqueueResult(
+    val taskId: Long,
+    val created: Boolean,
+    val cachedResultAvailable: Boolean
+)
+
 data class RadioScanHistoryItem(
     val id: Long, val time: Long, val wifiCount: Int, val cellCount: Int, val bleCount: Int,
     val matchedCount: Int, val latitude: Double?, val longitude: Double?,
@@ -953,6 +975,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         createCellObservationDetailsTable(db)
         createCellSiteTables(db)
+        createOpenStreetMapCellSiteTables(db)
         createWifiNetworkGroupTables(db)
         db.execSQL("""
             CREATE TABLE scan_history (
@@ -1057,6 +1080,82 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         if (oldVersion < 16) {
             createCellSiteTables(db)
         }
+        if (oldVersion < 17) {
+            createOpenStreetMapCellSiteTables(db)
+        }
+    }
+
+
+    private fun createOpenStreetMapCellSiteTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_osm_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_key TEXT NOT NULL UNIQUE,
+                site_stable_key TEXT NOT NULL,
+                latitude REAL NOT NULL CHECK(latitude BETWEEN -90 AND 90),
+                longitude REAL NOT NULL CHECK(longitude BETWEEN -180 AND 180),
+                radius_m INTEGER NOT NULL CHECK(radius_m BETWEEN 100 AND 5000),
+                status TEXT NOT NULL CHECK(status IN ('pending','in_progress','completed','not_found','failed')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+                created_at INTEGER NOT NULL CHECK(created_at >= 0),
+                updated_at INTEGER NOT NULL CHECK(updated_at >= 0),
+                next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at >= 0),
+                last_attempt_at INTEGER,
+                completed_at INTEGER,
+                last_http_status INTEGER,
+                last_message TEXT NOT NULL DEFAULT ''
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_osm_queue_due " +
+                "ON cell_osm_queue(status, next_attempt_at, created_at)"
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_osm_objects (
+                object_key TEXT PRIMARY KEY,
+                element_type TEXT NOT NULL CHECK(element_type IN ('node','way','relation')),
+                osm_id INTEGER NOT NULL CHECK(osm_id > 0),
+                latitude REAL NOT NULL CHECK(latitude BETWEEN -90 AND 90),
+                longitude REAL NOT NULL CHECK(longitude BETWEEN -180 AND 180),
+                coordinate_uncertainty_m REAL NOT NULL CHECK(coordinate_uncertainty_m > 0),
+                man_made TEXT,
+                tower_type TEXT,
+                mobile_phone_capable INTEGER CHECK(mobile_phone_capable IS NULL OR mobile_phone_capable IN (0,1)),
+                telecom TEXT,
+                operator TEXT,
+                name TEXT,
+                height_m REAL CHECK(height_m IS NULL OR height_m BETWEEN 0.1 AND 1000),
+                checked_at INTEGER NOT NULL CHECK(checked_at >= 0),
+                expires_at INTEGER NOT NULL CHECK(expires_at >= checked_at),
+                last_request_key TEXT NOT NULL,
+                UNIQUE(element_type, osm_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_osm_objects_expiry " +
+                "ON cell_osm_objects(expires_at, element_type, osm_id)"
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_osm_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES cell_osm_queue(id) ON DELETE CASCADE,
+                attempted_at INTEGER NOT NULL CHECK(attempted_at >= 0),
+                result_status TEXT NOT NULL DEFAULT 'started' CHECK(result_status IN (
+                    'started','found','not_found','rate_limited','temporary_error',
+                    'invalid_request','invalid_response'
+                ))
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_osm_attempts_time " +
+                "ON cell_osm_attempts(attempted_at DESC, task_id)"
+        )
     }
 
 
@@ -3808,6 +3907,414 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         )
     }
 
+    /**
+     * Schedules one bounded Overpass lookup. Repeated requests for the same site, rounded
+     * location and radius share one row. Positive and negative cache entries suppress requests
+     * until their expiry time.
+     *
+     * This method performs no network access.
+     */
+    fun enqueueOpenStreetMapCellSiteLookup(
+        siteStableKey: String,
+        latitude: Double,
+        longitude: Double,
+        radiusMeters: Int,
+        nowMillis: Long = System.currentTimeMillis()
+    ): OpenStreetMapCellSiteEnqueueResult {
+        require(siteStableKey.isNotBlank() && siteStableKey.length <= 8_192)
+        require(latitude.isFinite() && latitude in -90.0..90.0)
+        require(longitude.isFinite() && longitude in -180.0..180.0)
+        require(radiusMeters in OPEN_CELL_OSM_MIN_RADIUS_METERS..OPEN_CELL_OSM_MAX_RADIUS_METERS)
+        require(nowMillis >= 0L)
+
+        // Four decimal places coalesce minor recalculation drift (~11 m in latitude).
+        val keyMaterial = buildString {
+            append(siteStableKey)
+            append('|')
+            append(String.format(Locale.US, "%.4f", latitude))
+            append('|')
+            append(String.format(Locale.US, "%.4f", longitude))
+            append('|')
+            append(radiusMeters)
+        }
+        val requestKey = sha256(keyMaterial.toByteArray(Charsets.UTF_8))
+        val db = writableDatabase
+        var result: OpenStreetMapCellSiteEnqueueResult? = null
+        db.beginTransaction()
+        try {
+            db.delete(
+                "cell_osm_queue",
+                "status IN ('completed','not_found','failed') AND updated_at < ?",
+                arrayOf((nowMillis - OPEN_CELL_OSM_QUEUE_RETENTION_MILLIS).coerceAtLeast(0L).toString())
+            )
+            db.delete("cell_osm_objects", "expires_at <= ?", arrayOf(nowMillis.toString()))
+            val existing = db.rawQuery(
+                "SELECT id, status, next_attempt_at FROM cell_osm_queue WHERE request_key = ? LIMIT 1",
+                arrayOf(requestKey)
+            ).use { cursor ->
+                if (cursor.moveToFirst()) Triple(cursor.getLong(0), cursor.getString(1), cursor.getLong(2))
+                else null
+            }
+
+            if (existing != null) {
+                val (id, status, nextAttemptAt) = existing
+                val activeOrWaiting = status == "pending" || status == "in_progress"
+                val validCache = (status == "completed" || status == "not_found") &&
+                    nowMillis < nextAttemptAt
+                val failedCooldown = status == "failed" && nowMillis < nextAttemptAt
+                if (!activeOrWaiting && !validCache && !failedCooldown) {
+                    db.update(
+                        "cell_osm_queue",
+                        ContentValues().apply {
+                            put("site_stable_key", siteStableKey)
+                            put("latitude", latitude)
+                            put("longitude", longitude)
+                            put("radius_m", radiusMeters)
+                            put("status", "pending")
+                            put("attempt_count", 0)
+                            put("updated_at", nowMillis)
+                            put("next_attempt_at", nowMillis)
+                            putNull("last_attempt_at")
+                            putNull("completed_at")
+                            putNull("last_http_status")
+                            put("last_message", "")
+                        },
+                        "id = ?",
+                        arrayOf(id.toString())
+                    )
+                }
+                result = OpenStreetMapCellSiteEnqueueResult(
+                    taskId = id,
+                    created = false,
+                    cachedResultAvailable = validCache
+                )
+            } else {
+                val id = db.insertOrThrow(
+                    "cell_osm_queue",
+                    null,
+                    ContentValues().apply {
+                        put("request_key", requestKey)
+                        put("site_stable_key", siteStableKey)
+                        put("latitude", latitude)
+                        put("longitude", longitude)
+                        put("radius_m", radiusMeters)
+                        put("status", "pending")
+                        put("attempt_count", 0)
+                        put("created_at", nowMillis)
+                        put("updated_at", nowMillis)
+                        put("next_attempt_at", nowMillis)
+                        put("last_message", "")
+                    }
+                )
+                result = OpenStreetMapCellSiteEnqueueResult(id, created = true, cachedResultAvailable = false)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return checkNotNull(result)
+    }
+
+    /**
+     * Claims at most one due OSM task. Stale in-progress work is released after a process crash.
+     * A local daily cap and a single-active-task guard protect shared public Overpass capacity.
+     */
+    fun claimNextOpenStreetMapCellSiteLookup(
+        nowMillis: Long = System.currentTimeMillis()
+    ): OpenStreetMapCellSiteQueueTask? {
+        require(nowMillis >= 0L)
+        val db = writableDatabase
+        var claimed: OpenStreetMapCellSiteQueueTask? = null
+        db.beginTransaction()
+        try {
+            val staleBefore = (nowMillis - OPEN_CELL_OSM_STALE_TASK_MILLIS).coerceAtLeast(0L)
+            db.execSQL(
+                "UPDATE cell_osm_queue SET status = 'pending', updated_at = ?, " +
+                    "next_attempt_at = MIN(next_attempt_at, ?), " +
+                    "last_message = 'Recovered stale lookup after process interruption' " +
+                    "WHERE status = 'in_progress' AND last_attempt_at IS NOT NULL AND last_attempt_at <= ?",
+                arrayOf(nowMillis, nowMillis, staleBefore)
+            )
+
+            val activeExists = db.rawQuery(
+                "SELECT 1 FROM cell_osm_queue WHERE status = 'in_progress' LIMIT 1",
+                null
+            ).use { it.moveToFirst() }
+            if (activeExists) {
+                db.setTransactionSuccessful()
+                return null
+            }
+
+            val attemptsLastDay = db.rawQuery(
+                "SELECT COUNT(*) FROM cell_osm_attempts WHERE attempted_at >= ?",
+                arrayOf((nowMillis - OPEN_CELL_OSM_DAILY_ATTEMPT_WINDOW_MILLIS).coerceAtLeast(0L).toString())
+            ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+            if (attemptsLastDay >= OPEN_CELL_OSM_MAX_ATTEMPTS_PER_DAY) {
+                db.setTransactionSuccessful()
+                return null
+            }
+
+            val id = db.rawQuery(
+                "SELECT id FROM cell_osm_queue WHERE status = 'pending' AND next_attempt_at <= ? " +
+                    "ORDER BY next_attempt_at, created_at, id LIMIT 1",
+                arrayOf(nowMillis.toString())
+            ).use { if (it.moveToFirst()) it.getLong(0) else null }
+
+            if (id != null) {
+                val attemptsBeforeClaim = readOpenStreetMapCellSiteQueueTask(db, id)?.attemptCount ?: 0
+                val changed = db.update(
+                    "cell_osm_queue",
+                    ContentValues().apply {
+                        put("status", "in_progress")
+                        put("attempt_count", attemptsBeforeClaim + 1)
+                        put("last_attempt_at", nowMillis)
+                        put("updated_at", nowMillis)
+                    },
+                    "id = ? AND status = 'pending' AND next_attempt_at <= ?",
+                    arrayOf(id.toString(), nowMillis.toString())
+                )
+                if (changed == 1) {
+                    db.insertOrThrow(
+                        "cell_osm_attempts",
+                        null,
+                        ContentValues().apply {
+                            put("task_id", id)
+                            put("attempted_at", nowMillis)
+                            put("result_status", "started")
+                        }
+                    )
+                    claimed = readOpenStreetMapCellSiteQueueTask(db, id)
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return claimed
+    }
+
+    /**
+     * Stores a parsed Overpass response and advances its durable queue state.
+     * HTTP 429/406 and temporary server errors use exponential backoff; a no-result response is
+     * negatively cached for a week. Invalid requests/responses are retained as failed diagnostics.
+     */
+    fun finishOpenStreetMapCellSiteLookup(
+        taskId: Long,
+        response: OpenStreetMapCellSiteResponse,
+        httpStatus: Int?,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        require(taskId > 0L)
+        require(nowMillis >= 0L)
+        require(httpStatus == null || httpStatus in 100..599)
+        val db = writableDatabase
+        var finished = false
+        db.beginTransaction()
+        try {
+            val task = db.rawQuery(
+                "SELECT request_key, attempt_count, status FROM cell_osm_queue WHERE id = ?",
+                arrayOf(taskId.toString())
+            ).use { cursor ->
+                if (cursor.moveToFirst()) Triple(cursor.getString(0), cursor.getInt(1), cursor.getString(2))
+                else null
+            } ?: return false
+
+            if (task.third != "in_progress") return false
+            val requestKey = task.first
+            val attempts = task.second.coerceAtLeast(1)
+            val backoff = openCellOsmRetryDelayMillis(attempts)
+            val (status, nextAttemptAt, completedAt) = when (response.status) {
+                OpenStreetMapCellSiteLookupStatus.FOUND -> {
+                    if (response.objects.isEmpty()) {
+                        Triple("failed", nowMillis, nowMillis)
+                    } else {
+                        response.objects.forEach { osmObject ->
+                            validateOpenStreetMapCellSiteObject(osmObject)
+                            db.insertWithOnConflict(
+                                "cell_osm_objects",
+                                null,
+                                openStreetMapCellSiteObjectValues(
+                                    osmObject,
+                                    checkedAtMillis = nowMillis,
+                                    expiresAtMillis = nowMillis + OPEN_CELL_OSM_OBJECT_TTL_MILLIS,
+                                    requestKey = requestKey
+                                ),
+                                SQLiteDatabase.CONFLICT_REPLACE
+                            )
+                        }
+                        Triple("completed", nowMillis + OPEN_CELL_OSM_OBJECT_TTL_MILLIS, nowMillis)
+                    }
+                }
+                OpenStreetMapCellSiteLookupStatus.NOT_FOUND ->
+                    Triple("not_found", nowMillis + OPEN_CELL_OSM_NEGATIVE_TTL_MILLIS, nowMillis)
+                OpenStreetMapCellSiteLookupStatus.RATE_LIMITED,
+                OpenStreetMapCellSiteLookupStatus.TEMPORARY_ERROR ->
+                    Triple("pending", nowMillis + maxOf(OPEN_CELL_OSM_MIN_RETRY_DELAY_MILLIS, backoff), null)
+                OpenStreetMapCellSiteLookupStatus.INVALID_REQUEST,
+                OpenStreetMapCellSiteLookupStatus.INVALID_RESPONSE ->
+                    Triple("failed", nowMillis + OPEN_CELL_OSM_FAILED_RETRY_DELAY_MILLIS, nowMillis)
+            }
+
+            db.update(
+                "cell_osm_queue",
+                ContentValues().apply {
+                    put("status", status)
+                    put("updated_at", nowMillis)
+                    put("next_attempt_at", nextAttemptAt)
+                    if (completedAt == null) putNull("completed_at") else put("completed_at", completedAt)
+                    if (httpStatus == null) putNull("last_http_status") else put("last_http_status", httpStatus)
+                    put("last_message", response.message.take(300))
+                },
+                "id = ? AND status = 'in_progress'",
+                arrayOf(taskId.toString())
+            )
+            val attemptResult = response.status.name.lowercase(Locale.ROOT)
+            db.execSQL(
+                "UPDATE cell_osm_attempts SET result_status = ? WHERE id = (" +
+                    "SELECT id FROM cell_osm_attempts WHERE task_id = ? ORDER BY attempted_at DESC, id DESC LIMIT 1)",
+                arrayOf(attemptResult, taskId)
+            )
+            db.setTransactionSuccessful()
+            finished = true
+        } finally {
+            db.endTransaction()
+        }
+        return finished
+    }
+
+    /** Returns unexpired OSM communication structures for the evidence-fusion adapter. */
+    fun listCachedOpenStreetMapCellSiteObjects(
+        nowMillis: Long = System.currentTimeMillis(),
+        limit: Int = 2_000
+    ): List<OpenStreetMapCellSiteObject> {
+        require(nowMillis >= 0L)
+        val result = ArrayList<OpenStreetMapCellSiteObject>()
+        readableDatabase.rawQuery(
+            "SELECT object_key, element_type, osm_id, latitude, longitude, coordinate_uncertainty_m, " +
+                "man_made, tower_type, mobile_phone_capable, telecom, operator, name, height_m " +
+                "FROM cell_osm_objects WHERE expires_at > ? " +
+                "ORDER BY checked_at DESC, element_type, osm_id LIMIT ?",
+            arrayOf(nowMillis.toString(), limit.coerceIn(1, 5_000).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val type = OpenStreetMapElementType.parse(cursor.getString(1)) ?: continue
+                val capableIndex = cursor.getColumnIndexOrThrow("mobile_phone_capable")
+                val heightIndex = cursor.getColumnIndexOrThrow("height_m")
+                result += OpenStreetMapCellSiteObject(
+                    elementType = type,
+                    osmId = cursor.getLong(2),
+                    latitude = cursor.getDouble(3),
+                    longitude = cursor.getDouble(4),
+                    coordinateUncertaintyMeters = cursor.getDouble(5),
+                    manMade = cursor.getString(6),
+                    towerType = cursor.getString(7),
+                    mobilePhoneCapable = if (cursor.isNull(capableIndex)) null else cursor.getInt(capableIndex) != 0,
+                    telecom = cursor.getString(9),
+                    operator = cursor.getString(10),
+                    name = cursor.getString(11),
+                    heightMeters = if (cursor.isNull(heightIndex)) null else cursor.getDouble(heightIndex)
+                )
+            }
+        }
+        return result
+    }
+
+    fun listOpenStreetMapCellSiteQueue(limit: Int = 100): List<OpenStreetMapCellSiteQueueTask> {
+        val result = ArrayList<OpenStreetMapCellSiteQueueTask>()
+        readableDatabase.rawQuery(
+            "SELECT id, request_key, site_stable_key, latitude, longitude, radius_m, status, attempt_count, " +
+                "created_at, next_attempt_at, last_attempt_at, last_http_status, last_message " +
+                "FROM cell_osm_queue ORDER BY created_at DESC, id DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 1_000).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += cursor.toOpenStreetMapCellSiteQueueTask()
+        }
+        return result
+    }
+
+    /** Removes the locally cached OSM objects and pending lookup metadata. */
+    fun clearOpenStreetMapCellSiteData(): Int {
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val objectCount = db.delete("cell_osm_objects", null, null)
+            db.delete("cell_osm_queue", null, null)
+            db.setTransactionSuccessful()
+            objectCount
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun readOpenStreetMapCellSiteQueueTask(
+        db: SQLiteDatabase,
+        id: Long
+    ): OpenStreetMapCellSiteQueueTask? = db.rawQuery(
+        "SELECT id, request_key, site_stable_key, latitude, longitude, radius_m, status, attempt_count, " +
+            "created_at, next_attempt_at, last_attempt_at, last_http_status, last_message " +
+            "FROM cell_osm_queue WHERE id = ?",
+        arrayOf(id.toString())
+    ).use { if (it.moveToFirst()) it.toOpenStreetMapCellSiteQueueTask() else null }
+
+    private fun Cursor.toOpenStreetMapCellSiteQueueTask() = OpenStreetMapCellSiteQueueTask(
+        id = getLong(0),
+        requestKey = getString(1),
+        siteStableKey = getString(2),
+        latitude = getDouble(3),
+        longitude = getDouble(4),
+        radiusMeters = getInt(5),
+        status = getString(6),
+        attemptCount = getInt(7),
+        createdAtMillis = getLong(8),
+        nextAttemptAtMillis = getLong(9),
+        lastAttemptAtMillis = if (isNull(10)) null else getLong(10),
+        lastHttpStatus = if (isNull(11)) null else getInt(11),
+        lastMessage = getString(12).orEmpty()
+    )
+
+    private fun openStreetMapCellSiteObjectValues(
+        osmObject: OpenStreetMapCellSiteObject,
+        checkedAtMillis: Long,
+        expiresAtMillis: Long,
+        requestKey: String
+    ) = ContentValues().apply {
+        put("object_key", osmObject.stableKey)
+        put("element_type", osmObject.elementType.name.lowercase(Locale.ROOT))
+        put("osm_id", osmObject.osmId)
+        put("latitude", osmObject.latitude)
+        put("longitude", osmObject.longitude)
+        put("coordinate_uncertainty_m", osmObject.coordinateUncertaintyMeters)
+        put("man_made", osmObject.manMade)
+        put("tower_type", osmObject.towerType)
+        if (osmObject.mobilePhoneCapable == null) putNull("mobile_phone_capable")
+        else put("mobile_phone_capable", if (osmObject.mobilePhoneCapable) 1 else 0)
+        put("telecom", osmObject.telecom)
+        put("operator", osmObject.operator)
+        put("name", osmObject.name)
+        if (osmObject.heightMeters == null) putNull("height_m") else put("height_m", osmObject.heightMeters)
+        put("checked_at", checkedAtMillis)
+        put("expires_at", expiresAtMillis)
+        put("last_request_key", requestKey)
+    }
+
+    private fun validateOpenStreetMapCellSiteObject(osmObject: OpenStreetMapCellSiteObject) {
+        val expectedKey = "osm:${osmObject.elementType.name.lowercase(Locale.ROOT)}:${osmObject.osmId}"
+        require(osmObject.osmId > 0L && osmObject.stableKey == expectedKey)
+        require(osmObject.latitude.isFinite() && osmObject.latitude in -90.0..90.0)
+        require(osmObject.longitude.isFinite() && osmObject.longitude in -180.0..180.0)
+        require(osmObject.coordinateUncertaintyMeters.isFinite() && osmObject.coordinateUncertaintyMeters > 0.0)
+        require(osmObject.heightMeters == null ||
+            (osmObject.heightMeters.isFinite() && osmObject.heightMeters in 0.1..1_000.0))
+    }
+
+    private fun openCellOsmRetryDelayMillis(attemptCount: Int): Long {
+        val shift = (attemptCount - 1).coerceIn(0, 10)
+        return minOf(
+            OPEN_CELL_OSM_MAX_RETRY_DELAY_MILLIS,
+            OPEN_CELL_OSM_BASE_RETRY_DELAY_MILLIS * (1L shl shift)
+        )
+    }
+
     /** Returns saved physical sites with their exact member identities. */
     fun listCellSites(limit: Int = 2_000): List<CellSiteRecord> {
         val boundedLimit = limit.coerceIn(1, 5_000)
@@ -5777,7 +6284,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 16
+        private const val DB_VERSION = 17
         private const val PASSIVE_OBSERVATION_HARD_LIMIT = 500_000
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
