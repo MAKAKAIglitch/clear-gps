@@ -6100,6 +6100,45 @@ private fun DatabaseScreen(
 }
 
 
+    if (pointFilterDialogExpanded) {
+        AlertDialog(
+            onDismissRequest = { pointFilterDialogExpanded = false },
+            title = { Text("Фильтр точек") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Минимум обнаружений: " + draftMinimumSightings.toInt())
+                    Slider(
+                        value = draftMinimumSightings,
+                        onValueChange = { draftMinimumSightings = it },
+                        valueRange = 1f..100f,
+                        steps = 98
+                    )
+                    Text(
+                        "Используется накопительный счётчик радиоточки. Подробная история наблюдений не изменяется.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pointFilterDialogExpanded = false
+                    onMinimumSightings(draftMinimumSightings.toInt())
+                }) { Text("Применить") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        draftMinimumSightings = 1f
+                        pointFilterDialogExpanded = false
+                        onMinimumSightings(1)
+                    }) { Text("Сбросить") }
+                    TextButton(onClick = { pointFilterDialogExpanded = false }) { Text("Отмена") }
+                }
+            }
+        )
+    }
+
 @Composable
 private fun RadioSourceRow(
     source: RadioSourceRecord,
@@ -6694,44 +6733,6 @@ private fun BeaconDbDatabaseContent(
                 }
             }
         }
-    }
-    if (pointFilterDialogExpanded) {
-        AlertDialog(
-            onDismissRequest = { pointFilterDialogExpanded = false },
-            title = { Text("Фильтр точек") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Минимум обнаружений: " + draftMinimumSightings.toInt())
-                    Slider(
-                        value = draftMinimumSightings,
-                        onValueChange = { draftMinimumSightings = it },
-                        valueRange = 1f..100f,
-                        steps = 98
-                    )
-                    Text(
-                        "Используется накопительный счётчик радиоточки. Подробная история наблюдений не изменяется.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pointFilterDialogExpanded = false
-                    onMinimumSightings(draftMinimumSightings.toInt())
-                }) { Text("Применить") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        draftMinimumSightings = 1f
-                        pointFilterDialogExpanded = false
-                        onMinimumSightings(1)
-                    }) { Text("Сбросить") }
-                    TextButton(onClick = { pointFilterDialogExpanded = false }) { Text("Отмена") }
-                }
-            }
-        )
     }
 }
 
