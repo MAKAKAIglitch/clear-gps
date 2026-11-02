@@ -376,6 +376,102 @@ class LocalRadioDatabaseRetentionAndSourceDeletionTest {
         assertEquals(0, countRows("radio_sources", "id = ?", sourceId.toString()))
     }
 
+    @Test
+    fun listAndSearchApplyObservationSortBeforeLimit() {
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val baseTime = 1_800_000_000_000L
+        insertSortPoint(localSourceId, "sort-low", "Zeta", baseTime, baseTime + 500L, 2, -35, 8.0)
+        insertSortPoint(localSourceId, "sort-high", "Alpha", baseTime + 1L, baseTime + 300L, 12, -90, null)
+        insertSortPoint(localSourceId, "sort-middle", "Beta", baseTime + 2L, baseTime + 700L, 5, -58, 35.0)
+
+        val mostObserved = RadioPointSort(RadioPointSortField.SIGHTINGS, descending = true)
+        assertEquals(
+            "sort-high",
+            database.listPoints(limit = 1, sort = mostObserved).single().identifier
+        )
+        assertEquals(
+            listOf("sort-high", "sort-middle", "sort-low"),
+            database.searchPoints("sort-", limit = 3, sort = mostObserved).map { it.identifier }
+        )
+        assertEquals(
+            listOf("sort-low", "sort-middle", "sort-high"),
+            database.listPoints(
+                limit = 3,
+                sort = RadioPointSort(RadioPointSortField.SIGHTINGS, descending = false)
+            ).map { it.identifier }
+        )
+    }
+
+    @Test
+    fun signalAccuracyNameAndDateSortsUseStableNullSafeOrder() {
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val baseTime = 1_800_000_100_000L
+        insertSortPoint(localSourceId, "sort-low", "Zeta", baseTime, baseTime + 500L, 2, -35, 8.0)
+        insertSortPoint(localSourceId, "sort-high", "Alpha", baseTime + 1L, baseTime + 300L, 12, -90, null)
+        insertSortPoint(localSourceId, "sort-middle", "Beta", baseTime + 2L, baseTime + 700L, 5, -58, 35.0)
+
+        assertEquals(
+            listOf("sort-low", "sort-middle", "sort-high"),
+            database.listPoints(sort = RadioPointSort(RadioPointSortField.SIGNAL, true))
+                .map { it.identifier }
+        )
+        assertEquals(
+            listOf("sort-low", "sort-middle", "sort-high"),
+            database.listPoints(sort = RadioPointSort(RadioPointSortField.ACCURACY, false))
+                .map { it.identifier }
+        )
+        assertEquals(
+            listOf("sort-middle", "sort-low", "sort-high"),
+            database.listPoints(sort = RadioPointSort(RadioPointSortField.ACCURACY, true))
+                .map { it.identifier }
+        )
+        assertEquals(
+            listOf("sort-high", "sort-middle", "sort-low"),
+            database.listPoints(sort = RadioPointSort(RadioPointSortField.NAME, false))
+                .map { it.identifier }
+        )
+        assertEquals(
+            listOf("sort-middle", "sort-low", "sort-high"),
+            database.listPoints(sort = RadioPointSort(RadioPointSortField.LAST_SEEN, true))
+                .map { it.identifier }
+        )
+    }
+
+    private fun insertSortPoint(
+        sourceId: Long,
+        identifier: String,
+        label: String,
+        firstSeen: Long,
+        lastSeen: Long,
+        sightings: Int,
+        rssi: Int,
+        accuracy: Double?
+    ) {
+        sqlite.insertOrThrow(
+            "radio_points",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", identifier)
+                put("label", label)
+                put("ssid", "")
+                put("notes", "")
+                putNull("latitude")
+                putNull("longitude")
+                if (accuracy == null) putNull("accuracy") else put("accuracy", accuracy)
+                put("last_rssi", rssi)
+                put("peak_rssi", rssi)
+                put("frequency", 2412)
+                put("first_seen", firstSeen)
+                put("last_seen", lastSeen)
+                put("sightings", sightings)
+                put("position_source", "local-test")
+                put("source_id", sourceId)
+                putNull("position_observed_at")
+            }
+        )
+    }
+
     private fun insertObservation(
         sourceId: Long,
         observedAt: Long,
