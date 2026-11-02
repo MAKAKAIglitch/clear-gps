@@ -1123,11 +1123,20 @@ class RadioGeolocationRepository(private val context: Context) {
                     val ssid = it.SSID.orEmpty().takeUnless { name ->
                         name == WifiManager.UNKNOWN_SSID || name.equals("<unknown ssid>", ignoreCase = true)
                     }.orEmpty().take(100)
+                    val mldMac = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        try {
+                            it.getApMldMacAddress()?.toString()?.lowercase(Locale.ROOT)
+                                ?.takeIf { address -> address.matches(MAC_REGEX) }
+                        } catch (_: RuntimeException) {
+                            null
+                        }
+                    } else null
                     RadioSignal(
                         "wifi", it.BSSID.lowercase(Locale.ROOT), it.level, it.frequency, ssid,
                         observedAtElapsedRealtimeNanos = it.timestamp
                             .takeIf { timestamp -> timestamp > 0L && timestamp <= Long.MAX_VALUE / 1_000L }
-                            ?.times(1_000L)
+                            ?.times(1_000L),
+                        wifiMldMac = mldMac
                     )
                 }
                 .toList()

@@ -445,6 +445,8 @@ fun ClearGpsApp(
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
+    var selectedWifiNetworkGroup by remember { mutableStateOf<WifiNetworkGroupRecord?>(null) }
+    var selectedWifiNetworkCandidates by remember { mutableStateOf<List<WifiNetworkCandidate>>(emptyList()) }
     var mapViewportTopInWindowPx by remember { mutableStateOf(0) }
     var mapViewportBottomInWindowPx by remember { mutableStateOf(0) }
     var detailsSheetTopInWindowPx by remember { mutableStateOf(0) }
@@ -793,7 +795,19 @@ fun ClearGpsApp(
                             )
                         }
                     }
-                    point to RadioObservationSortPolicy.strongestFirst(history)
+                    val group = if (point.type == "wifi") database.findWifiNetworkGroup(point.id) else null
+                    val candidates = if (point.type == "wifi") {
+                        val allWifi = radioRepository.loadLocalPoints(
+                            limit = RadioRepository.MAX_LIST_LIMIT,
+                            minimumSightings = 1
+                        ).filter { it.type == "wifi" }
+                        WifiNetworkGroupingPolicy.suggestCandidates(
+                            point = point,
+                            pool = allWifi,
+                            excludedPointIds = group?.members?.map { it.id }?.toSet().orEmpty()
+                        )
+                    } else emptyList()
+                    Triple(point, RadioObservationSortPolicy.strongestFirst(history), group to candidates)
                 }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
@@ -810,6 +824,8 @@ fun ClearGpsApp(
             val observations = data.second
             val center = estimateObservationCenter(observations)
             selectedMapPoint = point
+            selectedWifiNetworkGroup = data.third.first
+            selectedWifiNetworkCandidates = data.third.second
             selectedPointObservations = observations
             selectedPointCenter = center
             selectedObservationId = null
@@ -821,6 +837,8 @@ fun ClearGpsApp(
         mapController.clearPendingFocus()
         selectedMapPlacePoints = emptyList()
         selectedMapPoint = null
+        selectedWifiNetworkGroup = null
+        selectedWifiNetworkCandidates = emptyList()
         selectedPointObservations = emptyList()
         selectedPointCenter = null
         selectedObservationId = null
@@ -4163,7 +4181,36 @@ fun ClearGpsApp(
                     observations = selectedPointObservations,
                     center = selectedPointCenter,
                     selectedObservationId = selectedObservationId,
+                    wifiNetworkGroup = selectedWifiNetworkGroup,
+                    wifiNetworkCandidates = selectedWifiNetworkCandidates,
                     onDismiss = { closeRadioPointDetails() },
+                    onConfirmWifiCandidate = { candidateId ->
+                        val current = selectedMapPoint
+                        if (current != null) scope.launch {
+                            val grouped = withContext(Dispatchers.IO) {
+                                database.groupWifiPoints(listOf(current.id, candidateId))
+                            }
+                            if (grouped != null) {
+                                Toast.makeText(context, "Точки объединены в одну Wi-Fi сеть вручную", Toast.LENGTH_SHORT).show()
+                                openRadioPointDetails(current.id)
+                            } else {
+                                Toast.makeText(context, "Не удалось объединить выбранные Wi-Fi точки", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onRemoveWifiNetworkGroup = {
+                        val current = selectedMapPoint
+                        if (current != null) scope.launch {
+                            val removed = withContext(Dispatchers.IO) {
+                                database.removeWifiPointFromNetworkGroup(current.id)
+                            }
+                            if (removed) {
+                                Toast.makeText(context, "Точка отделена от Wi-Fi сети", Toast.LENGTH_SHORT).show()
+                                openRadioPointDetails(current.id)
+                            }
+                        }
+                    },
+                    onOpenWifiNetworkMember = { memberId -> openRadioPointDetails(memberId) },
                     onObservationSelected = { observationId ->
                         selectedObservationId = observationId
                         selectedPointObservations.firstOrNull { it.id == observationId }?.let { observation ->
@@ -6856,8 +6903,15 @@ private fun RadioPointPlaceSheet(
                 Column(Modifier.weight(1f)) {
                     Text("Что здесь", style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold)
+                    val sharedMldMac = points.mapNotNull { it.wifiMldMac?.lowercase() }.distinct()
+                    val oneWifi7Device = points.size > 1 && points.all { it.type == "wifi" } &&
+                        sharedMldMac.size == 1 && points.all { it.wifiMldMac?.equals(sharedMldMac.single(), true) == true }
                     Text(
-                        "В одном месте найдено объектов: ${points.size}. Выбери нужную запись.",
+                        if (oneWifi7Device) {
+                            "Android подтвердил одну Wi-Fi 7 точку доступа с несколькими MLO-ссылками. BSSID оставлены отдельными."
+                        } else {
+                            "В одном месте найдено объектов: ${points.size}. Выбери нужную запись."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -6924,6 +6978,13 @@ private fun RadioPointPlaceSheet(
     }
 }
 
+private fun wifiFrequencyBandLabel(frequencyMHz: Int): String? = when (frequencyMHz) {
+    in 2_400..2_500 -> "2,4 ГГц"
+    in 4_900..5_900 -> "5 ГГц"
+    in 5_925..7_125 -> "6 ГГц"
+    else -> null
+}
+
 @Composable
 private fun RadioPointDetailsSheet(
     modifier: Modifier = Modifier,
@@ -6933,7 +6994,12 @@ private fun RadioPointDetailsSheet(
     observations: List<RadioPointObservation>,
     center: RadioPointCenter?,
     selectedObservationId: Long?,
+    wifiNetworkGroup: WifiNetworkGroupRecord?,
+    wifiNetworkCandidates: List<WifiNetworkCandidate>,
     onDismiss: () -> Unit,
+    onConfirmWifiCandidate: (Long) -> Unit,
+    onRemoveWifiNetworkGroup: () -> Unit,
+    onOpenWifiNetworkMember: (Long) -> Unit,
     onEdit: () -> Unit,
     onObservationSelected: (Long) -> Unit
 ) {
@@ -7053,6 +7119,26 @@ private fun RadioPointDetailsSheet(
                             }
                             Text("Последний сигнал в базе: ${point.rssi} dBm · максимум: ${point.peakRssi} dBm")
                             if (point.frequency > 0) Text("Последняя частота: ${point.frequency} MHz")
+                            val frequencies = observations.map { it.frequency }.filter { it > 0 }.distinct().sorted()
+                            if (point.type == "wifi" && frequencies.isNotEmpty()) {
+                                Text(
+                                    "Все замеченные частоты: " + frequencies.joinToString(" / ") { "$it MHz" },
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    "Диапазоны: " + frequencies.mapNotNull(::wifiFrequencyBandLabel).distinct().joinToString(", "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                            if (point.type == "wifi" && !point.wifiMldMac.isNullOrBlank()) {
+                                Text("MLD MAC (Wi-Fi 7): " + point.wifiMldMac, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Android подтвердил, что эта точка доступа относится к Multi-Link Device. Совпадающие MLD MAC объединяются на карте автоматически.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
                             Text(
                                 "Источник сохранённой позиции: " + point.positionSource,
                                 style = MaterialTheme.typography.bodySmall,
@@ -7111,6 +7197,96 @@ private fun RadioPointDetailsSheet(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colors.onSurfaceVariant
                                 )
+                            }
+                        }
+                    }
+                }
+                if (point.type == "wifi" && wifiNetworkGroup != null) {
+                    item(key = "wifi-network-group") {
+                        Surface(
+                            Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.secondaryContainer
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Подтверждённая общая Wi-Fi сеть", fontWeight = FontWeight.SemiBold,
+                                    color = colors.onSecondaryContainer)
+                                Text(
+                                    "${wifiNetworkGroup.label} · ${wifiNetworkGroup.members.size} точек доступа",
+                                    color = colors.onSecondaryContainer
+                                )
+                                Text(
+                                    "Эта связь создана вручную. BSSID и история каждой точки хранятся отдельно.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSecondaryContainer
+                                )
+                                wifiNetworkGroup.members.filter { it.id != point.id }.forEach { member ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                member.ssid.ifBlank { "Скрытая сеть" },
+                                                color = colors.onSecondaryContainer,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(member.identifier, color = colors.onSecondaryContainer,
+                                                style = MaterialTheme.typography.labelSmall)
+                                        }
+                                        TextButton(onClick = { onOpenWifiNetworkMember(member.id) }) {
+                                            Text("Открыть")
+                                        }
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = onRemoveWifiNetworkGroup,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Отделить эту точку от сети") }
+                            }
+                        }
+                    }
+                }
+                if (point.type == "wifi" && wifiNetworkCandidates.isNotEmpty()) {
+                    item(key = "wifi-network-candidates-title") {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Возможные связанные точки", style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Это только подсказки для Mesh, репитеров или дополнительных интерфейсов роутера. Ничего не объединяется без твоего подтверждения.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        }
+                    }
+                    items(wifiNetworkCandidates, key = { "wifi-candidate-${it.point.id}" }) { candidate ->
+                        Surface(
+                            Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(15.dp),
+                            color = colors.surfaceContainerHigh
+                        ) {
+                            Column(Modifier.padding(11.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            candidate.point.ssid.ifBlank { "Скрытая Wi-Fi сеть" },
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(candidate.point.identifier, style = MaterialTheme.typography.labelSmall,
+                                            color = colors.onSurfaceVariant)
+                                    }
+                                    Text(
+                                        "${candidate.score}%",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = colors.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                candidate.reasons.forEach { reason ->
+                                    Text("• " + reason, style = MaterialTheme.typography.bodySmall,
+                                        color = colors.onSurfaceVariant)
+                                }
+                                Button(
+                                    onClick = { onConfirmWifiCandidate(candidate.point.id) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("Подтвердить: одна Wi-Fi сеть") }
                             }
                         }
                     }

@@ -204,12 +204,23 @@ class ClearGpsMapController {
                             val renderedPoints = try {
                                 mapObject.queryRenderedFeatures(hitBounds, WIFI_POINTS_LAYER, CELL_POINTS_LAYER, BLE_POINTS_LAYER)
                             } catch (_: Exception) { emptyList() }
-                            val candidates = renderedPoints.mapNotNull { feature ->
-                                val pointId = feature.getStringProperty("pointId")?.toLongOrNull()
-                                    ?: return@mapNotNull null
-                                val geometry = feature.geometry() as? Point ?: return@mapNotNull null
-                                val projected = mapObject.projection.toScreenLocation(LatLng(geometry.latitude(), geometry.longitude()))
-                                MapPointHitCandidate(pointId, projected.x, projected.y)
+                            val candidates = renderedPoints.flatMap { feature ->
+                                val pointIds = feature.getStringProperty("pointIds")
+                                    ?.split(",")
+                                    ?.mapNotNull { it.toLongOrNull() }
+                                    ?.filter { it > 0L }
+                                    ?.distinct()
+                                    ?.takeIf { it.isNotEmpty() }
+                                    ?: feature.getStringProperty("pointId")?.toLongOrNull()
+                                        ?.takeIf { it > 0L }?.let(::listOf)
+                                    ?: return@flatMap emptyList()
+                                val geometry = feature.geometry() as? Point ?: return@flatMap emptyList()
+                                val projected = mapObject.projection.toScreenLocation(
+                                    LatLng(geometry.latitude(), geometry.longitude())
+                                )
+                                pointIds.map { pointId ->
+                                    MapPointHitCandidate(pointId, projected.x, projected.y)
+                                }
                             }
                             val selection = MapPointHitTestPolicy.selectNearest(candidates, screenPoint.x, screenPoint.y, density)
                             val ids = selection?.pointIds.orEmpty()
@@ -1090,14 +1101,16 @@ class ClearGpsMapController {
 
     private fun renderRadioPoints() {
         if (!mapReady) return
+        val mapMarkers = WifiNetworkGroupingPolicy.buildMapMarkers(radioPoints)
         fun pointsFor(type: String): FeatureCollection {
             if (!showRadioPoints || !MapLayerVisibilityPolicy.isRadioTypeVisible(type, layerVisibility)) {
                 return emptyCollection()
             }
-            val features = radioPoints.asSequence().filter { it.type == type }
-                .map { point ->
-                    Feature.fromGeometry(Point.fromLngLat(point.longitude!!, point.latitude!!)).apply {
-                        addStringProperty("pointId", point.id.toString())
+            val features = mapMarkers.asSequence().filter { it.type == type }
+                .map { marker ->
+                    Feature.fromGeometry(Point.fromLngLat(marker.longitude, marker.latitude)).apply {
+                        addStringProperty("pointId", marker.pointIds.first().toString())
+                        addStringProperty("pointIds", marker.pointIds.joinToString(","))
                     }
                 }
                 .toList()

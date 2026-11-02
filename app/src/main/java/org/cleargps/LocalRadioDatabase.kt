@@ -35,7 +35,9 @@ data class RadioSignal(
     val type: String, val identifier: String, val rssi: Int,
     val frequency: Int = 0, val ssid: String = "",
     /** Monotonic measurement timestamp when exposed by Android; never persisted. */
-    val observedAtElapsedRealtimeNanos: Long? = null
+    val observedAtElapsedRealtimeNanos: Long? = null,
+    /** Android's stable Wi-Fi 7 Multi-Link Device address, when the scan API exposes it. */
+    val wifiMldMac: String? = null
 )
 
 data class BeaconDbRefinementCandidate(
@@ -84,7 +86,15 @@ data class RadioPointRecord(
     val latitude: Double?, val longitude: Double?, val accuracyMeters: Double?,
     val rssi: Int, val peakRssi: Int, val frequency: Int, val firstSeen: Long, val lastSeen: Long,
     val sightings: Int, val positionSource: String, val sourceId: Long? = null,
-    val positionObservedAt: Long? = null
+    val positionObservedAt: Long? = null,
+    val wifiMldMac: String? = null
+)
+
+data class WifiNetworkGroupRecord(
+    val id: Long,
+    val label: String,
+    val createdAt: Long,
+    val members: List<RadioPointRecord>
 )
 
 data class RadioScanHistoryItem(
@@ -880,6 +890,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 sightings INTEGER NOT NULL DEFAULT 1, position_source TEXT NOT NULL DEFAULT 'unknown',
                 source_id INTEGER REFERENCES radio_sources(id) ON DELETE SET NULL,
                 position_observed_at INTEGER,
+                wifi_mld_mac TEXT,
                 UNIQUE(radio_type, identifier)
             )
         """.trimIndent())
@@ -899,6 +910,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_import_dedupe ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
+        createWifiNetworkGroupTables(db)
         db.execSQL("""
             CREATE TABLE scan_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -989,6 +1001,31 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             // Independent, deletable estimates stay outside radio_observations and detector training.
             createRadioAutoRefinementTables(db)
         }
+        if (oldVersion < 13) {
+            // MLD identity is optional; legacy Wi-Fi rows remain valid without it.
+            db.execSQL("ALTER TABLE radio_points ADD COLUMN wifi_mld_mac TEXT")
+        }
+        if (oldVersion < 14) {
+            createWifiNetworkGroupTables(db)
+        }
+    }
+
+    private fun createWifiNetworkGroupTables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS wifi_network_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS wifi_network_group_members (
+                point_id INTEGER PRIMARY KEY REFERENCES radio_points(id) ON DELETE CASCADE,
+                group_id INTEGER NOT NULL REFERENCES wifi_network_groups(id) ON DELETE CASCADE,
+                added_at INTEGER NOT NULL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX IF NOT EXISTS wifi_network_group_members_group ON wifi_network_group_members(group_id)")
     }
 
     /**
@@ -1105,6 +1142,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                         put("peak_rssi", maxOf(old?.peakRssi ?: -120, signal.rssi))
                         put("frequency", signal.frequency)
                         if (signal.ssid.isNotBlank()) put("ssid", signal.ssid.take(100))
+                        if (signal.type == "wifi" && signal.wifiMldMac != null) {
+                            put("wifi_mld_mac", signal.wifiMldMac.lowercase(Locale.ROOT))
+                        }
                         put("last_seen", now)
                         put("sightings", (old?.sightings ?: 0) + 1)
                     }
@@ -3044,6 +3084,12 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         "SELECT * FROM radio_points WHERE id = ?", arrayOf(id.toString())
     ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
 
+    internal fun findWifiPointByIdentifier(identifier: String): RadioPointRecord? =
+        readableDatabase.rawQuery(
+            "SELECT * FROM radio_points WHERE radio_type = 'wifi' AND identifier = ? LIMIT 1",
+            arrayOf(identifier.lowercase(Locale.ROOT))
+        ).use { if (it.moveToFirst()) it.toRadioPoint() else null }
+
     /** All retained observations for one radio point (the DB keeps at most 20,000). */
     fun listObservations(point: RadioPointRecord, limit: Int = 20_000): List<RadioPointObservation> {
         val result = ArrayList<RadioPointObservation>()
@@ -3216,7 +3262,116 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     fun deletePoint(id: Long): Boolean {
         val db = writableDatabase
         clearAllRadioDeletionUndo(db)
-        return db.delete("radio_points", "id = ?", arrayOf(id.toString())) > 0
+        val deleted = db.delete("radio_points", "id = ?", arrayOf(id.toString())) > 0
+        if (deleted) {
+            // A manual network needs at least two members to remain meaningful.
+            db.execSQL(
+                "DELETE FROM wifi_network_groups WHERE id IN (" +
+                    "SELECT group_id FROM wifi_network_group_members GROUP BY group_id HAVING COUNT(*) < 2)"
+            )
+        }
+        return deleted
+    }
+
+    fun groupWifiPoints(pointIds: List<Long>): Long? {
+        val ids = pointIds.filter { it > 0L }.distinct().take(64)
+        if (ids.size < 2) return null
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val placeholders = ids.joinToString(",") { "?" }
+            val wifiCount = db.rawQuery(
+                "SELECT COUNT(*) FROM radio_points WHERE radio_type = 'wifi' AND id IN ($placeholders)",
+                ids.map(Long::toString).toTypedArray()
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+            if (wifiCount != ids.size) return null
+
+            val existingGroupIds = LinkedHashSet<Long>()
+            ids.forEach { pointId ->
+                db.rawQuery(
+                    "SELECT group_id FROM wifi_network_group_members WHERE point_id = ?",
+                    arrayOf(pointId.toString())
+                ).use { cursor -> while (cursor.moveToNext()) existingGroupIds.add(cursor.getLong(0)) }
+            }
+
+            val groupId = existingGroupIds.minOrNull() ?: run {
+                val first = findPoint(ids.first()) ?: return null
+                val label = first.ssid.ifBlank { first.label }.ifBlank { "Wi-Fi сеть" }.take(100)
+                db.insertOrThrow(
+                    "wifi_network_groups",
+                    null,
+                    ContentValues().apply {
+                        put("label", label)
+                        put("created_at", System.currentTimeMillis())
+                    }
+                )
+            }
+
+            // Joining two existing groups is an explicit user action, so merge their membership.
+            existingGroupIds.filter { it != groupId }.forEach { oldGroupId ->
+                db.update(
+                    "wifi_network_group_members",
+                    ContentValues().apply { put("group_id", groupId) },
+                    "group_id = ?",
+                    arrayOf(oldGroupId.toString())
+                )
+                db.delete("wifi_network_groups", "id = ?", arrayOf(oldGroupId.toString()))
+            }
+
+            ids.forEach { pointId ->
+                db.insertWithOnConflict(
+                    "wifi_network_group_members",
+                    null,
+                    ContentValues().apply {
+                        put("point_id", pointId)
+                        put("group_id", groupId)
+                        put("added_at", System.currentTimeMillis())
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE
+                )
+            }
+            db.setTransactionSuccessful()
+            return groupId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun findWifiNetworkGroup(pointId: Long): WifiNetworkGroupRecord? {
+        val db = readableDatabase
+        val group = db.rawQuery(
+            "SELECT g.id, g.label, g.created_at FROM wifi_network_groups g " +
+                "INNER JOIN wifi_network_group_members m ON m.group_id = g.id WHERE m.point_id = ? LIMIT 1",
+            arrayOf(pointId.toString())
+        ).use { cursor ->
+            if (cursor.moveToFirst()) Triple(cursor.getLong(0), cursor.getString(1).orEmpty(), cursor.getLong(2))
+            else null
+        } ?: return null
+
+        val memberIds = ArrayList<Long>()
+        db.rawQuery(
+            "SELECT point_id FROM wifi_network_group_members WHERE group_id = ? ORDER BY added_at, point_id",
+            arrayOf(group.first.toString())
+        ).use { cursor -> while (cursor.moveToNext()) memberIds.add(cursor.getLong(0)) }
+        val members = memberIds.mapNotNull(::findPoint)
+        return WifiNetworkGroupRecord(group.first, group.second, group.third, members)
+    }
+
+    fun removeWifiPointFromNetworkGroup(pointId: Long): Boolean {
+        val db = writableDatabase
+        val groupId = db.rawQuery(
+            "SELECT group_id FROM wifi_network_group_members WHERE point_id = ? LIMIT 1",
+            arrayOf(pointId.toString())
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null } ?: return false
+        val removed = db.delete("wifi_network_group_members", "point_id = ?", arrayOf(pointId.toString())) > 0
+        if (removed) {
+            val memberCount = db.rawQuery(
+                "SELECT COUNT(*) FROM wifi_network_group_members WHERE group_id = ?",
+                arrayOf(groupId.toString())
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+            if (memberCount < 2) db.delete("wifi_network_groups", "id = ?", arrayOf(groupId.toString()))
+        }
+        return removed
     }
 
     fun clearAll() {
@@ -4548,7 +4703,10 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         getInt(getColumnIndexOrThrow("sightings")),
         getString(getColumnIndexOrThrow("position_source")).orEmpty(),
         if (getColumnIndex("source_id") >= 0 && !isNull(getColumnIndexOrThrow("source_id"))) getLong(getColumnIndexOrThrow("source_id")) else null,
-        if (getColumnIndex("position_observed_at") >= 0 && !isNull(getColumnIndexOrThrow("position_observed_at"))) getLong(getColumnIndexOrThrow("position_observed_at")) else null
+        if (getColumnIndex("position_observed_at") >= 0 && !isNull(getColumnIndexOrThrow("position_observed_at"))) getLong(getColumnIndexOrThrow("position_observed_at")) else null,
+        if (getColumnIndex("wifi_mld_mac") >= 0 && !isNull(getColumnIndexOrThrow("wifi_mld_mac"))) {
+            getString(getColumnIndexOrThrow("wifi_mld_mac"))
+        } else null
     )
 
     private fun Cursor.toHistory() = RadioScanHistoryItem(
@@ -4567,7 +4725,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 12
+        private const val DB_VERSION = 14
         private const val PASSIVE_OBSERVATION_HARD_LIMIT = 500_000
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
