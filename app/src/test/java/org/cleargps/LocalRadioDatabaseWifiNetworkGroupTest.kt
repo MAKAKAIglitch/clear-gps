@@ -25,8 +25,8 @@ class LocalRadioDatabaseWifiNetworkGroupTest {
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        // Each test gets a fresh file so Windows Robolectric never reopens a just-deleted WAL DB.
-        databaseName = "clear_gps_wifi_group_${UUID.randomUUID()}.sqlite"
+        // Keep each WAL database isolated without unnecessarily long Windows paths.
+        databaseName = "wifi_" + UUID.randomUUID() + ".db"
         database = LocalRadioDatabase(context, databaseName)
     }
 
