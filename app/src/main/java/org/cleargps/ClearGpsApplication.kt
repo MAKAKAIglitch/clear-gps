@@ -8,6 +8,13 @@ import kotlin.system.exitProcess
 
 /** Installs a minimal, privacy-preserving crash-loop guard before UI or services start. */
 class ClearGpsApplication : Application() {
+    private val openStreetMapConsentListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == ClearGpsPreferences.KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED) {
+                OpenStreetMapCellSiteWorkScheduler.sync(this)
+            }
+        }
+
     /**
      * StrictMode is deliberately log-only and enabled only for debuggable installs.
      * It helps find main-thread I/O and VM/resource mistakes without turning diagnostics
@@ -32,6 +39,9 @@ class ClearGpsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         configureDebugDiagnostics()
+        getSharedPreferences(ClearGpsPreferences.PREFS, MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(openStreetMapConsentListener)
+        OpenStreetMapCellSiteWorkScheduler.sync(this)
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
