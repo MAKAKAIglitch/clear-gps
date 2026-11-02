@@ -1,5 +1,9 @@
 package org.cleargps
 
+import org.cleargps.cell.CellIdentity
+import org.cleargps.cell.CellObservationSample
+import org.cleargps.cell.ObservationLocationOrigin
+
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
@@ -3125,6 +3129,108 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     sourceId = if (cursor.isNull(cursor.getColumnIndexOrThrow("source_id"))) null else cursor.getLong(cursor.getColumnIndexOrThrow("source_id")),
                     sourceName = cursor.getString(cursor.getColumnIndexOrThrow("source_name"))
                 ))
+            }
+        }
+        return result
+    }
+
+    /**
+     * Returns historical handset observations for one exact cell identity.
+     * Only trusted local/import sources and original located observations are eligible.
+     */
+    fun listCellObservationSamples(
+        identity: CellIdentity,
+        limit: Int = 20_000,
+        maximumCoordinateAccuracyMeters: Double = 10_000.0
+    ): List<CellObservationSample> {
+        require(maximumCoordinateAccuracyMeters.isFinite() && maximumCoordinateAccuracyMeters > 0.0)
+        val boundedLimit = limit.coerceIn(1, 20_000)
+        val identifier = listOf(
+            identity.technology.token,
+            identity.mcc,
+            identity.mnc,
+            identity.areaCode.toString(),
+            identity.cellId.toString()
+        ).joinToString(":")
+        val result = ArrayList<CellObservationSample>()
+        readableDatabase.rawQuery(
+            """
+            SELECT o.latitude, o.longitude, o.accuracy, o.rssi, o.frequency, o.observed_at,
+                   o.source_id, s.kind AS source_kind,
+                   s.trust_weight AS source_weight,
+                   COALESCE(sg.trust_weight, 1.0) AS segment_weight
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            LEFT JOIN radio_source_segment_settings sg
+              ON sg.source_id = o.source_id
+             AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+             AND sg.radio_type = o.radio_type
+            WHERE o.radio_type = 'cell'
+              AND o.identifier = ?
+              AND s.kind IN ('local', 'wigle', 'custom')
+              AND s.enabled = 1
+              AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180
+              AND o.accuracy IS NOT NULL AND o.accuracy BETWEEN 1 AND ?
+              AND o.rssi BETWEEN -160 AND 0
+              AND o.frequency >= 0 AND o.observed_at >= 0
+              AND LOWER(o.position_source) NOT LIKE '%estimate%'
+              AND LOWER(o.position_source) NOT LIKE '%lookup%'
+              AND LOWER(o.position_source) NOT LIKE '%manual%'
+              AND LOWER(o.position_source) NOT LIKE '%auto%'
+              AND LOWER(o.position_source) NOT LIKE '%opencellid%'
+              AND LOWER(o.position_source) NOT LIKE '%beacondb%'
+            ORDER BY o.observed_at DESC, o.id DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                identifier,
+                maximumCoordinateAccuracyMeters.toString(),
+                boundedLimit.toString()
+            )
+        ).use { cursor ->
+            val latIndex = cursor.getColumnIndexOrThrow("latitude")
+            val lonIndex = cursor.getColumnIndexOrThrow("longitude")
+            val accuracyIndex = cursor.getColumnIndexOrThrow("accuracy")
+            while (cursor.moveToNext()) {
+                val sourceId = cursor.getLong(cursor.getColumnIndexOrThrow("source_id"))
+                val sourceKind = cursor.getString(cursor.getColumnIndexOrThrow("source_kind")).orEmpty()
+                val sourceWeight = RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("source_weight"))
+                )
+                val segmentWeight = RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("segment_weight"))
+                )
+                val combinedWeight = sourceWeight * segmentWeight
+                if (combinedWeight <= 0.0) continue
+
+                val rawAccuracy = cursor.getDouble(accuracyIndex)
+                val effectiveAccuracy = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, combinedWeight)
+                if (!effectiveAccuracy.isFinite() || effectiveAccuracy > maximumCoordinateAccuracyMeters) continue
+
+                val origin = when (sourceKind) {
+                    "local" -> ObservationLocationOrigin.OBSERVED
+                    "wigle", "custom" -> ObservationLocationOrigin.IMPORTED
+                    else -> continue
+                }
+                val profileId = if (sourceKind == "local") "local-device" else null
+                result.add(
+                    CellObservationSample(
+                        identity = identity,
+                        latitude = cursor.getDouble(latIndex),
+                        longitude = cursor.getDouble(lonIndex),
+                        coordinateAccuracyMeters = effectiveAccuracy,
+                        rssiDbm = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).toDouble(),
+                        frequencyKey = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0),
+                        observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                        locationOrigin = origin,
+                        receiverProfileId = profileId,
+                        sourceGroupId = "$sourceKind:$sourceId"
+                    )
+                )
             }
         }
         return result
