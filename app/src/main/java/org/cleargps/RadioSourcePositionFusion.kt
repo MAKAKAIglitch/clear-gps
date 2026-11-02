@@ -15,7 +15,6 @@ import kotlin.math.sqrt
  */
 internal object OpenCellIdPositionEstimator {
     private const val EARTH_RADIUS_METERS = 6_371_000.0
-    private const val MIN_ACCURACY_METERS = 5_000.0
 
     fun estimate(
         evidence: List<Pair<RadioSignal, OpenCellIdCellRecord>>,
@@ -34,16 +33,13 @@ internal object OpenCellIdPositionEstimator {
             if (signal.type != "cell" || record.status != "found") return@mapNotNull null
             val latitude = record.latitude ?: return@mapNotNull null
             val longitude = record.longitude ?: return@mapNotNull null
-            val age = nowMillis - record.checkedAtMillis
             if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
-                !longitude.isFinite() || longitude !in -180.0..180.0 ||
-                !OpenCellIdLookupPolicy.shouldUseForPosition(record, nowMillis) || age < 0L
+                !longitude.isFinite() || longitude !in -180.0..180.0
             ) return@mapNotNull null
 
-            val range = record.rangeMeters?.toDouble()?.coerceIn(100.0, 100_000.0) ?: 4_000.0
-            val agePenalty = age / 86_400_000.0 * 50.0
-            val uncertainty = (max(MIN_ACCURACY_METERS, range * 1.25) + agePenalty)
-                .coerceAtMost(100_000.0)
+            val uncertainty = OpenCellIdLookupPolicy.coordinateUncertaintyMeters(record, nowMillis)
+                ?: return@mapNotNull null
+            val range = OpenCellIdLookupPolicy.reportedRangeMeters(record)
             val rssiWeight = (0.4 + (signal.rssi + 120).coerceIn(0, 80) / 100.0)
                 .coerceIn(0.4, 1.2)
             val samplesWeight = sqrt((record.samples + 1).coerceIn(1, 10_000).toDouble())
@@ -76,10 +72,10 @@ internal object OpenCellIdPositionEstimator {
             anchor.weight * distanceMeters(latitude, longitude, anchor.latitude, anchor.longitude).pow(2.0)
         } / totalWeight
         val averageRange = valid.sumOf {
-            it.weight * (it.record.rangeMeters?.toDouble()?.coerceIn(100.0, 100_000.0) ?: 4_000.0)
+            it.weight * OpenCellIdLookupPolicy.reportedRangeMeters(it.record)
         } / totalWeight
         val accuracy = max(
-            max(MIN_ACCURACY_METERS, sqrt(1.0 / totalWeight)),
+            max(OpenCellIdLookupPolicy.MIN_CELL_COORDINATE_UNCERTAINTY_METERS, sqrt(1.0 / totalWeight)),
             sqrt(spreadSquared) + averageRange * 0.75
         ).coerceAtMost(100_000.0)
 

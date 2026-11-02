@@ -1,6 +1,7 @@
 package org.cleargps
 
 import org.cleargps.cell.CellSiteEvidenceBundle
+import org.cleargps.cell.CellIdentity
 import org.cleargps.cell.CellSiteEstimatorConfig
 import org.cleargps.cell.CellSiteGroup
 import org.cleargps.cell.CellSiteGroupingConfig
@@ -74,6 +75,16 @@ internal class RadioRepository(
 
     fun loadMapPoints(limit: Int): List<RadioPointRecord> =
         database.listMapPoints(limit)
+
+    fun loadOpenCellIdCellSiteEvidence(
+        identities: Collection<CellIdentity>,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<CellSiteEvidenceBundle> =
+        OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
+            identities = identities,
+            records = database.listOpenCellIdCells(limit = 1_000),
+            nowMillis = nowMillis
+        )
 
     fun calculateCellSites(
         evidence: List<CellSiteEvidenceBundle>,

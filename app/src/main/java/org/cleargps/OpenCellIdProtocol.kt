@@ -2,6 +2,7 @@ package org.cleargps
 
 import org.json.JSONObject
 import java.util.Locale
+import kotlin.math.max
 
 data class OpenCellIdCellKey(
     val radio: String,
@@ -147,6 +148,8 @@ internal object OpenCellIdLookupPolicy {
     const val NOT_FOUND_TTL_MILLIS = 7L * 24L * 60L * 60L * 1_000L
     const val MAX_LOOKUPS_PER_ACTION = 3
     const val POSITION_MAX_AGE_MILLIS = 90L * 24L * 60L * 60L * 1_000L
+    const val MIN_CELL_COORDINATE_UNCERTAINTY_METERS = 5_000.0
+    const val DEFAULT_CELL_RANGE_METERS = 4_000.0
 
     fun shouldLookup(cached: OpenCellIdCellRecord?, nowMillis: Long): Boolean {
         if (cached == null || cached.checkedAtMillis <= 0L || nowMillis < cached.checkedAtMillis) return true
@@ -164,5 +167,20 @@ internal object OpenCellIdLookupPolicy {
         return latitude.isFinite() && latitude in -90.0..90.0 &&
             longitude.isFinite() && longitude in -180.0..180.0 &&
             nowMillis - record.checkedAtMillis <= POSITION_MAX_AGE_MILLIS
+    }
+
+    fun reportedRangeMeters(record: OpenCellIdCellRecord): Double =
+        record.rangeMeters?.toDouble()?.coerceIn(100.0, 100_000.0) ?: DEFAULT_CELL_RANGE_METERS
+
+    /**
+     * Community catalogue coordinates are deliberately coarse. Keep the same 5 km floor
+     * used by radio position fusion; they must not be mistaken for surveyed mast coordinates.
+     */
+    fun coordinateUncertaintyMeters(record: OpenCellIdCellRecord, nowMillis: Long): Double? {
+        if (!shouldUseForPosition(record, nowMillis)) return null
+        val ageMillis = nowMillis - record.checkedAtMillis
+        val agePenalty = ageMillis / 86_400_000.0 * 50.0
+        return (max(MIN_CELL_COORDINATE_UNCERTAINTY_METERS, reportedRangeMeters(record) * 1.25) +
+            agePenalty).coerceAtMost(100_000.0)
     }
 }
