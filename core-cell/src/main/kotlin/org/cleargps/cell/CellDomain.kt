@@ -28,7 +28,8 @@ data class CellSignalMetadata(
     val rscpDbm: Int? = null,
     val ecNoDb: Int? = null,
     val timingAdvanceValue: Int? = null,
-    val timingAdvanceUnit: String? = null
+    val timingAdvanceUnit: String? = null,
+    val timingAdvancePositionDeltaMillis: Long? = null
 ) {
     init {
         require(mcc.matches(Regex("^[0-9]{3}$")))
@@ -48,6 +49,7 @@ data class CellSignalMetadata(
         require(rscpDbm == null || rscpDbm in -140..0)
         require(ecNoDb == null || ecNoDb in -40..10)
         require((timingAdvanceValue == null) == (timingAdvanceUnit == null))
+        require(timingAdvancePositionDeltaMillis == null || timingAdvancePositionDeltaMillis >= 0L)
         if (timingAdvanceValue != null) {
             require(timingAdvanceValue >= 0)
             require(
@@ -156,7 +158,10 @@ data class CellObservationSample(
     val observedAtMillis: Long,
     val locationOrigin: ObservationLocationOrigin,
     val receiverProfileId: String? = null,
-    val sourceGroupId: String? = null
+    val sourceGroupId: String? = null,
+    val timingAdvanceValue: Int? = null,
+    val timingAdvanceUnit: String? = null,
+    val timingAdvancePositionDeltaMillis: Long? = null
 ) {
     init {
         require(latitude.isFinite() && latitude in -90.0..90.0)
@@ -164,7 +169,21 @@ data class CellObservationSample(
         require(coordinateAccuracyMeters.isFinite() && coordinateAccuracyMeters > 0.0)
         require(rssiDbm.isFinite() && rssiDbm in -160.0..0.0)
         require(frequencyKey >= 0 && observedAtMillis >= 0L)
+        require((timingAdvanceValue == null) == (timingAdvanceUnit == null))
+        require(timingAdvanceValue == null || timingAdvanceValue >= 0)
+        require(timingAdvancePositionDeltaMillis == null || timingAdvancePositionDeltaMillis >= 0L)
     }
+
+    fun usableForTimingAdvance(
+        maximumCoordinateAccuracyMeters: Double = 50.0,
+        maximumPositionDeltaMillis: Long = 1_000L
+    ): Boolean = identity.mncLengthKnown &&
+        locationOrigin == ObservationLocationOrigin.OBSERVED &&
+        !receiverProfileId.isNullOrBlank() &&
+        frequencyKey > 0 &&
+        coordinateAccuracyMeters.isFinite() && coordinateAccuracyMeters in 1.0..maximumCoordinateAccuracyMeters &&
+        timingAdvancePositionDeltaMillis != null && timingAdvancePositionDeltaMillis in 0L..maximumPositionDeltaMillis &&
+        CellTimingAdvanceRangePolicy.from(timingAdvanceValue, timingAdvanceUnit) != null
 
     fun usableForSector(maximumAccuracyMeters: Double = 1_000.0): Boolean =
         identity.mncLengthKnown &&
@@ -214,3 +233,32 @@ data class CellSiteCoordinateEstimate(
     val lockedByUser: Boolean,
     val algorithmVersion: String = "cell-site-position-1"
 )
+
+
+/** Conservative one-way range interval represented by one modem timing-advance value. */
+data class CellTimingAdvanceRange(
+    val nominalDistanceMeters: Double,
+    val minimumDistanceMeters: Double,
+    val maximumDistanceMeters: Double,
+    val quantizationHalfWidthMeters: Double
+)
+
+/** Converts only the LTE command index whose distance scale is explicitly fixed by 3GPP. */
+object CellTimingAdvanceRangePolicy {
+    const val LTE_COMMAND_INDEX_MAX = 1_282
+    const val LTE_ONE_WAY_STEP_METERS = 78.125
+
+    fun from(value: Int?, unit: String?): CellTimingAdvanceRange? {
+        if (unit != "lte-command-index" || value == null || value !in 0..LTE_COMMAND_INDEX_MAX) {
+            return null
+        }
+        val nominal = value * LTE_ONE_WAY_STEP_METERS
+        val halfStep = LTE_ONE_WAY_STEP_METERS / 2.0
+        return CellTimingAdvanceRange(
+            nominalDistanceMeters = nominal,
+            minimumDistanceMeters = (nominal - halfStep).coerceAtLeast(0.0),
+            maximumDistanceMeters = nominal + halfStep,
+            quantizationHalfWidthMeters = halfStep
+        )
+    }
+}
