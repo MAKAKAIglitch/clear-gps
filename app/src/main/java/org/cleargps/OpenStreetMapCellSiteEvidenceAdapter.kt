@@ -50,8 +50,7 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
     ): List<CellSiteEvidenceBundle> {
         val validGroups = groups.distinctBy { it.stableKey }
             .filter { group ->
-                !group.lockedByUser &&
-                    group.members.isNotEmpty() &&
+                group.members.isNotEmpty() &&
                     group.members.all { it.mncLengthKnown } &&
                     group.latitude.isFinite() && group.latitude in -90.0..90.0 &&
                     group.longitude.isFinite() && group.longitude in -180.0..180.0 &&
@@ -90,11 +89,13 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
                     compareBy<Match> { it.distanceMeters }.thenBy { it.group.stableKey }
                 )
                 if (nearby.isEmpty()) return@mapNotNull null
-                // If two distinct cell sites are almost equally close, the structure is ambiguous.
+                // Locked sites remain spatial obstacles during matching. Otherwise an OSM
+                // object at a user-fixed tower could be misassigned to a nearby unlocked site.
+                // If two distinct sites are almost equally close, the object is ambiguous.
                 if (nearby.size > 1 &&
                     nearby[1].distanceMeters - nearby[0].distanceMeters < config.minimumAmbiguityGapMeters
                 ) return@mapNotNull null
-                nearby.first()
+                nearby.first().takeUnless { it.group.lockedByUser }
             }
             .toList()
 
