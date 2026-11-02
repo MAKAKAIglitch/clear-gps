@@ -423,6 +423,7 @@ fun ClearGpsApp(
         )
     }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
+    var cellSiteRecords by remember { mutableStateOf(radioRepository.loadCellSites()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
         mutableStateOf(
@@ -445,6 +446,12 @@ fun ClearGpsApp(
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
+    var selectedCellSite by remember { mutableStateOf<CellSiteRecord?>(null) }
+    var showCellSiteDetails by remember { mutableStateOf(false) }
+    var cellSiteLatitudeText by remember { mutableStateOf("") }
+    var cellSiteLongitudeText by remember { mutableStateOf("") }
+    var cellSiteUncertaintyText by remember { mutableStateOf("") }
+    var cellSiteCalculationBusy by remember { mutableStateOf(false) }
     var selectedWifiNetworkGroup by remember { mutableStateOf<WifiNetworkGroupRecord?>(null) }
     var selectedWifiNetworkCandidates by remember { mutableStateOf<List<WifiNetworkCandidate>>(emptyList()) }
     var mapViewportTopInWindowPx by remember { mutableStateOf(0) }
@@ -705,6 +712,7 @@ fun ClearGpsApp(
             )
         }
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
+        cellSiteRecords = withContext(Dispatchers.IO) { radioRepository.loadCellSites() }
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
@@ -2838,6 +2846,9 @@ fun ClearGpsApp(
     LaunchedEffect(mapPoints) {
         mapController.updateRadioPoints(mapPoints)
     }
+    LaunchedEffect(cellSiteRecords) {
+        mapController.updateCellSites(cellSiteRecords)
+    }
     LaunchedEffect(mapLayerVisibility) {
         mapController.setLayerVisibility(mapLayerVisibility)
     }
@@ -2888,6 +2899,16 @@ fun ClearGpsApp(
         }
         mapController.onZoneTap = { zoneId ->
             zones.firstOrNull { it.id == zoneId }?.let { zoneToEdit = it }
+        }
+        mapController.onCellSiteTap = { siteId ->
+            cellSiteRecords.firstOrNull { it.id == siteId }?.let { site ->
+                selectedCellSite = site
+                cellSiteLatitudeText = site.latitude.toString()
+                cellSiteLongitudeText = site.longitude.toString()
+                cellSiteUncertaintyText = site.uncertaintyMeters.toString()
+                showCellSiteDetails = true
+                mapController.focus(MapCoordinate(site.latitude, site.longitude), 16.0)
+            }
         }
         mapController.onMapTap = { latitude, longitude ->
             when (mapTapMode) {
@@ -4461,6 +4482,122 @@ fun ClearGpsApp(
             confirmButton = { TextButton(onClick = { showRadioOnlyInfo = false }) { Text("Понятно") } }
         )
         }
+        if (showCellSiteDetails && selectedCellSite != null) {
+            val site = selectedCellSite!!
+            AlertDialog(
+                onDismissRequest = { showCellSiteDetails = false },
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                title = { Text("Физическая сотовая площадка") },
+                text = {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Text("ID записи: ${site.id}", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "Состав: ${site.members.size} сот",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        site.members.take(12).forEach { member ->
+                            Text(
+                                "${member.technology.token.uppercase()} · MCC ${member.mcc} / MNC ${member.mnc} · area ${member.areaCode} · ID ${member.cellId}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        if (site.members.size > 12) {
+                            Text("И ещё ${site.members.size - 12} сот.", style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(
+                            "Уверенность алгоритма: ${(site.confidenceScore * 100.0).toInt()}% · погрешность ±${site.uncertaintyMeters.toInt()} м",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            if (site.lockedByUser) {
+                                "Координата закреплена вручную и защищена от автоматического перемещения."
+                            } else {
+                                "Автоматическая оценка. Большая погрешность означает, что точное положение вышки пока неизвестно."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        OutlinedTextField(
+                            value = cellSiteLatitudeText,
+                            onValueChange = { cellSiteLatitudeText = it },
+                            label = { Text("Широта") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = cellSiteLongitudeText,
+                            onValueChange = { cellSiteLongitudeText = it },
+                            label = { Text("Долгота") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = cellSiteUncertaintyText,
+                            onValueChange = { cellSiteUncertaintyText = it },
+                            label = { Text("Погрешность, м") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Ручная фиксация не делает неточную координату точной. Укажи погрешность по реальному способу измерения; OpenCellID-кэш имеет минимальную погрешность 5 км.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val latitude = cellSiteLatitudeText.trim().toDoubleOrNull()
+                        val longitude = cellSiteLongitudeText.trim().toDoubleOrNull()
+                        val uncertainty = cellSiteUncertaintyText.trim().toDoubleOrNull()
+                        if (latitude == null || longitude == null || uncertainty == null ||
+                            !latitude.isFinite() || latitude !in -90.0..90.0 ||
+                            !longitude.isFinite() || longitude !in -180.0..180.0 ||
+                            !uncertainty.isFinite() || uncertainty !in 1.0..100_000.0
+                        ) {
+                            Toast.makeText(context, "Проверь широту, долготу и погрешность.", Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        scope.launch {
+                            val saved = withContext(Dispatchers.IO) {
+                                radioRepository.lockCellSiteCoordinate(site.id, latitude, longitude, uncertainty)
+                            }
+                            if (saved) {
+                                refreshLocalUiInCurrentCoroutine()
+                                showCellSiteDetails = false
+                                Toast.makeText(context, "Координата площадки закреплена вручную.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Площадка уже изменилась. Обнови список и повтори.", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }) {
+                        Text(if (site.lockedByUser) "Сохранить правку" else "Закрепить координату")
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        if (site.lockedByUser) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    val unlocked = withContext(Dispatchers.IO) {
+                                        radioRepository.unlockCellSiteCoordinate(site.id)
+                                    }
+                                    if (unlocked) {
+                                        refreshLocalUiInCurrentCoroutine()
+                                        showCellSiteDetails = false
+                                        Toast.makeText(context, "Автоматическое обновление координаты снова разрешено.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }) { Text("Снять фиксацию") }
+                        }
+                        TextButton(onClick = { showCellSiteDetails = false }) { Text("Закрыть") }
+                    }
+                }
+            )
+        }
         if (showMapLayers && selectedTab == AppTab.MAP) {
             MapLayersBottomSheet(
                 visibility = mapLayerVisibility,
@@ -4481,6 +4618,36 @@ fun ClearGpsApp(
                 beaconDbAvailable = beaconDbLookupResult?.coordinate != null,
                 openCellIdCount = openCellIdRecords.count {
                     OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis())
+                },
+                cellSiteCount = cellSiteRecords.size,
+                cellSiteCalculationBusy = cellSiteCalculationBusy,
+                onRecalculateCellSites = {
+                    if (!cellSiteCalculationBusy) scope.launch {
+                        cellSiteCalculationBusy = true
+                        try {
+                            val result = withContext(Dispatchers.IO) {
+                                radioRepository.calculateAndSaveCachedOpenCellIdCellSites()
+                            }
+                            refreshLocalUiInCurrentCoroutine()
+                            Toast.makeText(
+                                context,
+                                if (result.groups.isEmpty()) {
+                                    "Нет достаточно подходящих локальных и кэшированных OpenCellID-свидетельств."
+                                } else {
+                                    "Рассчитано физических площадок: ${result.groups.size}. Погрешность показана отдельно."
+                                },
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } catch (error: Exception) {
+                            Toast.makeText(
+                                context,
+                                "Не удалось рассчитать площадки: ${error.message ?: error.javaClass.simpleName}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            cellSiteCalculationBusy = false
+                        }
+                    }
                 },
                 onDismiss = { showMapLayers = false }
             )
@@ -4728,6 +4895,9 @@ private fun MapLayersBottomSheet(
     onMapTheme: (MapThemeMode) -> Unit,
     beaconDbAvailable: Boolean,
     openCellIdCount: Int,
+    cellSiteCount: Int,
+    cellSiteCalculationBusy: Boolean,
+    onRecalculateCellSites: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -4788,6 +4958,26 @@ private fun MapLayersBottomSheet(
             ) {
                 onVisibilityChange(visibility.copy(showOpenCellIdCells = it))
             }
+            MapLayerToggleRow(
+                "Физические площадки",
+                "$cellSiteCount сохранённых групп сот. Маркер показывает площадку, полупрозрачный круг — расчётную погрешность; нажми маркер для подробностей и ручной правки.",
+                visibility.showCellSites
+            ) {
+                onVisibilityChange(visibility.copy(showCellSites = it))
+            }
+            OutlinedButton(
+                onClick = onRecalculateCellSites,
+                enabled = !cellSiteCalculationBusy,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(if (cellSiteCalculationBusy) "Расчёт площадок…" else "Пересчитать по локальному кэшу OpenCellID")
+            }
+            Text(
+                "Перерасчёт не обращается к сети и не запрашивает GPS. Он использует только сохранённые идентификаторы сот и уже закэшированные координаты OpenCellID; грубые оценки остаются с большой погрешностью.",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
+            )
             Divider(Modifier.padding(vertical = 5.dp), color = colors.outlineVariant)
             Text("Зоны", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             MapLayerToggleRow("Зоны спуфинга", "Сохранённые зоны; черновик рисования остаётся видимым.", visibility.showRiskZones) {
