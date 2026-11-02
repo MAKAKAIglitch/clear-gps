@@ -187,7 +187,7 @@ class OpenStreetMapCellSiteWorker(
             )
             try {
                 httpStatus = connection.responseCode
-                val body = if (httpStatus in 200..299) {
+                val body = if (httpStatus != null && httpStatus in 200..299) {
                     connection.inputStream.use { readBounded(it) }
                 } else {
                     ""
