@@ -1345,7 +1345,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     channelNumber = id.arfcn.takeIf { it >= 0 },
                     bsic = id.bsic.takeIf { it in 0..63 },
                     timingAdvanceValue = if (Build.VERSION.SDK_INT >= 26) {
-                        info.cellSignalStrength.timingAdvance.takeIf { it in 0..219 }
+                        info.cellSignalStrength.timingAdvance.takeIf { info.isRegistered && it in 0..219 }
                     } else null,
                     timingAdvanceUnit = "gsm-symbols"
                 )
@@ -1388,7 +1388,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     rsrpDbm = strength.rsrp.takeIf { it in -160..0 },
                     rsrqDb = strength.rsrq.takeIf { it in -60..30 },
                     sinrDb = strength.rssnr.takeIf { it in -40..60 },
-                    timingAdvanceValue = strength.timingAdvance.takeIf { it in 0..1282 },
+                    timingAdvanceValue = strength.timingAdvance.takeIf { info.isRegistered && it in 0..1282 },
                     timingAdvanceUnit = "lte-command-index"
                 )
             }
@@ -1413,7 +1413,7 @@ class RadioGeolocationRepository(private val context: Context) {
                         rsrqDb = strength.ssRsrq.takeIf { it in -60..30 },
                         sinrDb = strength.ssSinr.takeIf { it in -40..60 },
                         timingAdvanceValue = if (Build.VERSION.SDK_INT >= 34) {
-                            strength.timingAdvanceMicros.takeIf { it in 0..3846 }
+                            strength.timingAdvanceMicros.takeIf { info.isRegistered && it in 0..3846 }
                         } else null,
                         timingAdvanceUnit = "nr-command-index"
                     )
