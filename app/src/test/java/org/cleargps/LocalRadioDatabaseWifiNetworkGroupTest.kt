@@ -13,24 +13,27 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class LocalRadioDatabaseWifiNetworkGroupTest {
     private lateinit var context: Context
     private lateinit var database: LocalRadioDatabase
+    private lateinit var databaseName: String
 
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        context.deleteDatabase(DB_NAME)
-        database = LocalRadioDatabase(context, DB_NAME)
+        // Each test gets a fresh file so Windows Robolectric never reopens a just-deleted WAL DB.
+        databaseName = "clear_gps_wifi_group_${UUID.randomUUID()}.sqlite"
+        database = LocalRadioDatabase(context, databaseName)
     }
 
     @After
     fun tearDown() {
         if (::database.isInitialized) database.close()
-        if (::context.isInitialized) context.deleteDatabase(DB_NAME)
+        if (::context.isInitialized && ::databaseName.isInitialized) context.deleteDatabase(databaseName)
     }
 
     @Test
@@ -114,7 +117,4 @@ class LocalRadioDatabaseWifiNetworkGroupTest {
         assertNull(database.groupWifiPoints(listOf(first.id, 999_999L)))
     }
 
-    companion object {
-        private const val DB_NAME = "clear_gps_wifi_group_test.sqlite"
-    }
 }
