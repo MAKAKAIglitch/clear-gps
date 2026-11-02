@@ -233,6 +233,31 @@ class CellObservationSamplesDatabaseTest {
     }
 
     @Test
+    fun sectorBatchQueryReturnsOnlyOriginalLocalSamplesWithKnownCarrier() {
+        val localSource = database.listRadioSources().single { it.kind == "local" }
+        insertObservation(
+            localSource.id,
+            "lte:250:01:1024:987702",
+            "gps",
+            51.5,
+            -0.12,
+            CellSignalMetadata(
+                CellTechnology.LTE, "250", "01", true, 1024, 987702L,
+                channelNumber = 1800,
+                pci = 111,
+                rsrpDbm = -65
+            )
+        )
+
+        val samples = database.listCellSectorObservationSamples()
+
+        assertEquals(1, samples.size)
+        assertEquals(1800, samples.single().frequencyKey)
+        assertEquals("local-device", samples.single().receiverProfileId)
+        assertTrue(samples.single().usableForSector())
+    }
+
+    @Test
     fun timingAdvanceHistoryCreatesAndPersistsPhysicalSiteWithoutNetworkOrNewGps() {
         val localSource = database.listRadioSources().single { it.kind == "local" }
         val identity = CellIdentity.fromAndroidStrings(
