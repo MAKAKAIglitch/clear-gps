@@ -182,6 +182,7 @@ private enum class PointsView { POINTS, HISTORY, SOURCES, REFINEMENT }
 private const val RADIO_POINT_LIST_LIMIT = 5_000
 private const val KEY_DATABASE_POINT_SORT_FIELD = "database_point_sort_field"
 private const val KEY_DATABASE_POINT_SORT_DESCENDING = "database_point_sort_descending"
+private const val KEY_DATABASE_POINT_MIN_SIGHTINGS = "database_point_min_sightings"
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
     PASSIVE("passive", "Пассивная запись"),
@@ -399,7 +400,17 @@ fun ClearGpsApp(
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
-    var points by remember { mutableStateOf(radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT)) }
+    var minimumPointSightings by remember {
+        mutableStateOf(prefs.getInt(KEY_DATABASE_POINT_MIN_SIGHTINGS, 1).coerceIn(1, 100))
+    }
+    var points by remember {
+        mutableStateOf(
+            radioRepository.loadLocalPoints(
+                limit = RADIO_POINT_LIST_LIMIT,
+                minimumSightings = minimumPointSightings
+            )
+        )
+    }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
@@ -680,7 +691,12 @@ fun ClearGpsApp(
         val query = searchQuery
         val sort = RadioPointSort(pointSortField, pointSortDescending)
         points = withContext(Dispatchers.IO) {
-            radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT, sort = sort)
+            radioRepository.loadLocalPoints(
+                query = query,
+                limit = RADIO_POINT_LIST_LIMIT,
+                sort = sort,
+                minimumSightings = minimumPointSightings
+            )
         }
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
@@ -3448,7 +3464,12 @@ fun ClearGpsApp(
                                         scope.launch {
                                             val sort = RadioPointSort(pointSortField, pointSortDescending)
                                             points = withContext(Dispatchers.IO) {
-                                                radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT, sort = sort)
+                                                radioRepository.loadLocalPoints(
+                                                    query = query,
+                                                    limit = RADIO_POINT_LIST_LIMIT,
+                                                    sort = sort,
+                                                    minimumSightings = minimumPointSightings
+                                                )
                                             }
                                         }
                                     },
@@ -3462,6 +3483,14 @@ fun ClearGpsApp(
                                         prefs.edit()
                                             .putString(KEY_DATABASE_POINT_SORT_FIELD, field.key)
                                             .putBoolean(KEY_DATABASE_POINT_SORT_DESCENDING, descending)
+                                            .apply()
+                                        refreshLocalUi()
+                                    },
+                                    minimumSightings = minimumPointSightings,
+                                    onMinimumSightings = { minimum ->
+                                        minimumPointSightings = minimum.coerceIn(1, 100)
+                                        prefs.edit()
+                                            .putInt(KEY_DATABASE_POINT_MIN_SIGHTINGS, minimumPointSightings)
                                             .apply()
                                         refreshLocalUi()
                                     },
@@ -5496,6 +5525,7 @@ private fun DatabaseScreen(
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
     sortField: RadioPointSortField, sortDescending: Boolean,
     onSort: (RadioPointSortField, Boolean) -> Unit,
+    minimumSightings: Int, onMinimumSightings: (Int) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
     dataSource: DatabaseDataSource,
@@ -5530,6 +5560,10 @@ private fun DatabaseScreen(
     var sourceMinRssi by remember { mutableStateOf(-110f) }
     var sourceMinObservations by remember { mutableStateOf(1f) }
     var sortMenuExpanded by remember { mutableStateOf(false) }
+    var pointFilterDialogExpanded by remember { mutableStateOf(false) }
+    var draftMinimumSightings by remember(minimumSightings) {
+        mutableStateOf(minimumSightings.toFloat())
+    }
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(
         Modifier.fillMaxSize()
@@ -5737,6 +5771,15 @@ private fun DatabaseScreen(
                         contentDescription = if (sortDescending) "По убыванию" else "По возрастанию"
                     )
                 }
+                AssistChip(
+                    onClick = {
+                        draftMinimumSightings = minimumSightings.toFloat()
+                        pointFilterDialogExpanded = true
+                    },
+                    label = {
+                        Text(if (minimumSightings > 1) "≥$minimumSightings" else "Фильтр")
+                    }
+                )
                 Spacer(Modifier.weight(1f))
             }
         }
@@ -6651,6 +6694,44 @@ private fun BeaconDbDatabaseContent(
                 }
             }
         }
+    }
+    if (pointFilterDialogExpanded) {
+        AlertDialog(
+            onDismissRequest = { pointFilterDialogExpanded = false },
+            title = { Text("Фильтр точек") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Минимум обнаружений: " + draftMinimumSightings.toInt())
+                    Slider(
+                        value = draftMinimumSightings,
+                        onValueChange = { draftMinimumSightings = it },
+                        valueRange = 1f..100f,
+                        steps = 98
+                    )
+                    Text(
+                        "Используется накопительный счётчик радиоточки. Подробная история наблюдений не изменяется.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pointFilterDialogExpanded = false
+                    onMinimumSightings(draftMinimumSightings.toInt())
+                }) { Text("Применить") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        draftMinimumSightings = 1f
+                        pointFilterDialogExpanded = false
+                        onMinimumSightings(1)
+                    }) { Text("Сбросить") }
+                    TextButton(onClick = { pointFilterDialogExpanded = false }) { Text("Отмена") }
+                }
+            }
+        )
     }
 }
 

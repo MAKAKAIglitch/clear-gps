@@ -3021,14 +3021,19 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         }, "id = ?", arrayOf(point.id.toString()))
     }
 
-    fun listPoints(
+    internal fun listPoints(
         limit: Int = 2_000,
-        sort: RadioPointSort = RadioPointSort()
+        sort: RadioPointSort = RadioPointSort(),
+        minimumSightings: Int = 1
     ): List<RadioPointRecord> {
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
-            "SELECT * FROM radio_points ORDER BY " + sort.orderBySql + " LIMIT ?",
-            arrayOf(limit.coerceIn(1, 5_000).toString())
+            "SELECT * FROM radio_points WHERE sightings >= ? ORDER BY " +
+                sort.orderBySql + " LIMIT ?",
+            arrayOf(
+                minimumSightings.coerceAtLeast(1).toString(),
+                limit.coerceIn(1, 5_000).toString()
+            )
         ).use { cursor ->
             while (cursor.moveToNext()) result.add(cursor.toRadioPoint())
         }
@@ -3090,19 +3095,27 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
     /** Local search across SSID, BSSID/MAC, labels and notes. */
-    fun searchPoints(
+    internal fun searchPoints(
         query: String,
         limit: Int = 500,
-        sort: RadioPointSort = RadioPointSort()
+        sort: RadioPointSort = RadioPointSort(),
+        minimumSightings: Int = 1
     ): List<RadioPointRecord> {
         val term = query.trim()
-        if (term.isBlank()) return listPoints(limit.coerceIn(1, 5_000), sort)
+        if (term.isBlank()) {
+            return listPoints(limit.coerceIn(1, 5_000), sort, minimumSightings)
+        }
         val pattern = "%" + term.take(120) + "%"
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
-            "SELECT * FROM radio_points WHERE label LIKE ? OR ssid LIKE ? OR identifier LIKE ? OR notes LIKE ? " +
-                "ORDER BY " + sort.orderBySql + " LIMIT ?",
-            arrayOf(pattern, pattern, pattern, pattern, limit.coerceIn(1, 5_000).toString())
+            "SELECT * FROM radio_points WHERE " +
+                "(label LIKE ? OR ssid LIKE ? OR identifier LIKE ? OR notes LIKE ?) " +
+                "AND sightings >= ? ORDER BY " + sort.orderBySql + " LIMIT ?",
+            arrayOf(
+                pattern, pattern, pattern, pattern,
+                minimumSightings.coerceAtLeast(1).toString(),
+                limit.coerceIn(1, 5_000).toString()
+            )
         ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
         return result
     }

@@ -437,6 +437,40 @@ class LocalRadioDatabaseRetentionAndSourceDeletionTest {
         )
     }
 
+    @Test
+    fun minimumSightingsFilterAppliesBeforeLimitAndSearch() {
+        val localSourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val baseTime = 1_800_000_200_000L
+        insertSortPoint(localSourceId, "filter-one", "One", baseTime, baseTime + 100L, 1, -55, 20.0)
+        insertSortPoint(localSourceId, "filter-five", "Five", baseTime + 1L, baseTime + 200L, 5, -60, 30.0)
+        insertSortPoint(localSourceId, "filter-twelve", "Twelve", baseTime + 2L, baseTime + 300L, 12, -65, 40.0)
+
+        val sort = RadioPointSort(RadioPointSortField.SIGHTINGS, descending = true)
+        assertEquals(
+            "filter-twelve",
+            database.listPoints(limit = 1, sort = sort, minimumSightings = 5).single().identifier
+        )
+        assertEquals(
+            listOf("filter-twelve", "filter-five"),
+            database.searchPoints(
+                query = "filter-",
+                limit = 5,
+                sort = sort,
+                minimumSightings = 5
+            ).map { it.identifier }
+        )
+        assertEquals(
+            listOf("filter-twelve"),
+            database.searchPoints(
+                query = "filter-",
+                limit = 1,
+                sort = sort,
+                minimumSightings = 10
+            ).map { it.identifier }
+        )
+        assertEquals(3, database.listPoints(minimumSightings = 1).size)
+    }
+
     private fun insertSortPoint(
         sourceId: Long,
         identifier: String,

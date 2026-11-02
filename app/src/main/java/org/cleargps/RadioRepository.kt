@@ -29,24 +29,24 @@ internal enum class RadioPointSortField(
 }
 
 internal data class RadioPointSort(
-    val field: RadioPointSortField = RadioPointSortField.LAST_SEEN,
+    val sortField: RadioPointSortField = RadioPointSortField.LAST_SEEN,
     val descending: Boolean = true
 ) {
     // SQL fragments come only from the closed enum; user input stays parameterized.
     val orderBySql: String
         get() {
             val direction = if (descending) "DESC" else "ASC"
-            val nullsLast = if (field == RadioPointSortField.ACCURACY) {
+            val nullsLast = if (sortField == RadioPointSortField.ACCURACY) {
                 "CASE WHEN accuracy IS NULL THEN 1 ELSE 0 END ASC, "
             } else {
                 ""
             }
-            val tieBreakers = if (field == RadioPointSortField.LAST_SEEN) {
+            val tieBreakers = if (sortField == RadioPointSortField.LAST_SEEN) {
                 ", id DESC"
             } else {
                 ", last_seen DESC, id DESC"
             }
-            return nullsLast + field.sqlExpression + " " + direction + tieBreakers
+            return nullsLast + sortField.sqlExpression + " " + direction + tieBreakers
         }
 }
 
@@ -56,12 +56,13 @@ internal class RadioRepository(
     fun loadLocalPoints(
         query: String = "",
         limit: Int = DEFAULT_LIST_LIMIT,
-        sort: RadioPointSort = RadioPointSort()
+        sort: RadioPointSort = RadioPointSort(),
+        minimumSightings: Int = 1
     ): List<RadioPointRecord> =
         if (query.isBlank()) {
-            database.listPoints(normalizeListLimit(limit), sort)
+            database.listPoints(normalizeListLimit(limit), sort, minimumSightings)
         } else {
-            database.searchPoints(query, normalizeListLimit(limit), sort)
+            database.searchPoints(query, normalizeListLimit(limit), sort, minimumSightings)
         }
 
     fun loadMapPoints(limit: Int): List<RadioPointRecord> =
