@@ -1084,7 +1084,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         if (oldVersion < 17) {
             createOpenStreetMapCellSiteTables(db)
         }
-        if (oldVersion < 18) {
+        if (oldVersion < 18 &&
+            "timing_advance_position_delta_ms" !in tableColumns(db, "cell_observation_details")
+        ) {
             db.execSQL(
                 "ALTER TABLE cell_observation_details ADD COLUMN timing_advance_position_delta_ms INTEGER " +
                     "CHECK(timing_advance_position_delta_ms IS NULL OR timing_advance_position_delta_ms >= 0)"
