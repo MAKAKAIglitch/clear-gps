@@ -101,10 +101,17 @@ class LocalRadioDatabaseBackupRoundTripTest {
             assertEquals("unlocated", unknown.positionSource)
             assertNull(unknown.sourceId)
 
+            val beforeRepeatSnapshot = observationSnapshot(target.writableDatabase, first.sourceId!!)
             val second = target.importSqliteDatabase(ByteArrayInputStream(backupBytes))
             assertEquals("SQLite Clear GPS", second.format)
             assertEquals(first.sourceId, second.sourceId)
-            assertEquals(0, second.observationsImported)
+            val afterRepeatSnapshot = observationSnapshot(target.writableDatabase, first.sourceId!!)
+            assertEquals(
+                "Repeated import added rows. before=$beforeRepeatSnapshot; " +
+                    "after=$afterRepeatSnapshot; imported=${second.observationsImported}",
+                0,
+                second.observationsImported
+            )
             assertEquals(4, target.observationCount())
             assertEquals(2, target.pointCount())
             assertEquals(1, countRows(
@@ -263,6 +270,25 @@ class LocalRadioDatabaseBackupRoundTripTest {
             }
         )
     }
+
+    private fun observationSnapshot(db: SQLiteDatabase, sourceId: Long): String =
+        db.rawQuery(
+            "SELECT o.id, o.radio_type, o.identifier, o.observed_at, o.rssi, o.frequency, " +
+                "o.latitude, o.longitude, d.channel_number FROM radio_observations o " +
+                "LEFT JOIN cell_observation_details d ON d.observation_id = o.id " +
+                "WHERE o.source_id = ? ORDER BY o.id",
+            arrayOf(sourceId.toString())
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        (0 until cursor.columnCount).joinToString("|") { index ->
+                            if (cursor.isNull(index)) "NULL" else cursor.getString(index)
+                        }
+                    )
+                }
+            }.joinToString(";")
+        }
 
     private fun countRows(db: SQLiteDatabase, table: String, where: String, vararg args: String): Int =
         db.rawQuery("SELECT COUNT(*) FROM $table WHERE $where", args).use { cursor ->
