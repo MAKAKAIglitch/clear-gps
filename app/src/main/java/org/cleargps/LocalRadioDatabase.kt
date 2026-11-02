@@ -440,7 +440,13 @@ private fun compactRadioMacIdentifier(value: String): String? {
 }
 
 data class ManualAnchor(val latitude: Double, val longitude: Double)
-data class RadioReference(val latitude: Double, val longitude: Double, val accuracyMeters: Double, val source: String)
+data class RadioReference(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Double,
+    val source: String,
+    val measurementElapsedRealtimeNanos: Long? = null
+)
 
 /**
  * Signal strength alone cannot triangulate a transmitter. This only promotes a recorded sample
