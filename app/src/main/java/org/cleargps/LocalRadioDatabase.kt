@@ -3341,9 +3341,13 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             rows.drop(headerIndex + 1).forEach { row ->
                 val rawIdentifier = field(row, "MAC")
                 if (rawIdentifier.isBlank()) return@forEach
-                val typeHint = (field(row, "TYPE") + " " + field(row, "AUTHMODE")).uppercase(Locale.ROOT)
-                val type = wigleTypeToRadioType(typeHint)
-                val identifier = canonicalIdentifier(rawIdentifier)
+                val rawType = field(row, "TYPE")
+                val authMode = field(row, "AUTHMODE")
+                val type = wigleTypeToRadioType((rawType + " " + authMode).uppercase(Locale.ROOT))
+                val canonicalCellId = if (type == "cell") {
+                    canonicalWigleCellIdentifier(rawIdentifier, rawType, authMode)
+                } else null
+                val identifier = canonicalCellId ?: canonicalIdentifier(rawIdentifier)
                 if (identifier.isBlank() || identifier.length > 256) return@forEach
 
                 val latText = field(row, "CURRENTLATITUDE")
@@ -3365,6 +3369,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                 val coordinateLon = if (hasNoCoordinate) null else lon
                 validRows++
                 touched.add(type + "|" + identifier)
+                if (canonicalCellId != null) {
+                    mergeImportedCellAliases(db, type, identifier, includeLegacyWigleAlias = true)
+                }
 
                 val newObservation = insertObservationIfAbsent(
                     db, type, identifier, observedAt, coordinateLat, coordinateLon,
@@ -3521,15 +3528,20 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                         val radio = field(row, "radiotype").lowercase(Locale.ROOT).let {
                             when (it) { "umts" -> "wcdma"; else -> it }
                         }
-                        val mcc = field(row, "mcc").toIntOrNull()
-                        val mnc = field(row, "mnc").toIntOrNull()
+                        val mccText = field(row, "mcc")
+                        val mncText = field(row, "mnc")
+                        val mcc = mccText.toIntOrNull()
+                        val mnc = mncText.toIntOrNull()
                         val area = field(row, "lac").toIntOrNull()
                         val cellId = field(row, "cellid").toLongOrNull()
                         if (radio !in setOf("gsm", "wcdma", "lte", "nr") ||
                             mcc == null || mcc !in 1..999 || mnc == null || mnc !in 0..999 ||
                             area == null || area < 0 || cellId == null || cellId <= 0L ||
                             (radio != "nr" && cellId > Int.MAX_VALUE.toLong())) return@forEach
-                        Quadruple("cell", "$radio:$mcc:$mnc:$area:$cellId", "NeoStumbler $radio cell", 0)
+                        val cellIdentity = cellularRadioIdentity(
+                            radio, mccText, mncText, area.toLong(), cellId
+                        ) ?: return@forEach
+                        Quadruple("cell", cellIdentity.identifier, "NeoStumbler " + radio + " cell", 0)
                     }
                 }
                 parsed.add(
@@ -3561,6 +3573,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             )
             parsed.forEach { item ->
                 touched.add(item.type + "|" + item.identifier)
+                if (item.type == "cell") {
+                    mergeImportedCellAliases(db, item.type, item.identifier, includeLegacyWigleAlias = false)
+                }
                 val inserted = insertObservationIfAbsent(
                     db, item.type, item.identifier, item.observedAt,
                     item.latitude, item.longitude, item.accuracy,
@@ -3796,9 +3811,212 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         }
     }
 
+    private data class CellularRadioIdentity(
+        val rat: String,
+        val plmn: String,
+        val area: Long,
+        val cellId: Long
+    ) {
+        val identifier: String
+            get() = rat + ":" + plmn + ":" + area + ":" + cellId
+
+        // Previous NeoStumbler imports stored MCC and numeric MNC as separate fields.
+        val legacyNeoIdentifier: String
+            get() = rat + ":" + plmn.substring(0, 3).toInt() + ":" +
+                plmn.substring(3).toInt() + ":" + area + ":" + cellId
+
+        // Kismet WiGLE exports store PLMN_TAC_CID in MAC; RAT is in TYPE/AUTHMODE.
+        val legacyWigleIdentifier: String
+            get() = plmn + "_" + area + "_" + cellId
+    }
+
+    private fun canonicalCellRat(value: String): String? = when (value.trim().lowercase(Locale.ROOT)) {
+        "gsm" -> "gsm"
+        "wcdma", "umts" -> "wcdma"
+        "lte" -> "lte"
+        "nr" -> "nr"
+        "cdma" -> "cdma"
+        else -> null
+    }
+
+    private fun cellularRadioIdentity(
+        ratValue: String,
+        mccValue: String,
+        mncValue: String,
+        area: Long,
+        cellId: Long
+    ): CellularRadioIdentity? {
+        val rat = canonicalCellRat(ratValue) ?: return null
+        val mccDigits = mccValue.trim()
+        val mncDigits = mncValue.trim()
+        if (!mccDigits.matches(Regex("^[0-9]{1,3}$")) ||
+            !mncDigits.matches(Regex("^[0-9]{1,3}$"))) return null
+
+        val mcc = mccDigits.toIntOrNull() ?: return null
+        val mnc = mncDigits.toIntOrNull() ?: return null
+        if (mcc !in 1..999 || mnc !in 0..999 || area < 0L || cellId <= 0L) return null
+
+        // Preserve two/three MNC digits; one-digit exports are padded to the two-digit form.
+        val plmn = mcc.toString().padStart(3, '0') + mncDigits.padStart(2, '0')
+        if (plmn.length !in 5..6) return null
+        return CellularRadioIdentity(rat, plmn, area, cellId)
+    }
+
+    private fun canonicalWigleCellIdentifier(
+        rawIdentifier: String,
+        rawType: String,
+        authMode: String
+    ): String? {
+        val ratTokens = authMode.split(Regex("[;,\\s]+")) + rawType.split(Regex("[;,\\s]+"))
+        var rat: String? = null
+        for (token in ratTokens) {
+            rat = canonicalCellRat(token)
+            if (rat != null) break
+        }
+        val resolvedRat = rat ?: return null
+
+        val parts = rawIdentifier.trim().split(Regex("[_\\s:]+")).filter { it.isNotEmpty() }
+        if (parts.size != 3 || !parts[0].matches(Regex("^[0-9]{5,6}$"))) return null
+        val area = parts[1].toLongOrNull() ?: return null
+        val cellId = parts[2].toLongOrNull() ?: return null
+
+        // Kismet writes the broadcast PLMN next to the RAT in WiGLE AUTHMODE.
+        val authPlmn = authMode.split(';').getOrNull(1)?.trim().orEmpty()
+        if (authPlmn.isNotEmpty() && authPlmn != parts[0]) return null
+
+        return cellularRadioIdentity(
+            resolvedRat, parts[0].substring(0, 3), parts[0].substring(3), area, cellId
+        )?.identifier
+    }
+
+    private fun parseCanonicalCellIdentity(identifier: String): CellularRadioIdentity? {
+        val parts = identifier.split(':')
+        if (parts.size != 4 || !parts[1].matches(Regex("^[0-9]{5,6}$"))) return null
+        val area = parts[2].toLongOrNull() ?: return null
+        val cellId = parts[3].toLongOrNull() ?: return null
+        return cellularRadioIdentity(
+            parts[0], parts[1].substring(0, 3), parts[1].substring(3), area, cellId
+        )
+    }
+
+    /**
+     * Re-key old imported aliases after a source supplies the RAT.
+     * Observation/source provenance and auto-refinement rows are retained.
+     */
+    private fun mergeImportedCellAliases(
+        db: SQLiteDatabase,
+        radioType: String,
+        identifier: String,
+        includeLegacyWigleAlias: Boolean
+    ) {
+        if (radioType != "cell") return
+        val identity = parseCanonicalCellIdentity(identifier) ?: return
+        val aliases = linkedSetOf(identity.legacyNeoIdentifier)
+        if (includeLegacyWigleAlias) {
+            aliases.add(identity.legacyWigleIdentifier)
+            aliases.add(identity.plmn + " " + identity.area + " " + identity.cellId)
+        }
+        aliases.remove(identity.identifier)
+        if (aliases.isEmpty()) return
+
+        val aliasList = aliases.toList()
+        val placeholders = List(aliasList.size) { "?" }.joinToString(",")
+        val aliasArgs = arrayOf(radioType) + aliasList.toTypedArray()
+
+        db.update(
+            "radio_observations",
+            ContentValues().apply { put("identifier", identity.identifier) },
+            "radio_type = ? AND identifier IN (" + placeholders + ")",
+            aliasArgs
+        )
+
+        // Keep the newest result per source/provider when old keys collapse together.
+        db.execSQL(
+            "INSERT OR IGNORE INTO radio_auto_refinements " +
+                "(source_id, provider, radio_type, identifier, latitude, longitude, accuracy, observed_at) " +
+                "SELECT source_id, provider, radio_type, ?, latitude, longitude, accuracy, observed_at " +
+                "FROM radio_auto_refinements WHERE radio_type = ? AND identifier IN (" + placeholders + ")",
+            arrayOf(identity.identifier, radioType) + aliasList.toTypedArray()
+        )
+        db.delete(
+            "radio_auto_refinements",
+            "radio_type = ? AND identifier IN (" + placeholders + ")",
+            aliasArgs
+        )
+
+        val pointPlaceholders = List(aliasList.size + 1) { "?" }.joinToString(",")
+        val pointArgs = arrayOf(radioType, identity.identifier) + aliasList.toTypedArray()
+        val records = ArrayList<RadioPointRecord>()
+        db.rawQuery(
+            "SELECT * FROM radio_points WHERE radio_type = ? AND identifier IN (" + pointPlaceholders + ")",
+            pointArgs
+        ).use { cursor ->
+            while (cursor.moveToNext()) records.add(cursor.toRadioPoint())
+        }
+        if (records.isEmpty()) return
+
+        val keeper = records.firstOrNull { it.identifier == identity.identifier }
+            ?: records.minByOrNull { it.id } ?: return
+        val newest = records.maxByOrNull { it.lastSeen } ?: keeper
+        val selectedPosition = records.asSequence()
+            .filter { validCoordinates(it.latitude, it.longitude) }
+            .minWithOrNull(
+                compareBy<RadioPointRecord>(
+                    {
+                        if (it.positionSource.equals("manual-edit", ignoreCase = true) ||
+                            it.positionSource.equals("imported-manual-edit", ignoreCase = true)) 0 else 1
+                    },
+                    { it.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS },
+                    { -it.peakRssi },
+                    { -(it.positionObservedAt ?: it.lastSeen) }
+                )
+            )
+        val positionOwner = selectedPosition ?: newest
+        val merged = ContentValues().apply {
+            put("identifier", identity.identifier)
+            put("label", records.firstOrNull { it.label.isNotBlank() }?.label.orEmpty())
+            put("ssid", records.firstOrNull { it.ssid.isNotBlank() }?.ssid.orEmpty())
+            put("notes", records.firstOrNull { it.notes.isNotBlank() }?.notes.orEmpty())
+            put("last_rssi", newest.rssi)
+            put("peak_rssi", records.maxOf { it.peakRssi })
+            put("frequency", newest.frequency.takeIf { it > 0 }
+                ?: records.firstOrNull { it.frequency > 0 }?.frequency ?: 0)
+            put("first_seen", records.minOf { it.firstSeen })
+            put("last_seen", records.maxOf { it.lastSeen })
+            put("sightings", records.sumOf { it.sightings.toLong() }
+                .coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1))
+            put("position_source", positionOwner.positionSource)
+            if (selectedPosition == null) {
+                putNull("latitude")
+                putNull("longitude")
+                putNull("accuracy")
+                if (positionOwner.sourceId == null) putNull("source_id")
+                else put("source_id", positionOwner.sourceId)
+                if (positionOwner.positionObservedAt == null) putNull("position_observed_at")
+                else put("position_observed_at", positionOwner.positionObservedAt)
+            } else {
+                put("latitude", selectedPosition.latitude!!)
+                put("longitude", selectedPosition.longitude!!)
+                if (selectedPosition.accuracyMeters == null) putNull("accuracy")
+                else put("accuracy", selectedPosition.accuracyMeters)
+                if (selectedPosition.sourceId == null) putNull("source_id")
+                else put("source_id", selectedPosition.sourceId)
+                if (selectedPosition.positionObservedAt == null) putNull("position_observed_at")
+                else put("position_observed_at", selectedPosition.positionObservedAt)
+            }
+        }
+
+        // Delete only duplicate summaries; all observations/refinements were re-keyed above.
+        records.filter { it.id != keeper.id }.forEach { duplicate ->
+            db.delete("radio_points", "id = ?", arrayOf(duplicate.id.toString()))
+        }
+        db.update("radio_points", merged, "id = ?", arrayOf(keeper.id.toString()))
+    }
+
     private data class WigleNetworkSummary(
-        val type: String, val identifier: String, val ssid: String, val frequency: Int,
-        val time: Long, val rssi: Int, val latitude: Double?, val longitude: Double?
+        val type: String, val identifier: String, val rawIdentifier: String,
+        val ssid: String, val frequency: Int, val time: Long, val rssi: Int,
+        val latitude: Double?, val longitude: Double?
     )
 
     private fun importClearGpsSqlite(sourceDb: SQLiteDatabase, fingerprint: String): RadioImportResult {
@@ -3924,10 +4142,15 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         val summaries = LinkedHashMap<String, WigleNetworkSummary>()
         sourceDb.rawQuery("SELECT * FROM network", null).use { cursor ->
             while (cursor.moveToNext()) {
-                val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
-                if (identifier.isBlank() || identifier.length > 256) continue
+                val rawIdentifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
+                if (rawIdentifier.isBlank() || rawIdentifier.length > 256) continue
                 val rawType = cursor.getColumnIndex("type").takeIf { it >= 0 }?.let { cursor.getString(it).orEmpty() }.orEmpty()
+                val authMode = cursor.getColumnIndex("authmode").takeIf { it >= 0 }
+                    ?.let { cursor.getString(it).orEmpty() }.orEmpty()
                 val type = wigleDatabaseTypeToRadioType(rawType)
+                val identifier = if (type == "cell") {
+                    canonicalWigleCellIdentifier(rawIdentifier, rawType, authMode) ?: rawIdentifier
+                } else rawIdentifier
                 fun value(name: String): Double? = cursor.doubleOrNull(name)
                 val bestLat = value("bestlat")
                 val bestLon = value("bestlon")
@@ -3939,7 +4162,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                     lastLat to lastLon
                 } else null
                 val info = WigleNetworkSummary(
-                    type, identifier, cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
+                    type, identifier, rawIdentifier, cursor.getString(cursor.getColumnIndexOrThrow("ssid")).orEmpty(),
                     cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0),
                     cursor.getColumnIndex("lasttime").takeIf { it >= 0 }?.let { cursor.getLong(it) }?.takeIf { it > 0L }
                         ?: System.currentTimeMillis(),
@@ -3963,10 +4186,11 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             sourceId = createOrGetImportedSource(target, "wigle", "WiGLE SQLite", "wigle-sqlite:" + fingerprint, System.currentTimeMillis())
             sourceDb.rawQuery("SELECT * FROM location ORDER BY time, _id", null).use { cursor ->
                 while (cursor.moveToNext()) {
-                    val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
-                    if (identifier.isBlank() || identifier.length > 256) continue
-                    val info = summaries.values.firstOrNull { it.identifier == identifier }
+                    val rawIdentifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("bssid")).orEmpty())
+                    if (rawIdentifier.isBlank() || rawIdentifier.length > 256) continue
+                    val info = summaries.values.firstOrNull { it.rawIdentifier == rawIdentifier }
                     val type = info?.type ?: "wifi"
+                    val identifier = info?.identifier ?: rawIdentifier
                     val lat = cursor.doubleOrNull("lat")
                     val lon = cursor.doubleOrNull("lon")
                     if ((lat == null) != (lon == null) || (lat != null && !validCoordinates(lat, lon))) continue
@@ -3979,6 +4203,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                     val key = type + "|" + identifier
                     seenKeys.add(key)
                     touched.add(key)
+                    if (type == "cell" && parseCanonicalCellIdentity(identifier) != null) {
+                        mergeImportedCellAliases(target, type, identifier, includeLegacyWigleAlias = true)
+                    }
                     val newObservation = insertObservationIfAbsent(
                         target, type, identifier, time, lat, lon, if (lat != null) accuracy else null,
                         rssi, frequency, "wigle-import", sourceId
@@ -3997,6 +4224,9 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
 
             summaries.forEach { (key, info) ->
                 if (key in seenKeys) return@forEach
+                if (info.type == "cell" && parseCanonicalCellIdentity(info.identifier) != null) {
+                    mergeImportedCellAliases(target, info.type, info.identifier, includeLegacyWigleAlias = true)
+                }
                 if (upsertImportedPoint(
                         target, info.type, info.identifier, info.ssid, info.latitude, info.longitude,
                         DEFAULT_IMPORTED_ACCURACY_METERS, info.rssi, info.frequency, info.time, "wigle-import", sourceId,

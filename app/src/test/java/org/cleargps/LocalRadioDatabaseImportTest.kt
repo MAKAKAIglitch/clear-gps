@@ -246,6 +246,134 @@ class LocalRadioDatabaseImportTest {
     }
 
     @Test
+    fun wigleAndNeoStumblerCellImportsShareOneRatQualifiedIdentity() {
+        val wigleCsv = (
+            "MAC,SSID,AuthMode,CurrentLatitude,CurrentLongitude,FirstSeen,Frequency,RSSI,Type\n" +
+                "25002_36820_176395327,25002,LTE;25002,52.274,40.452,2026-01-02 03:04:05,200,-92,LTE\n"
+        )
+        val neoCellsCsv = (
+            "timestamp,latitude,longitude,locationAccuracy,cellId,radioType,mcc,mnc,lac,psc,signalStrength,asu,arfcn,cellScanAge\n" +
+                "2026-01-02T03:05:05Z,52.275,40.453,35,176395327,lte,250,02,36820,,-53,15,1300,2500\n"
+        )
+
+        val wigle = database.importWigleCsv(ByteArrayInputStream(wigleCsv.toByteArray()))
+        val neo = database.importRadioCsv(ByteArrayInputStream(neoCellsCsv.toByteArray()))
+        val canonicalId = "lte:25002:36820:176395327"
+
+        assertEquals(1, wigle.uniqueRadios)
+        assertEquals(1, neo.uniqueRadios)
+        assertEquals(1, countRows(
+            "radio_points", "radio_type = ? AND identifier = ?", "cell", canonicalId
+        ))
+        assertEquals(2, countRows(
+            "radio_observations", "radio_type = ? AND identifier = ?", "cell", canonicalId
+        ))
+        assertEquals(2, sqlite.rawQuery(
+            "SELECT COUNT(DISTINCT source_id) FROM radio_observations WHERE radio_type = ? AND identifier = ?",
+            arrayOf("cell", canonicalId)
+        ).use { cursor -> cursor.moveToFirst(); cursor.getInt(0) })
+        assertEquals("neostumbler-import", readPointPositionSource(canonicalId, "cell"))
+        assertNotNull(wigle.sourceId)
+        assertNotNull(neo.sourceId)
+        assertFalse(wigle.sourceId == neo.sourceId)
+
+        // Recreate the two legacy keys to verify existing databases are reconciled on WiGLE re-import.
+        val legacyWigleId = "25002_36820_176395327"
+        val legacyNeoId = "lte:250:2:36820:176395327"
+        sqlite.update(
+            "radio_observations",
+            ContentValues().apply { put("identifier", legacyWigleId) },
+            "source_id = ? AND radio_type = ?",
+            arrayOf(wigle.sourceId.toString(), "cell")
+        )
+        sqlite.update(
+            "radio_observations",
+            ContentValues().apply { put("identifier", legacyNeoId) },
+            "source_id = ? AND radio_type = ?",
+            arrayOf(neo.sourceId.toString(), "cell")
+        )
+        val existingPoint = database.listPoints().single { it.type == "cell" }
+        sqlite.update(
+            "radio_points",
+            ContentValues().apply { put("identifier", legacyWigleId) },
+            "id = ?",
+            arrayOf(existingPoint.id.toString())
+        )
+        sqlite.insertOrThrow(
+            "radio_points",
+            null,
+            ContentValues().apply {
+                put("radio_type", "cell")
+                put("identifier", legacyNeoId)
+                put("label", "Legacy Neo cell")
+                put("ssid", "")
+                put("notes", "")
+                put("latitude", 52.275)
+                put("longitude", 40.453)
+                put("accuracy", 35.0)
+                put("last_rssi", -53)
+                put("peak_rssi", -51)
+                put("frequency", 200)
+                put("first_seen", 1_767_320_705_000L)
+                put("last_seen", 1_767_320_705_000L)
+                put("sightings", 1)
+                put("position_source", "neostumbler-import")
+                put("source_id", neo.sourceId)
+                put("position_observed_at", 1_767_320_705_000L)
+            }
+        )
+        sqlite.insertOrThrow(
+            "radio_auto_refinements",
+            null,
+            ContentValues().apply {
+                put("source_id", neo.sourceId)
+                put("provider", "beacondb")
+                put("radio_type", "cell")
+                put("identifier", legacyNeoId)
+                put("latitude", 52.276)
+                put("longitude", 40.454)
+                put("accuracy", 150.0)
+                put("observed_at", 1_767_320_705_000L)
+            }
+        )
+
+        val repeated = database.importWigleCsv(ByteArrayInputStream(wigleCsv.toByteArray()))
+        assertEquals(0, repeated.observationsImported)
+        assertEquals(1, countRows(
+            "radio_points", "radio_type = ? AND identifier = ?", "cell", canonicalId
+        ))
+        assertEquals(0, countRows(
+            "radio_points", "radio_type = ? AND identifier IN (?, ?)",
+            "cell", legacyWigleId, legacyNeoId
+        ))
+        assertEquals(2, countRows(
+            "radio_observations", "radio_type = ? AND identifier = ?", "cell", canonicalId
+        ))
+        assertEquals(1, countRows(
+            "radio_auto_refinements", "radio_type = ? AND identifier = ?", "cell", canonicalId
+        ))
+    }
+
+    @Test
+    fun cellularIdentityKeepsRatAsPartOfTheImportedKey() {
+        fun cellCsv(rat: String) = (
+            "timestamp,latitude,longitude,locationAccuracy,cellId,radioType,mcc,mnc,lac,psc,signalStrength,asu,arfcn,cellScanAge\n" +
+                "2026-01-02T03:04:05Z,52.275,40.453,35,176395327," + rat + ",250,02,36820,,-53,15,1300,2500\n"
+        )
+
+        database.importRadioCsv(ByteArrayInputStream(cellCsv("lte").toByteArray()))
+        database.importRadioCsv(ByteArrayInputStream(cellCsv("nr").toByteArray()))
+
+        assertEquals(2, countRows("radio_points", "radio_type = ?", "cell"))
+        assertEquals(1, countRows(
+            "radio_points", "radio_type = ? AND identifier = ?", "cell", "lte:25002:36820:176395327"
+        ))
+        assertEquals(1, countRows(
+            "radio_points", "radio_type = ? AND identifier = ?", "cell", "nr:25002:36820:176395327"
+        ))
+    }
+
+    @Test
     fun importsStandaloneNeoStumblerWifiCsv() {
         val csv = (
             "timestamp,latitude,longitude,locationAccuracy,macAddress,frequency,signalStrength,ssid,wifiScanAge\n" +
@@ -439,10 +567,10 @@ class LocalRadioDatabaseImportTest {
         }
     }
 
-    private fun readPointPositionSource(identifier: String): String? =
+    private fun readPointPositionSource(identifier: String, radioType: String = "wifi"): String? =
         sqlite.rawQuery(
-            "SELECT position_source FROM radio_points WHERE radio_type = 'wifi' AND identifier = ?",
-            arrayOf(identifier)
+            "SELECT position_source FROM radio_points WHERE radio_type = ? AND identifier = ?",
+            arrayOf(radioType, identifier)
         ).use { cursor -> if (!cursor.moveToFirst()) null else cursor.getString(0) }
 
     companion object {
