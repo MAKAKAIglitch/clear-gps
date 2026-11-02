@@ -18,6 +18,7 @@ import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
+import android.telephony.CellSignalStrengthNr
 import android.telephony.CellIdentityNr
 import android.telephony.TelephonyManager
 import org.cleargps.cell.CellSignalMetadata
@@ -1388,7 +1389,7 @@ class RadioGeolocationRepository(private val context: Context) {
                         legacyMnc = -1,
                         stringMncAvailable = true
                     ) ?: return null
-                    val strength = info.cellSignalStrength
+                    val strength = info.cellSignalStrength as? CellSignalStrengthNr ?: return null
                     cell(
                         CellTechnology.NR, plmn.first, plmn.second, plmn.third,
                         id.tac.toLong(), id.nci, strength.dbm,
