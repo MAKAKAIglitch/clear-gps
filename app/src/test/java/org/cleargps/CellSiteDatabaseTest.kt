@@ -240,6 +240,45 @@ class CellSiteDatabaseTest {
         assertEquals("no-candidate-groups", database.listCellSiteBatches().first().algorithmVersion)
     }
 
+    @Test
+    fun storesOnlyQualifiedSectorEstimatesForTheirPhysicalSite() {
+        val cell = identity(cellId = 8101L)
+        database.saveCellSiteGroups(
+            listOf(group(listOf(cell))),
+            calculatedAtMillis = 100L
+        )
+        val site = database.listCellSites().single()
+        val sector = CellSiteSectorRecord(
+            id = 0L,
+            siteId = site.id,
+            identity = cell,
+            azimuthDegrees = 82.0,
+            widthDegrees = 74.0,
+            confidenceScore = 0.76,
+            sampleCount = 48,
+            occupiedBearingBins = 8,
+            signalContrastDb = 9.2,
+            modelDirectionSpreadDegrees = 6.0,
+            receiverProfileId = "local-device",
+            frequencyKeys = listOf(1800, 1850),
+            algorithmVersion = "sector-azimuth-1",
+            calculatedAtMillis = 200L,
+            batchId = site.batchId
+        )
+
+        assertEquals(1, database.saveCellSiteSectors(listOf(sector), 200L))
+        val stored = database.listCellSiteSectors().single()
+        assertEquals(site.id, stored.siteId)
+        assertEquals(cell.stableKey, stored.identity.stableKey)
+        assertEquals(82.0, stored.azimuthDegrees, 0.0)
+        assertEquals(74.0, stored.widthDegrees, 0.0)
+        assertEquals(listOf(1800, 1850), stored.frequencyKeys)
+        assertEquals(48, stored.sampleCount)
+
+        assertEquals(0, database.saveCellSiteSectors(emptyList(), 300L))
+        assertTrue(database.listCellSiteSectors().isEmpty())
+    }
+
     private fun queryCount(sql: String): Int =
         database.readableDatabase.rawQuery(sql, null).use {
             if (it.moveToFirst()) it.getInt(0) else 0
