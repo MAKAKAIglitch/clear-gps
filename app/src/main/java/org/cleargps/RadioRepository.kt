@@ -9,6 +9,7 @@ import org.cleargps.cell.CellSiteGroup
 import org.cleargps.cell.CellSiteGroupingConfig
 import org.cleargps.cell.CellSiteIntelligenceEngine
 import org.cleargps.cell.CellSiteIntelligenceResult
+import org.cleargps.cell.SectorAzimuthEstimator
 
 /**
  * Shared read path for the local radio-point dataset.
@@ -115,6 +116,7 @@ internal class RadioRepository(
     ): CellSiteIntelligenceResult {
         val result = calculateCellSites(evidence, estimatorConfig, groupingConfig, additionalCandidates)
         database.saveCellSiteGroups(result.groups, calculatedAtMillis)
+        recalculateCellSiteSectors(calculatedAtMillis)
         return result
     }
 
@@ -169,6 +171,55 @@ internal class RadioRepository(
         )
     }
 
+    /**
+     * Persists only sector models that pass the estimator's map-display quality gate.
+     */
+    fun recalculateCellSiteSectors(
+        calculatedAtMillis: Long = System.currentTimeMillis()
+    ): List<CellSiteSectorRecord> {
+        require(calculatedAtMillis >= 0L)
+        val sites = database.listCellSites(limit = 5_000)
+        val samplesByIdentity = database.listCellSectorObservationSamples()
+            .groupBy { it.identity.stableKey }
+        val sectors = sites.flatMap { site ->
+            // A sector needs a bounded site centre, even when the centre was manually fixed.
+            if (site.uncertaintyMeters > 1_000.0 || site.confidenceScore < 0.60) {
+                return@flatMap emptyList()
+            }
+            site.members.mapNotNull { identity ->
+                val estimate = SectorAzimuthEstimator.estimate(
+                    identity = identity,
+                    siteLatitude = site.latitude,
+                    siteLongitude = site.longitude,
+                    siteUncertaintyMeters = site.uncertaintyMeters,
+                    observations = samplesByIdentity[identity.stableKey].orEmpty()
+                )?.takeIf { it.suitableForMapDisplay } ?: return@mapNotNull null
+                CellSiteSectorRecord(
+                    id = 0L,
+                    siteId = site.id,
+                    identity = identity,
+                    azimuthDegrees = estimate.azimuthDegrees,
+                    widthDegrees = estimate.widthDegrees,
+                    confidenceScore = estimate.confidenceScore,
+                    sampleCount = estimate.sampleCount,
+                    occupiedBearingBins = estimate.occupiedBearingBins,
+                    signalContrastDb = estimate.signalContrastDb,
+                    modelDirectionSpreadDegrees = estimate.modelDirectionSpreadDegrees,
+                    receiverProfileId = estimate.receiverProfileId ?: return@mapNotNull null,
+                    frequencyKeys = estimate.frequencyKeys,
+                    algorithmVersion = "sector-azimuth-1",
+                    calculatedAtMillis = calculatedAtMillis,
+                    batchId = site.batchId
+                )
+            }
+        }
+        database.saveCellSiteSectors(sectors, calculatedAtMillis)
+        return database.listCellSiteSectors()
+    }
+
+    fun loadCellSiteSectors(limit: Int = 2_000): List<CellSiteSectorRecord> =
+        database.listCellSiteSectors(limit)
+
     fun loadCellSites(limit: Int = 2_000): List<CellSiteRecord> =
         database.listCellSites(limit)
 
@@ -186,10 +237,17 @@ internal class RadioRepository(
         latitude: Double,
         longitude: Double,
         uncertaintyMeters: Double
-    ): Boolean = database.lockCellSiteCoordinate(siteId, latitude, longitude, uncertaintyMeters)
+    ): Boolean {
+        val saved = database.lockCellSiteCoordinate(siteId, latitude, longitude, uncertaintyMeters)
+        if (saved) recalculateCellSiteSectors()
+        return saved
+    }
 
-    fun unlockCellSiteCoordinate(siteId: Long): Boolean =
-        database.unlockCellSiteCoordinate(siteId)
+    fun unlockCellSiteCoordinate(siteId: Long): Boolean {
+        val unlocked = database.unlockCellSiteCoordinate(siteId)
+        if (unlocked) recalculateCellSiteSectors()
+        return unlocked
+    }
 
     fun pointCounts(): RadioPointCounts = RadioPointCounts(
         total = database.pointCount(),
