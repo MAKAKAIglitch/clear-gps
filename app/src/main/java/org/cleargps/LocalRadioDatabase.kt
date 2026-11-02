@@ -1084,6 +1084,12 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         if (oldVersion < 17) {
             createOpenStreetMapCellSiteTables(db)
         }
+        if (oldVersion < 18) {
+            db.execSQL(
+                "ALTER TABLE cell_observation_details ADD COLUMN timing_advance_position_delta_ms INTEGER " +
+                    "CHECK(timing_advance_position_delta_ms IS NULL OR timing_advance_position_delta_ms >= 0)"
+            )
+        }
     }
 
 
@@ -1243,6 +1249,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 ecno_db INTEGER,
                 timing_advance_value INTEGER,
                 timing_advance_unit TEXT,
+                timing_advance_position_delta_ms INTEGER CHECK(
+                    timing_advance_position_delta_ms IS NULL OR timing_advance_position_delta_ms >= 0
+                ),
                 CHECK((timing_advance_value IS NULL AND timing_advance_unit IS NULL) OR
                       (timing_advance_value >= 0 AND timing_advance_unit IS NOT NULL))
             )
@@ -1278,6 +1287,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             put("ecno_db", metadata.ecNoDb)
             put("timing_advance_value", metadata.timingAdvanceValue)
             put("timing_advance_unit", metadata.timingAdvanceUnit)
+            put("timing_advance_position_delta_ms", metadata.timingAdvancePositionDeltaMillis)
         }
         db.insertWithOnConflict(
             "cell_observation_details",
@@ -1317,6 +1327,10 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 putNullableInt(cursor, this, "ecno_db")
                 putNullableInt(cursor, this, "timing_advance_value")
                 put("timing_advance_unit", cursor.getString(cursor.getColumnIndexOrThrow("timing_advance_unit")))
+                val timingDeltaIndex = cursor.getColumnIndex("timing_advance_position_delta_ms")
+                if (timingDeltaIndex >= 0 && !cursor.isNull(timingDeltaIndex)) {
+                    put("timing_advance_position_delta_ms", cursor.getLong(timingDeltaIndex))
+                }
             }
             targetDb.insertWithOnConflict(
                 "cell_observation_details",
@@ -3526,7 +3540,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             SELECT o.latitude, o.longitude, o.accuracy, o.rssi, o.observed_at, o.source_id,
                    s.kind AS source_kind, s.trust_weight AS source_weight,
                    COALESCE(sg.trust_weight, 1.0) AS segment_weight,
-                   d.channel_number
+                   d.channel_number, d.timing_advance_value, d.timing_advance_unit,
+                   d.timing_advance_position_delta_ms
             FROM radio_observations o
             JOIN radio_sources s ON s.id = o.source_id
             JOIN cell_observation_details d ON d.observation_id = o.id
@@ -3601,7 +3616,13 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                         observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
                         locationOrigin = origin,
                         receiverProfileId = if (sourceKind == "local") "local-device" else null,
-                        sourceGroupId = "$sourceKind:$sourceId"
+                        sourceGroupId = "$sourceKind:$sourceId",
+                        timingAdvanceValue = cursor.getInt(cursor.getColumnIndexOrThrow("timing_advance_value"))
+                            .takeUnless { cursor.isNull(cursor.getColumnIndexOrThrow("timing_advance_value")) },
+                        timingAdvanceUnit = cursor.getString(cursor.getColumnIndexOrThrow("timing_advance_unit")),
+                        timingAdvancePositionDeltaMillis = cursor.getColumnIndex("timing_advance_position_delta_ms")
+                            .takeIf { it >= 0 && !cursor.isNull(it) }
+                            ?.let(cursor::getLong)
                     )
                 )
             }
@@ -6311,7 +6332,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 17
+        private const val DB_VERSION = 18
         private const val OPEN_CELL_OSM_MIN_RADIUS_METERS = 100
         private const val OPEN_CELL_OSM_MAX_RADIUS_METERS = 5_000
         private const val OPEN_CELL_OSM_MAX_ATTEMPTS_PER_DAY = 2
