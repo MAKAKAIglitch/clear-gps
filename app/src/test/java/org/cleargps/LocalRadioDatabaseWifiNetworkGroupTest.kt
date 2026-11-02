@@ -13,27 +13,23 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class LocalRadioDatabaseWifiNetworkGroupTest {
     private lateinit var context: Context
     private lateinit var database: LocalRadioDatabase
-    private lateinit var databaseName: String
 
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
-        // Keep each WAL database isolated without unnecessarily long Windows paths.
-        databaseName = "wifi_" + UUID.randomUUID() + ".db"
-        database = LocalRadioDatabase(context, databaseName)
+        // Each test gets an independent in-memory database.
+        database = LocalRadioDatabase(context, null)
     }
 
     @After
     fun tearDown() {
         if (::database.isInitialized) database.close()
-        if (::context.isInitialized && ::databaseName.isInitialized) context.deleteDatabase(databaseName)
     }
 
     @Test

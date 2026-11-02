@@ -854,8 +854,9 @@ internal fun estimateRadioAnchorPosition(
 /**
  * Radio scans, matched coordinates, point aliases and history stay in app-private SQLite.
  * This database class has no HTTP client and never sends wireless identifiers to a service.
+ * Pass a null database name to use an isolated in-memory database.
  */
-class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DB_VERSION) {
+class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DB_VERSION) {
     private val appContext = context.applicationContext
 
     init {
