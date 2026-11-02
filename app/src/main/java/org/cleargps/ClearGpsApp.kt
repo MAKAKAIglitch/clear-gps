@@ -539,6 +539,9 @@ fun ClearGpsApp(
     var openCellIdLocalDbAutoLookupEnabled by remember {
         mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_OPENCELLID_LOCAL_DB_AUTO_LOOKUP_ENABLED, false))
     }
+    var openStreetMapCellSiteLookupEnabled by remember {
+        mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED, false))
+    }
     var passiveRadioCaptureEnabled by remember {
         mutableStateOf(prefs.getBoolean(ClearGpsPreferences.KEY_PASSIVE_RADIO_CAPTURE_ENABLED, false))
     }
@@ -3904,6 +3907,7 @@ fun ClearGpsApp(
                                     beaconDbEnabled = beaconDbEnabled,
                                     beaconDbAutoRefinementEnabled = beaconDbAutoRefinementEnabled,
                                     openCellIdLocalDbAutoLookupEnabled = openCellIdLocalDbAutoLookupEnabled,
+                                    openStreetMapCellSiteLookupEnabled = openStreetMapCellSiteLookupEnabled,
                                     passiveRadioCaptureEnabled = passiveRadioCaptureEnabled,
                                     onBeaconDbAutoRefinementEnabled = { enabled ->
                                         beaconDbAutoRefinementEnabled = enabled
@@ -3920,6 +3924,12 @@ fun ClearGpsApp(
                                             withContext(Dispatchers.IO) { database.deleteAutoRefinementBatches("opencellid") }
                                             refreshLocalUiInCurrentCoroutine()
                                         }
+                                    },
+                                    onOpenStreetMapCellSiteLookupEnabled = { enabled ->
+                                        openStreetMapCellSiteLookupEnabled = enabled
+                                        prefs.edit().putBoolean(
+                                            ClearGpsPreferences.KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED, enabled
+                                        ).apply()
                                     },
                                     onPassiveRadioCaptureEnabled = { enabled ->
                                         val permitted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -7649,9 +7659,11 @@ private fun SettingsScreen(
     beaconDbEnabled: Boolean,
     beaconDbAutoRefinementEnabled: Boolean,
     openCellIdLocalDbAutoLookupEnabled: Boolean,
+    openStreetMapCellSiteLookupEnabled: Boolean,
     passiveRadioCaptureEnabled: Boolean,
     onBeaconDbAutoRefinementEnabled: (Boolean) -> Unit,
     onOpenCellIdLocalDbAutoLookupEnabled: (Boolean) -> Unit,
+    onOpenStreetMapCellSiteLookupEnabled: (Boolean) -> Unit,
     onPassiveRadioCaptureEnabled: (Boolean) -> Unit,
     onBeaconDbEnabled: (Boolean) -> Unit,
     onDetailedLogging: (Boolean) -> Unit, onDiagnosticLogMaxKb: (Int) -> Unit,
@@ -7722,6 +7734,13 @@ private fun SettingsScreen(
                     "По умолчанию выключено. Требуются сохранённый личный API-ключ, включённый OpenCellID и разрешение сетевых запросов. Запрашиваются только сотовые идентификаторы, уже находящиеся в локальной базе; дневной лимит — 10 попыток.",
                     openCellIdLocalDbAutoLookupEnabled,
                     onOpenCellIdLocalDbAutoLookupEnabled
+                )
+                Divider(color = colors.outlineVariant)
+                SettingSwitch(
+                    "Разрешить запросы OpenStreetMap / Overpass для вышек",
+                    "По умолчанию выключено. При включении Clear GPS сможет отправлять в overpass-api.de только приблизительный центр уже рассчитанной площадки и радиус поиска (100–5000 м). Идентификаторы сот, MCC/MNC, MAC-адреса, SSID, GPS-трек и история наблюдений не передаются. Используются только HTTPS GET read-only запросы; максимум 2 попытки в сутки на устройстве, одна активная задача, кэш 30 дней и отрицательный кэш 7 дней. IP-адрес устройства виден Overpass. Результаты OSM считаются вспомогательными, не подтверждают мобильную вышку сами по себе.",
+                    openStreetMapCellSiteLookupEnabled,
+                    onOpenStreetMapCellSiteLookupEnabled
                 )
                 Divider(color = colors.outlineVariant)
                 SettingSwitch(
