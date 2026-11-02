@@ -5,16 +5,20 @@ import android.content.Context
 import org.cleargps.cell.CellIdentity
 import org.cleargps.cell.CellSignalMetadata
 import org.cleargps.cell.CellTechnology
+import org.cleargps.cell.CellTimingAdvanceRangePolicy
+import org.cleargps.cell.CellTimingAdvanceSiteEstimator
 import org.cleargps.cell.ObservationLocationOrigin
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import kotlin.math.roundToInt
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -186,6 +190,115 @@ class CellObservationSamplesDatabaseTest {
     }
 
     @Test
+    fun batchQueryReturnsOnlySynchronizedLocalLteTimingAdvanceSamples() {
+        val localSource = database.listRadioSources().single { it.kind == "local" }
+        val importedSource = database.writableDatabase.insertOrThrow(
+            "radio_sources",
+            null,
+            ContentValues().apply {
+                put("kind", "wigle")
+                put("name", "Imported TA")
+                put("created_at", 1_700_000_000_000L)
+                put("last_seen", 1_700_000_000_000L)
+                put("enabled", 1)
+                put("trust_weight", 1.0)
+            }
+        )
+        val identity = CellIdentity.fromAndroidStrings(
+            CellTechnology.LTE, "250", "01", 1024, 987700L
+        )!!
+        val valid = CellSignalMetadata(
+            CellTechnology.LTE, "250", "01", true, 1024, 987700L,
+            channelNumber = 1800,
+            timingAdvanceValue = 20,
+            timingAdvanceUnit = "lte-command-index",
+            timingAdvancePositionDeltaMillis = 300L
+        )
+        insertObservation(
+            localSource.id, "lte:250:01:1024:987700", "gps", 51.5, -0.12, valid
+        )
+        insertObservation(
+            localSource.id, "lte:250:01:1024:987700", "gps", 51.5001, -0.1201,
+            valid.copy(timingAdvancePositionDeltaMillis = null)
+        )
+        insertObservation(
+            importedSource, "lte:250:01:1024:987700", "wigle-import", 51.5002, -0.1202, valid
+        )
+
+        val samples = database.listCellTimingAdvanceSamples()
+
+        assertEquals(1, samples.size)
+        assertEquals(identity.stableKey, samples.single().identity.stableKey)
+        assertTrue(samples.single().usableForTimingAdvance())
+    }
+
+    @Test
+    fun timingAdvanceHistoryCreatesAndPersistsPhysicalSiteWithoutNetworkOrNewGps() {
+        val localSource = database.listRadioSources().single { it.kind == "local" }
+        val identity = CellIdentity.fromAndroidStrings(
+            CellTechnology.LTE, "250", "01", 1024, 987701L
+        )!!
+        val siteLatitude = 51.5007
+        val siteLongitude = -0.1246
+        val baseTime = 1_700_000_000_000L
+
+        repeat(16) { index ->
+            val bearing = Math.toRadians(index * 22.5)
+            val distance = 600.0 + (index % 4) * 180.0
+            val angular = distance / 6_371_008.8
+            val lat0 = Math.toRadians(siteLatitude)
+            val lon0 = Math.toRadians(siteLongitude)
+            val latitude = Math.toDegrees(
+                kotlin.math.asin(
+                    kotlin.math.sin(lat0) * kotlin.math.cos(angular) +
+                        kotlin.math.cos(lat0) * kotlin.math.sin(angular) * kotlin.math.cos(bearing)
+                )
+            )
+            val longitude = Math.toDegrees(
+                lon0 + kotlin.math.atan2(
+                    kotlin.math.sin(bearing) * kotlin.math.sin(angular) * kotlin.math.cos(lat0),
+                    kotlin.math.cos(angular) - kotlin.math.sin(lat0) * kotlin.math.sin(Math.toRadians(latitude))
+                )
+            )
+            val timingAdvance = (distance / CellTimingAdvanceRangePolicy.LTE_ONE_WAY_STEP_METERS)
+                .roundToInt()
+            val metadata = CellSignalMetadata(
+                CellTechnology.LTE, "250", "01", true, 1024, 987701L,
+                channelNumber = 1800,
+                pci = 111,
+                rsrpDbm = -65,
+                timingAdvanceValue = timingAdvance,
+                timingAdvanceUnit = "lte-command-index",
+                timingAdvancePositionDeltaMillis = 100L
+            )
+            insertObservation(
+                localSource.id,
+                "lte:250:01:1024:987701",
+                "gps",
+                latitude,
+                longitude,
+                metadata,
+                observedAtMillis = baseTime + index * 1_000L
+            )
+        }
+
+        val rawSamples = database.listCellTimingAdvanceSamples()
+        assertEquals(16, rawSamples.size)
+        assertNotNull(CellTimingAdvanceSiteEstimator.estimate(identity, rawSamples))
+
+        val result = RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites(
+            nowMillis = baseTime + 20_000L
+        )
+
+        assertEquals(1, result.groups.size)
+        val saved = database.listCellSites().single()
+        assertEquals(identity.stableKey, saved.members.single().stableKey)
+        assertTrue(saved.uncertaintyMeters in 1.0..250.0)
+        assertTrue(saved.confidenceScore >= 0.45)
+        assertFalse(saved.lockedByUser)
+    }
+
+    @Test
     fun cachedOpenCellIdCandidatesAreCalculatedAndSavedWithoutNetwork() {
         val localSource = database.listRadioSources().single { it.kind == "local" }
         val now = 1_700_000_000_000L
@@ -245,7 +358,8 @@ class CellObservationSamplesDatabaseTest {
         positionSource: String,
         latitude: Double,
         longitude: Double,
-        metadata: CellSignalMetadata
+        metadata: CellSignalMetadata,
+        observedAtMillis: Long = 1_700_000_000_000L
     ) {
         val observationId = database.writableDatabase.insertOrThrow(
             "radio_observations",
@@ -258,7 +372,7 @@ class CellObservationSamplesDatabaseTest {
                 put("accuracy", 12.0)
                 put("rssi", -65)
                 put("frequency", 1800)
-                put("observed_at", 1_700_000_000_000L)
+                put("observed_at", observedAtMillis)
                 put("position_source", positionSource)
                 put("source_id", sourceId)
             }
