@@ -15,14 +15,16 @@ class CellDomainTest {
     @Test
     fun legacyNumericMncIsAlwaysWidthAmbiguous() {
         val oldTwoDigit = CellIdentity.fromLegacyIdentifier("lte:250:15:1024:987654")!!
-        val oldThreeDigit = CellIdentity.fromLegacyIdentifier("lte:250:1:1024:987654")!!
-        val currentTwoDigit = CellIdentity.fromAndroidStrings(CellTechnology.LTE, "250", "15", 1024, 987654L)!!
+        val oldOneDigit = CellIdentity.fromLegacyIdentifier("lte:250:1:1024:987654")!!
+        val currentTwoDigit = CellIdentity.fromAndroidStrings(CellTechnology.LTE, "250", "01", 1024, 987654L)!!
         val currentThreeDigit = CellIdentity.fromAndroidStrings(CellTechnology.LTE, "250", "015", 1024, 987654L)!!
+        val currentTwoDigitFifteen = CellIdentity.fromAndroidStrings(CellTechnology.LTE, "250", "15", 1024, 987654L)!!
 
         assertFalse(oldTwoDigit.mncLengthKnown)
-        assertFalse(oldThreeDigit.mncLengthKnown)
+        assertFalse(oldOneDigit.mncLengthKnown)
         assertEquals(CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH, oldTwoDigit.compare(currentThreeDigit))
-        assertEquals(CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH, oldThreeDigit.compare(currentTwoDigit))
+        assertEquals(CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH, oldOneDigit.compare(currentTwoDigit))
+        assertEquals(CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH, oldTwoDigit.compare(currentTwoDigitFifteen))
     }
 
     @Test
