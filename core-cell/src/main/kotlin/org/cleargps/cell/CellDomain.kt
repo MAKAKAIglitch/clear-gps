@@ -188,11 +188,13 @@ data class CellObservationSample(
     fun usableForSector(maximumAccuracyMeters: Double = 1_000.0): Boolean =
         identity.mncLengthKnown &&
             !receiverProfileId.isNullOrBlank() &&
+            frequencyKey > 0 &&
             locationOrigin in setOf(
                 ObservationLocationOrigin.OBSERVED,
                 ObservationLocationOrigin.IMPORTED,
                 ObservationLocationOrigin.USER_CONFIRMED
             ) &&
+            coordinateAccuracyMeters.isFinite() &&
             coordinateAccuracyMeters <= maximumAccuracyMeters
 }
 
