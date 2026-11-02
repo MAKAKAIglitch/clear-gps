@@ -3531,6 +3531,106 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
      * Returns historical handset observations for one exact cell identity.
      * Only trusted local/import sources and original located observations are eligible.
      */
+    /**
+     * Loads synchronized local LTE TA samples in one bounded query for the site estimator.
+     */
+    fun listCellTimingAdvanceSamples(
+        limit: Int = 100_000,
+        maximumCoordinateAccuracyMeters: Double = 50.0,
+        maximumPositionDeltaMillis: Long = 1_000L
+    ): List<CellObservationSample> {
+        require(maximumCoordinateAccuracyMeters.isFinite() && maximumCoordinateAccuracyMeters > 0.0)
+        require(maximumPositionDeltaMillis >= 0L)
+        val result = ArrayList<CellObservationSample>()
+        readableDatabase.rawQuery(
+            """
+            SELECT d.rat, d.mcc, d.mnc, d.area_code, d.cell_id,
+                   o.latitude, o.longitude, o.accuracy, o.rssi, o.observed_at,
+                   o.source_id, s.trust_weight AS source_weight,
+                   COALESCE(sg.trust_weight, 1.0) AS segment_weight,
+                   d.channel_number, d.timing_advance_value, d.timing_advance_unit,
+                   d.timing_advance_position_delta_ms
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            JOIN cell_observation_details d ON d.observation_id = o.id
+            LEFT JOIN radio_source_segment_settings sg
+              ON sg.source_id = o.source_id
+             AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+             AND sg.radio_type = o.radio_type
+            WHERE o.radio_type = 'cell'
+              AND d.rat = 'lte' AND d.mnc_length_known = 1
+              AND d.timing_advance_value IS NOT NULL
+              AND d.timing_advance_unit = 'lte-command-index'
+              AND d.timing_advance_position_delta_ms BETWEEN 0 AND ?
+              AND s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180
+              AND o.accuracy IS NOT NULL AND o.accuracy BETWEEN 1 AND ?
+              AND o.rssi BETWEEN -160 AND 0
+              AND o.observed_at >= 0
+              AND LOWER(o.position_source) NOT LIKE '%estimate%'
+              AND LOWER(o.position_source) NOT LIKE '%lookup%'
+              AND LOWER(o.position_source) NOT LIKE '%manual%'
+              AND LOWER(o.position_source) NOT LIKE '%auto%'
+              AND LOWER(o.position_source) NOT LIKE '%opencellid%'
+              AND LOWER(o.position_source) NOT LIKE '%beacondb%'
+            ORDER BY o.observed_at DESC, o.id DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                maximumPositionDeltaMillis.toString(),
+                maximumCoordinateAccuracyMeters.toString(),
+                limit.coerceIn(1, 100_000).toString()
+            )
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val identity = runCatching {
+                    CellIdentity(
+                        technology = CellTechnology.LTE,
+                        mcc = cursor.getString(cursor.getColumnIndexOrThrow("mcc")),
+                        mnc = cursor.getString(cursor.getColumnIndexOrThrow("mnc")),
+                        areaCode = cursor.getLong(cursor.getColumnIndexOrThrow("area_code")),
+                        cellId = cursor.getLong(cursor.getColumnIndexOrThrow("cell_id")),
+                        mncLengthKnown = true
+                    )
+                }.getOrNull() ?: continue
+                val sourceId = cursor.getLong(cursor.getColumnIndexOrThrow("source_id"))
+                val sourceWeight = RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("source_weight"))
+                )
+                val segmentWeight = RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("segment_weight"))
+                )
+                val combinedWeight = sourceWeight * segmentWeight
+                if (combinedWeight <= 0.0) continue
+                val rawAccuracy = cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy"))
+                val effectiveAccuracy = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, combinedWeight)
+                if (!effectiveAccuracy.isFinite() || effectiveAccuracy > maximumCoordinateAccuracyMeters) continue
+
+                result += CellObservationSample(
+                    identity = identity,
+                    latitude = cursor.getDouble(cursor.getColumnIndexOrThrow("latitude")),
+                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow("longitude")),
+                    coordinateAccuracyMeters = effectiveAccuracy,
+                    rssiDbm = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).toDouble(),
+                    frequencyKey = cursor.getInt(cursor.getColumnIndexOrThrow("channel_number")).coerceAtLeast(0),
+                    observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    locationOrigin = ObservationLocationOrigin.OBSERVED,
+                    receiverProfileId = "local-device",
+                    sourceGroupId = "local:$sourceId",
+                    timingAdvanceValue = cursor.getInt(cursor.getColumnIndexOrThrow("timing_advance_value")),
+                    timingAdvanceUnit = cursor.getString(cursor.getColumnIndexOrThrow("timing_advance_unit")),
+                    timingAdvancePositionDeltaMillis = cursor.getLong(
+                        cursor.getColumnIndexOrThrow("timing_advance_position_delta_ms")
+                    )
+                )
+            }
+        }
+        return result
+    }
+
     fun listCellObservationSamples(
         identity: CellIdentity,
         limit: Int = 20_000,
