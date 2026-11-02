@@ -7224,7 +7224,7 @@ private fun RadioPointDetailsSheet(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Text(
-                                                member.ssid.ifBlank { "Скрытая сеть" },
+                                                member.ssid.ifBlank { "SSID не получен" },
                                                 color = colors.onSecondaryContainer,
                                                 fontWeight = FontWeight.Medium
                                             )
@@ -7250,7 +7250,7 @@ private fun RadioPointDetailsSheet(
                             Text("Возможные связанные точки", style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Это только подсказки для Mesh, репитеров или дополнительных интерфейсов роутера. Ничего не объединяется без твоего подтверждения.",
+                                "Это только подсказки для Mesh, репитеров или дополнительных интерфейсов роутера. Пустое имя не доказывает, что сеть скрытая; ничего не объединяется без твоего подтверждения.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant
                             )
@@ -7266,7 +7266,7 @@ private fun RadioPointDetailsSheet(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
                                         Text(
-                                            candidate.point.ssid.ifBlank { "Скрытая Wi-Fi сеть" },
+                                            candidate.point.ssid.ifBlank { "SSID не получен (возможна скрытая сеть)" },
                                             fontWeight = FontWeight.SemiBold
                                         )
                                         Text(candidate.point.identifier, style = MaterialTheme.typography.labelSmall,

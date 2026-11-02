@@ -46,7 +46,7 @@ class WifiNetworkGroupingPolicyTest {
         val suggestions = WifiNetworkGroupingPolicy.suggestCandidates(first, listOf(first, hidden))
 
         assertEquals(1, suggestions.size)
-        assertTrue(suggestions.single().reasons.any { it.contains("SSID скрыт") })
+        assertTrue(suggestions.single().reasons.any { it.contains("возможна скрытая сеть") })
     }
 
     @Test

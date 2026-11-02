@@ -108,10 +108,10 @@ internal object WifiNetworkGroupingPolicy {
 
                 val reasons = buildList {
                     if (sameSsid) add("Совпадает имя сети (SSID)")
-                    if (sameVendorPrefix) add("Совпадает префикс MAC производителя")
+                    if (sameVendorPrefix) add("Совпадает OUI (первые 3 байта MAC)")
                     if (nearby) add("Центры наблюдений близко: ${distance!!.toInt()} м")
                     if (coObserved) add("Точки обнаруживались примерно в одно время")
-                    if (hiddenInterface) add("SSID скрыт: имя сети не передаётся")
+                    if (hiddenInterface) add("SSID не получен: возможна скрытая сеть")
                 }
                 WifiNetworkCandidate(candidate, score, reasons)
             }
