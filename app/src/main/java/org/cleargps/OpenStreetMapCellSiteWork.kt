@@ -208,6 +208,12 @@ class OpenStreetMapCellSiteWorker(
                         httpStatus = execution.httpStatus
                     )
                     if (saved) {
+                        if (execution.response.status == OpenStreetMapCellSiteLookupStatus.FOUND &&
+                            execution.response.objects.isNotEmpty()
+                        ) {
+                            // Cached OSM evidence must flow back through the local fusion pipeline.
+                            CellSiteRecalculationScheduler.enqueue(applicationContext)
+                        }
                         DiagnosticLogStore.log(
                             applicationContext, "CELL_OSM",
                             "Overpass lookup finished: ${execution.response.status}, " +
