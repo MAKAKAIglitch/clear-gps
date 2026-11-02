@@ -400,6 +400,16 @@ fun ClearGpsApp(
     var obd2StatusIsError by remember { mutableStateOf(false) }
     var fusionNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     var pointsView by remember { mutableStateOf(PointsView.POINTS) }
+    var pointSortField by remember {
+        mutableStateOf(
+            RadioPointSortField.values().firstOrNull {
+                it.key == prefs.getString(KEY_DATABASE_POINT_SORT_FIELD, RadioPointSortField.LAST_SEEN.key)
+            } ?: RadioPointSortField.LAST_SEEN
+        )
+    }
+    var pointSortDescending by remember {
+        mutableStateOf(prefs.getBoolean(KEY_DATABASE_POINT_SORT_DESCENDING, true))
+    }
     var minimumPointSightings by remember {
         mutableStateOf(prefs.getInt(KEY_DATABASE_POINT_MIN_SIGHTINGS, 1).coerceIn(1, 100))
     }
@@ -407,6 +417,7 @@ fun ClearGpsApp(
         mutableStateOf(
             radioRepository.loadLocalPoints(
                 limit = RADIO_POINT_LIST_LIMIT,
+                sort = RadioPointSort(pointSortField, pointSortDescending),
                 minimumSightings = minimumPointSightings
             )
         )
@@ -433,16 +444,6 @@ fun ClearGpsApp(
     var retentionLimitUpdating by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
-    var pointSortField by remember {
-        mutableStateOf(
-            RadioPointSortField.values().firstOrNull {
-                it.key == prefs.getString(KEY_DATABASE_POINT_SORT_FIELD, RadioPointSortField.LAST_SEEN.key)
-            } ?: RadioPointSortField.LAST_SEEN
-        )
-    }
-    var pointSortDescending by remember {
-        mutableStateOf(prefs.getBoolean(KEY_DATABASE_POINT_SORT_DESCENDING, true))
-    }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var mapViewportTopInWindowPx by remember { mutableStateOf(0) }
     var mapViewportBottomInWindowPx by remember { mutableStateOf(0) }
