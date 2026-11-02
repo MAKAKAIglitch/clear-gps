@@ -3528,10 +3528,6 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
     }
 
     /**
-     * Returns historical handset observations for one exact cell identity.
-     * Only trusted local/import sources and original located observations are eligible.
-     */
-    /**
      * Loads synchronized local LTE TA samples in one bounded query for the site estimator.
      */
     fun listCellTimingAdvanceSamples(
@@ -3631,6 +3627,10 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return result
     }
 
+    /**
+     * Returns historical handset observations for one exact cell identity.
+     * Only trusted local/import sources and original located observations are eligible.
+     */
     fun listCellObservationSamples(
         identity: CellIdentity,
         limit: Int = 20_000,
