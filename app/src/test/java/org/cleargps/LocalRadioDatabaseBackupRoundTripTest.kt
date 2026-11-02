@@ -77,6 +77,10 @@ class LocalRadioDatabaseBackupRoundTripTest {
             ))
 
             val located = target.listPoints().single { it.identifier == LOCATED_ID }
+            assertEquals("02:11:22:33:44:55", located.wifiMldMac)
+            val restoredGroup = target.findWifiNetworkGroup(located.id)
+            assertNotNull(restoredGroup)
+            assertEquals(setOf(LOCATED_ID, UNKNOWN_ID), restoredGroup!!.members.map { it.identifier }.toSet())
             assertEquals(52.274, located.latitude!!, 0.000001)
             assertEquals(40.452, located.longitude!!, 0.000001)
             assertNotNull(located.sourceId)
@@ -134,6 +138,7 @@ class LocalRadioDatabaseBackupRoundTripTest {
                 put("position_source", "manual-reference")
                 put("source_id", sourceId)
                 put("position_observed_at", now)
+                put("wifi_mld_mac", "02:11:22:33:44:55")
             }
         )
         sqlite.insertOrThrow(
@@ -189,6 +194,10 @@ class LocalRadioDatabaseBackupRoundTripTest {
                 put("source_id", sourceId)
             }
         )
+        val locatedPoint = database.findWifiPointByIdentifier(LOCATED_ID)!!
+        val unknownPoint = database.findWifiPointByIdentifier(UNKNOWN_ID)!!
+        assertNotNull(database.groupWifiPoints(listOf(locatedPoint.id, unknownPoint.id)))
+
         sqlite.insertOrThrow(
             "scan_history",
             null,

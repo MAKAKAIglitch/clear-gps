@@ -4223,6 +4223,24 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             throw IllegalArgumentException("SQLite-файл похож на Clear GPS, но структура таблиц неполная.")
         }
 
+        val sourceWifiGroups = LinkedHashMap<Long, LinkedHashSet<String>>()
+        val sourceGroupMemberColumns = tableColumns(sourceDb, "wifi_network_group_members")
+        if (sourceGroupMemberColumns.containsAll(setOf("group_id", "point_id"))) {
+            sourceDb.rawQuery(
+                "SELECT m.group_id, p.identifier FROM wifi_network_group_members m " +
+                    "INNER JOIN radio_points p ON p.id = m.point_id WHERE p.radio_type = 'wifi' " +
+                    "ORDER BY m.group_id, m.added_at, m.point_id",
+                null
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val identifier = canonicalIdentifier(cursor.getString(1).orEmpty())
+                    if (identifier.isNotBlank()) {
+                        sourceWifiGroups.getOrPut(cursor.getLong(0)) { LinkedHashSet() }.add(identifier)
+                    }
+                }
+            }
+        }
+
         val target = writableDatabase
         var observationsImported = 0
         var newRadios = 0
@@ -4257,6 +4275,19 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                             rssi, peak, frequency, firstSeen, lastSeen, sightings, positionSource, sourceId
                         )
                     ) newRadios++
+                    val mldColumn = cursor.getColumnIndex("wifi_mld_mac")
+                    val mldMac = if (type == "wifi" && mldColumn >= 0 && !cursor.isNull(mldColumn)) {
+                        cursor.getString(mldColumn).orEmpty().trim().lowercase(Locale.ROOT)
+                            .takeIf { it.matches(Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")) }
+                    } else null
+                    if (mldMac != null) {
+                        target.update(
+                            "radio_points",
+                            ContentValues().apply { put("wifi_mld_mac", mldMac) },
+                            "radio_type = ? AND identifier = ?",
+                            arrayOf("wifi", identifier)
+                        )
+                    }
                     touched.add(type + "|" + identifier)
                 }
             }
@@ -4314,6 +4345,15 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             target.setTransactionSuccessful()
         } finally {
             target.endTransaction()
+        }
+
+        // Restore only explicitly confirmed groups. Imported BSSIDs are resolved by their
+        // canonical identifiers because their SQLite row IDs can differ on the target device.
+        sourceWifiGroups.values.forEach { sourceIdentifiers ->
+            val targetIds = sourceIdentifiers.mapNotNull { identifier ->
+                findWifiPointByIdentifier(identifier)?.id
+            }.distinct()
+            if (targetIds.size >= 2) groupWifiPoints(targetIds)
         }
         return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite Clear GPS", sourceId)
     }
