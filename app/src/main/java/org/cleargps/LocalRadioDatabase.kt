@@ -3021,10 +3021,15 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         }, "id = ?", arrayOf(point.id.toString()))
     }
 
-    fun listPoints(limit: Int = 2_000): List<RadioPointRecord> {
+    fun listPoints(
+        limit: Int = 2_000,
+        sort: RadioPointSort = RadioPointSort()
+    ): List<RadioPointRecord> {
         val result = ArrayList<RadioPointRecord>()
-        readableDatabase.rawQuery("SELECT * FROM radio_points ORDER BY last_seen DESC LIMIT ?",
-            arrayOf(limit.coerceIn(1, 5_000).toString())).use { cursor ->
+        readableDatabase.rawQuery(
+            "SELECT * FROM radio_points ORDER BY " + sort.orderBySql + " LIMIT ?",
+            arrayOf(limit.coerceIn(1, 5_000).toString())
+        ).use { cursor ->
             while (cursor.moveToNext()) result.add(cursor.toRadioPoint())
         }
         return result
@@ -3085,14 +3090,18 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
     ).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
     /** Local search across SSID, BSSID/MAC, labels and notes. */
-    fun searchPoints(query: String, limit: Int = 500): List<RadioPointRecord> {
+    fun searchPoints(
+        query: String,
+        limit: Int = 500,
+        sort: RadioPointSort = RadioPointSort()
+    ): List<RadioPointRecord> {
         val term = query.trim()
-        if (term.isBlank()) return listPoints(limit.coerceIn(1, 5_000))
+        if (term.isBlank()) return listPoints(limit.coerceIn(1, 5_000), sort)
         val pattern = "%" + term.take(120) + "%"
         val result = ArrayList<RadioPointRecord>()
         readableDatabase.rawQuery(
             "SELECT * FROM radio_points WHERE label LIKE ? OR ssid LIKE ? OR identifier LIKE ? OR notes LIKE ? " +
-                "ORDER BY last_seen DESC LIMIT ?",
+                "ORDER BY " + sort.orderBySql + " LIMIT ?",
             arrayOf(pattern, pattern, pattern, pattern, limit.coerceIn(1, 5_000).toString())
         ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
         return result
