@@ -7,9 +7,9 @@ import org.junit.Test
 class WifiNetworkGroupingPolicyTest {
     @Test
     fun onlyMatchingMldMacGroupsDifferentBssidsOnTheMap() {
-        val first = point(1, "aa:bb:cc:00:00:01", ssid = "Home", mld = "02:11:22:33:44:55")
-        val second = point(2, "aa:bb:cc:00:00:02", ssid = "Home", mld = "02:11:22:33:44:55")
-        val neighbour = point(3, "aa:bb:cc:00:00:03", ssid = "Home", mld = null)
+        val first = point(1, "a8:bb:cc:00:00:01", ssid = "Home", mld = "02:11:22:33:44:55")
+        val second = point(2, "a8:bb:cc:00:00:02", ssid = "Home", mld = "02:11:22:33:44:55")
+        val neighbour = point(3, "a8:bb:cc:00:00:03", ssid = "Home", mld = null)
 
         val markers = WifiNetworkGroupingPolicy.buildMapMarkers(listOf(first, second, neighbour))
 
@@ -20,8 +20,8 @@ class WifiNetworkGroupingPolicyTest {
 
     @Test
     fun sameSsidAndVendorPrefixAreOnlySuggestedNotAutoGrouped() {
-        val first = point(1, "aa:bb:cc:00:00:01", "Home")
-        val second = point(2, "aa:bb:cc:00:00:02", "Home")
+        val first = point(1, "a8:bb:cc:00:00:01", "Home")
+        val second = point(2, "a8:bb:cc:00:00:02", "Home")
 
         val suggestions = WifiNetworkGroupingPolicy.suggestCandidates(first, listOf(first, second))
 
@@ -32,7 +32,7 @@ class WifiNetworkGroupingPolicyTest {
 
     @Test
     fun sameSsidAloneDoesNotCreateCandidate() {
-        val first = point(1, "aa:bb:cc:00:00:01", "Home", latitude = 52.0, longitude = 13.0)
+        val first = point(1, "a8:bb:cc:00:00:01", "Home", latitude = 52.0, longitude = 13.0)
         val second = point(2, "de:ad:be:00:00:02", "Home", latitude = 52.02, longitude = 13.02)
 
         assertTrue(WifiNetworkGroupingPolicy.suggestCandidates(first, listOf(first, second)).isEmpty())
@@ -40,8 +40,8 @@ class WifiNetworkGroupingPolicyTest {
 
     @Test
     fun hiddenInterfaceRequiresVendorProximityAndNearSimultaneousSightings() {
-        val first = point(1, "aa:bb:cc:00:00:01", "Home")
-        val hidden = point(2, "aa:bb:cc:00:00:02", "", latitude = 52.0002, longitude = 13.0002)
+        val first = point(1, "a8:bb:cc:00:00:01", "Home")
+        val hidden = point(2, "a8:bb:cc:00:00:02", "", latitude = 52.0002, longitude = 13.0002)
 
         val suggestions = WifiNetworkGroupingPolicy.suggestCandidates(first, listOf(first, hidden))
 
@@ -51,8 +51,8 @@ class WifiNetworkGroupingPolicyTest {
 
     @Test
     fun excludedManualGroupMembersAreNotSuggestedAgain() {
-        val first = point(1, "aa:bb:cc:00:00:01", "Home")
-        val second = point(2, "aa:bb:cc:00:00:02", "Home")
+        val first = point(1, "a8:bb:cc:00:00:01", "Home")
+        val second = point(2, "a8:bb:cc:00:00:02", "Home")
 
         assertTrue(
             WifiNetworkGroupingPolicy.suggestCandidates(first, listOf(first, second), setOf(2L)).isEmpty()

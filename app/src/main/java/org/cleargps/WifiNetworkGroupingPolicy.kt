@@ -78,6 +78,9 @@ internal object WifiNetworkGroupingPolicy {
             .mapNotNull { candidate ->
                 val candidateMac = normalizeMac(candidate.identifier) ?: return@mapNotNull null
                 if (candidateMac == sourceMac) return@mapNotNull null
+                val sourceMld = normalizeMac(source.wifiMldMac)
+                val candidateMld = normalizeMac(candidate.wifiMldMac)
+                if (sourceMld != null && sourceMld == candidateMld) return@mapNotNull null
 
                 val sameSsid = source.ssid.isNotBlank() &&
                     candidate.ssid.isNotBlank() && source.ssid == candidate.ssid
@@ -93,6 +96,10 @@ internal object WifiNetworkGroupingPolicy {
                     (if (nearby) 25 else 0) +
                     (if (coObserved) 15 else 0)
                 val enoughEvidence = if (hiddenInterface) {
+                    sameVendorPrefix && nearby && coObserved
+                } else if (!sameSsid) {
+                    // Different visible names may be separate router bands, IoT SSIDs or Mesh backhaul;
+                    // only offer them when vendor, location and time all agree.
                     sameVendorPrefix && nearby && coObserved
                 } else {
                     score >= 65 && listOf(sameSsid, sameVendorPrefix, nearby, coObserved).count { it } >= 2
@@ -144,5 +151,10 @@ internal object WifiNetworkGroupingPolicy {
         return mac
     }
 
-    private fun oui(mac: String): String? = mac.take(8).takeIf { it.length == 8 }
+    private fun oui(mac: String): String? {
+        val firstOctet = mac.substringBefore(':').toIntOrNull(16) ?: return null
+        // Local-administered or multicast addresses do not carry a reliable vendor OUI.
+        if ((firstOctet and 0x03) != 0) return null
+        return mac.take(8).takeIf { it.length == 8 }
+    }
 }

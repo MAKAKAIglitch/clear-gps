@@ -802,7 +802,7 @@ fun ClearGpsApp(
                             minimumSightings = 1
                         ).filter { it.type == "wifi" }
                         WifiNetworkGroupingPolicy.suggestCandidates(
-                            point = point,
+                            source = point,
                             pool = allWifi,
                             excludedPointIds = group?.members?.map { it.id }?.toSet().orEmpty()
                         )
@@ -7273,7 +7273,7 @@ private fun RadioPointDetailsSheet(
                                             color = colors.onSurfaceVariant)
                                     }
                                     Text(
-                                        "${candidate.score}%",
+                                        "${candidate.score} баллов",
                                         style = MaterialTheme.typography.labelLarge,
                                         color = colors.primary,
                                         fontWeight = FontWeight.SemiBold
@@ -7283,7 +7283,7 @@ private fun RadioPointDetailsSheet(
                                     Text("• " + reason, style = MaterialTheme.typography.bodySmall,
                                         color = colors.onSurfaceVariant)
                                 }
-                                Button(
+                                FilledTonalButton(
                                     onClick = { onConfirmWifiCandidate(candidate.point.id) },
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("Подтвердить: одна Wi-Fi сеть") }
