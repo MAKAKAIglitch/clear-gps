@@ -42,6 +42,16 @@ jobs:
           echo 'Gradle Wrapper JAR SHA-256 verified.'
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
         run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
+      - name: Preserve Linux unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-linux
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            core-cell/build/test-results/test/*.xml
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: ClearGPS-debug
@@ -77,3 +87,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
           if ($LASTEXITCODE -ne 0) { throw "Windows tests/build failed with exit code $LASTEXITCODE." }
+      - name: Preserve Windows unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-windows
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            core-cell/build/test-results/test/*.xml
+          if-no-files-found: warn
+          retention-days: 7
