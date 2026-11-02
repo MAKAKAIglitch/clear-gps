@@ -106,7 +106,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(14, sqlite!!.version)
+        assertEquals(15, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertEquals(1, countRows("radio_points", "LOWER(identifier) = ?", WIGLE_ID))
         assertEquals(2, database!!.observationCount())
@@ -146,6 +146,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         assertTrue(indexExists("radio_obs_source_time"))
         assertTrue(indexExists("radio_points_source"))
         assertTrue(indexExists("radio_obs_radio_time"))
+        assertTrue(tableExists("cell_observation_details"))
         assertFalse(queryHasRow("PRAGMA foreign_key_check"))
         assertEquals(0, countRows("radio_source_segment_settings", "1 = 1"))
         assertEquals(6, countRows("sqlite_master", "type = ? AND name LIKE 'radio_deletion_undo%'", "table"))
@@ -326,7 +327,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(14, sqlite!!.version)
+        assertEquals(15, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertEquals(3, database!!.pointCount())
         assertEquals(3, database!!.observationCount())
@@ -496,6 +497,12 @@ class LocalRadioDatabaseLegacyMigrationTest {
 
     private fun queryHasRow(sql: String): Boolean =
         sqlite!!.rawQuery(sql, null).use { it.moveToFirst() }
+
+    private fun tableExists(table: String): Boolean =
+        sqlite!!.rawQuery(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            arrayOf(table)
+        ).use { it.moveToFirst() }
 
     private fun indexExists(index: String): Boolean =
         sqlite!!.rawQuery(

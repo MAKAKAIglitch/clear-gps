@@ -2,6 +2,7 @@ package org.cleargps
 
 import org.cleargps.cell.CellIdentity
 import org.cleargps.cell.CellObservationSample
+import org.cleargps.cell.CellSignalMetadata
 import org.cleargps.cell.ObservationLocationOrigin
 
 import android.content.ContentValues
@@ -41,7 +42,8 @@ data class RadioSignal(
     /** Monotonic measurement timestamp when exposed by Android; never persisted. */
     val observedAtElapsedRealtimeNanos: Long? = null,
     /** Android's stable Wi-Fi 7 Multi-Link Device address, when the scan API exposes it. */
-    val wifiMldMac: String? = null
+    val wifiMldMac: String? = null,
+    val cellMetadata: CellSignalMetadata? = null
 )
 
 data class BeaconDbRefinementCandidate(
@@ -915,6 +917,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_import_dedupe ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
+        createCellObservationDetailsTable(db)
         createWifiNetworkGroupTables(db)
         db.execSQL("""
             CREATE TABLE scan_history (
@@ -1013,6 +1016,122 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         if (oldVersion < 14) {
             createWifiNetworkGroupTables(db)
         }
+        if (oldVersion < 15) {
+            createCellObservationDetailsTable(db)
+        }
+    }
+
+
+    private fun createCellObservationDetailsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_observation_details (
+                observation_id INTEGER PRIMARY KEY
+                    REFERENCES radio_observations(id) ON DELETE CASCADE,
+                rat TEXT NOT NULL CHECK(rat IN ('gsm','wcdma','lte','nr')),
+                mcc TEXT NOT NULL CHECK(length(mcc) = 3),
+                mnc TEXT NOT NULL CHECK(length(mnc) BETWEEN 1 AND 3),
+                mnc_length_known INTEGER NOT NULL DEFAULT 0 CHECK(mnc_length_known IN (0,1)),
+                area_code INTEGER NOT NULL CHECK(area_code >= 0),
+                cell_id INTEGER NOT NULL CHECK(cell_id > 0),
+                channel_number INTEGER CHECK(channel_number IS NULL OR channel_number >= 0),
+                bsic INTEGER,
+                psc INTEGER,
+                pci INTEGER,
+                rsrp_dbm INTEGER,
+                rsrq_db INTEGER,
+                sinr_db INTEGER,
+                rscp_dbm INTEGER,
+                ecno_db INTEGER,
+                timing_advance_value INTEGER,
+                timing_advance_unit TEXT,
+                CHECK((timing_advance_value IS NULL AND timing_advance_unit IS NULL) OR
+                      (timing_advance_value >= 0 AND timing_advance_unit IS NOT NULL))
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_observation_identity " +
+                "ON cell_observation_details(rat, mcc, mnc, mnc_length_known, area_code, cell_id)"
+        )
+    }
+
+    private fun saveCellObservationDetails(
+        db: SQLiteDatabase,
+        observationId: Long,
+        metadata: CellSignalMetadata
+    ) {
+        val values = ContentValues().apply {
+            put("observation_id", observationId)
+            put("rat", metadata.technology.token)
+            put("mcc", metadata.mcc)
+            put("mnc", metadata.mnc)
+            put("mnc_length_known", if (metadata.mncLengthKnown) 1 else 0)
+            put("area_code", metadata.areaCode)
+            put("cell_id", metadata.cellId)
+            put("channel_number", metadata.channelNumber)
+            put("bsic", metadata.bsic)
+            put("psc", metadata.psc)
+            put("pci", metadata.pci)
+            put("rsrp_dbm", metadata.rsrpDbm)
+            put("rsrq_db", metadata.rsrqDb)
+            put("sinr_db", metadata.sinrDb)
+            put("rscp_dbm", metadata.rscpDbm)
+            put("ecno_db", metadata.ecNoDb)
+            put("timing_advance_value", metadata.timingAdvanceValue)
+            put("timing_advance_unit", metadata.timingAdvanceUnit)
+        }
+        db.insertWithOnConflict(
+            "cell_observation_details",
+            null,
+            values,
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    private fun copyCellObservationDetails(
+        sourceDb: SQLiteDatabase,
+        sourceObservationId: Long,
+        targetDb: SQLiteDatabase,
+        targetObservationId: Long
+    ) {
+        sourceDb.rawQuery(
+            "SELECT * FROM cell_observation_details WHERE observation_id = ?",
+            arrayOf(sourceObservationId.toString())
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return
+            val values = ContentValues().apply {
+                put("observation_id", targetObservationId)
+                put("rat", cursor.getString(cursor.getColumnIndexOrThrow("rat")))
+                put("mcc", cursor.getString(cursor.getColumnIndexOrThrow("mcc")))
+                put("mnc", cursor.getString(cursor.getColumnIndexOrThrow("mnc")))
+                put("mnc_length_known", cursor.getInt(cursor.getColumnIndexOrThrow("mnc_length_known")))
+                put("area_code", cursor.getLong(cursor.getColumnIndexOrThrow("area_code")))
+                put("cell_id", cursor.getLong(cursor.getColumnIndexOrThrow("cell_id")))
+                putNullableInt(cursor, this, "channel_number")
+                putNullableInt(cursor, this, "bsic")
+                putNullableInt(cursor, this, "psc")
+                putNullableInt(cursor, this, "pci")
+                putNullableInt(cursor, this, "rsrp_dbm")
+                putNullableInt(cursor, this, "rsrq_db")
+                putNullableInt(cursor, this, "sinr_db")
+                putNullableInt(cursor, this, "rscp_dbm")
+                putNullableInt(cursor, this, "ecno_db")
+                putNullableInt(cursor, this, "timing_advance_value")
+                put("timing_advance_unit", cursor.getString(cursor.getColumnIndexOrThrow("timing_advance_unit")))
+            }
+            targetDb.insertWithOnConflict(
+                "cell_observation_details",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+        }
+    }
+
+    private fun putNullableInt(cursor: Cursor, values: ContentValues, column: String) {
+        val index = cursor.getColumnIndexOrThrow(column)
+        if (cursor.isNull(index)) values.putNull(column) else values.put(column, cursor.getInt(index))
     }
 
     private fun createWifiNetworkGroupTables(db: SQLiteDatabase) {
@@ -1186,7 +1305,10 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     }
                     val frequencyVariants = signalGroups[signal.type + "|" + signal.identifier]
                         .orEmpty()
-                        .distinctBy { it.frequency }
+                        .distinctBy { candidate ->
+                            if (candidate.type == "cell") candidate.cellMetadata?.channelNumber ?: -1
+                            else candidate.frequency
+                        }
                     frequencyVariants.forEach { observedSignal ->
                         val obs = ContentValues().apply {
                             put("radio_type", observedSignal.type)
@@ -1202,7 +1324,12 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                                 put("accuracy", reference.accuracyMeters)
                             }
                         }
-                        db.insert("radio_observations", null, obs)
+                        val observationId = db.insert("radio_observations", null, obs)
+                        if (observationId > 0L && observedSignal.type == "cell") {
+                            observedSignal.cellMetadata?.let {
+                                saveCellObservationDetails(db, observationId, it)
+                            }
+                        }
                         recorded++
                     }
                 }
@@ -3146,37 +3273,37 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         require(maximumCoordinateAccuracyMeters.isFinite() && maximumCoordinateAccuracyMeters > 0.0)
         val boundedLimit = limit.coerceIn(1, 20_000)
         val identifier = listOf(
-            identity.technology.token,
-            identity.mcc,
-            identity.mnc,
-            identity.areaCode.toString(),
-            identity.cellId.toString()
+            identity.technology.token, identity.mcc, identity.mnc,
+            identity.areaCode.toString(), identity.cellId.toString()
         ).joinToString(":")
         val result = ArrayList<CellObservationSample>()
         readableDatabase.rawQuery(
             """
-            SELECT o.latitude, o.longitude, o.accuracy, o.rssi, o.frequency, o.observed_at,
-                   o.source_id, s.kind AS source_kind,
-                   s.trust_weight AS source_weight,
-                   COALESCE(sg.trust_weight, 1.0) AS segment_weight
+            SELECT o.latitude, o.longitude, o.accuracy, o.rssi, o.observed_at, o.source_id,
+                   s.kind AS source_kind, s.trust_weight AS source_weight,
+                   COALESCE(sg.trust_weight, 1.0) AS segment_weight,
+                   d.channel_number
             FROM radio_observations o
             JOIN radio_sources s ON s.id = o.source_id
+            JOIN cell_observation_details d ON d.observation_id = o.id
             LEFT JOIN radio_source_segment_settings sg
               ON sg.source_id = o.source_id
              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
              AND sg.radio_type = o.radio_type
             WHERE o.radio_type = 'cell'
               AND o.identifier = ?
+              AND d.rat = ? AND d.mcc = ? AND d.mnc = ?
+              AND d.mnc_length_known = 1
+              AND d.area_code = ? AND d.cell_id = ?
               AND s.kind IN ('local', 'wigle', 'custom')
-              AND s.enabled = 1
-              AND s.trust_weight > 0
+              AND s.enabled = 1 AND s.trust_weight > 0
               AND (sg.enabled IS NULL OR sg.enabled = 1)
               AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
               AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
               AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180
               AND o.accuracy IS NOT NULL AND o.accuracy BETWEEN 1 AND ?
               AND o.rssi BETWEEN -160 AND 0
-              AND o.frequency >= 0 AND o.observed_at >= 0
+              AND o.observed_at >= 0
               AND LOWER(o.position_source) NOT LIKE '%estimate%'
               AND LOWER(o.position_source) NOT LIKE '%lookup%'
               AND LOWER(o.position_source) NOT LIKE '%manual%'
@@ -3187,9 +3314,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             LIMIT ?
             """.trimIndent(),
             arrayOf(
-                identifier,
-                maximumCoordinateAccuracyMeters.toString(),
-                boundedLimit.toString()
+                identifier, identity.technology.token, identity.mcc, identity.mnc,
+                identity.areaCode.toString(), identity.cellId.toString(),
+                maximumCoordinateAccuracyMeters.toString(), boundedLimit.toString()
             )
         ).use { cursor ->
             val latIndex = cursor.getColumnIndexOrThrow("latitude")
@@ -3216,7 +3343,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     "wigle", "custom" -> ObservationLocationOrigin.IMPORTED
                     else -> continue
                 }
-                val profileId = if (sourceKind == "local") "local-device" else null
+                val channelIndex = cursor.getColumnIndexOrThrow("channel_number")
                 result.add(
                     CellObservationSample(
                         identity = identity,
@@ -3224,10 +3351,12 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                         longitude = cursor.getDouble(lonIndex),
                         coordinateAccuracyMeters = effectiveAccuracy,
                         rssiDbm = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).toDouble(),
-                        frequencyKey = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0),
+                        frequencyKey = if (cursor.isNull(channelIndex)) 0 else {
+                            cursor.getInt(channelIndex).coerceAtLeast(0)
+                        },
                         observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
                         locationOrigin = origin,
-                        receiverProfileId = profileId,
+                        receiverProfileId = if (sourceKind == "local") "local-device" else null,
                         sourceGroupId = "$sourceKind:$sourceId"
                     )
                 )
@@ -4317,6 +4446,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val pointColumns = tableColumns(sourceDb, "radio_points")
         val observationColumns = tableColumns(sourceDb, "radio_observations")
         val historyColumns = tableColumns(sourceDb, "scan_history")
+        val hasCellObservationDetails = "cell_observation_details" in tableNames(sourceDb)
         val pointRequired = setOf(
             "radio_type", "identifier", "label", "latitude", "longitude", "accuracy",
             "last_rssi", "frequency", "first_seen", "last_seen", "sightings", "position_source"
@@ -4415,6 +4545,20 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty().take(100)
                     if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source, sourceId)) {
                         observationsImported++
+                    }
+                    val sourceObservationIdIndex = cursor.getColumnIndex("id")
+                    if (type == "cell" && hasCellObservationDetails && sourceObservationIdIndex >= 0) {
+                        val sourceObservationId = cursor.getLong(sourceObservationIdIndex)
+                        val targetObservationId = target.rawQuery(
+                            "SELECT id FROM radio_observations WHERE source_id = ? AND radio_type = ? " +
+                                "AND identifier = ? AND observed_at = ? AND rssi = ? AND frequency = ? " +
+                                "ORDER BY id DESC LIMIT 1",
+                            arrayOf(sourceId.toString(), type, identifier, observedAt.toString(),
+                                rssi.toString(), frequency.toString())
+                        ).use { rows -> if (rows.moveToFirst()) rows.getLong(0) else null }
+                        if (targetObservationId != null) {
+                            copyCellObservationDetails(sourceDb, sourceObservationId, target, targetObservationId)
+                        }
                     }
                 }
             }
@@ -4882,7 +5026,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 14
+        private const val DB_VERSION = 15
         private const val PASSIVE_OBSERVATION_HARD_LIMIT = 500_000
         private const val RADIO_DELETION_UNDO_TTL_MS = 120_000L
         private val PROCESS_UNDO_SESSION_ID = UUID.randomUUID().toString()
