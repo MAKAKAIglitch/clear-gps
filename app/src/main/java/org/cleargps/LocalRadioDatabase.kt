@@ -4573,8 +4573,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                                 "LEFT JOIN cell_observation_details d ON d.observation_id = o.id " +
                                 "WHERE o.source_id = ? AND o.radio_type = ? AND o.identifier = ? " +
                                 "AND o.observed_at = ? AND o.rssi = ? AND o.frequency = ? " +
-                                "AND (d.channel_number IS NULL OR COALESCE(d.channel_number, -1) = ?) " +
-                                "ORDER BY CASE WHEN d.channel_number = ? THEN 0 ELSE 1 END, o.id DESC LIMIT 1",
+                                "AND (d.channel_number IS NULL OR COALESCE(d.channel_number, -1) = CAST(? AS INTEGER)) " +
+                                "ORDER BY CASE WHEN d.channel_number = CAST(? AS INTEGER) THEN 0 ELSE 1 END, o.id DESC LIMIT 1",
                             arrayOf(
                                 sourceId.toString(), type, identifier, observedAt.toString(),
                                 rssi.toString(), frequency.toString(), (sourceChannelNumber ?: -1).toString(),
@@ -4880,7 +4880,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     "AND o.rssi = ? AND o.frequency = ? " +
                     "AND COALESCE(o.latitude, 999.0) = CAST(? AS REAL) " +
                     "AND COALESCE(o.longitude, 999.0) = CAST(? AS REAL) " +
-                    "AND COALESCE(d.channel_number, -1) = ? LIMIT 1",
+                    "AND COALESCE(d.channel_number, -1) = CAST(? AS INTEGER) LIMIT 1",
                 commonArguments + arrayOf((cellChannelNumber ?: -1).toString())
             ).use { it.moveToFirst() }
         } else {
