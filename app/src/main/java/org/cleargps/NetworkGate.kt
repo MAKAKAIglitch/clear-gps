@@ -174,7 +174,7 @@ internal object NetworkGate {
             setRequestProperty("Accept", "application/json")
             setRequestProperty(
                 "User-Agent",
-                "ClearGPS/${BuildConfig.VERSION_NAME} (Android; read-only OpenStreetMap tower lookup)"
+                "ClearGPS/${applicationVersionName(appContext)} (Android; read-only OpenStreetMap tower lookup)"
             )
         }
     }
@@ -213,6 +213,14 @@ internal object NetworkGate {
         HttpRequestUtil.setOkHttpClient(client)
         mapResourceClient = client
     }
+
+    @Suppress("DEPRECATION")
+    private fun applicationVersionName(context: Context): String =
+        runCatching {
+            context.applicationContext.packageManager
+                .getPackageInfo(context.applicationContext.packageName, 0)
+                .versionName
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "unknown"
 
     private fun isOnlineMapEnabled(context: Context): Boolean =
         context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
