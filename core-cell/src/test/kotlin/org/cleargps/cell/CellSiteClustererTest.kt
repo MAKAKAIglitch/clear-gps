@@ -167,6 +167,27 @@ class CellSiteClustererTest {
         assertEquals(51.500000, group.latitude, 0.0)
         assertEquals(-0.120000, group.longitude, 0.0)
         assertEquals(0.9, group.confidenceScore, 0.0)
+        assertTrue(group.lockedByUser)
+    }
+
+    @Test fun conflictingDuplicateUserLocksAreExcludedInsteadOfPickingOne() {
+        val first = candidate(
+            cellId = 1001L, latitude = 51.500000, longitude = -0.120000,
+            confidence = 1.0, uncertainty = 5.0, evidenceCount = 1, locked = true
+        )
+        val second = candidate(
+            cellId = 1001L, latitude = 51.500050, longitude = -0.120000,
+            confidence = 1.0, uncertainty = 5.0, evidenceCount = 1, locked = true
+        )
+
+        val result = CellSiteClusterer.group(listOf(first, second))
+
+        assertTrue(result.groups.isEmpty())
+        assertEquals(
+            CellSiteExclusionReason.CONFLICTING_EVIDENCE,
+            result.excludedIdentityReasons[first.identity.stableKey]
+        )
+        assertEquals(listOf(first.identity.stableKey), result.duplicateIdentityKeys)
     }
 
     @Test fun differentUserLockedCoordinatesAreNeverAutoMerged() {

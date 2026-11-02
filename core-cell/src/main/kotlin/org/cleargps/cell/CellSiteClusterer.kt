@@ -44,7 +44,8 @@ data class CellSiteGroup(
     val latitude: Double,
     val longitude: Double,
     val uncertaintyRadiusMeters: Double,
-    val confidenceScore: Double
+    val confidenceScore: Double,
+    val lockedByUser: Boolean
 ) {
     val memberCount: Int get() = members.size
     val technologies: Set<CellTechnology> get() = members.mapTo(linkedSetOf()) { it.technology }
@@ -81,17 +82,32 @@ object CellSiteClusterer {
         }
 
         val duplicateKeys = ArrayList<String>()
-        val unique = valid.groupBy { it.identity.stableKey }.toSortedMap().map { (key, sameIdentity) ->
+        val uniqueCandidates = ArrayList<CellSiteCandidate>()
+        valid.groupBy { it.identity.stableKey }.toSortedMap().forEach { (key, sameIdentity) ->
             if (sameIdentity.size > 1) duplicateKeys += key
-            sameIdentity.sortedWith(
-                compareByDescending<CellSiteCandidate> { it.estimate.lockedByUser }
-                    .thenByDescending { it.estimate.confidenceScore }
-                    .thenByDescending { it.estimate.independentEvidenceCount }
-                    .thenBy { it.estimate.uncertaintyRadiusMeters }
-                    .thenBy { it.estimate.latitude }
-                    .thenBy { it.estimate.longitude }
-            ).first()
-        }.sortedWith(
+            val lockedCandidates = sameIdentity.filter { it.estimate.lockedByUser }
+            val lockedAnchor = lockedCandidates.firstOrNull()
+            val conflictingLockedCoordinates = lockedAnchor != null &&
+                lockedCandidates.drop(1).any { other ->
+                    CellSiteCoordinateEstimator.distanceMeters(
+                        lockedAnchor.estimate.latitude, lockedAnchor.estimate.longitude,
+                        other.estimate.latitude, other.estimate.longitude
+                    ) > 0.01
+                }
+            if (conflictingLockedCoordinates) {
+                excluded[key] = CellSiteExclusionReason.CONFLICTING_EVIDENCE
+            } else {
+                uniqueCandidates += sameIdentity.sortedWith(
+                    compareByDescending<CellSiteCandidate> { it.estimate.lockedByUser }
+                        .thenByDescending { it.estimate.confidenceScore }
+                        .thenByDescending { it.estimate.independentEvidenceCount }
+                        .thenBy { it.estimate.uncertaintyRadiusMeters }
+                        .thenBy { it.estimate.latitude }
+                        .thenBy { it.estimate.longitude }
+                ).first()
+            }
+        }
+        val unique = uniqueCandidates.sortedWith(
             compareByDescending<CellSiteCandidate> { it.estimate.lockedByUser }
                 .thenByDescending { it.estimate.confidenceScore }
                 .thenByDescending { it.estimate.independentEvidenceCount }
@@ -217,7 +233,7 @@ object CellSiteClusterer {
         }
         val confidence = candidates.minOf { it.estimate.confidenceScore }
         val stableKey = "site:" + members.joinToString("~") { it.stableKey }
-        return CellSiteGroup(stableKey, members, latitude, longitude, uncertainty, confidence)
+        return CellSiteGroup(stableKey, members, latitude, longitude, uncertainty, confidence, locked != null)
     }
 
     private fun normalizeLongitude(value: Double): Double {
