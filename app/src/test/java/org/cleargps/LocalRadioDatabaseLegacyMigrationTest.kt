@@ -106,7 +106,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(17, sqlite!!.version)
+        assertEquals(18, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertTrue(tableExists("cell_sites"))
         assertTrue(tableExists("cell_site_links"))
@@ -334,7 +334,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(17, sqlite!!.version)
+        assertEquals(18, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertTrue(tableExists("cell_sites"))
         assertTrue(tableExists("cell_site_links"))
