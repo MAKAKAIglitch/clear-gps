@@ -94,8 +94,8 @@ object CellTimingAdvanceSiteEstimator {
         val h11: Double,
         val h12: Double,
         val h22: Double,
-        val medianResidual: Double,
-        val p90Residual: Double,
+        val medianResidualMeters: Double,
+        val ninetiethResidualMeters: Double,
         val occupiedBearingBins: Int
     )
 
