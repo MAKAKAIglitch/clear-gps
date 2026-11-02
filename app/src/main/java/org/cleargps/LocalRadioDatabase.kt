@@ -3653,6 +3653,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         var removed = 0
         var preservedLockedGroups = 0
         val keptSiteIds = LinkedHashSet<Long>()
+        val osmLookupCandidates = LinkedHashMap<String, CellSiteGroup>()
         val algorithmVersions = groups.map { it.algorithmVersion }.distinct()
         val batchAlgorithmVersion = when (algorithmVersions.size) {
             0 -> "no-candidate-groups"
@@ -3796,6 +3797,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
                 keptSiteIds += siteId
                 group.members.forEach { identity -> insertCellSiteLink(db, siteId, identity) }
+                if (OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group)) {
+                    osmLookupCandidates[group.stableKey] = group
+                }
                 if (group.lockedByUser) {
                     group.members.forEach { identity -> lockedOwners[identity.stableKey] = siteId }
                 }
@@ -3827,6 +3831,28 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
+        }
+
+        osmLookupCandidates.values.forEach { group ->
+            try {
+                enqueueOpenStreetMapCellSiteLookup(
+                    siteStableKey = group.stableKey,
+                    latitude = group.latitude,
+                    longitude = group.longitude,
+                    radiusMeters = OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(
+                        group.uncertaintyRadiusMeters
+                    ),
+                    nowMillis = calculatedAtMillis
+                )
+            } catch (error: Exception) {
+                DiagnosticLogStore.log(
+                    appContext, "CELL_OSM",
+                    "Could not queue a qualified cell-site lookup: ${error.javaClass.simpleName}", "WARN"
+                )
+            }
+        }
+        if (osmLookupCandidates.isNotEmpty()) {
+            OpenStreetMapCellSiteWorkScheduler.enqueueNow(appContext)
         }
 
         return CellSitePersistenceResult(
