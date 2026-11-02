@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import org.cleargps.cell.CellIdentity
 import org.cleargps.cell.CellSignalMetadata
+import org.cleargps.cell.CellSiteGroup
+import org.cleargps.cell.SectorAzimuthEstimator
 import org.cleargps.cell.CellTechnology
 import org.cleargps.cell.CellTimingAdvanceRangePolicy
 import org.cleargps.cell.CellTimingAdvanceSiteEstimator
@@ -258,6 +260,63 @@ class CellObservationSamplesDatabaseTest {
     }
 
     @Test
+    fun historicalLocalSignalPatternProducesStoredMapEligibleSector() {
+        val localSource = database.listRadioSources().single { it.kind == "local" }
+        val identity = CellIdentity.fromAndroidStrings(
+            CellTechnology.LTE, "250", "01", 1024, 987703L
+        )!!
+        val siteLatitude = 51.5
+        val siteLongitude = -0.12
+        val group = CellSiteGroup(
+            stableKey = "site:${identity.stableKey}",
+            members = listOf(identity),
+            latitude = siteLatitude,
+            longitude = siteLongitude,
+            uncertaintyRadiusMeters = 10.0,
+            confidenceScore = 0.85,
+            lockedByUser = false
+        )
+        database.saveCellSiteGroups(listOf(group), calculatedAtMillis = 1_700_000_000_000L)
+
+        var observationIndex = 0
+        for (bearing in 0 until 360 step 10) {
+            for (distance in listOf(300.0, 450.0, 600.0)) {
+                val gain = if (angularDifference(bearing.toDouble(), 80.0) <= 65.0) 16.0 else 0.0
+                val coordinate = destination(siteLatitude, siteLongitude, bearing.toDouble(), distance)
+                val rssi = (-45.0 - 30.0 * log10(distance) + gain).roundToInt()
+                insertObservation(
+                    localSource.id,
+                    "lte:250:01:1024:987703",
+                    "gps",
+                    coordinate.first,
+                    coordinate.second,
+                    CellSignalMetadata(
+                        CellTechnology.LTE, "250", "01", true, 1024, 987703L,
+                        channelNumber = 1800,
+                        pci = 111,
+                        rsrpDbm = rssi
+                    ),
+                    observedAtMillis = 1_700_000_000_100L + observationIndex * 1_000L,
+                    accuracyMeters = 8.0,
+                    rssiDbm = rssi
+                )
+                observationIndex++
+            }
+        }
+
+        val stored = RadioRepository(database).recalculateCellSiteSectors(
+            calculatedAtMillis = 1_700_000_200_000L
+        )
+
+        assertEquals(1, stored.size)
+        val sector = stored.single()
+        assertEquals(identity.stableKey, sector.identity.stableKey)
+        assertTrue(angularDifference(sector.azimuthDegrees, 80.0) < 20.0)
+        assertTrue(sector.suitableForMapDisplay())
+        assertEquals(1800, sector.frequencyKeys.single())
+    }
+
+    @Test
     fun timingAdvanceHistoryCreatesAndPersistsPhysicalSiteWithoutNetworkOrNewGps() {
         val localSource = database.listRadioSources().single { it.kind == "local" }
         val identity = CellIdentity.fromAndroidStrings(
@@ -377,6 +436,34 @@ class CellObservationSamplesDatabaseTest {
         assertEquals(2, database.listCellSiteBatches().size)
     }
 
+    private fun destination(
+        latitude: Double,
+        longitude: Double,
+        bearingDegrees: Double,
+        distanceMeters: Double
+    ): Pair<Double, Double> {
+        val angular = distanceMeters / 6_371_008.8
+        val bearing = Math.toRadians(bearingDegrees)
+        val lat0 = Math.toRadians(latitude)
+        val lon0 = Math.toRadians(longitude)
+        val lat = kotlin.math.asin(
+            kotlin.math.sin(lat0) * kotlin.math.cos(angular) +
+                kotlin.math.cos(lat0) * kotlin.math.sin(angular) * kotlin.math.cos(bearing)
+        )
+        val lon = lon0 + kotlin.math.atan2(
+            kotlin.math.sin(bearing) * kotlin.math.sin(angular) * kotlin.math.cos(lat0),
+            kotlin.math.cos(angular) - kotlin.math.sin(lat0) * kotlin.math.sin(lat)
+        )
+        return Math.toDegrees(lat) to (((Math.toDegrees(lon) + 540.0) % 360.0) - 180.0)
+    }
+
+    private fun angularDifference(first: Double, second: Double): Double {
+        val delta = kotlin.math.abs((first - second + 540.0) % 360.0 - 180.0)
+        return delta
+    }
+
+    private fun log10(value: Double): Double = kotlin.math.ln(value) / kotlin.math.ln(10.0)
+
     private fun insertObservation(
         sourceId: Long,
         identifier: String,
@@ -384,7 +471,9 @@ class CellObservationSamplesDatabaseTest {
         latitude: Double,
         longitude: Double,
         metadata: CellSignalMetadata,
-        observedAtMillis: Long = 1_700_000_000_000L
+        observedAtMillis: Long = 1_700_000_000_000L,
+        accuracyMeters: Double = 12.0,
+        rssiDbm: Int = -65
     ) {
         val observationId = database.writableDatabase.insertOrThrow(
             "radio_observations",
@@ -394,8 +483,8 @@ class CellObservationSamplesDatabaseTest {
                 put("identifier", identifier)
                 put("latitude", latitude)
                 put("longitude", longitude)
-                put("accuracy", 12.0)
-                put("rssi", -65)
+                put("accuracy", accuracyMeters)
+                put("rssi", rssiDbm)
                 put("frequency", 1800)
                 put("observed_at", observedAtMillis)
                 put("position_source", positionSource)
