@@ -43,7 +43,8 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
         val identity = identity("01")
         val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
             identities = listOf(identity),
-            records = listOf(record())
+            records = listOf(record()),
+            nowMillis = now
         )
 
         assertEquals(1, result.size)
@@ -63,7 +64,8 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
         val threeDigit = identity("001")
         val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
             identities = listOf(twoDigit, threeDigit),
-            records = listOf(record())
+            records = listOf(record()),
+            nowMillis = now
         )
 
         assertTrue(result.isEmpty())
@@ -83,7 +85,8 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
 
         val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
             identities = listOf(known, legacy),
-            records = listOf(record())
+            records = listOf(record()),
+            nowMillis = now
         )
 
         assertTrue(result.isEmpty())
@@ -98,7 +101,8 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
 
         val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
             identities = listOf(identity),
-            records = listOf(stale, negative, invalid)
+            records = listOf(stale, negative, invalid),
+            nowMillis = now
         )
 
         assertTrue(result.isEmpty())
@@ -109,7 +113,8 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
         val identity = identity("01", CellTechnology.WCDMA)
         val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
             identities = listOf(identity),
-            records = listOf(record(radio = "UMTS"))
+            records = listOf(record(radio = "UMTS")),
+            nowMillis = now
         )
 
         assertEquals(1, result.size)
