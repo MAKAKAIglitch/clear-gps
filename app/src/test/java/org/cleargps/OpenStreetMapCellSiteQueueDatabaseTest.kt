@@ -1,6 +1,9 @@
 package org.cleargps
 
 import android.content.Context
+import org.cleargps.cell.CellIdentity
+import org.cleargps.cell.CellSiteGroup
+import org.cleargps.cell.CellTechnology
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -241,6 +244,48 @@ class OpenStreetMapCellSiteQueueDatabaseTest {
         assertEquals(0, removed)
         assertTrue(database.listOpenStreetMapCellSiteQueue().isEmpty())
         assertTrue(database.listCachedOpenStreetMapCellSiteObjects(now + 4L).isEmpty())
+    }
+
+    @Test
+    fun savingQualifiedAutomaticSitesCreatesOsmTasksOnlyForSafeCandidates() {
+        fun site(
+            cellId: Long,
+            uncertainty: Double,
+            confidence: Double,
+            locked: Boolean = false
+        ): CellSiteGroup {
+            val identity = CellIdentity(
+                technology = CellTechnology.LTE,
+                mcc = "250",
+                mnc = "01",
+                areaCode = 100L,
+                cellId = cellId
+            )
+            return CellSiteGroup(
+                stableKey = "site:${identity.stableKey}",
+                members = listOf(identity),
+                latitude = 51.5 + cellId / 1_000_000.0,
+                longitude = -0.12,
+                uncertaintyRadiusMeters = uncertainty,
+                confidenceScore = confidence,
+                lockedByUser = locked
+            )
+        }
+
+        database.saveCellSiteGroups(
+            groups = listOf(
+                site(cellId = 7001L, uncertainty = 80.0, confidence = 0.7),
+                site(cellId = 7002L, uncertainty = 251.0, confidence = 0.9),
+                site(cellId = 7003L, uncertainty = 80.0, confidence = 0.7, locked = true)
+            ),
+            calculatedAtMillis = now
+        )
+
+        val queued = database.listOpenStreetMapCellSiteQueue()
+        assertEquals(1, queued.size)
+        assertTrue(queued.single().siteStableKey.contains("7001"))
+        assertEquals(150, queued.single().radiusMeters)
+        assertEquals(1, database.listCellSites().count { it.lockedByUser })
     }
 
     private fun queryCount(sql: String): Int =
