@@ -4975,10 +4975,10 @@ private fun MapLayersBottomSheet(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(if (cellSiteCalculationBusy) "Расчёт площадок…" else "Пересчитать по локальному кэшу OpenCellID")
+                Text(if (cellSiteCalculationBusy) "Расчёт площадок…" else "Пересчитать по истории LTE и кэшу каталогов")
             }
             Text(
-                "Перерасчёт не обращается к сети и не запрашивает GPS. Он использует только сохранённые идентификаторы сот и уже закэшированные координаты OpenCellID; грубые оценки остаются с большой погрешностью.",
+                "Перерасчёт не обращается к сети и не запускает GPS. Он использует сохранённые координаты исторических измерений с синхронизированным LTE Timing Advance, а также локальные кэши OpenCellID и OSM. OpenCellID остаётся грубым источником с погрешностью от 5 км.",
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.onSurfaceVariant
             )
