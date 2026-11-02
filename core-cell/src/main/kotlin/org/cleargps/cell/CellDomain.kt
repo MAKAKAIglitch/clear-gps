@@ -26,28 +26,38 @@ data class CellIdentity(
     }
 
     val stableKey: String
-        get() = listOf(technology.token, mcc, mnc, areaCode.toString(), cellId.toString(),
-            if (mncLengthKnown) "known" else "legacy-width-unknown").joinToString(":")
+        get() = listOf(
+            technology.token, mcc, mnc, areaCode.toString(), cellId.toString(),
+            if (mncLengthKnown) "known" else "legacy-width-unknown"
+        ).joinToString(":")
 
     fun compare(other: CellIdentity): CellIdentityMatch {
         if (technology != other.technology || mcc != other.mcc ||
-            areaCode != other.areaCode || cellId != other.cellId) return CellIdentityMatch.DIFFERENT
+            areaCode != other.areaCode || cellId != other.cellId
+        ) return CellIdentityMatch.DIFFERENT
+
         if (mncLengthKnown && other.mncLengthKnown) {
             return if (mnc == other.mnc) CellIdentityMatch.EXACT else CellIdentityMatch.DIFFERENT
         }
-        return if (mnc.toIntOrNull() == other.mnc.toIntOrNull())
-            CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH else CellIdentityMatch.DIFFERENT
+        return if (mnc.toIntOrNull() == other.mnc.toIntOrNull()) {
+            CellIdentityMatch.POSSIBLE_MNC_LENGTH_MATCH
+        } else CellIdentityMatch.DIFFERENT
     }
 
     companion object {
         fun fromAndroidStrings(
-            technology: CellTechnology, mcc: String?, mnc: String?,
-            areaCode: Int, cellId: Long
+            technology: CellTechnology,
+            mcc: String?,
+            mnc: String?,
+            areaCode: Int,
+            cellId: Long
         ): CellIdentity? {
             val rawMcc = mcc?.trim() ?: return null
             val rawMnc = mnc?.trim() ?: return null
             if (!rawMcc.matches(Regex("^[0-9]{3}$")) ||
-                !rawMnc.matches(Regex("^[0-9]{2,3}$")) || areaCode < 0 || cellId <= 0L) return null
+                !rawMnc.matches(Regex("^[0-9]{2,3}$")) ||
+                areaCode < 0 || cellId <= 0L
+            ) return null
             return CellIdentity(technology, rawMcc, rawMnc, areaCode.toLong(), cellId, true)
         }
 
@@ -59,10 +69,16 @@ data class CellIdentity(
             val mnc = parts[2]
             val area = parts[3].toLongOrNull() ?: return null
             val cell = parts[4].toLongOrNull() ?: return null
-            val known = mnc.length in 2..3
             if (!mcc.matches(Regex("^[0-9]{3}$")) ||
-                !mnc.matches(if (known) Regex("^[0-9]{2,3}$") else Regex("^[0-9]{1,3}$"))) return null
-            return runCatching { CellIdentity(technology, mcc, mnc, area, cell, known) }.getOrNull()
+                !mnc.matches(Regex("^[0-9]{1,3}$")) ||
+                area < 0L || cell <= 0L
+            ) return null
+
+            // The old Android parser stored MNC as Int, so even a two-digit value may have lost
+            // an original leading zero. Legacy identifiers therefore cannot prove MNC width.
+            return runCatching {
+                CellIdentity(technology, mcc, mnc, area, cell, mncLengthKnown = false)
+            }.getOrNull()
         }
     }
 }
@@ -92,9 +108,11 @@ data class CellObservationSample(
     }
 
     fun usableForSector(maximumAccuracyMeters: Double = 1_000.0): Boolean =
-        locationOrigin in setOf(ObservationLocationOrigin.OBSERVED,
-            ObservationLocationOrigin.IMPORTED, ObservationLocationOrigin.USER_CONFIRMED) &&
-            coordinateAccuracyMeters <= maximumAccuracyMeters
+        locationOrigin in setOf(
+            ObservationLocationOrigin.OBSERVED,
+            ObservationLocationOrigin.IMPORTED,
+            ObservationLocationOrigin.USER_CONFIRMED
+        ) && coordinateAccuracyMeters <= maximumAccuracyMeters
 }
 
 enum class CellEvidenceSource(val defaultReliability: Double) {
