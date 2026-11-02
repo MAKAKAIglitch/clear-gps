@@ -8,27 +8,33 @@ import org.cleargps.cell.CellEvidenceSource
 import org.cleargps.cell.CellSiteCoordinateEstimator
 
 data class OpenStreetMapCellSiteEvidenceConfig(
-    val minimumMatchDistanceMeters: Double = 100.0,
-    val maximumMatchDistanceMeters: Double = 500.0,
+    val minimumMatchDistanceMeters: Double = 50.0,
+    val maximumMatchDistanceMeters: Double = 150.0,
+    val maximumSiteUncertaintyMeters: Double = 250.0,
+    val minimumSiteConfidenceScore: Double = 0.45,
     val uncertaintyMultiplier: Double = 1.5,
-    val minimumAmbiguityGapMeters: Double = 75.0
+    val minimumAmbiguityGapMeters: Double = 75.0,
+    val minimumEvidenceUncertaintyMeters: Double = 100.0
 ) {
     init {
         require(minimumMatchDistanceMeters.isFinite() && minimumMatchDistanceMeters > 0.0)
         require(maximumMatchDistanceMeters.isFinite() &&
             maximumMatchDistanceMeters >= minimumMatchDistanceMeters)
+        require(maximumSiteUncertaintyMeters.isFinite() && maximumSiteUncertaintyMeters > 0.0)
+        require(minimumSiteConfidenceScore.isFinite() && minimumSiteConfidenceScore in 0.0..1.0)
         require(uncertaintyMultiplier.isFinite() && uncertaintyMultiplier > 0.0)
         require(minimumAmbiguityGapMeters.isFinite() && minimumAmbiguityGapMeters >= 0.0)
+        require(minimumEvidenceUncertaintyMeters.isFinite() && minimumEvidenceUncertaintyMeters > 0.0)
     }
 }
 
 /**
- * Matches cached OSM communication structures to existing cell-site candidates.
+ * Matches cached OSM communication structures to already-localized cell-site candidates.
  *
- * Matching is strictly spatial and conservative: an OSM object is assigned only to one clearly
- * nearest site. It is not used to create a new tower identity, and objects tagged explicitly as
- * not mobile-phone capable are ignored. All OSM objects share one dependency group because
- * they originate from the same community catalogue and must not inflate independent evidence.
+ * OSM evidence is not used to bootstrap a coarse/ambiguous OpenCellID-only position. The
+ * existing site candidate must already have bounded uncertainty and adequate confidence.
+ * A structure is assigned only to one clearly nearest site; all OSM catalogue records share
+ * one dependency group so they cannot inflate independent-evidence counts.
  */
 internal object OpenStreetMapCellSiteEvidenceAdapter {
     private data class Match(
@@ -49,7 +55,11 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
                     group.members.all { it.mncLengthKnown } &&
                     group.latitude.isFinite() && group.latitude in -90.0..90.0 &&
                     group.longitude.isFinite() && group.longitude in -180.0..180.0 &&
-                    group.uncertaintyRadiusMeters.isFinite() && group.uncertaintyRadiusMeters > 0.0
+                    group.uncertaintyRadiusMeters.isFinite() &&
+                    group.uncertaintyRadiusMeters in 1.0..config.maximumSiteUncertaintyMeters &&
+                    group.confidenceScore.isFinite() &&
+                    group.confidenceScore >= config.minimumSiteConfidenceScore &&
+                    group.confidenceScore <= 1.0
             }
         if (validGroups.isEmpty()) return emptyList()
 
@@ -80,7 +90,7 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
                     compareBy<Match> { it.distanceMeters }.thenBy { it.group.stableKey }
                 )
                 if (nearby.isEmpty()) return@mapNotNull null
-                // If two separate cell sites are almost equally close, the OSM object is ambiguous.
+                // If two distinct cell sites are almost equally close, the structure is ambiguous.
                 if (nearby.size > 1 &&
                     nearby[1].distanceMeters - nearby[0].distanceMeters < config.minimumAmbiguityGapMeters
                 ) return@mapNotNull null
@@ -88,8 +98,8 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
             }
             .toList()
 
-        // A cell site may have several OSM representations (for example a node and a way).
-        // Keep only one clearly nearest object per site; all remain in the same OSM dependency group.
+        // Keep one clearly nearest representation per site. Multiple nearby OSM objects are
+        // not independent surveys of the same mast and must not improve its confidence.
         val selected = matches.groupBy { it.group.stableKey }.values.mapNotNull { siteMatches ->
             val ordered = siteMatches.sortedWith(
                 compareBy<Match> { it.distanceMeters }.thenBy { it.osmObject.stableKey }
@@ -101,12 +111,17 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
 
         val bundles = LinkedHashMap<String, MutableList<CellSiteCoordinateEvidence>>()
         selected.forEach { match ->
+            val conservativeUncertainty = maxOf(
+                match.osmObject.coordinateUncertaintyMeters,
+                match.group.uncertaintyRadiusMeters * config.uncertaintyMultiplier,
+                config.minimumEvidenceUncertaintyMeters
+            )
             val evidence = CellSiteCoordinateEvidence(
                 evidenceId = "osm:${match.osmObject.stableKey}",
                 source = CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE,
                 latitude = match.osmObject.latitude,
                 longitude = match.osmObject.longitude,
-                uncertaintyMeters = match.osmObject.coordinateUncertaintyMeters,
+                uncertaintyMeters = conservativeUncertainty,
                 dependencyGroup = "osm:communications-catalogue"
             )
             match.group.members.forEach { identity ->

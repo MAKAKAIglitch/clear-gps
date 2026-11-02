@@ -17,6 +17,7 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
         latitude: Double,
         longitude: Double,
         uncertainty: Double = 25.0,
+        confidence: Double = 0.8,
         locked: Boolean = false
     ): CellSiteGroup = CellSiteGroup(
         stableKey = "site:" + identity.stableKey,
@@ -24,7 +25,7 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
         latitude = latitude,
         longitude = longitude,
         uncertaintyRadiusMeters = uncertainty,
-        confidenceScore = 0.8,
+        confidenceScore = confidence,
         lockedByUser = locked
     )
 
@@ -69,7 +70,7 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
             assertEquals(1, bundle.evidence.size)
             assertEquals(CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE, bundle.evidence.single().source)
             assertEquals("osm:communications-catalogue", bundle.evidence.single().dependencyGroup)
-            assertEquals(30.0, bundle.evidence.single().uncertaintyMeters, 0.0)
+            assertTrue(bundle.evidence.single().uncertaintyMeters >= 100.0)
         }
     }
 
@@ -114,6 +115,40 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
         )
 
         // Similar nearby representations are intentionally considered ambiguous.
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun coarseOpenCellIdOnlyCandidateCannotBePulledToANearbyOsmObject() {
+        val coarse = group(
+            identity(1001L),
+            latitude = 51.5,
+            longitude = -0.12,
+            uncertainty = 5_000.0,
+            confidence = 0.3
+        )
+
+        val result = OpenStreetMapCellSiteEvidenceAdapter.toEvidenceBundles(
+            listOf(coarse),
+            listOf(osm(901L, 51.5001, -0.1201))
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun lowConfidenceSiteIsNotUsedToAttributeAnOsmStructure() {
+        val weak = group(
+            identity(1002L), 51.5, -0.12,
+            uncertainty = 40.0,
+            confidence = 0.2
+        )
+
+        val result = OpenStreetMapCellSiteEvidenceAdapter.toEvidenceBundles(
+            listOf(weak),
+            listOf(osm(902L, 51.5001, -0.1201))
+        )
+
         assertTrue(result.isEmpty())
     }
 }
