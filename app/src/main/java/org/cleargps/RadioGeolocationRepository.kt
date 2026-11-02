@@ -1116,7 +1116,7 @@ class RadioGeolocationRepository(private val context: Context) {
                 "Результаты Wi-Fi: валидных BSSID=${validResults.size}, возраст самого старого сигнала=${ageMillis?.div(1_000) ?: "unknown"}s"
             )
             val signals = validResults.asSequence()
-                .distinctBy { it.BSSID.lowercase(Locale.ROOT) }
+                .distinctBy { it.BSSID.lowercase(Locale.ROOT) + "|" + it.frequency }
                 .sortedByDescending { it.level }
                 .take(MAX_WIFI)
                 .map {

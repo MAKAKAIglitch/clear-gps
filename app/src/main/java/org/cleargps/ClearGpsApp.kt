@@ -7122,7 +7122,7 @@ private fun RadioPointDetailsSheet(
                             val frequencies = observations.map { it.frequency }.filter { it > 0 }.distinct().sorted()
                             if (point.type == "wifi" && frequencies.isNotEmpty()) {
                                 Text(
-                                    "Все замеченные частоты: " + frequencies.joinToString(" / ") { "$it MHz" },
+                                    "Частоты в сохранённой истории: " + frequencies.joinToString(" / ") { "$it MHz" },
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(

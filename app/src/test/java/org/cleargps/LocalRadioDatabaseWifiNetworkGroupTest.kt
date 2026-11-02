@@ -71,6 +71,31 @@ class LocalRadioDatabaseWifiNetworkGroupTest {
     }
 
     @Test
+    fun sameBssidObservedOnTwoFrequenciesStaysOnePointWithBothFrequencyObservations() {
+        database.recordScan(
+            listOf(
+                RadioSignal("wifi", "a8:bb:cc:00:00:01", -55, 2412, "DualBand"),
+                RadioSignal("wifi", "a8:bb:cc:00:00:01", -62, 5180, "DualBand")
+            ),
+            reference = null,
+            estimate = null,
+            mode = "test",
+            wifiCount = 1,
+            cellCount = 0,
+            bleCount = 0,
+            shouldRecord = true
+        )
+
+        val point = database.findWifiPointByIdentifier("a8:bb:cc:00:00:01")!!
+        val observations = database.listObservations(point)
+
+        assertEquals(1, database.pointCount())
+        assertEquals(1, point.sightings)
+        assertEquals(setOf(2412, 5180), observations.map { it.frequency }.toSet())
+        assertEquals(2, observations.size)
+    }
+
+    @Test
     fun groupingRejectsCellAndBleRecords() {
         database.recordScan(
             listOf(

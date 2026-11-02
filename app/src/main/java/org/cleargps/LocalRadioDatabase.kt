@@ -1129,8 +1129,11 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         } else {
             -1L
         }
-        val unique = applyWifiSsidFilter(signals).filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
-            .distinctBy { it.type + "|" + it.identifier }
+        val filteredSignals = applyWifiSsidFilter(signals)
+            .filter { it.identifier.isNotBlank() && it.type in VALID_TYPES }
+        val signalGroups = filteredSignals.groupBy { it.type + "|" + it.identifier }
+        // One point update per radio identity, but keep one observation for each frequency.
+        val unique = signalGroups.values.mapNotNull { group -> group.maxByOrNull { it.rssi } }
         var recorded = 0
         db.beginTransaction()
         try {
@@ -1176,22 +1179,27 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
                         }
                         db.update("radio_points", values, "id = ?", arrayOf(old.id.toString()))
                     }
-                    val obs = ContentValues().apply {
-                        put("radio_type", signal.type)
-                        put("identifier", signal.identifier)
-                        put("rssi", signal.rssi)
-                        put("frequency", signal.frequency)
-                        put("observed_at", now)
-                        put("position_source", reference?.source ?: "unlocated")
-                        put("source_id", localSourceId)
-                        if (reference != null && validReference(reference)) {
-                            put("latitude", reference.latitude)
-                            put("longitude", reference.longitude)
-                            put("accuracy", reference.accuracyMeters)
+                    val frequencyVariants = signalGroups[signal.type + "|" + signal.identifier]
+                        .orEmpty()
+                        .distinctBy { it.frequency }
+                    frequencyVariants.forEach { observedSignal ->
+                        val obs = ContentValues().apply {
+                            put("radio_type", observedSignal.type)
+                            put("identifier", observedSignal.identifier)
+                            put("rssi", observedSignal.rssi)
+                            put("frequency", observedSignal.frequency)
+                            put("observed_at", now)
+                            put("position_source", reference?.source ?: "unlocated")
+                            put("source_id", localSourceId)
+                            if (reference != null && validReference(reference)) {
+                                put("latitude", reference.latitude)
+                                put("longitude", reference.longitude)
+                                put("accuracy", reference.accuracyMeters)
+                            }
                         }
+                        db.insert("radio_observations", null, obs)
+                        recorded++
                     }
-                    db.insert("radio_observations", null, obs)
-                    recorded++
                 }
                 // Keep only recent detail rows at the user's configured cap. Summary points and
                 // coordinates remain intact after their detailed observation history is trimmed.
@@ -3266,7 +3274,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
         if (deleted) {
             // A manual network needs at least two members to remain meaningful.
             db.execSQL(
-                "DELETE FROM wifi_network_groups WHERE id IN (" +
+                "DELETE FROM wifi_network_groups WHERE id NOT IN (" +
+                    "SELECT DISTINCT group_id FROM wifi_network_group_members) OR id IN (" +
                     "SELECT group_id FROM wifi_network_group_members GROUP BY group_id HAVING COUNT(*) < 2)"
             )
         }
@@ -3381,6 +3390,7 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             clearAllRadioDeletionUndo(db)
             db.delete("radio_observations", null, null)
             db.delete("radio_points", null, null)
+            db.delete("wifi_network_groups", null, null)
             db.delete("scan_history", null, null)
             db.delete("radio_sources", "kind <> 'local'", null)
             db.setTransactionSuccessful()
