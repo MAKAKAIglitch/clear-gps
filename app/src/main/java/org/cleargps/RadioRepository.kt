@@ -1,6 +1,8 @@
 package org.cleargps
 
 import org.cleargps.cell.CellSiteEvidenceBundle
+import org.cleargps.cell.CellSiteCandidate
+import org.cleargps.cell.CellTimingAdvanceSiteEstimator
 import org.cleargps.cell.CellIdentity
 import org.cleargps.cell.CellSiteEstimatorConfig
 import org.cleargps.cell.CellSiteGroup
@@ -98,18 +100,20 @@ internal class RadioRepository(
     fun calculateCellSites(
         evidence: List<CellSiteEvidenceBundle>,
         estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
-        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig()
+        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig(),
+        additionalCandidates: List<CellSiteCandidate> = emptyList()
     ): CellSiteIntelligenceResult =
-        CellSiteIntelligenceEngine.calculate(evidence, estimatorConfig, groupingConfig)
+        CellSiteIntelligenceEngine.calculate(evidence, estimatorConfig, groupingConfig, additionalCandidates)
 
     /** Calculates and persists a complete candidate snapshot from adapter-supplied evidence. */
     fun calculateAndSaveCellSites(
         evidence: List<CellSiteEvidenceBundle>,
         estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
         groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig(),
-        calculatedAtMillis: Long = System.currentTimeMillis()
+        calculatedAtMillis: Long = System.currentTimeMillis(),
+        additionalCandidates: List<CellSiteCandidate> = emptyList()
     ): CellSiteIntelligenceResult {
-        val result = calculateCellSites(evidence, estimatorConfig, groupingConfig)
+        val result = calculateCellSites(evidence, estimatorConfig, groupingConfig, additionalCandidates)
         database.saveCellSiteGroups(result.groups, calculatedAtMillis)
         return result
     }
@@ -133,7 +137,18 @@ internal class RadioRepository(
         require(nowMillis >= 0L)
         val identities = database.listCellIdentitiesWithObservationHistory()
         val openCellIdEvidence = loadOpenCellIdCellSiteEvidence(identities, nowMillis)
-        val preliminary = calculateCellSites(openCellIdEvidence, estimatorConfig, groupingConfig)
+        val timingAdvanceCandidates = database.listCellTimingAdvanceSamples()
+            .groupBy { it.identity.stableKey }
+            .values
+            .mapNotNull { samples ->
+                val identity = samples.first().identity
+                CellTimingAdvanceSiteEstimator.estimate(identity, samples)?.let { estimate ->
+                    CellSiteCandidate(identity, estimate.toCoordinateEstimate())
+                }
+            }
+        val preliminary = calculateCellSites(
+            openCellIdEvidence, estimatorConfig, groupingConfig, timingAdvanceCandidates
+        )
         val osmEvidence = loadOpenStreetMapCellSiteEvidence(preliminary.groups, nowMillis)
         val combinedEvidence = (openCellIdEvidence + osmEvidence)
             .groupBy { it.identity.stableKey }
@@ -149,7 +164,8 @@ internal class RadioRepository(
             evidence = combinedEvidence,
             estimatorConfig = estimatorConfig,
             groupingConfig = groupingConfig,
-            calculatedAtMillis = nowMillis
+            calculatedAtMillis = nowMillis,
+            additionalCandidates = timingAdvanceCandidates
         )
     }
 
