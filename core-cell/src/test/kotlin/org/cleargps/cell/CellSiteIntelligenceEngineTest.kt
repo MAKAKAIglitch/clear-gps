@@ -110,6 +110,85 @@ class CellSiteIntelligenceEngineTest {
     }
 
     @Test
+    fun additionalTimingAdvanceCandidateCanCreateASiteWithoutCatalogueCoordinates() {
+        val identity = identity(CellTechnology.LTE, 6001L)
+        val timingEstimate = CellSiteCoordinateEstimate(
+            latitude = 51.5000,
+            longitude = -0.1200,
+            uncertaintyRadiusMeters = 75.0,
+            confidenceScore = 0.82,
+            independentEvidenceCount = 12,
+            acceptedEvidenceIds = (0 until 12).map { "lte-ta-$it" },
+            rejectedEvidenceIds = emptyList(),
+            ignoredCorrelatedEvidenceIds = emptyList(),
+            conflictDetected = false,
+            lockedByUser = false,
+            algorithmVersion = "cell-ta-multilateration-1"
+        )
+
+        val result = CellSiteIntelligenceEngine.calculate(
+            bundles = emptyList(),
+            groupingConfig = CellSiteGroupingConfig(
+                minimumConfidenceScore = 0.4,
+                minimumIndependentEvidenceCount = 1,
+                maximumCandidateUncertaintyMeters = 500.0
+            ),
+            additionalCandidates = listOf(CellSiteCandidate(identity, timingEstimate))
+        )
+
+        assertEquals(timingEstimate, result.estimatesByIdentity[identity.stableKey])
+        assertEquals(1, result.groups.size)
+        assertEquals(identity.stableKey, result.groups.single().members.single().stableKey)
+    }
+
+    @Test
+    fun conflictingTimingAdvanceAndCatalogueEstimatesAreExcluded() {
+        val identity = identity(CellTechnology.LTE, 6002L)
+        val timingEstimate = CellSiteCoordinateEstimate(
+            latitude = 51.5000,
+            longitude = -0.1200,
+            uncertaintyRadiusMeters = 50.0,
+            confidenceScore = 0.9,
+            independentEvidenceCount = 12,
+            acceptedEvidenceIds = (0 until 12).map { "lte-ta-$it" },
+            rejectedEvidenceIds = emptyList(),
+            ignoredCorrelatedEvidenceIds = emptyList(),
+            conflictDetected = false,
+            lockedByUser = false,
+            algorithmVersion = "cell-ta-multilateration-1"
+        )
+        val catalogueEvidence = CellSiteEvidenceBundle(
+            identity,
+            listOf(
+                CellSiteCoordinateEvidence(
+                    evidenceId = "catalogue-conflict",
+                    source = CellEvidenceSource.OPENCELLID,
+                    latitude = 51.5100,
+                    longitude = -0.1200,
+                    uncertaintyMeters = 60.0
+                )
+            )
+        )
+
+        val result = CellSiteIntelligenceEngine.calculate(
+            bundles = listOf(catalogueEvidence),
+            groupingConfig = CellSiteGroupingConfig(
+                minimumConfidenceScore = 0.1,
+                minimumIndependentEvidenceCount = 1,
+                maximumCandidateUncertaintyMeters = 10_000.0
+            ),
+            additionalCandidates = listOf(CellSiteCandidate(identity, timingEstimate))
+        )
+
+        assertTrue(result.estimatesByIdentity.getValue(identity.stableKey).conflictDetected)
+        assertTrue(result.groups.isEmpty())
+        assertEquals(
+            CellSiteExclusionReason.CONFLICTING_EVIDENCE,
+            result.grouping.excludedIdentityReasons[identity.stableKey]
+        )
+    }
+
+    @Test
     fun duplicateEvidenceIdsAreCountedOnlyOnce() {
         val identity = identity(CellTechnology.LTE, 5001L)
         val duplicate = CellSiteCoordinateEvidence(
