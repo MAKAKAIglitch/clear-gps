@@ -3686,6 +3686,209 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
      * Returns historical handset observations for one exact cell identity.
      * Only trusted local/import sources and original located observations are eligible.
      */
+    /**
+     * Loads only original local receiver measurements suitable for sector inference.
+     */
+    fun listCellSectorObservationSamples(
+        limit: Int = 100_000,
+        maximumCoordinateAccuracyMeters: Double = 1_000.0
+    ): List<CellObservationSample> {
+        require(maximumCoordinateAccuracyMeters.isFinite() && maximumCoordinateAccuracyMeters > 0.0)
+        val result = ArrayList<CellObservationSample>()
+        readableDatabase.rawQuery(
+            """
+            SELECT d.rat, d.mcc, d.mnc, d.area_code, d.cell_id,
+                   o.latitude, o.longitude, o.accuracy, o.rssi,
+                   d.channel_number, o.observed_at, o.source_id,
+                   s.trust_weight AS source_weight,
+                   COALESCE(sg.trust_weight, 1.0) AS segment_weight
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            JOIN cell_observation_details d ON d.observation_id = o.id
+            LEFT JOIN radio_source_segment_settings sg
+              ON sg.source_id = o.source_id
+             AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+             AND sg.radio_type = o.radio_type
+            WHERE o.radio_type = 'cell'
+              AND d.mnc_length_known = 1
+              AND d.channel_number > 0
+              AND s.kind = 'local' AND s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.latitude BETWEEN -90 AND 90 AND o.longitude BETWEEN -180 AND 180
+              AND o.accuracy IS NOT NULL AND o.accuracy BETWEEN 1 AND ?
+              AND o.rssi BETWEEN -160 AND 0
+              AND o.observed_at >= 0
+              AND LOWER(o.position_source) NOT LIKE '%estimate%'
+              AND LOWER(o.position_source) NOT LIKE '%lookup%'
+              AND LOWER(o.position_source) NOT LIKE '%manual%'
+              AND LOWER(o.position_source) NOT LIKE '%auto%'
+              AND LOWER(o.position_source) NOT LIKE '%opencellid%'
+              AND LOWER(o.position_source) NOT LIKE '%beacondb%'
+            ORDER BY o.observed_at DESC, o.id DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                maximumCoordinateAccuracyMeters.toString(),
+                limit.coerceIn(1, 100_000).toString()
+            )
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val technology = CellTechnology.fromToken(
+                    cursor.getString(cursor.getColumnIndexOrThrow("rat"))
+                ) ?: continue
+                val identity = runCatching {
+                    CellIdentity(
+                        technology = technology,
+                        mcc = cursor.getString(cursor.getColumnIndexOrThrow("mcc")),
+                        mnc = cursor.getString(cursor.getColumnIndexOrThrow("mnc")),
+                        mncLengthKnown = true,
+                        areaCode = cursor.getLong(cursor.getColumnIndexOrThrow("area_code")),
+                        cellId = cursor.getLong(cursor.getColumnIndexOrThrow("cell_id"))
+                    )
+                }.getOrNull() ?: continue
+                val sourceId = cursor.getLong(cursor.getColumnIndexOrThrow("source_id"))
+                val trust = RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("source_weight"))
+                ) * RadioSourceTrustPolicy.normalizeWeight(
+                    cursor.getDouble(cursor.getColumnIndexOrThrow("segment_weight"))
+                )
+                if (trust <= 0.0) continue
+                val rawAccuracy = cursor.getDouble(cursor.getColumnIndexOrThrow("accuracy"))
+                val effectiveAccuracy = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, trust)
+                if (!effectiveAccuracy.isFinite() ||
+                    effectiveAccuracy > maximumCoordinateAccuracyMeters
+                ) continue
+
+                result += CellObservationSample(
+                    identity = identity,
+                    latitude = cursor.getDouble(cursor.getColumnIndexOrThrow("latitude")),
+                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow("longitude")),
+                    coordinateAccuracyMeters = effectiveAccuracy,
+                    rssiDbm = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).toDouble(),
+                    frequencyKey = cursor.getInt(cursor.getColumnIndexOrThrow("channel_number")),
+                    observedAtMillis = cursor.getLong(cursor.getColumnIndexOrThrow("observed_at")),
+                    locationOrigin = ObservationLocationOrigin.OBSERVED,
+                    receiverProfileId = "local-device",
+                    sourceGroupId = "local:$sourceId"
+                )
+            }
+        }
+        return result
+    }
+
+    /** Replaces derived sector estimates; weak models are never persisted for map display. */
+    fun saveCellSiteSectors(
+        sectors: List<CellSiteSectorRecord>,
+        calculatedAtMillis: Long = System.currentTimeMillis()
+    ): Int {
+        require(calculatedAtMillis >= 0L)
+        sectors.forEach { sector ->
+            require(sector.siteId > 0L)
+            require(sector.identity.mncLengthKnown)
+            require(sector.azimuthDegrees.isFinite() && sector.azimuthDegrees in 0.0..<360.0)
+            require(sector.widthDegrees.isFinite() && sector.widthDegrees in 1.0..360.0)
+            require(sector.confidenceScore.isFinite() && sector.confidenceScore in 0.60..1.0)
+            require(sector.sampleCount >= 18 && sector.occupiedBearingBins >= 3)
+            require(sector.signalContrastDb.isFinite() && sector.signalContrastDb >= 0.0)
+            require(sector.modelDirectionSpreadDegrees.isFinite() &&
+                sector.modelDirectionSpreadDegrees in 0.0..30.0
+            )
+            require(sector.receiverProfileId.isNotBlank())
+            require(sector.frequencyKeys.isNotEmpty() && sector.frequencyKeys.all { it > 0 })
+            require(sector.algorithmVersion.isNotBlank())
+            require(sector.batchId.isNotBlank())
+        }
+
+        val db = writableDatabase
+        var inserted = 0
+        db.beginTransaction()
+        try {
+            db.delete("cell_site_sectors", null, null)
+            sectors.distinctBy { it.identity.stableKey }.forEach { sector ->
+                val values = ContentValues().apply {
+                    put("identity_key", sector.identity.stableKey)
+                    put("site_id", sector.siteId)
+                    put("rat", sector.identity.technology.token)
+                    put("mcc", sector.identity.mcc)
+                    put("mnc", sector.identity.mnc)
+                    put("area_code", sector.identity.areaCode)
+                    put("cell_id", sector.identity.cellId)
+                    put("azimuth_degrees", sector.azimuthDegrees)
+                    put("width_degrees", sector.widthDegrees)
+                    put("confidence", sector.confidenceScore)
+                    put("sample_count", sector.sampleCount)
+                    put("occupied_bearing_bins", sector.occupiedBearingBins)
+                    put("signal_contrast_db", sector.signalContrastDb)
+                    put("model_direction_spread_degrees", sector.modelDirectionSpreadDegrees)
+                    put("receiver_profile_id", sector.receiverProfileId)
+                    put("frequency_keys", sector.frequencyKeys.distinct().sorted().joinToString(","))
+                    put("algorithm_version", sector.algorithmVersion)
+                    put("calculated_at", calculatedAtMillis)
+                    put("batch_id", sector.batchId)
+                }
+                if (db.insertOrThrow("cell_site_sectors", null, values) > 0L) inserted++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return inserted
+    }
+
+    fun listCellSiteSectors(limit: Int = 2_000): List<CellSiteSectorRecord> {
+        val result = ArrayList<CellSiteSectorRecord>()
+        readableDatabase.rawQuery(
+            """
+            SELECT id, site_id, rat, mcc, mnc, area_code, cell_id,
+                   azimuth_degrees, width_degrees, confidence, sample_count,
+                   occupied_bearing_bins, signal_contrast_db, model_direction_spread_degrees,
+                   receiver_profile_id, frequency_keys, algorithm_version, calculated_at, batch_id
+            FROM cell_site_sectors
+            ORDER BY confidence DESC, sample_count DESC, id
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(limit.coerceIn(1, 5_000).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val technology = CellTechnology.fromToken(cursor.getString(2)) ?: continue
+                val identity = runCatching {
+                    CellIdentity(
+                        technology = technology,
+                        mcc = cursor.getString(3),
+                        mnc = cursor.getString(4),
+                        areaCode = cursor.getLong(5),
+                        cellId = cursor.getLong(6),
+                        mncLengthKnown = true
+                    )
+                }.getOrNull() ?: continue
+                val frequencyKeys = cursor.getString(15).orEmpty()
+                    .split(',')
+                    .mapNotNull { it.toIntOrNull()?.takeIf { value -> value > 0 } }
+                    .distinct().sorted()
+                result += CellSiteSectorRecord(
+                    id = cursor.getLong(0),
+                    siteId = cursor.getLong(1),
+                    identity = identity,
+                    azimuthDegrees = cursor.getDouble(7),
+                    widthDegrees = cursor.getDouble(8),
+                    confidenceScore = cursor.getDouble(9),
+                    sampleCount = cursor.getInt(10),
+                    occupiedBearingBins = cursor.getInt(11),
+                    signalContrastDb = cursor.getDouble(12),
+                    modelDirectionSpreadDegrees = cursor.getDouble(13),
+                    receiverProfileId = cursor.getString(14),
+                    frequencyKeys = frequencyKeys,
+                    algorithmVersion = cursor.getString(16),
+                    calculatedAtMillis = cursor.getLong(17),
+                    batchId = cursor.getString(18)
+                )
+            }
+        }
+        return result
+    }
+
     fun listCellObservationSamples(
         identity: CellIdentity,
         limit: Int = 20_000,
