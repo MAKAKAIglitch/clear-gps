@@ -127,6 +127,16 @@ data class CellSitePersistenceResult(
     val batchId: String
 )
 
+data class CellSiteBatchRecord(
+    val batchId: String,
+    val calculatedAtMillis: Long,
+    val algorithmVersion: String,
+    val candidateSiteCount: Int,
+    val insertedCount: Int,
+    val updatedCount: Int,
+    val removedCount: Int
+)
+
 data class RadioScanHistoryItem(
     val id: Long, val time: Long, val wifiCount: Int, val cellCount: Int, val bleCount: Int,
     val matchedCount: Int, val latitude: Double?, val longitude: Double?,
@@ -1088,6 +1098,24 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS cell_sites_updated " +
                 "ON cell_sites(calculated_at DESC, id DESC)"
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_site_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL UNIQUE,
+                calculated_at INTEGER NOT NULL CHECK(calculated_at >= 0),
+                algorithm_version TEXT NOT NULL,
+                candidate_site_count INTEGER NOT NULL CHECK(candidate_site_count >= 0),
+                inserted_count INTEGER NOT NULL CHECK(inserted_count >= 0),
+                updated_count INTEGER NOT NULL CHECK(updated_count >= 0),
+                removed_count INTEGER NOT NULL CHECK(removed_count >= 0)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_site_batches_time " +
+                "ON cell_site_batches(calculated_at DESC, id DESC)"
         )
     }
 
@@ -3332,6 +3360,52 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
     }
 
     /**
+     * Lists exact and legacy-width-unknown identities present in trusted local history.
+     * Legacy identities are retained so catalogue adapters can detect numeric MNC aliases
+     * instead of accidentally assigning a cached OpenCellID row to the wrong network.
+     */
+    fun listCellIdentitiesWithObservationHistory(limit: Int = 20_000): List<CellIdentity> {
+        val boundedLimit = limit.coerceIn(1, 50_000)
+        val result = LinkedHashMap<String, CellIdentity>()
+        readableDatabase.rawQuery(
+            """
+            SELECT DISTINCT d.rat, d.mcc, d.mnc, d.mnc_length_known, d.area_code, d.cell_id
+            FROM cell_observation_details d
+            INNER JOIN radio_observations o ON o.id = d.observation_id
+            INNER JOIN radio_sources s ON s.id = o.source_id
+            LEFT JOIN radio_source_segment_settings sg
+              ON sg.source_id = o.source_id
+             AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+             AND sg.radio_type = o.radio_type
+            WHERE o.radio_type = 'cell'
+              AND s.kind IN ('local', 'wigle', 'custom')
+              AND s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+            ORDER BY d.rat, d.mcc, d.mnc, d.mnc_length_known, d.area_code, d.cell_id
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(boundedLimit.toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val technology = CellTechnology.fromToken(cursor.getString(0)) ?: continue
+                val identity = runCatching {
+                    CellIdentity(
+                        technology = technology,
+                        mcc = cursor.getString(1),
+                        mnc = cursor.getString(2),
+                        mncLengthKnown = cursor.getInt(3) != 0,
+                        areaCode = cursor.getLong(4),
+                        cellId = cursor.getLong(5)
+                    )
+                }.getOrNull() ?: continue
+                result[identity.stableKey] = identity
+            }
+        }
+        return result.values.sortedBy { it.stableKey }
+    }
+
+    /**
      * Returns historical handset observations for one exact cell identity.
      * Only trusted local/import sources and original located observations are eligible.
      */
@@ -3462,9 +3536,10 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             require(group.members.isNotEmpty())
             require(stableKeys.add(group.stableKey)) { "Повторяется ключ физической площадки." }
             val sortedMembers = group.members.sortedBy { it.stableKey }
-            val expectedKey = "site:" + sortedMembers.joinToString("~") { it.stableKey }
+            val expectedKey = cellSiteStableKey(sortedMembers)
             require(group.stableKey == expectedKey) { "Ключ площадки не соответствует её составу." }
             sortedMembers.forEach { identity ->
+                require(identity.mncLengthKnown) { "Нельзя сохранять площадку с неоднозначной длиной MNC." }
                 require(identityKeys.add(identity.stableKey)) {
                     "Одна и та же сота входит в несколько физических площадок."
                 }
@@ -3478,13 +3553,28 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         var removed = 0
         var preservedLockedGroups = 0
         val keptSiteIds = LinkedHashSet<Long>()
+        val algorithmVersions = groups.map { it.algorithmVersion }.distinct()
+        val batchAlgorithmVersion = when (algorithmVersions.size) {
+            0 -> "no-candidate-groups"
+            1 -> algorithmVersions.single()
+            else -> "mixed:" + algorithmVersions.sorted().joinToString("+")
+        }
+
         db.beginTransaction()
         try {
-            db.delete(
-                "cell_site_links",
-                "site_id IN (SELECT id FROM cell_sites WHERE locked_by_user = 0)",
-                null
-            )
+            if (groups.isNotEmpty()) {
+                // Rebuild only generated memberships. Manual links remain immutable here.
+                db.delete(
+                    "cell_site_links",
+                    "site_id IN (SELECT id FROM cell_sites WHERE locked_by_user = 0)",
+                    null
+                )
+            } else {
+                // An empty/temporarily incomplete calculation is not proof that every tower vanished.
+                db.rawQuery("SELECT COUNT(*) FROM cell_sites WHERE locked_by_user = 1", null).use {
+                    if (it.moveToFirst()) preservedLockedGroups = it.getInt(0)
+                }
+            }
 
             val lockedOwners = LinkedHashMap<String, Long>()
             db.rawQuery(
@@ -3511,33 +3601,49 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                         return@forEach
                     }
 
+                    // Carry forward existing manually attached identities; recalculation only adds.
+                    val mergedMembers = (readCellSiteMembers(db, lockedSiteId) + group.members)
+                        .distinctBy { it.stableKey }
+                        .sortedBy { it.stableKey }
+                    val mergedStableKey = cellSiteStableKey(mergedMembers)
                     val otherLockedKeyExists = db.rawQuery(
                         "SELECT 1 FROM cell_sites WHERE stable_key = ? AND id <> ? AND locked_by_user = 1 LIMIT 1",
-                        arrayOf(group.stableKey, lockedSiteId.toString())
+                        arrayOf(mergedStableKey, lockedSiteId.toString())
                     ).use { it.moveToFirst() }
                     if (otherLockedKeyExists) {
                         preservedLockedGroups++
                         return@forEach
                     }
 
-                    removed += db.delete(
-                        "cell_sites",
-                        "stable_key = ? AND id <> ? AND locked_by_user = 0",
-                        arrayOf(group.stableKey, lockedSiteId.toString())
-                    )
-                    val oldUncertainty = db.rawQuery(
-                        "SELECT uncertainty_m FROM cell_sites WHERE id = ? AND locked_by_user = 1",
+                    val lockedPosition = db.rawQuery(
+                        "SELECT latitude, longitude, uncertainty_m FROM cell_sites " +
+                            "WHERE id = ? AND locked_by_user = 1",
                         arrayOf(lockedSiteId.toString())
-                    ).use { if (it.moveToFirst()) it.getDouble(0) else null }
-                    if (oldUncertainty == null) {
+                    ).use { cursor ->
+                        if (cursor.moveToFirst()) Triple(cursor.getDouble(0), cursor.getDouble(1), cursor.getDouble(2))
+                        else null
+                    }
+                    if (lockedPosition == null) {
                         preservedLockedGroups++
                         return@forEach
                     }
+                    val offset = org.cleargps.cell.CellSiteCoordinateEstimator.distanceMeters(
+                        lockedPosition.first, lockedPosition.second, group.latitude, group.longitude
+                    )
+                    val enclosingUncertainty = maxOf(
+                        lockedPosition.third,
+                        group.uncertaintyRadiusMeters + offset
+                    )
+                    removed += db.delete(
+                        "cell_sites",
+                        "stable_key = ? AND id <> ? AND locked_by_user = 0",
+                        arrayOf(mergedStableKey, lockedSiteId.toString())
+                    )
                     db.update(
                         "cell_sites",
                         ContentValues().apply {
-                            put("stable_key", group.stableKey)
-                            put("uncertainty_m", maxOf(oldUncertainty, group.uncertaintyRadiusMeters))
+                            put("stable_key", mergedStableKey)
+                            put("uncertainty_m", enclosingUncertainty)
                             put("algorithm_version", group.algorithmVersion)
                             put("calculated_at", calculatedAtMillis)
                             put("batch_id", batchId)
@@ -3545,7 +3651,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                         "id = ? AND locked_by_user = 1",
                         arrayOf(lockedSiteId.toString())
                     )
-                    group.members.forEach { identity ->
+                    mergedMembers.forEach { identity ->
                         insertCellSiteLink(db, lockedSiteId, identity)
                         lockedOwners[identity.stableKey] = lockedSiteId
                     }
@@ -3595,14 +3701,29 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 }
             }
 
-            val automaticSiteIds = ArrayList<Long>()
-            db.rawQuery("SELECT id FROM cell_sites WHERE locked_by_user = 0", null).use { cursor ->
-                while (cursor.moveToNext()) automaticSiteIds += cursor.getLong(0)
-            }
-            automaticSiteIds.filterNot { it in keptSiteIds }.forEach { id ->
-                removed += db.delete("cell_sites", "id = ? AND locked_by_user = 0", arrayOf(id.toString()))
+            if (groups.isNotEmpty()) {
+                val automaticSiteIds = ArrayList<Long>()
+                db.rawQuery("SELECT id FROM cell_sites WHERE locked_by_user = 0", null).use { cursor ->
+                    while (cursor.moveToNext()) automaticSiteIds += cursor.getLong(0)
+                }
+                automaticSiteIds.filterNot { it in keptSiteIds }.forEach { id ->
+                    removed += db.delete("cell_sites", "id = ? AND locked_by_user = 0", arrayOf(id.toString()))
+                }
             }
 
+            db.insertOrThrow(
+                "cell_site_batches",
+                null,
+                ContentValues().apply {
+                    put("batch_id", batchId)
+                    put("calculated_at", calculatedAtMillis)
+                    put("algorithm_version", batchAlgorithmVersion)
+                    put("candidate_site_count", groups.size)
+                    put("inserted_count", inserted)
+                    put("updated_count", updated)
+                    put("removed_count", removed)
+                }
+            )
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -3631,6 +3752,31 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         put("algorithm_version", group.algorithmVersion)
         put("calculated_at", calculatedAtMillis)
         put("batch_id", batchId)
+    }
+
+    private fun cellSiteStableKey(members: List<CellIdentity>): String =
+        "site:" + members.sortedBy { it.stableKey }.joinToString("~") { it.stableKey }
+
+    private fun readCellSiteMembers(db: SQLiteDatabase, siteId: Long): List<CellIdentity> {
+        val result = ArrayList<CellIdentity>()
+        db.rawQuery(
+            "SELECT rat, mcc, mnc, mnc_length_known, area_code, cell_id " +
+                "FROM cell_site_links WHERE site_id = ? ORDER BY identity_key",
+            arrayOf(siteId.toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val technology = CellTechnology.fromToken(cursor.getString(0)) ?: continue
+                result += CellIdentity(
+                    technology = technology,
+                    mcc = cursor.getString(1),
+                    mnc = cursor.getString(2),
+                    mncLengthKnown = cursor.getInt(3) != 0,
+                    areaCode = cursor.getLong(4),
+                    cellId = cursor.getLong(5)
+                )
+            }
+        }
+        return result
     }
 
     private fun insertCellSiteLink(
@@ -3719,6 +3865,27 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return records.values.map { record ->
             record.copy(members = members[record.id].orEmpty())
         }
+    }
+
+    fun listCellSiteBatches(limit: Int = 50): List<CellSiteBatchRecord> {
+        val result = ArrayList<CellSiteBatchRecord>()
+        readableDatabase.rawQuery(
+            "SELECT batch_id, calculated_at, algorithm_version, candidate_site_count, " +
+                "inserted_count, updated_count, removed_count " +
+                "FROM cell_site_batches ORDER BY calculated_at DESC, id DESC LIMIT ?",
+            arrayOf(limit.coerceIn(1, 500).toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += CellSiteBatchRecord(
+                batchId = cursor.getString(0),
+                calculatedAtMillis = cursor.getLong(1),
+                algorithmVersion = cursor.getString(2),
+                candidateSiteCount = cursor.getInt(3),
+                insertedCount = cursor.getInt(4),
+                updatedCount = cursor.getInt(5),
+                removedCount = cursor.getInt(6)
+            )
+        }
+        return result
     }
 
     /** Manual edits are durable anchors that automatic recalculation cannot move. */
@@ -5022,6 +5189,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     }
                 }
             }
+            importCellSitesFromBackup(sourceDb, target, fingerprint)
             target.execSQL("DELETE FROM scan_history WHERE id NOT IN (SELECT id FROM scan_history ORDER BY scanned_at DESC LIMIT 500)")
             target.setTransactionSuccessful()
         } finally {
@@ -5037,6 +5205,143 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             if (targetIds.size >= 2) groupWifiPoints(targetIds)
         }
         return RadioImportResult(observationsImported, touched.size, newRadios, "SQLite Clear GPS", sourceId)
+    }
+
+    /**
+     * Merges saved cell-site snapshots from a Clear GPS backup without replacing local sites.
+     * A lock authored in the imported database is retained as imported provenance, not as a
+     * local user lock. Local locked sites and already-owned cell identities always win.
+     */
+    private fun importCellSitesFromBackup(
+        sourceDb: SQLiteDatabase,
+        targetDb: SQLiteDatabase,
+        fingerprint: String
+    ): Int {
+        val sourceTables = tableNames(sourceDb)
+        if (!sourceTables.containsAll(setOf("cell_sites", "cell_site_links"))) return 0
+
+        data class ImportedSite(
+            val group: CellSiteGroup,
+            val calculatedAt: Long
+        )
+
+        val importedBatchId = "sqlite-import:$fingerprint"
+        val candidates = ArrayList<ImportedSite>()
+        sourceDb.rawQuery(
+            "SELECT id, stable_key, latitude, longitude, uncertainty_m, confidence, " +
+                "locked_by_user, algorithm_version, calculated_at FROM cell_sites ORDER BY id",
+            null
+        ).use { sites ->
+            while (sites.moveToNext()) {
+                val sourceSiteId = sites.getLong(0)
+                val sourceStableKey = sites.getString(1).orEmpty()
+                val latitude = sites.getDouble(2)
+                val longitude = sites.getDouble(3)
+                val uncertainty = sites.getDouble(4)
+                val confidence = sites.getDouble(5)
+                val wasLocked = sites.getInt(6) != 0
+                val sourceAlgorithm = sites.getString(7).orEmpty().ifBlank { "unknown" }.take(160)
+                val calculatedAt = sites.getLong(8).coerceAtLeast(0L)
+                if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+                    !longitude.isFinite() || longitude !in -180.0..180.0 ||
+                    !uncertainty.isFinite() || uncertainty <= 0.0 ||
+                    !confidence.isFinite() || confidence !in 0.0..1.0
+                ) continue
+
+                val members = ArrayList<CellIdentity>()
+                sourceDb.rawQuery(
+                    "SELECT rat, mcc, mnc, mnc_length_known, area_code, cell_id " +
+                        "FROM cell_site_links WHERE site_id = ? ORDER BY identity_key",
+                    arrayOf(sourceSiteId.toString())
+                ).use { links ->
+                    while (links.moveToNext()) {
+                        val technology = CellTechnology.fromToken(links.getString(0)) ?: continue
+                        val knownMncWidth = links.getInt(3) != 0
+                        if (!knownMncWidth) continue
+                        val identity = runCatching {
+                            CellIdentity(
+                                technology = technology,
+                                mcc = links.getString(1),
+                                mnc = links.getString(2),
+                                areaCode = links.getLong(4),
+                                cellId = links.getLong(5),
+                                mncLengthKnown = true
+                            )
+                        }.getOrNull() ?: continue
+                        members += identity
+                    }
+                }
+                val uniqueMembers = members.distinctBy { it.stableKey }.sortedBy { it.stableKey }
+                if (uniqueMembers.isEmpty()) continue
+                val stableKey = cellSiteStableKey(uniqueMembers)
+                if (sourceStableKey != stableKey) continue
+
+                val importedAlgorithm = if (wasLocked) {
+                    "imported-user-lock:$sourceAlgorithm"
+                } else {
+                    "imported:$sourceAlgorithm"
+                }
+                candidates += ImportedSite(
+                    group = CellSiteGroup(
+                        stableKey = stableKey,
+                        members = uniqueMembers,
+                        latitude = latitude,
+                        longitude = longitude,
+                        uncertaintyRadiusMeters = uncertainty,
+                        confidenceScore = confidence,
+                        lockedByUser = false,
+                        algorithmVersion = importedAlgorithm
+                    ),
+                    calculatedAt = calculatedAt
+                )
+            }
+        }
+
+        if (candidates.isEmpty()) return 0
+
+        var inserted = 0
+        candidates.forEach { imported ->
+                val group = imported.group
+                val existingStableKey = targetDb.rawQuery(
+                    "SELECT 1 FROM cell_sites WHERE stable_key = ? LIMIT 1",
+                    arrayOf(group.stableKey)
+                ).use { it.moveToFirst() }
+                if (existingStableKey) return@forEach
+
+                val identityAlreadyOwned = group.members.any { identity ->
+                    targetDb.rawQuery(
+                        "SELECT 1 FROM cell_site_links WHERE identity_key = ? LIMIT 1",
+                        arrayOf(identity.stableKey)
+                    ).use { it.moveToFirst() }
+                }
+                if (identityAlreadyOwned) return@forEach
+
+                val siteId = targetDb.insertOrThrow(
+                    "cell_sites",
+                    null,
+                    cellSiteValues(group, imported.calculatedAt, importedBatchId)
+                )
+                group.members.forEach { identity ->
+                    insertCellSiteLink(targetDb, siteId, identity)
+                }
+                inserted++
+            }
+
+        targetDb.insertWithOnConflict(
+            "cell_site_batches",
+            null,
+            ContentValues().apply {
+                put("batch_id", importedBatchId)
+                put("calculated_at", System.currentTimeMillis())
+                put("algorithm_version", "sqlite-backup-import")
+                put("candidate_site_count", candidates.size)
+                put("inserted_count", inserted)
+                put("updated_count", 0)
+                put("removed_count", 0)
+            },
+            SQLiteDatabase.CONFLICT_IGNORE
+        )
+        return inserted
     }
 
     private fun importWigleSqlite(sourceDb: SQLiteDatabase, fingerprint: String): RadioImportResult {

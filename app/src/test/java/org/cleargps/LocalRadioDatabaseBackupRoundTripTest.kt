@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import android.database.sqlite.SQLiteDatabase
+import org.cleargps.cell.CellIdentity
+import org.cleargps.cell.CellSiteGroup
+import org.cleargps.cell.CellTechnology
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -66,6 +69,11 @@ class LocalRadioDatabaseBackupRoundTripTest {
             assertEquals(4, first.observationsImported)
             assertEquals(4, target.observationCount())
             assertEquals(2, target.pointCount())
+            assertEquals(1, countRows(target.writableDatabase, "cell_sites", "1 = 1"))
+            assertEquals(1, countRows(target.writableDatabase, "cell_site_links", "1 = 1"))
+            assertEquals(1, countRows(
+                target.writableDatabase, "cell_site_batches", "batch_id LIKE ?", "sqlite-import:%"
+            ))
             assertEquals(1, countRows(
                 target.writableDatabase, "scan_history", "mode = ?", "backup-roundtrip"
             ))
@@ -86,6 +94,13 @@ class LocalRadioDatabaseBackupRoundTripTest {
                     buildSet { while (cursor.moveToNext()) add(cursor.getInt(0)) }
                 }
             )
+            val restoredCellSite = target.listCellSites().single()
+            assertEquals(siteIdentityStableKey(), restoredCellSite.members.single().stableKey)
+            assertEquals(52.274, restoredCellSite.latitude, 0.0)
+            assertEquals(40.452, restoredCellSite.longitude, 0.0)
+            assertEquals(false, restoredCellSite.lockedByUser)
+            assertTrue(restoredCellSite.algorithmVersion.startsWith("imported-user-lock:"))
+            assertEquals(1, countRows(target.writableDatabase, "cell_sites", "1 = 1"))
 
             val located = target.listPoints().single { it.identifier == LOCATED_ID }
             assertEquals("02:11:22:33:44:55", located.wifiMldMac)
@@ -114,6 +129,8 @@ class LocalRadioDatabaseBackupRoundTripTest {
             )
             assertEquals(4, target.observationCount())
             assertEquals(2, target.pointCount())
+            assertEquals(1, countRows(target.writableDatabase, "cell_sites", "1 = 1"))
+            assertEquals(1, countRows(target.writableDatabase, "cell_site_links", "1 = 1"))
             assertEquals(1, countRows(
                 target.writableDatabase, "scan_history", "mode = ?", "backup-roundtrip"
             ))
@@ -253,6 +270,26 @@ class LocalRadioDatabaseBackupRoundTripTest {
         val unknownPoint = database.findWifiPointByIdentifier(UNKNOWN_ID)!!
         assertNotNull(database.groupWifiPoints(listOf(locatedPoint.id, unknownPoint.id)))
 
+        val siteIdentity = CellIdentity.fromAndroidStrings(
+            CellTechnology.LTE, "250", "01", 1024, 987654L
+        )!!
+        val siteMembers = listOf(siteIdentity)
+        database.saveCellSiteGroups(
+            listOf(
+                CellSiteGroup(
+                    stableKey = "site:" + siteMembers.joinToString("~") { it.stableKey },
+                    members = siteMembers,
+                    latitude = 52.274,
+                    longitude = 40.452,
+                    uncertaintyRadiusMeters = 35.0,
+                    confidenceScore = 1.0,
+                    lockedByUser = true,
+                    algorithmVersion = "user-locked"
+                )
+            ),
+            calculatedAtMillis = now
+        )
+
         sqlite.insertOrThrow(
             "scan_history",
             null,
@@ -270,6 +307,9 @@ class LocalRadioDatabaseBackupRoundTripTest {
             }
         )
     }
+
+    private fun siteIdentityStableKey(): String =
+        CellIdentity.fromAndroidStrings(CellTechnology.LTE, "250", "01", 1024, 987654L)!!.stableKey
 
     private fun observationSnapshot(db: SQLiteDatabase, sourceId: Long): String =
         db.rawQuery(

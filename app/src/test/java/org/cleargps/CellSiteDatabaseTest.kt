@@ -88,6 +88,10 @@ class CellSiteDatabaseTest {
         assertNotEquals(firstRecord.batchId, secondRecord.batchId)
         assertEquals(1, queryCount("SELECT COUNT(*) FROM cell_sites"))
         assertEquals(2, queryCount("SELECT COUNT(*) FROM cell_site_links"))
+        val latestBatch = database.listCellSiteBatches().first()
+        assertEquals(1, latestBatch.candidateSiteCount)
+        assertEquals(0, latestBatch.insertedCount)
+        assertEquals(1, latestBatch.updatedCount)
     }
 
     @Test
@@ -138,7 +142,9 @@ class CellSiteDatabaseTest {
         assertEquals(13.0, afterAutomatic.longitude, 0.0)
         assertEquals(listOf(anchor.stableKey), afterAutomatic.members.map { it.stableKey })
 
-        val lockCarryingProposal = automaticProposal.copy(lockedByUser = true)
+        val lockCarryingProposal = automaticProposal.copy(
+            latitude = 52.0, longitude = 13.0, lockedByUser = true
+        )
         database.saveCellSiteGroups(listOf(lockCarryingProposal), calculatedAtMillis = 300L)
         val expanded = database.listCellSites().single()
         assertEquals(original.id, expanded.id)
@@ -199,6 +205,39 @@ class CellSiteDatabaseTest {
         assertEquals(before.stableKey, after.stableKey)
         assertEquals(before.members.map { it.stableKey }.toSet(), after.members.map { it.stableKey }.toSet())
         assertFalse(after.lockedByUser)
+    }
+
+    @Test
+    fun ambiguousMncWidthCannotBePersistedAsAPhysicalSite() {
+        val ambiguousIdentity = identity(cellId = 7001L).copy(mncLengthKnown = false)
+        val invalidGroup = group(listOf(ambiguousIdentity))
+
+        var rejected = false
+        try {
+            database.saveCellSiteGroups(listOf(invalidGroup), calculatedAtMillis = 300L)
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+
+        assertTrue(rejected)
+        assertTrue(database.listCellSites().isEmpty())
+        assertTrue(database.listCellSiteBatches().isEmpty())
+    }
+
+    @Test
+    fun emptyCalculationDoesNotDeletePreviouslySavedAutomaticSites() {
+        val previous = group(listOf(identity(cellId = 6001L)))
+        database.saveCellSiteGroups(listOf(previous), calculatedAtMillis = 100L)
+        val before = database.listCellSites().single()
+
+        val result = database.saveCellSiteGroups(emptyList(), calculatedAtMillis = 200L)
+
+        val after = database.listCellSites().single()
+        assertEquals(0, result.removed)
+        assertEquals(before.id, after.id)
+        assertEquals(before.stableKey, after.stableKey)
+        assertEquals(0, database.listCellSiteBatches().first().candidateSiteCount)
+        assertEquals("no-candidate-groups", database.listCellSiteBatches().first().algorithmVersion)
     }
 
     private fun queryCount(sql: String): Int =

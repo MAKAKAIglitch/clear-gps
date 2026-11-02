@@ -93,6 +93,45 @@ internal class RadioRepository(
     ): CellSiteIntelligenceResult =
         CellSiteIntelligenceEngine.calculate(evidence, estimatorConfig, groupingConfig)
 
+    /** Calculates and persists a complete candidate snapshot from adapter-supplied evidence. */
+    fun calculateAndSaveCellSites(
+        evidence: List<CellSiteEvidenceBundle>,
+        estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
+        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig(),
+        calculatedAtMillis: Long = System.currentTimeMillis()
+    ): CellSiteIntelligenceResult {
+        val result = calculateCellSites(evidence, estimatorConfig, groupingConfig)
+        database.saveCellSiteGroups(result.groups, calculatedAtMillis)
+        return result
+    }
+
+    /**
+     * Recalculates candidates from the existing OpenCellID cache only.
+     * This method performs no network calls and does not request or start GPS.
+     *
+     * OpenCellID positions have a 5 km uncertainty floor. Such results are stored as low-
+     * confidence candidates for later corroboration, not treated as surveyed mast locations.
+     */
+    fun calculateAndSaveCachedOpenCellIdCellSites(
+        nowMillis: Long = System.currentTimeMillis(),
+        estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
+        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig(
+            minimumConfidenceScore = 0.18,
+            minimumIndependentEvidenceCount = 1,
+            maximumCandidateUncertaintyMeters = 10_000.0
+        )
+    ): CellSiteIntelligenceResult {
+        require(nowMillis >= 0L)
+        val identities = database.listCellIdentitiesWithObservationHistory()
+        val evidence = loadOpenCellIdCellSiteEvidence(identities, nowMillis)
+        return calculateAndSaveCellSites(
+            evidence = evidence,
+            estimatorConfig = estimatorConfig,
+            groupingConfig = groupingConfig,
+            calculatedAtMillis = nowMillis
+        )
+    }
+
     fun loadCellSites(limit: Int = 2_000): List<CellSiteRecord> =
         database.listCellSites(limit)
 
@@ -101,6 +140,9 @@ internal class RadioRepository(
         calculatedAtMillis: Long = System.currentTimeMillis()
     ): CellSitePersistenceResult =
         database.saveCellSiteGroups(groups, calculatedAtMillis)
+
+    fun loadCellSiteBatches(limit: Int = 50): List<CellSiteBatchRecord> =
+        database.listCellSiteBatches(limit)
 
     fun lockCellSiteCoordinate(
         siteId: Long,
