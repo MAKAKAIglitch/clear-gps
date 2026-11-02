@@ -8895,7 +8895,13 @@ private fun currentReference(location: Location?, anchor: ManualAnchor?): RadioR
     val now = System.currentTimeMillis()
     if (location != null && now - location.time in 0..60_000L && !isMockLocation(location) &&
         location.hasAccuracy() && location.accuracy in 1f..500f) {
-        return RadioReference(location.latitude, location.longitude, location.accuracy.toDouble(), "android-location")
+        return RadioReference(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = location.accuracy.toDouble(),
+            source = "android-location",
+            measurementElapsedRealtimeNanos = location.elapsedRealtimeNanos.takeIf { it > 0L }
+        )
     }
     return anchor?.let { RadioReference(it.latitude, it.longitude, 1_500.0, "manual-anchor") }
 }
