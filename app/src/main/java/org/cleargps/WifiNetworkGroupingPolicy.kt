@@ -111,7 +111,7 @@ internal object WifiNetworkGroupingPolicy {
                     if (sameVendorPrefix) add("Совпадает префикс MAC производителя")
                     if (nearby) add("Центры наблюдений близко: ${distance!!.toInt()} м")
                     if (coObserved) add("Точки обнаруживались примерно в одно время")
-                    if (hiddenInterface) add("Одна из сетей не передаёт имя SSID")
+                    if (hiddenInterface) add("SSID скрыт: имя сети не передаётся")
                 }
                 WifiNetworkCandidate(candidate, score, reasons)
             }

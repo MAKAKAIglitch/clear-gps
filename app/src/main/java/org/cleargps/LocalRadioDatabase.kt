@@ -1001,8 +1001,8 @@ class LocalRadioDatabase(context: Context, databaseName: String = DB_NAME) : SQL
             // Independent, deletable estimates stay outside radio_observations and detector training.
             createRadioAutoRefinementTables(db)
         }
-        if (oldVersion < 13) {
-            // MLD identity is optional; legacy Wi-Fi rows remain valid without it.
+        if (oldVersion < 13 && "wifi_mld_mac" !in tableColumns(db, "radio_points")) {
+            // MLD identity is optional; the presence check also makes older-version recovery safe.
             db.execSQL("ALTER TABLE radio_points ADD COLUMN wifi_mld_mac TEXT")
         }
         if (oldVersion < 14) {
