@@ -48,7 +48,9 @@ class CellObservationSamplesDatabaseTest {
 
         insertObservation(localSource.id, "lte:250:01:1024:987654", "gps", 51.5, -0.12, CellSignalMetadata(
             CellTechnology.LTE, "250", "01", true, 1024, 987654L,
-            channelNumber = 1800, pci = 111, rsrpDbm = -65, rsrqDb = -10, sinrDb = 15
+            channelNumber = 1800, pci = 111, rsrpDbm = -65, rsrqDb = -10, sinrDb = 15,
+            timingAdvanceValue = 100, timingAdvanceUnit = "lte-command-index",
+            timingAdvancePositionDeltaMillis = 500L
         ))
         insertObservation(localSource.id, "lte:250:01:1024:987654", "radio-estimate", 51.6, -0.13, CellSignalMetadata(
             CellTechnology.LTE, "250", "01", true, 1024, 987654L,
@@ -74,7 +76,34 @@ class CellObservationSamplesDatabaseTest {
         assertEquals(1800, sample.frequencyKey)
         assertEquals(ObservationLocationOrigin.OBSERVED, sample.locationOrigin)
         assertEquals("local-device", sample.receiverProfileId)
+        assertEquals(100, sample.timingAdvanceValue)
+        assertEquals("lte-command-index", sample.timingAdvanceUnit)
+        assertEquals(500L, sample.timingAdvancePositionDeltaMillis)
         assertTrue(sample.usableForSector())
+        assertTrue(sample.usableForTimingAdvance())
+    }
+
+    @Test
+    fun timingAdvanceWithoutSynchronizedMeasuredLocationIsNotUsable() {
+        val localSource = database.listRadioSources().single { it.kind == "local" }
+        val identity = CellIdentity.fromAndroidStrings(
+            CellTechnology.LTE, "250", "01", 1024, 123456L
+        )!!
+        insertObservation(
+            localSource.id, "lte:250:01:1024:123456", "gps", 51.5, -0.12,
+            CellSignalMetadata(
+                CellTechnology.LTE, "250", "01", true, 1024, 123456L,
+                channelNumber = 1800,
+                timingAdvanceValue = 20,
+                timingAdvanceUnit = "lte-command-index"
+            )
+        )
+
+        val sample = database.listCellObservationSamples(identity).single()
+
+        assertEquals(20, sample.timingAdvanceValue)
+        assertEquals(null, sample.timingAdvancePositionDeltaMillis)
+        assertFalse(sample.usableForTimingAdvance())
     }
 
     @Test
@@ -256,6 +285,7 @@ class CellObservationSamplesDatabaseTest {
                 put("ecno_db", metadata.ecNoDb)
                 put("timing_advance_value", metadata.timingAdvanceValue)
                 put("timing_advance_unit", metadata.timingAdvanceUnit)
+                put("timing_advance_position_delta_ms", metadata.timingAdvancePositionDeltaMillis)
             }
         )
     }
