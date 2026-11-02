@@ -109,6 +109,72 @@ internal object OpenStreetMapCellSiteWorkScheduler {
     }
 }
 
+/** Coalesces local calculations after new observations; this worker needs no network. */
+internal object CellSiteRecalculationScheduler {
+    private const val WORK_NAME = "clear-gps-cell-site-local-recalculation"
+
+    fun enqueue(context: Context) {
+        val appContext = context.applicationContext
+        try {
+            val constraints = Constraints.Builder()
+                .setRequiresBatteryNotLow(true)
+                .build()
+            val request = OneTimeWorkRequestBuilder<CellSiteRecalculationWorker>()
+                .setConstraints(constraints)
+                .setInitialDelay(15, TimeUnit.MINUTES)
+                .setBackoffCriteria(
+                    androidx.work.BackoffPolicy.EXPONENTIAL,
+                    30,
+                    TimeUnit.MINUTES
+                )
+                .build()
+            WorkManager.getInstance(appContext).enqueueUniqueWork(
+                WORK_NAME, ExistingWorkPolicy.KEEP, request
+            )
+        } catch (error: Exception) {
+            DiagnosticLogStore.log(
+                appContext, "CELL_SITE",
+                "Could not schedule local site recalculation: ${error.javaClass.simpleName}", "WARN"
+            )
+        }
+    }
+}
+
+/** Builds local candidates from stored observations and already-cached catalogues only. */
+class CellSiteRecalculationWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : Worker(appContext, workerParams) {
+    override fun doWork(): Result {
+        val powerDecision = PowerPolicy.optionalBackgroundDecision(applicationContext)
+        if (!powerDecision.allowed) {
+            DiagnosticLogStore.log(
+                applicationContext, "CELL_SITE",
+                "Local site recalculation deferred by power policy: ${powerDecision.blockReason}"
+            )
+            return Result.retry()
+        }
+
+        return try {
+            LocalRadioDatabase(applicationContext).use { database ->
+                val result = RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites()
+                DiagnosticLogStore.log(
+                    applicationContext, "CELL_SITE",
+                    "Local recalculation complete: ${result.estimatesByIdentity.size} cell estimates, " +
+                        "${result.groups.size} physical sites."
+                )
+            }
+            Result.success()
+        } catch (error: Exception) {
+            DiagnosticLogStore.log(
+                applicationContext, "CELL_SITE",
+                "Local site recalculation failed: ${error.javaClass.simpleName}", "WARN"
+            )
+            Result.retry()
+        }
+    }
+}
+
 /** Executes one queued, consent-gated Overpass request per WorkManager run. */
 class OpenStreetMapCellSiteWorker(
     appContext: Context,
