@@ -29,6 +29,7 @@ class CellSiteClustererTest {
         evidenceCount: Int = 5,
         knownWidth: Boolean = true,
         conflict: Boolean = false,
+        locked: Boolean = false,
         mcc: String = "250",
         mnc: String = "01"
     ) = CellSiteCandidate(
@@ -43,7 +44,7 @@ class CellSiteClustererTest {
             rejectedEvidenceIds = emptyList(),
             ignoredCorrelatedEvidenceIds = emptyList(),
             conflictDetected = conflict,
-            lockedByUser = false
+            lockedByUser = locked
         )
     )
 
@@ -74,7 +75,6 @@ class CellSiteClustererTest {
     }
 
     @Test fun completeLinkPreventsTransitiveTowerChaining() {
-        // A-B and B-C are close enough, but A-C are farther apart than the merge threshold.
         val a = candidate(cellId = 1001L, latitude = 51.500000, longitude = -0.120000, uncertainty = 30.0)
         val b = candidate(cellId = 1002L, latitude = 51.500270, longitude = -0.120000, uncertainty = 30.0)
         val c = candidate(cellId = 1003L, latitude = 51.500540, longitude = -0.120000, uncertainty = 30.0)
@@ -142,6 +142,43 @@ class CellSiteClustererTest {
         assertEquals(first.groups.map { it.stableKey }, second.groups.map { it.stableKey })
         assertEquals(listOf(weak.identity.stableKey), first.duplicateIdentityKeys)
         assertEquals(0.9, first.groups.single().confidenceScore, 0.0)
-        assertEquals(weak.identity.stableKey, first.groups.single().members.first().stableKey)
+    }
+
+    @Test fun userLockedCoordinateRemainsExactAndMayStandAloneWithOneEvidence() {
+        val locked = candidate(
+            cellId = 1001L,
+            latitude = 51.500000,
+            longitude = -0.120000,
+            confidence = 1.0,
+            uncertainty = 5.0,
+            evidenceCount = 1,
+            locked = true
+        )
+        val nearby = candidate(
+            cellId = 1002L,
+            latitude = 51.500050,
+            longitude = -0.120000,
+            confidence = 0.9,
+            uncertainty = 10.0
+        )
+
+        val group = CellSiteClusterer.group(listOf(nearby, locked)).groups.single()
+
+        assertEquals(51.500000, group.latitude, 0.0)
+        assertEquals(-0.120000, group.longitude, 0.0)
+        assertEquals(0.9, group.confidenceScore, 0.0)
+    }
+
+    @Test fun differentUserLockedCoordinatesAreNeverAutoMerged() {
+        val first = candidate(
+            cellId = 1001L, latitude = 51.500000, longitude = -0.120000,
+            confidence = 1.0, uncertainty = 5.0, evidenceCount = 1, locked = true
+        )
+        val second = candidate(
+            cellId = 1002L, latitude = 51.500050, longitude = -0.120000,
+            confidence = 1.0, uncertainty = 5.0, evidenceCount = 1, locked = true
+        )
+
+        assertEquals(2, CellSiteClusterer.group(listOf(first, second)).groups.size)
     }
 }

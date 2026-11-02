@@ -65,6 +65,7 @@ object CellSiteClusterer {
      * creating an A~B~C chain when A and C are too far apart.
      *
      * Different RATs and operators may share a physical site. Their identities are preserved.
+     * A user-locked coordinate remains the site's anchor and is never moved by averaging.
      */
     fun group(
         candidates: List<CellSiteCandidate>,
@@ -83,14 +84,16 @@ object CellSiteClusterer {
         val unique = valid.groupBy { it.identity.stableKey }.toSortedMap().map { (key, sameIdentity) ->
             if (sameIdentity.size > 1) duplicateKeys += key
             sameIdentity.sortedWith(
-                compareByDescending<CellSiteCandidate> { it.estimate.confidenceScore }
+                compareByDescending<CellSiteCandidate> { it.estimate.lockedByUser }
+                    .thenByDescending { it.estimate.confidenceScore }
                     .thenByDescending { it.estimate.independentEvidenceCount }
                     .thenBy { it.estimate.uncertaintyRadiusMeters }
                     .thenBy { it.estimate.latitude }
                     .thenBy { it.estimate.longitude }
             ).first()
         }.sortedWith(
-            compareByDescending<CellSiteCandidate> { it.estimate.confidenceScore }
+            compareByDescending<CellSiteCandidate> { it.estimate.lockedByUser }
+                .thenByDescending { it.estimate.confidenceScore }
                 .thenByDescending { it.estimate.independentEvidenceCount }
                 .thenBy { it.estimate.uncertaintyRadiusMeters }
                 .thenBy { it.identity.stableKey }
@@ -106,6 +109,11 @@ object CellSiteClusterer {
                         existing.estimate.latitude,
                         existing.estimate.longitude
                     )
+                    // Two different manual anchors are distinct user decisions. Never auto-merge them.
+                    if (candidate.estimate.lockedByUser && existing.estimate.lockedByUser &&
+                        distance > 0.01
+                    ) return@mapNotNull null
+
                     val maximumDistance = allowedDistance(candidate.estimate, existing.estimate, config)
                     if (distance > maximumDistance) null else distance / maximumDistance
                 }
@@ -137,9 +145,9 @@ object CellSiteClusterer {
             !estimate.confidenceScore.isFinite() || estimate.confidenceScore !in 0.0..1.0
         ) return CellSiteExclusionReason.INVALID_ESTIMATE
         if (estimate.conflictDetected) return CellSiteExclusionReason.CONFLICTING_EVIDENCE
-        if (estimate.independentEvidenceCount < config.minimumIndependentEvidenceCount) {
-            return CellSiteExclusionReason.INSUFFICIENT_EVIDENCE
-        }
+        if (!estimate.lockedByUser &&
+            estimate.independentEvidenceCount < config.minimumIndependentEvidenceCount
+        ) return CellSiteExclusionReason.INSUFFICIENT_EVIDENCE
         if (estimate.confidenceScore < config.minimumConfidenceScore) {
             return CellSiteExclusionReason.LOW_CONFIDENCE
         }
@@ -168,28 +176,36 @@ object CellSiteClusterer {
     private fun buildGroup(candidates: List<CellSiteCandidate>): CellSiteGroup? {
         if (candidates.isEmpty()) return null
         val members = candidates.map { it.identity }.sortedBy { it.stableKey }
+        val locked = candidates.filter { it.estimate.lockedByUser }
+            .minByOrNull { it.identity.stableKey }
 
-        // Weighted spherical mean is stable across the date line and high latitudes.
-        var x = 0.0
-        var y = 0.0
-        var z = 0.0
-        candidates.forEach { candidate ->
-            val estimate = candidate.estimate
-            val weight = estimate.confidenceScore.coerceAtLeast(0.01) /
-                (estimate.uncertaintyRadiusMeters * estimate.uncertaintyRadiusMeters)
-            val latitude = Math.toRadians(estimate.latitude)
-            val longitude = Math.toRadians(estimate.longitude)
-            x += weight * cos(latitude) * cos(longitude)
-            y += weight * cos(latitude) * sin(longitude)
-            z += weight * sin(latitude)
+        val centre = if (locked != null) {
+            // Preserve the exact user-entered coordinate, including its decimal representation.
+            locked.estimate.latitude to locked.estimate.longitude
+        } else {
+            // Weighted spherical mean is stable across the date line and high latitudes.
+            var x = 0.0
+            var y = 0.0
+            var z = 0.0
+            candidates.forEach { candidate ->
+                val estimate = candidate.estimate
+                val weight = estimate.confidenceScore.coerceAtLeast(0.01) /
+                    (estimate.uncertaintyRadiusMeters * estimate.uncertaintyRadiusMeters)
+                val latitude = Math.toRadians(estimate.latitude)
+                val longitude = Math.toRadians(estimate.longitude)
+                x += weight * cos(latitude) * cos(longitude)
+                y += weight * cos(latitude) * sin(longitude)
+                z += weight * sin(latitude)
+            }
+            val horizontal = sqrt(x * x + y * y)
+            if (!horizontal.isFinite() || !z.isFinite() ||
+                (horizontal < 1e-15 && kotlin.math.abs(z) < 1e-15)
+            ) return null
+            Math.toDegrees(kotlin.math.atan2(z, horizontal)) to
+                normalizeLongitude(Math.toDegrees(kotlin.math.atan2(y, x)))
         }
-        val horizontal = sqrt(x * x + y * y)
-        if (!horizontal.isFinite() || !z.isFinite() ||
-            (horizontal < 1e-15 && kotlin.math.abs(z) < 1e-15)
-        ) return null
-
-        val latitude = Math.toDegrees(kotlin.math.atan2(z, horizontal))
-        val longitude = normalizeLongitude(Math.toDegrees(kotlin.math.atan2(y, x)))
+        val latitude = centre.first
+        val longitude = centre.second
         if (!latitude.isFinite() || !longitude.isFinite()) return null
 
         // Keep a conservative bound; cell estimates may share correlated handset-location error.
