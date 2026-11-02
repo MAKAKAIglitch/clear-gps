@@ -312,7 +312,9 @@ class CellObservationSamplesDatabaseTest {
         val sector = stored.single()
         assertEquals(identity.stableKey, sector.identity.stableKey)
         assertTrue(angularDifference(sector.azimuthDegrees, 80.0) < 20.0)
-        assertTrue(sector.suitableForMapDisplay())
+        assertTrue(sector.sampleCount >= 18)
+        assertTrue(sector.confidenceScore >= 0.60)
+        assertTrue(sector.modelDirectionSpreadDegrees <= 30.0)
         assertEquals(1800, sector.frequencyKeys.single())
     }
 
