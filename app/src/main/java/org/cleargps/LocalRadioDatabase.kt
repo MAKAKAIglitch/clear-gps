@@ -1306,7 +1306,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     val frequencyVariants = signalGroups[signal.type + "|" + signal.identifier]
                         .orEmpty()
                         .distinctBy { candidate ->
-                            if (candidate.type == "cell") candidate.cellMetadata?.channelNumber ?: -1
+                            if (candidate.type == "cell") candidate.cellMetadata?.channelNumber ?: candidate.frequency
                             else candidate.frequency
                         }
                     frequencyVariants.forEach { observedSignal ->
@@ -4543,18 +4543,33 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     val rssi = cursor.getInt(cursor.getColumnIndexOrThrow("rssi")).coerceIn(-120, 0)
                     val frequency = cursor.getInt(cursor.getColumnIndexOrThrow("frequency")).coerceAtLeast(0)
                     val source = cursor.getString(cursor.getColumnIndexOrThrow("position_source")).orEmpty().take(100)
-                    if (insertObservationIfAbsent(target, type, identifier, observedAt, lat, lon, accuracy, rssi, frequency, source, sourceId)) {
+                    val sourceObservationIdIndex = cursor.getColumnIndex("id")
+                    val sourceObservationId = sourceObservationIdIndex.takeIf {
+                        type == "cell" && hasCellObservationDetails && it >= 0
+                    }?.let { cursor.getLong(it) }
+                    val sourceChannelNumber = sourceObservationId?.let {
+                        readCellObservationDetailChannel(sourceDb, it)
+                    }
+                    val preserveCellChannel = sourceObservationId != null
+                    if (insertObservationIfAbsent(
+                            target, type, identifier, observedAt, lat, lon, accuracy, rssi,
+                            frequency, source, sourceId, sourceChannelNumber, preserveCellChannel
+                        )
+                    ) {
                         observationsImported++
                     }
-                    val sourceObservationIdIndex = cursor.getColumnIndex("id")
-                    if (type == "cell" && hasCellObservationDetails && sourceObservationIdIndex >= 0) {
-                        val sourceObservationId = cursor.getLong(sourceObservationIdIndex)
+                    if (sourceObservationId != null) {
                         val targetObservationId = target.rawQuery(
-                            "SELECT id FROM radio_observations WHERE source_id = ? AND radio_type = ? " +
-                                "AND identifier = ? AND observed_at = ? AND rssi = ? AND frequency = ? " +
-                                "ORDER BY id DESC LIMIT 1",
-                            arrayOf(sourceId.toString(), type, identifier, observedAt.toString(),
-                                rssi.toString(), frequency.toString())
+                            "SELECT o.id FROM radio_observations o " +
+                                "LEFT JOIN cell_observation_details d ON d.observation_id = o.id " +
+                                "WHERE o.source_id = ? AND o.radio_type = ? AND o.identifier = ? " +
+                                "AND o.observed_at = ? AND o.rssi = ? AND o.frequency = ? " +
+                                "AND COALESCE(d.channel_number, -1) = ? " +
+                                "ORDER BY o.id DESC LIMIT 1",
+                            arrayOf(
+                                sourceId.toString(), type, identifier, observedAt.toString(),
+                                rssi.toString(), frequency.toString(), (sourceChannelNumber ?: -1).toString()
+                            )
                         ).use { rows -> if (rows.moveToFirst()) rows.getLong(0) else null }
                         if (targetObservationId != null) {
                             copyCellObservationDetails(sourceDb, sourceObservationId, target, targetObservationId)
@@ -4836,21 +4851,45 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return false
     }
 
+    private fun readCellObservationDetailChannel(db: SQLiteDatabase, observationId: Long): Int? =
+        db.rawQuery(
+            "SELECT channel_number FROM cell_observation_details WHERE observation_id = ?",
+            arrayOf(observationId.toString())
+        ).use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getInt(0) else null
+        }
+
     private fun insertObservationIfAbsent(
         db: SQLiteDatabase, type: String, identifier: String, observedAt: Long,
         latitude: Double?, longitude: Double?, accuracy: Double?, rssi: Int, frequency: Int, positionSource: String,
-        sourceId: Long
+        sourceId: Long,
+        cellChannelNumber: Int? = null,
+        includeCellDetailsInDedupe: Boolean = false
     ): Boolean {
-        val exists = db.rawQuery(
-            "SELECT 1 FROM radio_observations WHERE source_id = ? AND radio_type = ? AND identifier = ? AND observed_at = ? " +
-                "AND rssi = ? AND frequency = ? " +
-                "AND COALESCE(latitude, 999.0) = CAST(? AS REAL) " +
-                "AND COALESCE(longitude, 999.0) = CAST(? AS REAL) LIMIT 1",
-            arrayOf(
-                sourceId.toString(), type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
-                latitude?.toString() ?: "999.0", longitude?.toString() ?: "999.0"
-            )
-        ).use { it.moveToFirst() }
+        val commonArguments = arrayOf(
+            sourceId.toString(), type, identifier, observedAt.toString(), rssi.toString(), frequency.toString(),
+            latitude?.toString() ?: "999.0", longitude?.toString() ?: "999.0"
+        )
+        val exists = if (type == "cell" && includeCellDetailsInDedupe) {
+            db.rawQuery(
+                "SELECT 1 FROM radio_observations o " +
+                    "LEFT JOIN cell_observation_details d ON d.observation_id = o.id " +
+                    "WHERE o.source_id = ? AND o.radio_type = ? AND o.identifier = ? AND o.observed_at = ? " +
+                    "AND o.rssi = ? AND o.frequency = ? " +
+                    "AND COALESCE(o.latitude, 999.0) = CAST(? AS REAL) " +
+                    "AND COALESCE(o.longitude, 999.0) = CAST(? AS REAL) " +
+                    "AND COALESCE(d.channel_number, -1) = ? LIMIT 1",
+                commonArguments + arrayOf((cellChannelNumber ?: -1).toString())
+            ).use { it.moveToFirst() }
+        } else {
+            db.rawQuery(
+                "SELECT 1 FROM radio_observations WHERE source_id = ? AND radio_type = ? AND identifier = ? AND observed_at = ? " +
+                    "AND rssi = ? AND frequency = ? " +
+                    "AND COALESCE(latitude, 999.0) = CAST(? AS REAL) " +
+                    "AND COALESCE(longitude, 999.0) = CAST(? AS REAL) LIMIT 1",
+                commonArguments
+            ).use { it.moveToFirst() }
+        }
         if (exists) return false
         val values = ContentValues().apply {
             put("radio_type", type); put("identifier", identifier)

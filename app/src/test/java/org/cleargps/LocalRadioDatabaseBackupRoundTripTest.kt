@@ -63,8 +63,8 @@ class LocalRadioDatabaseBackupRoundTripTest {
 
             assertEquals("SQLite Clear GPS", first.format)
             assertNotNull(first.sourceId)
-            assertEquals(2, first.observationsImported)
-            assertEquals(2, target.observationCount())
+            assertEquals(4, first.observationsImported)
+            assertEquals(4, target.observationCount())
             assertEquals(2, target.pointCount())
             assertEquals(1, countRows(
                 target.writableDatabase, "scan_history", "mode = ?", "backup-roundtrip"
@@ -72,9 +72,20 @@ class LocalRadioDatabaseBackupRoundTripTest {
             assertEquals(1, countRows(
                 target.writableDatabase, "radio_sources", "kind = ? AND id = ?", "custom", first.sourceId.toString()
             ))
-            assertEquals(2, countRows(
+            assertEquals(4, countRows(
                 target.writableDatabase, "radio_observations", "source_id = ?", first.sourceId.toString()
             ))
+            assertEquals(2, countRows(
+                target.writableDatabase, "cell_observation_details", "1 = 1"
+            ))
+            assertEquals(
+                setOf(1800, 1900),
+                target.writableDatabase.rawQuery(
+                    "SELECT channel_number FROM cell_observation_details ORDER BY channel_number", null
+                ).use { cursor ->
+                    buildSet { while (cursor.moveToNext()) add(cursor.getInt(0)) }
+                }
+            )
 
             val located = target.listPoints().single { it.identifier == LOCATED_ID }
             assertEquals("02:11:22:33:44:55", located.wifiMldMac)
@@ -94,7 +105,7 @@ class LocalRadioDatabaseBackupRoundTripTest {
             assertEquals("SQLite Clear GPS", second.format)
             assertEquals(first.sourceId, second.sourceId)
             assertEquals(0, second.observationsImported)
-            assertEquals(2, target.observationCount())
+            assertEquals(4, target.observationCount())
             assertEquals(2, target.pointCount())
             assertEquals(1, countRows(
                 target.writableDatabase, "scan_history", "mode = ?", "backup-roundtrip"
@@ -194,6 +205,43 @@ class LocalRadioDatabaseBackupRoundTripTest {
                 put("source_id", sourceId)
             }
         )
+        listOf(1800, 1900).forEach { channel ->
+            val observationId = sqlite.insertOrThrow(
+                "radio_observations",
+                null,
+                ContentValues().apply {
+                    put("radio_type", "cell")
+                    put("identifier", "lte:250:01:1024:987654")
+                    put("latitude", 52.274)
+                    put("longitude", 40.452)
+                    put("accuracy", 18.0)
+                    put("rssi", -65)
+                    put("frequency", 0)
+                    put("observed_at", now)
+                    put("position_source", "gps")
+                    put("source_id", sourceId)
+                }
+            )
+            sqlite.insertOrThrow(
+                "cell_observation_details",
+                null,
+                ContentValues().apply {
+                    put("observation_id", observationId)
+                    put("rat", "lte")
+                    put("mcc", "250")
+                    put("mnc", "01")
+                    put("mnc_length_known", 1)
+                    put("area_code", 1024)
+                    put("cell_id", 987654)
+                    put("channel_number", channel)
+                    put("pci", 111)
+                    put("rsrp_dbm", -65)
+                    put("rsrq_db", -10)
+                    put("sinr_db", 15)
+                }
+            )
+        }
+
         val locatedPoint = database.findWifiPointByIdentifier(LOCATED_ID)!!
         val unknownPoint = database.findWifiPointByIdentifier(UNKNOWN_ID)!!
         assertNotNull(database.groupWifiPoints(listOf(locatedPoint.id, unknownPoint.id)))

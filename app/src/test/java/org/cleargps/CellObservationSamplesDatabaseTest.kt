@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class CellObservationSamplesDatabaseTest {
     private val context: Context = RuntimeEnvironment.getApplication()
-    private val databaseName = "cell-observation-samples-\${System.nanoTime()}.sqlite"
+    private val databaseName = "cell-observation-samples-${System.nanoTime()}.sqlite"
     private val database = LocalRadioDatabase(context, databaseName)
 
     @After
