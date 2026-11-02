@@ -24,6 +24,25 @@ class SectorAzimuthEstimatorTest {
         assertTrue(result.suitableForMapDisplay)
     }
 
+    @Test fun missingReceiverProfileCannotDetermineAntennaDirection() {
+        val samples = (0 until 360 step 10).map { bearing ->
+            val p = destination(51.5, -0.12, bearing.toDouble(), 500.0)
+            CellObservationSample(identity, p.first, p.second, 5.0, -50.0, 1800000,
+                bearing.toLong(), ObservationLocationOrigin.OBSERVED)
+        }
+        assertNull(SectorAzimuthEstimator.estimate(identity, 51.5, -0.12, 10.0, samples))
+    }
+
+    @Test fun legacyAmbiguousMncCannotProduceSector() {
+        val legacy = CellIdentity.fromLegacyIdentifier("lte:250:1:10:123456")!!
+        val samples = (0 until 360 step 10).map { bearing ->
+            val p = destination(51.5, -0.12, bearing.toDouble(), 500.0)
+            CellObservationSample(legacy, p.first, p.second, 5.0, -50.0, 1800000,
+                bearing.toLong(), ObservationLocationOrigin.OBSERVED, "device-a")
+        }
+        assertNull(SectorAzimuthEstimator.estimate(legacy, 51.5, -0.12, 10.0, samples))
+    }
+
     @Test fun derivedCoordinatesCannotDetermineAntennaDirection() {
         val samples = (0 until 360 step 10).map { bearing ->
             val p = destination(51.5, -0.12, bearing.toDouble(), 500.0)

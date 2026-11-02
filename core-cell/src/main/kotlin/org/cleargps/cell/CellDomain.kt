@@ -108,11 +108,14 @@ data class CellObservationSample(
     }
 
     fun usableForSector(maximumAccuracyMeters: Double = 1_000.0): Boolean =
-        locationOrigin in setOf(
-            ObservationLocationOrigin.OBSERVED,
-            ObservationLocationOrigin.IMPORTED,
-            ObservationLocationOrigin.USER_CONFIRMED
-        ) && coordinateAccuracyMeters <= maximumAccuracyMeters
+        identity.mncLengthKnown &&
+            !receiverProfileId.isNullOrBlank() &&
+            locationOrigin in setOf(
+                ObservationLocationOrigin.OBSERVED,
+                ObservationLocationOrigin.IMPORTED,
+                ObservationLocationOrigin.USER_CONFIRMED
+            ) &&
+            coordinateAccuracyMeters <= maximumAccuracyMeters
 }
 
 enum class CellEvidenceSource(val defaultReliability: Double) {

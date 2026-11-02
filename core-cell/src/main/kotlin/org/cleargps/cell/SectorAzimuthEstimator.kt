@@ -67,6 +67,7 @@ object SectorAzimuthEstimator {
         observations: List<CellObservationSample>,
         config: SectorAzimuthConfig = SectorAzimuthConfig()
     ): SectorAzimuthEstimate? {
+        if (!identity.mncLengthKnown) return null
         if (!siteLatitude.isFinite() || siteLatitude !in -90.0..90.0 ||
             !siteLongitude.isFinite() || siteLongitude !in -180.0..180.0 ||
             !siteUncertaintyMeters.isFinite() || siteUncertaintyMeters < 0.0 ||
@@ -101,9 +102,7 @@ object SectorAzimuthEstimator {
                 it.identity.stableKey == identity.stableKey &&
                     it.usableForSector(config.maximumObservationAccuracyMeters)
             }
-            .groupBy {
-                (it.receiverProfileId?.takeIf(String::isNotBlank) ?: UNKNOWN_RECEIVER) to it.frequencyKey
-            }
+            .groupBy { it.receiverProfileId!! to it.frequencyKey }
 
         val results = groups.mapNotNull { (key, group) ->
             val located = group.mapNotNull { observation ->
@@ -132,7 +131,7 @@ object SectorAzimuthEstimator {
         }
         if (directionSpread > config.maximumModelSpreadDegrees) return null
 
-        val receiverProfile = best.first.first.takeUnless { it == UNKNOWN_RECEIVER }
+        val receiverProfile = best.first.first
         return SectorAzimuthEstimate(
             azimuthDegrees = normalize(best.second.azimuth),
             widthDegrees = best.second.width,
@@ -288,5 +287,4 @@ object SectorAzimuthEstimator {
 
     private fun log10(value: Double) = ln(value) / ln(10.0)
 
-    private const val UNKNOWN_RECEIVER = "__unknown__"
 }
