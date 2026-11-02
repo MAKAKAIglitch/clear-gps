@@ -127,6 +127,24 @@ data class CellSitePersistenceResult(
     val batchId: String
 )
 
+data class CellSiteSectorRecord(
+    val id: Long,
+    val siteId: Long,
+    val identity: CellIdentity,
+    val azimuthDegrees: Double,
+    val widthDegrees: Double,
+    val confidenceScore: Double,
+    val sampleCount: Int,
+    val occupiedBearingBins: Int,
+    val signalContrastDb: Double,
+    val modelDirectionSpreadDegrees: Double,
+    val receiverProfileId: String,
+    val frequencyKeys: List<Int>,
+    val algorithmVersion: String,
+    val calculatedAtMillis: Long,
+    val batchId: String
+)
+
 data class CellSiteBatchRecord(
     val batchId: String,
     val calculatedAtMillis: Long,
@@ -1098,6 +1116,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     "CHECK(timing_advance_position_delta_ms IS NULL OR timing_advance_position_delta_ms >= 0)"
             )
         }
+        if (oldVersion < 19) {
+            createCellSiteSectorTables(db)
+        }
     }
 
 
@@ -1230,6 +1251,40 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS cell_site_batches_time " +
                 "ON cell_site_batches(calculated_at DESC, id DESC)"
+        )
+        createCellSiteSectorTables(db)
+    }
+
+    private fun createCellSiteSectorTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cell_site_sectors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_key TEXT NOT NULL UNIQUE,
+                site_id INTEGER NOT NULL REFERENCES cell_sites(id) ON DELETE CASCADE,
+                rat TEXT NOT NULL CHECK(rat IN ('gsm','wcdma','lte','nr')),
+                mcc TEXT NOT NULL CHECK(length(mcc) = 3),
+                mnc TEXT NOT NULL CHECK(length(mnc) BETWEEN 2 AND 3),
+                area_code INTEGER NOT NULL CHECK(area_code >= 0),
+                cell_id INTEGER NOT NULL CHECK(cell_id > 0),
+                azimuth_degrees REAL NOT NULL CHECK(azimuth_degrees >= 0 AND azimuth_degrees < 360),
+                width_degrees REAL NOT NULL CHECK(width_degrees > 0 AND width_degrees <= 360),
+                confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+                sample_count INTEGER NOT NULL CHECK(sample_count >= 18),
+                occupied_bearing_bins INTEGER NOT NULL CHECK(occupied_bearing_bins >= 3),
+                signal_contrast_db REAL NOT NULL CHECK(signal_contrast_db >= 0),
+                model_direction_spread_degrees REAL NOT NULL CHECK(model_direction_spread_degrees BETWEEN 0 AND 90),
+                receiver_profile_id TEXT NOT NULL CHECK(length(receiver_profile_id) > 0),
+                frequency_keys TEXT NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                calculated_at INTEGER NOT NULL CHECK(calculated_at >= 0),
+                batch_id TEXT NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS cell_site_sectors_site " +
+                "ON cell_site_sectors(site_id, azimuth_degrees, id)"
         )
     }
 
@@ -6440,7 +6495,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 18
+        private const val DB_VERSION = 19
         private const val OPEN_CELL_OSM_MIN_RADIUS_METERS = 100
         private const val OPEN_CELL_OSM_MAX_RADIUS_METERS = 5_000
         private const val OPEN_CELL_OSM_MAX_ATTEMPTS_PER_DAY = 2
