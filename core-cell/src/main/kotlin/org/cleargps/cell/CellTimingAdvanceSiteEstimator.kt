@@ -4,6 +4,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -75,12 +76,10 @@ data class CellTimingAdvanceSiteEstimate(
  */
 object CellTimingAdvanceSiteEstimator {
     private const val EARTH_RADIUS_METERS = 6_371_008.8
-    private const val LTE_RANGE_STEP_METERS = CellTimingAdvanceRangePolicy.LTE_ONE_WAY_STEP_METERS
     private const val HUBER_THRESHOLD = 1.5
     private const val CONFIDENCE_MINIMUM = 0.45
 
     private data class Measurement(
-        val sample: CellObservationSample,
         val x: Double,
         val y: Double,
         val rangeMeters: Double,
@@ -155,13 +154,21 @@ object CellTimingAdvanceSiteEstimator {
         }
 
         val measurements = ArrayList<Measurement>()
+        val spatialBuckets = HashMap<Pair<Long, Long>, MutableList<Measurement>>()
+        val bucketSize = config.spatialDeduplicationMeters
         ordered.forEach { sample ->
             val point = localPoint(sample)
-            if (measurements.any { existing ->
-                    hypot(point.first - existing.x, point.second - existing.y) <
-                        config.spatialDeduplicationMeters
+            val bucketX = floor(point.first / bucketSize).toLong()
+            val bucketY = floor(point.second / bucketSize).toLong()
+            val duplicate = (-1L..1L).any { offsetX ->
+                (-1L..1L).any { offsetY ->
+                    spatialBuckets[bucketX + offsetX to bucketY + offsetY].orEmpty().any { existing ->
+                        hypot(point.first - existing.x, point.second - existing.y) <
+                            config.spatialDeduplicationMeters
+                    }
                 }
-            ) return@forEach
+            }
+            if (duplicate) return@forEach
 
             val range = CellTimingAdvanceRangePolicy.from(
                 sample.timingAdvanceValue, sample.timingAdvanceUnit
@@ -186,14 +193,15 @@ object CellTimingAdvanceSiteEstimator {
                 append(':')
                 append(sample.longitude)
             }
-            measurements += Measurement(
-                sample = sample,
+            val measurement = Measurement(
                 x = point.first,
                 y = point.second,
                 rangeMeters = range.nominalDistanceMeters,
                 sigmaMeters = sigma.coerceAtLeast(1.0),
                 evidenceId = evidenceId
             )
+            measurements += measurement
+            spatialBuckets.getOrPut(bucketX to bucketY) { ArrayList() }.add(measurement)
         }
         if (measurements.size < config.minimumSpatialSamples) return null
 
