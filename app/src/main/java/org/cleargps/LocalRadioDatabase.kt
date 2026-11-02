@@ -483,6 +483,7 @@ object ClearGpsPreferences {
     const val KEY_MAP_STYLE = "map_style"
     const val KEY_DATABASE_VIEW_SOURCE = "database_view_source"
     const val KEY_BEACONDB_LOOKUP_ENABLED = "beacondb_cell_lookup_enabled"
+    const val KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED = "openstreetmap_cell_site_lookup_enabled"
     const val KEY_RADIO_SOURCE_LOCAL_ENABLED = "radio_source_local_enabled"
     const val KEY_RADIO_SOURCE_BEACONDB_ENABLED = "radio_source_beacondb_enabled"
     const val KEY_RADIO_SOURCE_OPENCELLID_ENABLED = "radio_source_opencellid_enabled"
