@@ -295,6 +295,11 @@ class RadioGeolocationRepository(private val context: Context) {
                 allowRadioWrite = radioDataAllowed
             )
         }
+        if (record && radioDataAllowed && referenceForRecord != null &&
+            snapshot.cellCount > 0 && recorded > 0
+        ) {
+            CellSiteRecalculationScheduler.enqueue(context)
+        }
         prefs.edit()
             .putInt(ClearGpsPreferences.KEY_LAST_WIFI_COUNT, snapshot.wifiCount)
             .putInt(ClearGpsPreferences.KEY_LAST_CELL_COUNT, snapshot.cellCount)
