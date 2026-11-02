@@ -7,7 +7,6 @@ import org.cleargps.cell.CellSiteGroup
 import org.cleargps.cell.CellSiteGroupingConfig
 import org.cleargps.cell.CellSiteIntelligenceEngine
 import org.cleargps.cell.CellSiteIntelligenceResult
-import org.cleargps.cell.CellSiteEvidenceBundle
 
 /**
  * Shared read path for the local radio-point dataset.
