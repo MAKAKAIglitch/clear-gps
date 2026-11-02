@@ -35,14 +35,22 @@ object CellSiteIntelligenceEngine {
     fun calculate(
         bundles: List<CellSiteEvidenceBundle>,
         estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
-        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig()
+        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig(),
+        additionalCandidates: List<CellSiteCandidate> = emptyList()
     ): CellSiteIntelligenceResult {
         val estimates = linkedMapOf<String, CellSiteCoordinateEstimate>()
         val exclusions = linkedMapOf<String, CellSitePositionExclusionReason>()
         val candidates = ArrayList<CellSiteCandidate>()
 
-        bundles.groupBy { it.identity.stableKey }.toSortedMap().forEach { (identityKey, sameIdentityBundles) ->
-            val identity = sameIdentityBundles.first().identity
+        val bundlesByIdentity = bundles.groupBy { it.identity.stableKey }
+        val additionalByIdentity = additionalCandidates.groupBy { it.identity.stableKey }
+        val identityKeys = (bundlesByIdentity.keys + additionalByIdentity.keys).toSortedSet()
+        identityKeys.forEach { identityKey ->
+            val sameIdentityBundles = bundlesByIdentity[identityKey].orEmpty()
+            val sameIdentityCandidates = additionalByIdentity[identityKey].orEmpty()
+            val identity = sameIdentityBundles.firstOrNull()?.identity
+                ?: sameIdentityCandidates.firstOrNull()?.identity
+                ?: return@forEach
             if (!identity.mncLengthKnown) {
                 exclusions[identityKey] = CellSitePositionExclusionReason.UNKNOWN_MNC_WIDTH
                 return@forEach
@@ -58,12 +66,35 @@ object CellSiteIntelligenceEngine {
                 )
                 .distinctBy { it.evidenceId }
                 .toList()
-
-            val estimate = CellSiteCoordinateEstimator.estimate(combinedEvidence, estimatorConfig)
-            if (estimate == null) {
+            val externalEstimate = CellSiteCoordinateEstimator.estimate(combinedEvidence, estimatorConfig)
+            val extraEstimates = sameIdentityCandidates.map { it.estimate }
+            val allEstimates = listOfNotNull(externalEstimate) + extraEstimates
+            if (allEstimates.isEmpty()) {
                 exclusions[identityKey] = CellSitePositionExclusionReason.NO_VALID_COORDINATE_EVIDENCE
                 return@forEach
             }
+
+            val lockedEstimates = allEstimates.filter { it.lockedByUser }
+            val selected = (lockedEstimates.ifEmpty { allEstimates }).minWithOrNull(
+                compareBy<CellSiteCoordinateEstimate> { it.uncertaintyRadiusMeters }
+                    .thenByDescending { it.confidenceScore }
+                    .thenByDescending { it.independentEvidenceCount }
+                    .thenBy { it.latitude }
+                    .thenBy { it.longitude }
+            ) ?: return@forEach
+            val conflicting = allEstimates.any { other ->
+                other !== selected && CellSiteCoordinateEstimator.distanceMeters(
+                    selected.latitude, selected.longitude, other.latitude, other.longitude
+                ) > selected.uncertaintyRadiusMeters + other.uncertaintyRadiusMeters
+            }
+            val estimate = if (conflicting) selected.copy(
+                conflictDetected = true,
+                uncertaintyRadiusMeters = maxOf(
+                    selected.uncertaintyRadiusMeters,
+                    allEstimates.maxOf { it.uncertaintyRadiusMeters }
+                ),
+                confidenceScore = minOf(selected.confidenceScore, allEstimates.minOf { it.confidenceScore })
+            ) else selected
 
             estimates[identityKey] = estimate
             candidates += CellSiteCandidate(identity, estimate)
