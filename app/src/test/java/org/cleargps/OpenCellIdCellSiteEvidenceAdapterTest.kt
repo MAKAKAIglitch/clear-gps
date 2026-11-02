@@ -70,6 +70,26 @@ class OpenCellIdCellSiteEvidenceAdapterTest {
     }
 
     @Test
+    fun legacyUnknownMncWidthAlsoBlocksNumericAlias() {
+        val known = identity("01")
+        val legacy = CellIdentity(
+            technology = CellTechnology.LTE,
+            mcc = "234",
+            mnc = "1",
+            areaCode = 100L,
+            cellId = 55221L,
+            mncLengthKnown = false
+        )
+
+        val result = OpenCellIdCellSiteEvidenceAdapter.toEvidenceBundles(
+            identities = listOf(known, legacy),
+            records = listOf(record())
+        )
+
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
     fun staleNegativeAndInvalidCoordinatesAreNotEvidence() {
         val identity = identity("01")
         val stale = record(checkedAt = now - OpenCellIdLookupPolicy.POSITION_MAX_AGE_MILLIS - 1L)

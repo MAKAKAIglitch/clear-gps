@@ -20,7 +20,9 @@ internal object OpenCellIdCellSiteEvidenceAdapter {
         nowMillis: Long = System.currentTimeMillis()
     ): List<CellSiteEvidenceBundle> {
         require(nowMillis >= 0L)
-        val known = identities.filter { it.mncLengthKnown }.distinctBy { it.stableKey }
+        // Keep legacy-width-unknown identities in the ambiguity check. They cannot receive
+        // external evidence themselves, but may alias a width-known MNC with the same integer.
+        val candidates = identities.distinctBy { it.stableKey }
         val bundles = LinkedHashMap<String, CellSiteEvidenceBundle>()
 
         records.asSequence()
@@ -43,7 +45,7 @@ internal object OpenCellIdCellSiteEvidenceAdapter {
                     "NR" -> CellTechnology.NR
                     else -> return@forEach
                 }
-                val matches = known.filter { identity ->
+                val matches = candidates.filter { identity ->
                     identity.technology == technology &&
                         identity.mcc.toIntOrNull() == record.key.mcc &&
                         identity.mnc.toIntOrNull() == record.key.mnc &&
@@ -52,7 +54,7 @@ internal object OpenCellIdCellSiteEvidenceAdapter {
                 }
                 // Numeric OpenCellID MNCs are ambiguous when more than one width-qualified
                 // network identity shares the same integer value. Never guess which cell it is.
-                if (matches.size != 1) return@forEach
+                if (matches.size != 1 || !matches.single().mncLengthKnown) return@forEach
                 val identity = matches.single()
                 val key = listOf(
                     record.key.radio, record.key.mcc, record.key.mnc,
