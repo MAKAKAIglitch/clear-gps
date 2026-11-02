@@ -4529,7 +4529,15 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 }
             }
 
-            sourceDb.rawQuery("SELECT * FROM radio_observations ORDER BY observed_at, id", null).use { cursor ->
+            val observationImportQuery = if (hasCellObservationDetails) {
+                "SELECT o.*, d.channel_number AS cell_channel_number " +
+                    "FROM radio_observations o " +
+                    "LEFT JOIN cell_observation_details d ON d.observation_id = o.id " +
+                    "ORDER BY o.observed_at, o.id"
+            } else {
+                "SELECT * FROM radio_observations ORDER BY observed_at, id"
+            }
+            sourceDb.rawQuery(observationImportQuery, null).use { cursor ->
                 while (cursor.moveToNext()) {
                     val type = cursor.getString(cursor.getColumnIndexOrThrow("radio_type")).orEmpty().lowercase(Locale.ROOT)
                     val identifier = canonicalIdentifier(cursor.getString(cursor.getColumnIndexOrThrow("identifier")).orEmpty())
@@ -4547,9 +4555,10 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     val sourceObservationId = sourceObservationIdIndex.takeIf {
                         type == "cell" && hasCellObservationDetails && it >= 0
                     }?.let { cursor.getLong(it) }
-                    val sourceChannelNumber = sourceObservationId?.let {
-                        readCellObservationDetailChannel(sourceDb, it)
-                    }
+                    val sourceChannelIndex = cursor.getColumnIndex("cell_channel_number")
+                    val sourceChannelNumber = if (
+                        sourceObservationId != null && sourceChannelIndex >= 0 && !cursor.isNull(sourceChannelIndex)
+                    ) cursor.getInt(sourceChannelIndex) else null
                     val preserveCellChannel = sourceObservationId != null
                     if (insertObservationIfAbsent(
                             target, type, identifier, observedAt, lat, lon, accuracy, rssi,
@@ -4851,14 +4860,6 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.update("radio_points", values, "id = ?", arrayOf(old.id.toString()))
         return false
     }
-
-    private fun readCellObservationDetailChannel(db: SQLiteDatabase, observationId: Long): Int? =
-        db.rawQuery(
-            "SELECT channel_number FROM cell_observation_details WHERE observation_id = ?",
-            arrayOf(observationId.toString())
-        ).use { cursor ->
-            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getInt(0) else null
-        }
 
     private fun insertObservationIfAbsent(
         db: SQLiteDatabase, type: String, identifier: String, observedAt: Long,
