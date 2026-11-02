@@ -150,7 +150,7 @@ class LocalRadioDatabaseUndoTest {
         database = LocalRadioDatabase(context)
         sqlite = database.writableDatabase
 
-        assertEquals(17, sqlite.version)
+        assertEquals(18, sqlite.version)
         UNDO_TABLES.forEach { table -> assertTrue("missing migrated table $table", tableExists(table)) }
         assertTrue("missing OpenCellID catalogue", tableExists("opencellid_cells"))
         assertTrue("missing automatic refinement table", tableExists("radio_auto_refinements"))
