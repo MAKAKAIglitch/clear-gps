@@ -25,7 +25,7 @@ internal enum class RadioPointSortField(
     SIGHTINGS("sightings", "Наблюдения", "sightings"),
     SIGNAL("signal", "Сигнал", "last_rssi"),
     ACCURACY("accuracy", "Точность", "accuracy"),
-    NAME("name", "Имя / SSID", "COALESCE(NULLIF(label, ''), NULLIF(ssid, ''), identifier)")
+    NAME("name", "Имя / SSID", "COALESCE(NULLIF(label, ''), NULLIF(ssid, ''), identifier) COLLATE NOCASE")
 }
 
 internal data class RadioPointSort(
