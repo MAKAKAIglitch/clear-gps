@@ -9,6 +9,65 @@ enum class CellTechnology(val token: String) {
     }
 }
 
+
+/** Raw modem metadata. Channel numbers and timing advance remain in their native units. */
+data class CellSignalMetadata(
+    val technology: CellTechnology,
+    val mcc: String,
+    val mnc: String,
+    val mncLengthKnown: Boolean,
+    val areaCode: Long,
+    val cellId: Long,
+    val channelNumber: Int? = null,
+    val bsic: Int? = null,
+    val psc: Int? = null,
+    val pci: Int? = null,
+    val rsrpDbm: Int? = null,
+    val rsrqDb: Int? = null,
+    val sinrDb: Int? = null,
+    val rscpDbm: Int? = null,
+    val ecNoDb: Int? = null,
+    val timingAdvanceValue: Int? = null,
+    val timingAdvanceUnit: String? = null
+) {
+    init {
+        require(mcc.matches(Regex("^[0-9]{3}$")))
+        require(mnc.matches(if (mncLengthKnown) Regex("^[0-9]{2,3}$") else Regex("^[0-9]{1,3}$")))
+        require(areaCode >= 0L && cellId > 0L)
+        require(channelNumber == null || channelNumber >= 0)
+        require(bsic == null || (technology == CellTechnology.GSM && bsic in 0..63))
+        require(psc == null || (technology == CellTechnology.WCDMA && psc in 0..511))
+        require(pci == null || when (technology) {
+            CellTechnology.LTE -> pci in 0..503
+            CellTechnology.NR -> pci in 0..1007
+            else -> false
+        })
+        require(rsrpDbm == null || rsrpDbm in -160..0)
+        require(rsrqDb == null || rsrqDb in -60..30)
+        require(sinrDb == null || sinrDb in -40..60)
+        require(rscpDbm == null || rscpDbm in -140..0)
+        require(ecNoDb == null || ecNoDb in -40..10)
+        require((timingAdvanceValue == null) == (timingAdvanceUnit == null))
+        if (timingAdvanceValue != null) {
+            require(timingAdvanceValue >= 0)
+            require(
+                (technology == CellTechnology.GSM && timingAdvanceUnit == "gsm-symbols") ||
+                    (technology == CellTechnology.LTE && timingAdvanceUnit == "lte-command-index") ||
+                    (technology == CellTechnology.NR && timingAdvanceUnit == "nr-command-index")
+            )
+        }
+    }
+
+    fun toIdentity(): CellIdentity = CellIdentity(
+        technology = technology,
+        mcc = mcc,
+        mnc = mnc,
+        areaCode = areaCode,
+        cellId = cellId,
+        mncLengthKnown = mncLengthKnown
+    )
+}
+
 enum class CellIdentityMatch { EXACT, POSSIBLE_MNC_LENGTH_MATCH, DIFFERENT }
 
 data class CellIdentity(

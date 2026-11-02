@@ -20,6 +20,8 @@ import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
 import android.telephony.CellIdentityNr
 import android.telephony.TelephonyManager
+import org.cleargps.cell.CellSignalMetadata
+import org.cleargps.cell.CellTechnology
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -35,9 +37,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 private data class CellObservation(
-    val type: String, val mcc: Int, val mnc: Int, val area: Int, val cellId: Long, val rssi: Int
+    val metadata: CellSignalMetadata,
+    val rssi: Int
 ) {
-    fun toSignal() = RadioSignal("cell", "$type:$mcc:$mnc:$area:$cellId", rssi)
+    val type: String get() = metadata.technology.token
+    val mcc: String get() = metadata.mcc
+    val mnc: String get() = metadata.mnc
+    val area: Long get() = metadata.areaCode
+    val cellId: Long get() = metadata.cellId
+
+    fun toSignal() = RadioSignal(
+        type = "cell",
+        identifier = "$type:$mcc:$mnc:$area:$cellId",
+        rssi = rssi,
+        cellMetadata = metadata
+    )
 }
 
 private data class TimedRadioSignals(
@@ -1303,28 +1317,91 @@ class RadioGeolocationRepository(private val context: Context) {
         when (info) {
             is CellInfoGsm -> {
                 val id = info.cellIdentity
-                val mcc = if (Build.VERSION.SDK_INT >= 28) id.mccString?.toIntOrNull() else id.mcc
-                val mnc = if (Build.VERSION.SDK_INT >= 28) id.mncString?.toIntOrNull() else id.mnc
-                cell("gsm", mcc, mnc, id.lac, id.cid.toLong(), info.cellSignalStrength.dbm)
+                val plmn = cellPlmn(
+                    if (Build.VERSION.SDK_INT >= 28) id.mccString else null,
+                    if (Build.VERSION.SDK_INT >= 28) id.mncString else null,
+                    id.mcc,
+                    id.mnc,
+                    stringMncAvailable = Build.VERSION.SDK_INT >= 28
+                ) ?: return null
+                cell(
+                    CellTechnology.GSM, plmn.first, plmn.second, plmn.third,
+                    id.lac.toLong(), id.cid.toLong(), info.cellSignalStrength.dbm,
+                    channelNumber = id.arfcn.takeIf { it >= 0 },
+                    bsic = id.bsic.takeIf { it in 0..63 },
+                    timingAdvanceValue = if (Build.VERSION.SDK_INT >= 26) {
+                        info.cellSignalStrength.timingAdvance.takeIf { it in 0..219 }
+                    } else null,
+                    timingAdvanceUnit = "gsm-symbols"
+                )
             }
             is CellInfoWcdma -> {
                 val id = info.cellIdentity
-                val mcc = if (Build.VERSION.SDK_INT >= 28) id.mccString?.toIntOrNull() else id.mcc
-                val mnc = if (Build.VERSION.SDK_INT >= 28) id.mncString?.toIntOrNull() else id.mnc
-                cell("wcdma", mcc, mnc, id.lac, id.cid.toLong(), info.cellSignalStrength.dbm)
+                val plmn = cellPlmn(
+                    if (Build.VERSION.SDK_INT >= 28) id.mccString else null,
+                    if (Build.VERSION.SDK_INT >= 28) id.mncString else null,
+                    id.mcc,
+                    id.mnc,
+                    stringMncAvailable = Build.VERSION.SDK_INT >= 28
+                ) ?: return null
+                cell(
+                    CellTechnology.WCDMA, plmn.first, plmn.second, plmn.third,
+                    id.lac.toLong(), id.cid.toLong(), info.cellSignalStrength.dbm,
+                    channelNumber = id.uarfcn.takeIf { it >= 0 },
+                    psc = id.psc.takeIf { it in 0..511 },
+                    rscpDbm = info.cellSignalStrength.dbm.takeIf { it in -140..0 },
+                    ecNoDb = if (Build.VERSION.SDK_INT >= 30) {
+                        info.cellSignalStrength.ecNo.takeIf { it in -40..10 }
+                    } else null
+                )
             }
             is CellInfoLte -> {
                 val id = info.cellIdentity
-                val mcc = if (Build.VERSION.SDK_INT >= 28) id.mccString?.toIntOrNull() else id.mcc
-                val mnc = if (Build.VERSION.SDK_INT >= 28) id.mncString?.toIntOrNull() else id.mnc
-                cell("lte", mcc, mnc, id.tac, id.ci.toLong(), info.cellSignalStrength.dbm)
+                val plmn = cellPlmn(
+                    if (Build.VERSION.SDK_INT >= 28) id.mccString else null,
+                    if (Build.VERSION.SDK_INT >= 28) id.mncString else null,
+                    id.mcc,
+                    id.mnc,
+                    stringMncAvailable = Build.VERSION.SDK_INT >= 28
+                ) ?: return null
+                val strength = info.cellSignalStrength
+                cell(
+                    CellTechnology.LTE, plmn.first, plmn.second, plmn.third,
+                    id.tac.toLong(), id.ci.toLong(), strength.dbm,
+                    channelNumber = id.earfcn.takeIf { it >= 0 },
+                    pci = id.pci.takeIf { it in 0..503 },
+                    rsrpDbm = strength.rsrp.takeIf { it in -160..0 },
+                    rsrqDb = strength.rsrq.takeIf { it in -60..30 },
+                    sinrDb = strength.rssnr.takeIf { it in -40..60 },
+                    timingAdvanceValue = strength.timingAdvance.takeIf { it in 0..1282 },
+                    timingAdvanceUnit = "lte-command-index"
+                )
             }
             is CellInfoNr -> {
                 if (Build.VERSION.SDK_INT < 29) null
                 else {
                     val id = info.cellIdentity as? CellIdentityNr ?: return null
-                    cell("nr", id.mccString?.toIntOrNull(), id.mncString?.toIntOrNull(),
-                        id.tac, id.nci, info.cellSignalStrength.dbm)
+                    val plmn = cellPlmn(
+                        id.mccString,
+                        id.mncString,
+                        id.mcc,
+                        id.mnc,
+                        stringMncAvailable = true
+                    ) ?: return null
+                    val strength = info.cellSignalStrength
+                    cell(
+                        CellTechnology.NR, plmn.first, plmn.second, plmn.third,
+                        id.tac.toLong(), id.nci, strength.dbm,
+                        channelNumber = id.nrarfcn.takeIf { it >= 0 },
+                        pci = id.pci.takeIf { it in 0..1007 },
+                        rsrpDbm = strength.ssRsrp.takeIf { it in -160..0 },
+                        rsrqDb = strength.ssRsrq.takeIf { it in -60..30 },
+                        sinrDb = strength.ssSinr.takeIf { it in -40..60 },
+                        timingAdvanceValue = if (Build.VERSION.SDK_INT >= 34) {
+                            strength.timingAdvanceMicros.takeIf { it in 0..3846 }
+                        } else null,
+                        timingAdvanceUnit = "nr-command-index"
+                    )
                 }
             }
             else -> null
@@ -1333,11 +1410,69 @@ class RadioGeolocationRepository(private val context: Context) {
         null
     }
 
-    private fun cell(type: String, mcc: Int?, mnc: Int?, area: Int, id: Long, rssi: Int): CellObservation? {
-        if (mcc == null || mnc == null || mcc !in 1..999 || mnc !in 0..999 ||
-            area < 0 || id <= 0L || rssi !in -160..0) return null
-        if (type != "nr" && id > Int.MAX_VALUE.toLong()) return null
-        return CellObservation(type, mcc, mnc, area, id, rssi)
+    private fun cellPlmn(
+        mccString: String?,
+        mncString: String?,
+        legacyMcc: Int,
+        legacyMnc: Int,
+        stringMncAvailable: Boolean
+    ): Triple<String, String, Boolean>? {
+        val mcc = mccString?.trim()?.takeIf { it.matches(Regex("^[0-9]{3}$")) }
+            ?: legacyMcc.takeIf { it in 1..999 }?.toString()
+            ?: return null
+        val rawMnc = mncString?.trim()?.takeIf { it.matches(Regex("^[0-9]{2,3}$")) }
+        val mnc = rawMnc ?: legacyMnc.takeIf { it in 0..999 }?.toString() ?: return null
+        return Triple(mcc, mnc, stringMncAvailable && rawMnc != null)
+    }
+
+    private fun cell(
+        technology: CellTechnology,
+        mcc: String,
+        mnc: String,
+        mncLengthKnown: Boolean,
+        area: Long,
+        id: Long,
+        rssi: Int,
+        channelNumber: Int? = null,
+        bsic: Int? = null,
+        psc: Int? = null,
+        pci: Int? = null,
+        rsrpDbm: Int? = null,
+        rsrqDb: Int? = null,
+        sinrDb: Int? = null,
+        rscpDbm: Int? = null,
+        ecNoDb: Int? = null,
+        timingAdvanceValue: Int? = null,
+        timingAdvanceUnit: String? = null
+    ): CellObservation? {
+        if (!mcc.matches(Regex("^[0-9]{3}$")) ||
+            !mnc.matches(if (mncLengthKnown) Regex("^[0-9]{2,3}$") else Regex("^[0-9]{1,3}$")) ||
+            area < 0L || id <= 0L || rssi !in -160..0
+        ) return null
+        if (technology != CellTechnology.NR && id > Int.MAX_VALUE.toLong()) return null
+        if (technology == CellTechnology.NR && id > 68_719_476_735L) return null
+        val metadata = runCatching {
+            CellSignalMetadata(
+                technology = technology,
+                mcc = mcc,
+                mnc = mnc,
+                mncLengthKnown = mncLengthKnown,
+                areaCode = area,
+                cellId = id,
+                channelNumber = channelNumber,
+                bsic = bsic,
+                psc = psc,
+                pci = pci,
+                rsrpDbm = rsrpDbm,
+                rsrqDb = rsrqDb,
+                sinrDb = sinrDb,
+                rscpDbm = rscpDbm,
+                ecNoDb = ecNoDb,
+                timingAdvanceValue = timingAdvanceValue,
+                timingAdvanceUnit = timingAdvanceValue?.let { timingAdvanceUnit }
+            )
+        }.getOrNull() ?: return null
+        return CellObservation(metadata, rssi)
     }
 
     private suspend fun collectBluetooth(passiveBleOnly: Boolean = false): TimedRadioSignals {
