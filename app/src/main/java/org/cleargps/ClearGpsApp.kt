@@ -4508,7 +4508,11 @@ fun ClearGpsApp(
                             Text("И ещё ${site.members.size - 12} сот.", style = MaterialTheme.typography.labelSmall)
                         }
                         Text(
-                            "Уверенность алгоритма: ${(site.confidenceScore * 100.0).toInt()}% · погрешность ±${site.uncertaintyMeters.toInt()} м",
+                            if (site.lockedByUser) {
+                                "Ручная координата · заданная погрешность ±${site.uncertaintyMeters.toInt()} м"
+                            } else {
+                                "Уверенность алгоритма: ${(site.confidenceScore * 100.0).toInt()}% · погрешность ±${site.uncertaintyMeters.toInt()} м"
+                            },
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
