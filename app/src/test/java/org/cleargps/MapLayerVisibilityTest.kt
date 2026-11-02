@@ -18,6 +18,7 @@ class MapLayerVisibilityTest {
         assertTrue(state.showOpenCellIdCells)
         assertTrue(state.showCellSites)
         assertTrue(state.showCellSectors)
+        assertTrue(state.showCellSectors)
     }
 
     @Test
@@ -50,6 +51,7 @@ class MapLayerVisibilityTest {
         assertTrue(state.showBeaconDbEstimate)
         assertFalse(state.showOpenCellIdCells)
         assertFalse(state.showCellSites)
+        assertFalse(state.showCellSectors)
         assertFalse(state.showCellSectors)
     }
 }
