@@ -1,5 +1,7 @@
 package org.cleargps
 
+import org.cleargps.cell.CellSiteGroup
+
 /**
  * Shared read path for the local radio-point dataset.
  *
@@ -67,6 +69,25 @@ internal class RadioRepository(
 
     fun loadMapPoints(limit: Int): List<RadioPointRecord> =
         database.listMapPoints(limit)
+
+    fun loadCellSites(limit: Int = 2_000): List<CellSiteRecord> =
+        database.listCellSites(limit)
+
+    fun saveCellSites(
+        groups: List<CellSiteGroup>,
+        calculatedAtMillis: Long = System.currentTimeMillis()
+    ): CellSitePersistenceResult =
+        database.saveCellSiteGroups(groups, calculatedAtMillis)
+
+    fun lockCellSiteCoordinate(
+        siteId: Long,
+        latitude: Double,
+        longitude: Double,
+        uncertaintyMeters: Double
+    ): Boolean = database.lockCellSiteCoordinate(siteId, latitude, longitude, uncertaintyMeters)
+
+    fun unlockCellSiteCoordinate(siteId: Long): Boolean =
+        database.unlockCellSiteCoordinate(siteId)
 
     fun pointCounts(): RadioPointCounts = RadioPointCounts(
         total = database.pointCount(),

@@ -20,7 +20,8 @@ data class CellSiteGroupingConfig(
     val uncertaintyMultiplier: Double = 1.25,
     val minimumConfidenceScore: Double = 0.25,
     val minimumIndependentEvidenceCount: Int = 2,
-    val maximumCandidateUncertaintyMeters: Double = 500.0
+    val maximumCandidateUncertaintyMeters: Double = 500.0,
+    val algorithmVersion: String = "cell-site-grouping-1"
 ) {
     init {
         require(minimumMergeDistanceMeters.isFinite() && minimumMergeDistanceMeters > 0.0)
@@ -30,6 +31,7 @@ data class CellSiteGroupingConfig(
         require(minimumConfidenceScore.isFinite() && minimumConfidenceScore in 0.0..1.0)
         require(minimumIndependentEvidenceCount >= 1)
         require(maximumCandidateUncertaintyMeters.isFinite() && maximumCandidateUncertaintyMeters > 0.0)
+        require(algorithmVersion.isNotBlank())
     }
 }
 
@@ -45,7 +47,8 @@ data class CellSiteGroup(
     val longitude: Double,
     val uncertaintyRadiusMeters: Double,
     val confidenceScore: Double,
-    val lockedByUser: Boolean
+    val lockedByUser: Boolean,
+    val algorithmVersion: String = "cell-site-grouping-1"
 ) {
     val memberCount: Int get() = members.size
     val technologies: Set<CellTechnology> get() = members.mapTo(linkedSetOf()) { it.technology }
@@ -144,7 +147,8 @@ object CellSiteClusterer {
             else destination.candidates += candidate
         }
 
-        val groups = clusters.mapNotNull { buildGroup(it.candidates) }.sortedBy { it.stableKey }
+        val groups = clusters.mapNotNull { buildGroup(it.candidates, config.algorithmVersion) }
+            .sortedBy { it.stableKey }
         return CellSiteGroupingResult(groups, excluded.toSortedMap(), duplicateKeys.sorted())
     }
 
@@ -189,7 +193,10 @@ object CellSiteClusterer {
     private fun clusterKey(cluster: Cluster): String =
         cluster.candidates.map { it.identity.stableKey }.sorted().joinToString("|")
 
-    private fun buildGroup(candidates: List<CellSiteCandidate>): CellSiteGroup? {
+    private fun buildGroup(
+        candidates: List<CellSiteCandidate>,
+        algorithmVersion: String
+    ): CellSiteGroup? {
         if (candidates.isEmpty()) return null
         val members = candidates.map { it.identity }.sortedBy { it.stableKey }
         val locked = candidates.filter { it.estimate.lockedByUser }
@@ -233,7 +240,10 @@ object CellSiteClusterer {
         }
         val confidence = candidates.minOf { it.estimate.confidenceScore }
         val stableKey = "site:" + members.joinToString("~") { it.stableKey }
-        return CellSiteGroup(stableKey, members, latitude, longitude, uncertainty, confidence, locked != null)
+        return CellSiteGroup(
+            stableKey, members, latitude, longitude, uncertainty, confidence,
+            locked != null, algorithmVersion
+        )
     }
 
     private fun normalizeLongitude(value: Double): Double {
