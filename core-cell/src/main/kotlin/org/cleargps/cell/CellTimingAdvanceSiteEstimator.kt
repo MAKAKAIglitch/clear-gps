@@ -1,12 +1,10 @@
 package org.cleargps.cell
 
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -144,7 +142,6 @@ object CellTimingAdvanceSiteEstimator {
                 .thenBy { it.timingAdvancePositionDeltaMillis ?: Long.MAX_VALUE }
                 .thenByDescending { it.observedAtMillis }
         )
-        val origin = ordered.first()
         val originLatitude = ordered.map { it.latitude }.average()
         val originLongitude = circularMeanLongitude(ordered.map { it.longitude })
         val latitudeScale = cos(Math.toRadians(originLatitude))
@@ -305,7 +302,7 @@ object CellTimingAdvanceSiteEstimator {
         var h12 = 0.0
         var h22 = 0.0
 
-        repeat(config.maximumIterations) {
+        for (iteration in 0 until config.maximumIterations) {
             h11 = 0.0
             h12 = 0.0
             h22 = 0.0
@@ -337,7 +334,7 @@ object CellTimingAdvanceSiteEstimator {
             x -= stepX
             y -= stepY
             if (!x.isFinite() || !y.isFinite() || hypot(x, y) > 150_000.0) return null
-            if (hypot(stepX, stepY) < 0.1) return@repeat
+            if (hypot(stepX, stepY) < 0.1) break
         }
 
         val absoluteResiduals = measurements.map {
