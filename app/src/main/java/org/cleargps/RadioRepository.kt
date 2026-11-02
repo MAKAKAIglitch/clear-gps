@@ -119,11 +119,11 @@ internal class RadioRepository(
     }
 
     /**
-     * Recalculates candidates from the existing OpenCellID cache only.
+     * Recalculates candidates from original synchronized LTE TA history and local catalogue caches.
      * This method performs no network calls and does not request or start GPS.
      *
-     * OpenCellID positions have a 5 km uncertainty floor. Such results are stored as low-
-     * confidence candidates for later corroboration, not treated as surveyed mast locations.
+     * OpenCellID positions keep their 5 km uncertainty floor; synchronized LTE TA can add an
+     * independent range-based estimate when the saved GPS and modem timestamps are close enough.
      */
     fun calculateAndSaveCachedOpenCellIdCellSites(
         nowMillis: Long = System.currentTimeMillis(),
