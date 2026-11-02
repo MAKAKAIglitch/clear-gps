@@ -267,12 +267,25 @@ class RadioGeolocationRepository(private val context: Context) {
                 // Replay recording must never interrupt live positioning.
             }
         }
+        val referenceForRecord = safeReference?.takeUnless {
+            spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
+        }
+        val recordSignals = snapshot.signals.map { signal ->
+            val metadata = signal.cellMetadata ?: return@map signal
+            if (metadata.timingAdvanceValue == null) return@map signal
+            val modemTime = signal.observedAtElapsedRealtimeNanos
+            val coordinateTime = referenceForRecord?.measurementElapsedRealtimeNanos
+            val deltaMillis = if (modemTime != null && modemTime > 0L &&
+                coordinateTime != null && coordinateTime > 0L
+            ) {
+                (maxOf(modemTime, coordinateTime) - minOf(modemTime, coordinateTime)) / 1_000_000L
+            } else null
+            signal.copy(cellMetadata = metadata.copy(timingAdvancePositionDeltaMillis = deltaMillis))
+        }
         val recorded = withContext(Dispatchers.IO) {
             database.recordScan(
-                signals = snapshot.signals,
-                reference = safeReference?.takeUnless {
-                    spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
-                },
+                signals = recordSignals,
+                reference = referenceForRecord,
                 estimate = estimate,
                 mode = mode,
                 wifiCount = snapshot.wifiCount,
@@ -446,7 +459,8 @@ class RadioGeolocationRepository(private val context: Context) {
             latitude = location.latitude,
             longitude = location.longitude,
             accuracyMeters = location.accuracy.toDouble(),
-            source = "passive-gps"
+            source = "passive-gps",
+            measurementElapsedRealtimeNanos = location.elapsedRealtimeNanos.takeIf { it > 0L }
         )
         val recorded = withContext(Dispatchers.IO) {
             database.recordScan(
