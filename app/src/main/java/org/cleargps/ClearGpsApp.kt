@@ -60,6 +60,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -91,6 +93,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -176,6 +180,8 @@ import kotlin.math.roundToInt
 private enum class AppTab { HOME, MAP, POINTS, ZONES, OBD2, SETTINGS }
 private enum class PointsView { POINTS, HISTORY, SOURCES, REFINEMENT }
 private const val RADIO_POINT_LIST_LIMIT = 5_000
+private const val KEY_DATABASE_POINT_SORT_FIELD = "database_point_sort_field"
+private const val KEY_DATABASE_POINT_SORT_DESCENDING = "database_point_sort_descending"
 private enum class DatabaseDataSource(val key: String, val title: String) {
     LOCAL("local", "Локальная"),
     PASSIVE("passive", "Пассивная запись"),
@@ -416,6 +422,16 @@ fun ClearGpsApp(
     var retentionLimitUpdating by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var pointTypeFilter by remember { mutableStateOf(RadioPointTypeFilter.ALL) }
+    var pointSortField by remember {
+        mutableStateOf(
+            RadioPointSortField.values().firstOrNull {
+                it.key == prefs.getString(KEY_DATABASE_POINT_SORT_FIELD, RadioPointSortField.LAST_SEEN.key)
+            } ?: RadioPointSortField.LAST_SEEN
+        )
+    }
+    var pointSortDescending by remember {
+        mutableStateOf(prefs.getBoolean(KEY_DATABASE_POINT_SORT_DESCENDING, true))
+    }
     var selectedMapPoint by remember { mutableStateOf<RadioPointRecord?>(null) }
     var mapViewportTopInWindowPx by remember { mutableStateOf(0) }
     var mapViewportBottomInWindowPx by remember { mutableStateOf(0) }
@@ -662,8 +678,9 @@ fun ClearGpsApp(
 
     suspend fun refreshLocalUiInCurrentCoroutine() {
         val query = searchQuery
+        val sort = RadioPointSort(pointSortField, pointSortDescending)
         points = withContext(Dispatchers.IO) {
-            if (query.isBlank()) radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT) else radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT)
+            radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT, sort = sort)
         }
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
@@ -3429,13 +3446,25 @@ fun ClearGpsApp(
                                     searchQuery = searchQuery, onSearch = { query ->
                                         searchQuery = query
                                         scope.launch {
+                                            val sort = RadioPointSort(pointSortField, pointSortDescending)
                                             points = withContext(Dispatchers.IO) {
-                                                if (query.isBlank()) radioRepository.loadLocalPoints(limit = RADIO_POINT_LIST_LIMIT) else radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT)
+                                                radioRepository.loadLocalPoints(query = query, limit = RADIO_POINT_LIST_LIMIT, sort = sort)
                                             }
                                         }
                                     },
                                     typeFilter = pointTypeFilter,
                                     onTypeFilter = { pointTypeFilter = it },
+                                    sortField = pointSortField,
+                                    sortDescending = pointSortDescending,
+                                    onSort = { field, descending ->
+                                        pointSortField = field
+                                        pointSortDescending = descending
+                                        prefs.edit()
+                                            .putString(KEY_DATABASE_POINT_SORT_FIELD, field.key)
+                                            .putBoolean(KEY_DATABASE_POINT_SORT_DESCENDING, descending)
+                                            .apply()
+                                        refreshLocalUi()
+                                    },
                                     selectedView = pointsView, onView = { pointsView = it }, onEdit = {
                                         navigateToTab(AppTab.MAP)
                                         openRadioPointDetails(it.id)
@@ -5465,6 +5494,8 @@ private fun DatabaseScreen(
     onDeleteSourceSegment: (RadioSourceSegmentRecord) -> Unit,
     onExportSourceSegment: (RadioSourceSegmentRecord) -> Unit,
     typeFilter: RadioPointTypeFilter, onTypeFilter: (RadioPointTypeFilter) -> Unit,
+    sortField: RadioPointSortField, sortDescending: Boolean,
+    onSort: (RadioPointSortField, Boolean) -> Unit,
     selectedView: PointsView, onView: (PointsView) -> Unit, onEdit: (RadioPointRecord) -> Unit,
     onDelete: (RadioPointRecord) -> Unit, onImport: () -> Unit, onExport: () -> Unit, onClear: () -> Unit, onRefresh: () -> Unit,
     dataSource: DatabaseDataSource,
@@ -5498,6 +5529,7 @@ private fun DatabaseScreen(
     var sourceTypeFilter by remember { mutableStateOf("all") }
     var sourceMinRssi by remember { mutableStateOf(-110f) }
     var sourceMinObservations by remember { mutableStateOf(1f) }
+    var sortMenuExpanded by remember { mutableStateOf(false) }
     val filteredPoints = points.filter { point -> typeFilter.type == null || point.type == typeFilter.type }
     Column(
         Modifier.fillMaxSize()
@@ -5673,6 +5705,39 @@ private fun DatabaseScreen(
                         )
                     )
                 }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("По:", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                Box {
+                    TextButton(onClick = { sortMenuExpanded = true }) {
+                        Text(sortField.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Icon(Icons.Outlined.ExpandMore, null)
+                    }
+                    DropdownMenu(
+                        expanded = sortMenuExpanded,
+                        onDismissRequest = { sortMenuExpanded = false }
+                    ) {
+                        RadioPointSortField.values().forEach { field ->
+                            DropdownMenuItem(
+                                text = { Text(field.title) },
+                                onClick = {
+                                    sortMenuExpanded = false
+                                    onSort(field, sortDescending)
+                                }
+                            )
+                        }
+                    }
+                }
+                IconButton(onClick = { onSort(sortField, !sortDescending) }) {
+                    Icon(
+                        if (sortDescending) Icons.Outlined.ArrowDownward else Icons.Outlined.ArrowUpward,
+                        contentDescription = if (sortDescending) "По убыванию" else "По возрастанию"
+                    )
+                }
+                Spacer(Modifier.weight(1f))
             }
         }
         if (selectedView != PointsView.REFINEMENT) {
