@@ -424,6 +424,7 @@ fun ClearGpsApp(
     }
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var cellSiteRecords by remember { mutableStateOf(radioRepository.loadCellSites()) }
+    var cellSiteSectorRecords by remember { mutableStateOf(radioRepository.loadCellSiteSectors()) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
         mutableStateOf(
@@ -713,6 +714,7 @@ fun ClearGpsApp(
         }
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
         cellSiteRecords = withContext(Dispatchers.IO) { radioRepository.loadCellSites() }
+        cellSiteSectorRecords = withContext(Dispatchers.IO) { radioRepository.loadCellSiteSectors() }
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
@@ -2849,6 +2851,9 @@ fun ClearGpsApp(
     LaunchedEffect(cellSiteRecords) {
         mapController.updateCellSites(cellSiteRecords)
     }
+    LaunchedEffect(cellSiteSectorRecords) {
+        mapController.updateCellSiteSectors(cellSiteSectorRecords)
+    }
     LaunchedEffect(mapLayerVisibility) {
         mapController.setLayerVisibility(mapLayerVisibility)
     }
@@ -4484,6 +4489,7 @@ fun ClearGpsApp(
         }
         if (showCellSiteDetails && selectedCellSite != null) {
             val site = selectedCellSite!!
+            val siteSectors = cellSiteSectorRecords.filter { it.siteId == site.id }
             AlertDialog(
                 onDismissRequest = { showCellSiteDetails = false },
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -4511,7 +4517,7 @@ fun ClearGpsApp(
                             if (site.lockedByUser) {
                                 "Ручная координата · заданная погрешность ±${site.uncertaintyMeters.toInt()} м"
                             } else {
-                                "Уверенность алгоритма: ${(site.confidenceScore * 100.0).toInt()}% · погрешность ±${site.uncertaintyMeters.toInt()} м"
+                                "Оценочный балл координаты: ${(site.confidenceScore * 100.0).toInt()}% · погрешность ±${site.uncertaintyMeters.toInt()} м"
                             },
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -4519,9 +4525,39 @@ fun ClearGpsApp(
                             if (site.lockedByUser) {
                                 "Координата закреплена вручную и защищена от автоматического перемещения."
                             } else {
-                                "Автоматическая оценка. Большая погрешность означает, что точное положение вышки пока неизвестно."
+                                "Автоматическая оценка. Балл — внутренний показатель качества, не статистическая вероятность; реальная точность на размеченных сетях ещё не подтверждена."
                             },
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text("Оценка секторов", fontWeight = FontWeight.SemiBold)
+                        if (siteSectors.isEmpty()) {
+                            Text(
+                                "Подходящего направления пока нет. Нужны минимум 18 пространственно разнесённых локальных измерений с известным каналом и профилем приёмника.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            siteSectors.forEach { sector ->
+                                Text(
+                                    "${sector.identity.technology.token.uppercase()} · азимут ${sector.azimuthDegrees.toInt()}° · ширина ${sector.widthDegrees.toInt()}°",
+                                    fontWeight = FontWeight.Medium,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "Оценочный балл модели ${(sector.confidenceScore * 100.0).toInt()}% · выборок ${sector.sampleCount} · канал(ы): ${sector.frequencyKeys.joinToString()}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "Разброс между моделями: ${sector.modelDirectionSpreadDegrees.toInt()}° · контраст сигнала: ${"%.1f".format(java.util.Locale.ROOT, sector.signalContrastDb)} дБ",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Text(
+                            "Сектор строится по историческому уровню сигнала, а не измеряет физический азимут антенны. Длина сектора на карте условная (500 м), не радиус покрытия. Балл модели не является вероятностью.",
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         OutlinedTextField(
@@ -4624,6 +4660,7 @@ fun ClearGpsApp(
                     OpenCellIdLookupPolicy.shouldUseForPosition(it, System.currentTimeMillis())
                 },
                 cellSiteCount = cellSiteRecords.size,
+                cellSectorCount = cellSiteSectorRecords.size,
                 cellSiteCalculationBusy = cellSiteCalculationBusy,
                 onRecalculateCellSites = {
                     if (!cellSiteCalculationBusy) scope.launch {
@@ -4900,6 +4937,7 @@ private fun MapLayersBottomSheet(
     beaconDbAvailable: Boolean,
     openCellIdCount: Int,
     cellSiteCount: Int,
+    cellSectorCount: Int,
     cellSiteCalculationBusy: Boolean,
     onRecalculateCellSites: () -> Unit,
     onDismiss: () -> Unit
@@ -4969,6 +5007,18 @@ private fun MapLayersBottomSheet(
             ) {
                 onVisibilityChange(visibility.copy(showCellSites = it))
             }
+            MapLayerToggleRow(
+                "Направления секторов",
+                "$cellSectorCount оценок. Показываются только модели с достаточным числом точек, известным каналом и стабильным направлением.",
+                visibility.showCellSectors
+            ) {
+                onVisibilityChange(visibility.copy(showCellSectors = it))
+            }
+            Text(
+                "Клин сектора показывает только оценочное направление и ширину. Его длина 500 м условная, не означает фактический радиус покрытия или измеренный азимут антенны.",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant
+            )
             OutlinedButton(
                 onClick = onRecalculateCellSites,
                 enabled = !cellSiteCalculationBusy,
