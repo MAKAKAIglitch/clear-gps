@@ -186,13 +186,14 @@ class OpenStreetMapCellSiteWorker(
                 applicationContext, url
             )
             try {
-                httpStatus = connection.responseCode
-                val body = if (httpStatus != null && httpStatus in 200..299) {
+                val responseCode = connection.responseCode
+                httpStatus = responseCode
+                val body = if (responseCode in 200..299) {
                     connection.inputStream.use { readBounded(it) }
                 } else {
                     ""
                 }
-                OpenStreetMapCellSiteProtocol.parseResponse(httpStatus!!, body)
+                OpenStreetMapCellSiteProtocol.parseResponse(responseCode, body)
             } finally {
                 connection.disconnect()
             }
