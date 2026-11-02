@@ -6,6 +6,8 @@ import okhttp3.OkHttpClient
 import org.maplibre.android.module.http.HttpRequestUtil
 import java.io.IOException
 import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
 
@@ -26,7 +28,8 @@ internal object NetworkGate {
         BEACONDB_LOOKUP,
         OPENCELLID_LOOKUP,
         MAP_RESOURCE,
-        AIRPORT_CATALOG_READ
+        AIRPORT_CATALOG_READ,
+        OPENSTREETMAP_CELL_SITE_LOOKUP
     }
 
     private const val BEACONDB_HOST = "api.beacondb.net"
@@ -36,6 +39,9 @@ internal object NetworkGate {
     private const val MAP_HOST = "tiles.openfreemap.org"
     private const val AIRPORT_CATALOG_HOST = "davidmegginson.github.io"
     private const val AIRPORT_CATALOG_PATH = "/ourairports-data/airports.csv"
+    private const val OPENSTREETMAP_HOST = "overpass-api.de"
+    private const val OPENSTREETMAP_PATH = "/api/interpreter"
+    private const val MAX_OPENSTREETMAP_QUERY_LENGTH = 16_384
     private const val MAP_LOG_INTERVAL_MS = 60_000L
 
     private val mapLogLock = Any()
@@ -100,6 +106,13 @@ internal object NetworkGate {
                     !uri.rawQuery.isNullOrEmpty()
                 ) reject()
             }
+
+            Operation.OPENSTREETMAP_CELL_SITE_LOOKUP -> {
+                if (!consentGranted || normalizedMethod != "GET" ||
+                    host != OPENSTREETMAP_HOST || uri.rawPath != OPENSTREETMAP_PATH
+                ) reject()
+                validateOpenStreetMapQuery(uri.rawQuery)
+            }
         }
         return uri
     }
@@ -141,6 +154,29 @@ internal object NetworkGate {
         )
         logAllowed(context, "OpenCellID read-only cell lookup")
         return openHttpsConnection(uri, "GET")
+    }
+
+    fun openOpenStreetMapCellSiteLookupConnection(context: Context, url: String): HttpsURLConnection {
+        val appContext = context.applicationContext
+        val consent = appContext
+            .getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .getBoolean(ClearGpsPreferences.KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED, false)
+        val uri = validateRequest(
+            url,
+            "GET",
+            Operation.OPENSTREETMAP_CELL_SITE_LOOKUP,
+            consentGranted = consent
+        )
+        logAllowed(context, "OpenStreetMap read-only Overpass tower lookup")
+        return openHttpsConnection(uri, "GET").apply {
+            connectTimeout = 15_000
+            readTimeout = 25_000
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty(
+                "User-Agent",
+                "ClearGPS/${BuildConfig.VERSION_NAME} (Android; read-only OpenStreetMap tower lookup)"
+            )
+        }
     }
 
     /**
@@ -193,6 +229,29 @@ internal object NetworkGate {
         }
         val expected = setOf("key", "mcc", "mnc", "lac", "cellid", "radio", "format")
         if (names.size != expected.size || names.toSet() != expected) reject()
+    }
+
+    private fun validateOpenStreetMapQuery(rawQuery: String?) {
+        val queryParameter = rawQuery ?: reject()
+        if (queryParameter.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
+            !queryParameter.startsWith("data=") ||
+            queryParameter.contains('&')
+        ) reject()
+        val encodedQuery = queryParameter.removePrefix("data=")
+        if (encodedQuery.isBlank()) reject()
+        val query = try {
+            URLDecoder.decode(encodedQuery, StandardCharsets.UTF_8.name())
+        } catch (_: Exception) {
+            reject()
+        }
+        val normalized = query.trim()
+        val forbidden = Regex("""(?i)\b(make|delete|foreach|retro|complete|convert|augmented\s+diff|diff)\b""")
+        if (normalized.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
+            !normalized.startsWith("[out:json]") ||
+            !normalized.contains("nwr(around:") ||
+            !normalized.endsWith("out center tags;") ||
+            forbidden.containsMatchIn(normalized)
+        ) reject()
     }
 
     private fun openHttpsConnection(uri: URI, method: String): HttpsURLConnection {
