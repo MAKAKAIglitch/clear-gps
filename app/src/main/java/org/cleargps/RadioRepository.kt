@@ -1,6 +1,11 @@
 package org.cleargps
 
+import org.cleargps.cell.CellSiteEvidenceBundle
+import org.cleargps.cell.CellSiteEstimatorConfig
 import org.cleargps.cell.CellSiteGroup
+import org.cleargps.cell.CellSiteGroupingConfig
+import org.cleargps.cell.CellSiteIntelligenceEngine
+import org.cleargps.cell.CellSiteIntelligenceResult
 
 /**
  * Shared read path for the local radio-point dataset.
@@ -69,6 +74,13 @@ internal class RadioRepository(
 
     fun loadMapPoints(limit: Int): List<RadioPointRecord> =
         database.listMapPoints(limit)
+
+    fun calculateCellSites(
+        evidence: List<CellSiteEvidenceBundle>,
+        estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
+        groupingConfig: CellSiteGroupingConfig = CellSiteGroupingConfig()
+    ): CellSiteIntelligenceResult =
+        CellSiteIntelligenceEngine.calculate(evidence, estimatorConfig, groupingConfig)
 
     fun loadCellSites(limit: Int = 2_000): List<CellSiteRecord> =
         database.listCellSites(limit)
