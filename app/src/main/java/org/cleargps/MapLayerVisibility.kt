@@ -12,7 +12,8 @@ data class MapLayerVisibility(
     val showManualAnchor: Boolean = true,
     val showBeaconDbEstimate: Boolean = true,
     val showOpenCellIdCells: Boolean = true,
-    val showCellSites: Boolean = true
+    val showCellSites: Boolean = true,
+    val showCellSectors: Boolean = true
 )
 
 internal object MapLayerVisibilityPolicy {
@@ -34,6 +35,7 @@ internal object MapLayerPreferences {
     private const val KEY_BEACONDB = "map_layer_beacondb"
     private const val KEY_OPENCELLID = "map_layer_opencellid"
     private const val KEY_CELL_SITES = "map_layer_cell_sites"
+    private const val KEY_CELL_SECTORS = "map_layer_cell_sectors"
 
     fun load(prefs: SharedPreferences): MapLayerVisibility = MapLayerVisibility(
         showWifiPoints = prefs.getBoolean(KEY_WIFI, true),
@@ -44,7 +46,8 @@ internal object MapLayerPreferences {
         showManualAnchor = prefs.getBoolean(KEY_ANCHOR, true),
         showBeaconDbEstimate = prefs.getBoolean(KEY_BEACONDB, true),
         showOpenCellIdCells = prefs.getBoolean(KEY_OPENCELLID, true),
-        showCellSites = prefs.getBoolean(KEY_CELL_SITES, true)
+        showCellSites = prefs.getBoolean(KEY_CELL_SITES, true),
+        showCellSectors = prefs.getBoolean(KEY_CELL_SECTORS, true)
     )
 
     fun save(prefs: SharedPreferences, value: MapLayerVisibility) {
@@ -58,6 +61,7 @@ internal object MapLayerPreferences {
             .putBoolean(KEY_BEACONDB, value.showBeaconDbEstimate)
             .putBoolean(KEY_OPENCELLID, value.showOpenCellIdCells)
             .putBoolean(KEY_CELL_SITES, value.showCellSites)
+            .putBoolean(KEY_CELL_SECTORS, value.showCellSectors)
             .apply()
     }
 }
