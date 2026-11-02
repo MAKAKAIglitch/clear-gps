@@ -6097,9 +6097,6 @@ private fun DatabaseScreen(
             )
         }
     }
-}
-
-
     if (pointFilterDialogExpanded) {
         AlertDialog(
             onDismissRequest = { pointFilterDialogExpanded = false },
@@ -6138,6 +6135,7 @@ private fun DatabaseScreen(
             }
         )
     }
+}
 
 @Composable
 private fun RadioSourceRow(
