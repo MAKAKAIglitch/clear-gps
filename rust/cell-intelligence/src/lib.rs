@@ -176,7 +176,8 @@ fn fit_timing_advance(
         if east.hypot(north) >= 1.0 {
             let bearing = east.atan2(north).to_degrees().rem_euclid(360.0);
             let bin = (bearing / bearing_bin_degrees as f64) as usize;
-            occupied[bin.min(occupied.len() - 1)] = true;
+            let last_bin = occupied.len() - 1;
+            occupied[bin.min(last_bin)] = true;
         }
     }
     let occupied_bins = occupied.iter().filter(|value| **value).count();
@@ -494,7 +495,7 @@ mod tests {
         let mut distances = Vec::new();
         let mut rssi = Vec::new();
         for bearing in (0..360).step_by(10) {
-            for distance in [300.0, 450.0, 600.0] {
+            for distance in [300.0_f64, 450.0_f64, 600.0_f64] {
                 let difference = ((bearing as f64 - 80.0 + 540.0) % 360.0 - 180.0).abs();
                 let gain = if difference <= 65.0 { 16.0 } else { 0.0 };
                 bearings.push(bearing as f64);
