@@ -346,6 +346,7 @@ internal class RadioRefinementCoordinator(context: Context) {
         var refined = 0
         var found = 0
         var skipped = 0
+        var catalogueRecordsSaved = 0
         var lastReason = ""
 
         fun emit(status: String, message: String) {
@@ -461,7 +462,12 @@ internal class RadioRefinementCoordinator(context: Context) {
                 OpenCellIdUsageBudget.markServerLimitReached(appContext, now)
             }
             response.record?.let { record ->
-                withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
+                val savedToCatalogue = withContext(Dispatchers.IO) {
+                    database.saveOpenCellIdCell(record)
+                }
+                if (savedToCatalogue && record.status == "found" &&
+                    record.latitude != null && record.longitude != null
+                ) catalogueRecordsSaved++
             }
 
             var outcome = when (response.status) {
@@ -555,6 +561,7 @@ internal class RadioRefinementCoordinator(context: Context) {
             if (attempted < maxRequests) delay(intervalMillis)
         }
 
+        if (catalogueRecordsSaved > 0) CellSiteRecalculationScheduler.enqueue(appContext)
         val usedToday = OpenCellIdLocalDbAutoLookupBudget.requestsUsedToday(appContext)
         val message = buildString {
             append("OpenCellID: запросов выполнено ").append(attempted)

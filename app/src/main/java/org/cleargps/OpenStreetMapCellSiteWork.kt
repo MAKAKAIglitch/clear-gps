@@ -110,6 +110,11 @@ internal object OpenStreetMapCellSiteWorkScheduler {
 }
 
 /** Coalesces local calculations after new observations; this worker needs no network. */
+internal object CellSiteRecalculationSchedulePolicy {
+    const val INITIAL_DELAY_MILLIS = 60_000L
+    const val RETRY_DELAY_MILLIS = PowerPolicy.PAUSED_OPTIONAL_WORK_RECHECK_INTERVAL_MILLIS
+}
+
 internal object CellSiteRecalculationScheduler {
     private const val WORK_NAME = "clear-gps-cell-site-local-recalculation"
     const val KEY_LAST_COMPLETED_AT = "cell_site_recalculation_last_completed_at"
@@ -122,11 +127,14 @@ internal object CellSiteRecalculationScheduler {
                 .build()
             val request = OneTimeWorkRequestBuilder<CellSiteRecalculationWorker>()
                 .setConstraints(constraints)
-                .setInitialDelay(15, TimeUnit.MINUTES)
+                .setInitialDelay(
+                    CellSiteRecalculationSchedulePolicy.INITIAL_DELAY_MILLIS,
+                    TimeUnit.MILLISECONDS
+                )
                 .setBackoffCriteria(
-                    androidx.work.BackoffPolicy.EXPONENTIAL,
-                    30,
-                    TimeUnit.MINUTES
+                    androidx.work.BackoffPolicy.LINEAR,
+                    CellSiteRecalculationSchedulePolicy.RETRY_DELAY_MILLIS,
+                    TimeUnit.MILLISECONDS
                 )
                 .build()
             WorkManager.getInstance(appContext).enqueueUniqueWork(

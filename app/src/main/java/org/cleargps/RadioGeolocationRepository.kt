@@ -481,7 +481,14 @@ class RadioGeolocationRepository(private val context: Context) {
                 sourceIdOverride = sourceId
             )
         }
-        if (recorded <= 0) emptySet() else filtered.map { it.type }.toSet()
+        if (recorded <= 0) {
+            emptySet()
+        } else {
+            if (filtered.any { it.type == "cell" }) {
+                CellSiteRecalculationScheduler.enqueue(context)
+            }
+            filtered.map { it.type }.toSet()
+        }
     }
 
     /**
@@ -635,6 +642,7 @@ class RadioGeolocationRepository(private val context: Context) {
                             val batch = staleCells.take(OpenCellIdLookupPolicy.MAX_LOOKUPS_PER_ACTION)
                             var queried = 0
                             var saved = 0
+                            var siteEvidenceSaved = 0
                             var stoppedMessage = ""
                             for (cell in batch) {
                                 if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
@@ -657,6 +665,9 @@ class RadioGeolocationRepository(private val context: Context) {
                                 if (record != null) {
                                     withContext(Dispatchers.IO) { database.saveOpenCellIdCell(record) }
                                     saved++
+                                    if (record.status == "found" && record.latitude != null && record.longitude != null) {
+                                        siteEvidenceSaved++
+                                    }
                                 } else {
                                     stoppedMessage = response.message
                                     break
@@ -667,6 +678,7 @@ class RadioGeolocationRepository(private val context: Context) {
                                 openCellIdStatus = "OpenCellID checked ${queried} new cells; ${saved} records saved" +
                                     if (stoppedMessage.isBlank()) "" else " (${stoppedMessage})"
                             }
+                            if (siteEvidenceSaved > 0) CellSiteRecalculationScheduler.enqueue(context)
                         }
                         OpenCellIdBudgetBlock.DAILY_BUDGET ->
                             openCellIdStatus = "OpenCellID daily app budget reached"
