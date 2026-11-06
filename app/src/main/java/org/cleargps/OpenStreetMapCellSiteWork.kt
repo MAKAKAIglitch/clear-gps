@@ -112,6 +112,7 @@ internal object OpenStreetMapCellSiteWorkScheduler {
 /** Coalesces local calculations after new observations; this worker needs no network. */
 internal object CellSiteRecalculationScheduler {
     private const val WORK_NAME = "clear-gps-cell-site-local-recalculation"
+    const val KEY_LAST_COMPLETED_AT = "cell_site_recalculation_last_completed_at"
 
     fun enqueue(context: Context) {
         val appContext = context.applicationContext
@@ -140,6 +141,12 @@ internal object CellSiteRecalculationScheduler {
     }
 }
 
+/** Refreshes the UI after a newly completed local calculation. */
+internal object CellSiteRecalculationRefreshPolicy {
+    fun shouldRefresh(lastSeenAtMillis: Long, completedAtMillis: Long): Boolean =
+        completedAtMillis > lastSeenAtMillis
+}
+
 /** Builds local candidates from stored observations and already-cached catalogues only. */
 class CellSiteRecalculationWorker(
     appContext: Context,
@@ -156,14 +163,25 @@ class CellSiteRecalculationWorker(
         }
 
         return try {
-            LocalRadioDatabase(applicationContext).use { database ->
-                val result = RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites()
-                DiagnosticLogStore.log(
-                    applicationContext, "CELL_SITE",
-                    "Local recalculation complete: ${result.estimatesByIdentity.size} cell estimates, " +
-                        "${result.groups.size} physical sites."
-                )
+            val calculationStartedAt = android.os.SystemClock.elapsedRealtime()
+            val result = LocalRadioDatabase(applicationContext).use { database ->
+                RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites()
             }
+            val elapsedMillis = android.os.SystemClock.elapsedRealtime() - calculationStartedAt
+            DiagnosticLogStore.log(
+                applicationContext, "CELL_SITE",
+                "Local recalculation complete: ${result.estimatesByIdentity.size} cell estimates, " +
+                    "${result.groups.size} physical sites, elapsed=${elapsedMillis}ms."
+            )
+            // Publish only after SQLite has committed and closed successfully.
+            val completionPrefs = applicationContext.getSharedPreferences(
+                ClearGpsPreferences.PREFS, Context.MODE_PRIVATE
+            )
+            val previousCompletion = completionPrefs.getLong(KEY_LAST_COMPLETED_AT, 0L)
+            completionPrefs.edit().putLong(
+                KEY_LAST_COMPLETED_AT,
+                maxOf(System.currentTimeMillis(), previousCompletion + 1L)
+            ).apply()
             Result.success()
         } catch (error: Exception) {
             DiagnosticLogStore.log(

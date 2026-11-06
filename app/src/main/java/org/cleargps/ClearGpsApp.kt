@@ -425,6 +425,7 @@ fun ClearGpsApp(
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var cellSiteRecords by remember { mutableStateOf(radioRepository.loadCellSites()) }
     var cellSiteSectorRecords by remember { mutableStateOf(radioRepository.loadCellSiteSectors()) }
+    var lastCellSiteRecalculationAt by remember { mutableStateOf(0L) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
         mutableStateOf(
@@ -2573,6 +2574,22 @@ fun ClearGpsApp(
                     else -> LookupPhase.NO_MATCH
                 }
             }
+            val completedCellSiteRecalculationAt = prefs.getLong(
+                CellSiteRecalculationScheduler.KEY_LAST_COMPLETED_AT, 0L
+            )
+            if (CellSiteRecalculationRefreshPolicy.shouldRefresh(
+                    lastCellSiteRecalculationAt, completedCellSiteRecalculationAt
+                )
+            ) {
+                // A completed worker must refresh the already-open map, not only SQLite.
+                val latestCellSites = withContext(Dispatchers.IO) {
+                    radioRepository.loadCellSites() to radioRepository.loadCellSiteSectors()
+                }
+                cellSiteRecords = latestCellSites.first
+                cellSiteSectorRecords = latestCellSites.second
+                lastCellSiteRecalculationAt = completedCellSiteRecalculationAt
+            }
+
             if (positionMode.usesRadio) {
                 // Keep a short-lived last-known estimate through a single failed scan, but never
                 // show it indefinitely as a current position when monitoring is off or matches stop.
@@ -4666,9 +4683,16 @@ fun ClearGpsApp(
                     if (!cellSiteCalculationBusy) scope.launch {
                         cellSiteCalculationBusy = true
                         try {
+                            val calculationStartedAt = SystemClock.elapsedRealtime()
                             val result = withContext(Dispatchers.IO) {
                                 radioRepository.calculateAndSaveCachedOpenCellIdCellSites()
                             }
+                            DiagnosticLogStore.log(
+                                context, "CELL_SITE",
+                                "Manual recalculation: ${result.estimatesByIdentity.size} estimates, " +
+                                    "${result.groups.size} sites, " +
+                                    "elapsed=${SystemClock.elapsedRealtime() - calculationStartedAt}ms."
+                            )
                             refreshLocalUiInCurrentCoroutine()
                             Toast.makeText(
                                 context,
