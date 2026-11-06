@@ -11,3 +11,4 @@ dist/
 captures/
 .externalNativeBuild/
 .cxx/
+rust/cell-intelligence/target/

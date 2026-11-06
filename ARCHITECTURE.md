@@ -9,7 +9,7 @@ The repository currently builds four Gradle modules:
 - **`:app`** — Android application, Compose Material 3 UI, MapLibre map, Android services and permissions, local radio database, radio-position estimation, OBD-II transports, mock-location publication, diagnostics, settings and export/import flows.
 - **`:core-detect`** — plain Kotlin/JVM code for GNSS anomaly detection and related data models, baseline/environment diagnostics, risk feedback and replay parsing/encoding. It uses JUnit and has no Android dependency declared in its module build.
 - **`:core-fusion`** — plain Kotlin/JVM foundation for a 2D local-frame constant-velocity Kalman filter over timestamped GNSS/radio position measurements, with input validation, outlier rejection and a short prediction horizon. The separate `PositionFusionMotionModel` can apply a tightly bounded post-filter correction from fresh east/north IMU samples; it does not change the absolute-measurement timeline or TrustEngine and does not constitute a full inertial EKF.
-- **`:core-cell`** — plain Kotlin/JVM cell-intelligence engine for GSM/WCDMA/LTE/NR identities, evidence fusion, conservative physical-site grouping and quality-gated sector models. It has no Android, SQLite, network, map or GPS API dependency.
+- **`:core-cell`** — Kotlin/JVM cell-intelligence engine for GSM/WCDMA/LTE/NR identities, evidence fusion, conservative physical-site grouping and quality-gated sector models. It has no Android, SQLite, network, map or GPS API dependency. Its Timing Advance nonlinear fit and sector signal-model kernel can use an optional Rust JNI library; all filtering, grouping, validation, orchestration and a Kotlin numerical fallback remain in Kotlin.
 
 `:core-fusion` is wired into `LocationMonitorService` through a bounded `PositionFusionTimeline` (45-second window, at most 128 retained measurements). It accepts a physical GPS fix only after `LocationFilterEngine` returns `NORMAL`, source `GPS`, and no active risk zone. A late absolute measurement can be inserted by its original monotonic timestamp and the retained timeline replayed chronologically; duplicate timestamps, entries outside the window, invalid input and statistical outliers are rejected. Long measurement gaps still reinitialize the underlying filter.
 
@@ -179,6 +179,13 @@ When no position meets the publication policy, the intended safe behavior is to 
 - MapLibre resources are routed through its `HttpRequestUtil` OkHttp Call.Factory and checked on every network exchange/redirect. Only HTTPS GET resources from `tiles.openfreemap.org` are accepted while the saved map source is `online`; offline mode blocks map egress. The map provider sees the IP address and tile area, not radio identities or app positioning fixes.
 - No app-owned radio observations, local database, settings backup, replay, diagnostic log or WiGLE export is uploaded. Wi-Fi TCP to a user-selected private OBD adapter is a local peripheral connection and is not an Internet lookup.
 - BeaconDB and OpenCellID lookup results are used as described in the source-fusion section above; they are not written into local training fingerprints as ground-truth observations.
+## Rust numerical kernels
+
+- `rust/cell-intelligence` contains only the pure numerical kernels used by `CellTimingAdvanceSiteEstimator` and `SectorAzimuthEstimator`. The JNI boundary exchanges primitive arrays only; it does not receive Android objects, SQLite handles, network clients, map objects or GPS/location APIs.
+- Kotlin remains the owner of observation eligibility, receiver/frequency grouping, spatial deduplication, result validation, confidence/uncertainty policy and all repository/database integration. If the native library is unavailable or a JNI call fails, the original Kotlin calculation path remains active.
+- Android builds compile `arm64-v8a`, `armeabi-v7a` and `x86_64` libraries when `cargo-ndk` is installed. Without the Rust toolchain, the APK still builds with Kotlin fallback. CI requires the host JNI library for estimator tests and builds Android libraries as part of `assembleDebug`.
+- Native code is not assumed to be faster on every device or dataset. Compare stage timings on representative Android hardware before claiming a performance win; keep the native path only while correctness and measurable benefit hold.
+
 ## Build and test flow
 
 The Android CI uses JDK 17 and the checked-in Gradle Wrapper:

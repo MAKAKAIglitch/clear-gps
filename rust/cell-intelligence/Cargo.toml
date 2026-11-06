@@ -1,0 +1,12 @@
+[package]
+name = "clear-cell-intelligence"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "clear_cell_intelligence"
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "=0.21.1"

@@ -12,4 +12,12 @@ dependencies {
 
 tasks.test {
     useJUnit()
+    systemProperty(
+        "java.library.path",
+        rootProject.file("rust/cell-intelligence/target/release").absolutePath
+    )
+    systemProperty(
+        "cleargps.requireRustNative",
+        providers.gradleProperty("requireRustNative").orElse("false").get()
+    )
 }
