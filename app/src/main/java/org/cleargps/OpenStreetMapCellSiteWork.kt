@@ -177,9 +177,9 @@ class CellSiteRecalculationWorker(
             val completionPrefs = applicationContext.getSharedPreferences(
                 ClearGpsPreferences.PREFS, Context.MODE_PRIVATE
             )
-            val previousCompletion = completionPrefs.getLong(KEY_LAST_COMPLETED_AT, 0L)
+            val previousCompletion = completionPrefs.getLong(CellSiteRecalculationScheduler.KEY_LAST_COMPLETED_AT, 0L)
             completionPrefs.edit().putLong(
-                KEY_LAST_COMPLETED_AT,
+                CellSiteRecalculationScheduler.KEY_LAST_COMPLETED_AT,
                 maxOf(System.currentTimeMillis(), previousCompletion + 1L)
             ).apply()
             Result.success()
