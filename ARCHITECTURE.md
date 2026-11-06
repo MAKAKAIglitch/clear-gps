@@ -4,11 +4,12 @@ This document describes the **current implementation** on `dev`. It is intention
 
 ## Gradle modules
 
-The repository currently builds three Gradle modules:
+The repository currently builds four Gradle modules:
 
 - **`:app`** — Android application, Compose Material 3 UI, MapLibre map, Android services and permissions, local radio database, radio-position estimation, OBD-II transports, mock-location publication, diagnostics, settings and export/import flows.
 - **`:core-detect`** — plain Kotlin/JVM code for GNSS anomaly detection and related data models, baseline/environment diagnostics, risk feedback and replay parsing/encoding. It uses JUnit and has no Android dependency declared in its module build.
 - **`:core-fusion`** — plain Kotlin/JVM foundation for a 2D local-frame constant-velocity Kalman filter over timestamped GNSS/radio position measurements, with input validation, outlier rejection and a short prediction horizon. The separate `PositionFusionMotionModel` can apply a tightly bounded post-filter correction from fresh east/north IMU samples; it does not change the absolute-measurement timeline or TrustEngine and does not constitute a full inertial EKF.
+- **`:core-cell`** — plain Kotlin/JVM cell-intelligence engine for GSM/WCDMA/LTE/NR identities, evidence fusion, conservative physical-site grouping and quality-gated sector models. It has no Android, SQLite, network, map or GPS API dependency.
 
 `:core-fusion` is wired into `LocationMonitorService` through a bounded `PositionFusionTimeline` (45-second window, at most 128 retained measurements). It accepts a physical GPS fix only after `LocationFilterEngine` returns `NORMAL`, source `GPS`, and no active risk zone. A late absolute measurement can be inserted by its original monotonic timestamp and the retained timeline replayed chronologically; duplicate timestamps, entries outside the window, invalid input and statistical outliers are rejected. Long measurement gaps still reinitialize the underlying filter.
 
@@ -61,11 +62,11 @@ The Compose navigation has separate `HOME` and `MAP` destinations. Home hosts th
 
 The Map layer menu independently controls Wi‑Fi, cell, BLE, saved spoofing zones, GPS/radio position centres and accuracy areas, the manual anchor, the latest BeaconDB estimate already returned in the current session, and successful cached OpenCellID cell coordinates that pass the existing `shouldUseForPosition` freshness/status checks. OpenCellID display is capped at 2,000 coordinates and uses a clustered GeoJSON source. The menu flags are stored in UI preferences and affect only MapLibre rendering. They do not trigger recording, change position fusion or source trust, create radio observations, or initiate a provider lookup. The existing Settings switch for showing all radio points remains a master visibility switch above the per-radio-type menu toggles.
 
-BeaconDB contributes only the coordinate in the current in-memory lookup result; it is not persisted as a local radio fingerprint. OpenCellID markers are derived from the separate local cell catalogue and are not the device position. Opening the Map tab or changing either overlay switch does not issue a request. The online/offline basemap remains OpenFreeMap HTTPS tiles or the private blank offline canvas. The Light/Dark/System choice still affects the app and map together; an independently themed map is not implemented.
+BeaconDB contributes only the coordinate in the current in-memory lookup result; it is not persisted as a local radio fingerprint. OpenCellID markers are derived from the separate local cell catalogue and are not the device position. Physical cell-site groups and quality-gated sector-direction overlays are separate layers derived by Cell Intelligence; their markers are not the raw cell-observation points. Opening the Map tab or changing either overlay switch does not issue a request. The online/offline basemap remains OpenFreeMap HTTPS tiles or the private blank offline canvas. The Light/Dark/System choice still affects the app and map together; an independently themed map is not implemented.
 
 ## Local radio database and provenance
 
-`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **12**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
+`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **19**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
 
 Core tables and catalogues:
 
@@ -74,12 +75,14 @@ Core tables and catalogues:
 - `radio_observations` — timestamped RSSI/frequency observations with source provenance;
 - `scan_history` — bounded scan history;
 - `radio_source_segment_settings` — per-source/day/radio-type enablement and trust weights;
+- `cell_observation_details` — RAT-specific modem identity, channel and supported signal/Timing Advance metadata attached to original radio observations;
+- `cell_sites`, `cell_site_links`, `cell_site_sectors` and `cell_site_batches` — derived physical-site groups, membership, quality-gated sector models and calculation history; these are not training observations;
 - `opencellid_cells` — separate read-only catalogue of estimated cell positions; it is not mixed into local training observations;
 - `radio_auto_refinements` — independently deletable BeaconDB/OpenCellID coordinate batches, separate from measured `radio_observations` and detector training;
 - `radio_auto_refinement_attempts` — provider/fingerprint retry and backoff state for automatic refinement;
 - `radio_deletion_undo` and its `*_keys`, `*_points`, `*_observations`, `*_history` and `*_segments` tables — short-lived snapshots for undoing scoped deletions.
 
-Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, the OpenCellID checked-time index, and lookup/backoff indexes for automatic refinement. Migrations are additive: version 10 adds the isolated OpenCellID catalogue; version 11 adds the composite import-deduplication index; version 12 adds independently stored, deletable automatic-refinement batches and attempt/backoff state. Existing points, observations and scan history are preserved by these upgrades.
+Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, the OpenCellID checked-time index, and lookup/backoff indexes for automatic refinement. Migrations are additive. The current schema version 19 includes the isolated OpenCellID catalogue, import-deduplication index, independently stored automatic-refinement batches, RAT-specific cell observation metadata, physical cell sites, site membership and derived sector models. Existing points, observations and scan history are preserved by these upgrades.
 
 Storage limits are independent:
 
@@ -91,6 +94,18 @@ Imports are merged into the existing local database, not used to replace it. The
 
 SSID exclusion is applied on supported recording and matching paths. The radio-position estimate is not meant to become its own ground-truth training coordinate; provenance and quality remain relevant when positions conflict.
 
+
+## Cell Intelligence
+
+`:core-cell` contains deterministic identity, evidence-fusion, coordinate-estimation and complete-link site-grouping logic in pure Kotlin/JVM. Android-side adapters in `:app` load historical trusted observations and cached OpenCellID/OSM evidence, call the engine and persist derived results. The engine does not request GPS, read Android location APIs, access SQLite, call the network or render the map. Wi-Fi and Bluetooth are not part of this cell-only module.
+
+The current local coordinate path is deliberately narrower than the supported identity set: synchronized LTE Timing Advance can produce a local multilateration candidate; cached OpenCellID remains low-confidence catalogue evidence, and OSM is matched only to an already qualified candidate. OSM does not bootstrap an unknown tower coordinate. GSM/WCDMA/NR identities and history are retained, and qualified history can support sector-direction estimates, but a separate validated coordinate estimator for those RATs is not implemented. Missing evidence never becomes a guessed coordinate.
+
+Local recalculation is coalesced and battery-gated. It is triggered by normal and passive cell observations, imported cell history and successful OpenCellID catalogue updates. A blocked optional task is retried through the shared PowerPolicy. After SQLite commits successfully, a completion marker tells an already-open Compose screen to reload physical-site markers and sectors. Empty calculations preserve previously saved automatic sites; manual locks are not moved or deleted by background work.
+
+## Kotlin and Rust boundary
+
+Kotlin owns Android lifecycle, permissions, services, WorkManager, SQLite, network consent, UI, MapLibre and application orchestration. Algorithms remain in Kotlin/JVM while measured performance is acceptable. Rust is reserved for a demonstrated CPU-bound hotspot in a pure computation path; any port must retain the Kotlin implementation as a reference and pass comparative output/accuracy tests and performance benchmarks before replacement. The current repository has no Cargo workspace or Rust source, so no native layer is added speculatively. Cell Intelligence records per-stage durations; device profiling and representative data sizes are still required before deciding whether any stage merits a Rust port.
 
 ## Manual external radio refinement
 
