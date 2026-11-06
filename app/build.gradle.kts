@@ -9,7 +9,7 @@ plugins {
 val rustJniLibs = layout.buildDirectory.dir("generated/rustJniLibs")
 val buildCellRustAndroid by tasks.registering(Exec::class) {
     val outputDirectory = rustJniLibs.get().asFile
-    workingDir(rootProject.projectDir)
+    workingDir(rootProject.file("rust/cell-intelligence"))
     commandLine(
         "cargo", "ndk",
         "-t", "arm64-v8a",
@@ -17,7 +17,6 @@ val buildCellRustAndroid by tasks.registering(Exec::class) {
         "-t", "x86_64",
         "-o", outputDirectory.absolutePath,
         "build",
-        "--manifest-path", "rust/cell-intelligence/Cargo.toml",
         "--release"
     )
     inputs.files(fileTree(rootProject.file("rust/cell-intelligence")) {
