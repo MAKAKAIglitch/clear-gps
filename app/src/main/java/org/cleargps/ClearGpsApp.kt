@@ -4685,7 +4685,14 @@ fun ClearGpsApp(
                         try {
                             val calculationStartedAt = SystemClock.elapsedRealtime()
                             val result = withContext(Dispatchers.IO) {
-                                radioRepository.calculateAndSaveCachedOpenCellIdCellSites()
+                                radioRepository.calculateAndSaveCachedOpenCellIdCellSites(
+                                    onStageTiming = { stage, elapsedMillis ->
+                                        DiagnosticLogStore.log(
+                                            context, "CELL_SITE",
+                                            "Manual calculation stage=$stage elapsed=${elapsedMillis}ms."
+                                        )
+                                    }
+                                )
                             }
                             DiagnosticLogStore.log(
                                 context, "CELL_SITE",

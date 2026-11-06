@@ -134,24 +134,36 @@ internal class RadioRepository(
             minimumConfidenceScore = 0.18,
             minimumIndependentEvidenceCount = 1,
             maximumCandidateUncertaintyMeters = 10_000.0
-        )
+        ),
+        onStageTiming: ((stage: String, elapsedMillis: Long) -> Unit)? = null
     ): CellSiteIntelligenceResult {
         require(nowMillis >= 0L)
-        val identities = database.listCellIdentitiesWithObservationHistory()
-        val openCellIdEvidence = loadOpenCellIdCellSiteEvidence(identities, nowMillis)
-        val timingAdvanceCandidates = database.listCellTimingAdvanceSamples()
-            .groupBy { it.identity.stableKey }
-            .values
-            .mapNotNull { samples ->
-                val identity = samples.first().identity
-                CellTimingAdvanceSiteEstimator.estimate(identity, samples)?.let { estimate ->
-                    CellSiteCandidate(identity, estimate.toCoordinateEstimate())
+        val identities = measureCellStage("identity-query", onStageTiming) {
+            database.listCellIdentitiesWithObservationHistory()
+        }
+        val openCellIdEvidence = measureCellStage("opencellid-evidence", onStageTiming) {
+            loadOpenCellIdCellSiteEvidence(identities, nowMillis)
+        }
+        val timingAdvanceSamples = measureCellStage("timing-advance-query", onStageTiming) {
+            database.listCellTimingAdvanceSamples()
+        }
+        val timingAdvanceCandidates = measureCellStage("timing-advance-fit", onStageTiming) {
+            timingAdvanceSamples
+                .groupBy { it.identity.stableKey }
+                .values
+                .mapNotNull { samples ->
+                    val identity = samples.first().identity
+                    CellTimingAdvanceSiteEstimator.estimate(identity, samples)?.let { estimate ->
+                        CellSiteCandidate(identity, estimate.toCoordinateEstimate())
+                    }
                 }
-            }
-        val preliminary = calculateCellSites(
-            openCellIdEvidence, estimatorConfig, groupingConfig, timingAdvanceCandidates
-        )
-        val osmEvidence = loadOpenStreetMapCellSiteEvidence(preliminary.groups, nowMillis)
+        }
+        val preliminary = measureCellStage("preliminary-fusion", onStageTiming) {
+            calculateCellSites(openCellIdEvidence, estimatorConfig, groupingConfig, timingAdvanceCandidates)
+        }
+        val osmEvidence = measureCellStage("osm-evidence", onStageTiming) {
+            loadOpenStreetMapCellSiteEvidence(preliminary.groups, nowMillis)
+        }
         val combinedEvidence = (openCellIdEvidence + osmEvidence)
             .groupBy { it.identity.stableKey }
             .values
@@ -162,13 +174,29 @@ internal class RadioRepository(
                 )
             }
             .sortedBy { it.identity.stableKey }
-        return calculateAndSaveCellSites(
-            evidence = combinedEvidence,
-            estimatorConfig = estimatorConfig,
-            groupingConfig = groupingConfig,
-            calculatedAtMillis = nowMillis,
-            additionalCandidates = timingAdvanceCandidates
-        )
+        return measureCellStage("final-fusion-persist-sectors", onStageTiming) {
+            calculateAndSaveCellSites(
+                evidence = combinedEvidence,
+                estimatorConfig = estimatorConfig,
+                groupingConfig = groupingConfig,
+                calculatedAtMillis = nowMillis,
+                additionalCandidates = timingAdvanceCandidates
+            )
+        }
+    }
+
+    private inline fun <T> measureCellStage(
+        stage: String,
+        onStageTiming: ((String, Long) -> Unit)?,
+        block: () -> T
+    ): T {
+        val startedAt = System.nanoTime()
+        return try {
+            block()
+        } finally {
+            val elapsedMillis = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+            runCatching { onStageTiming?.invoke(stage, elapsedMillis) }
+        }
     }
 
     /**

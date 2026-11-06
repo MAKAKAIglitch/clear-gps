@@ -165,7 +165,14 @@ class CellSiteRecalculationWorker(
         return try {
             val calculationStartedAt = android.os.SystemClock.elapsedRealtime()
             val result = LocalRadioDatabase(applicationContext).use { database ->
-                RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites()
+                RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites(
+                    onStageTiming = { stage, elapsedMillis ->
+                        DiagnosticLogStore.log(
+                            applicationContext, "CELL_SITE",
+                            "Calculation stage=$stage elapsed=${elapsedMillis}ms."
+                        )
+                    }
+                )
             }
             val elapsedMillis = android.os.SystemClock.elapsedRealtime() - calculationStartedAt
             DiagnosticLogStore.log(
