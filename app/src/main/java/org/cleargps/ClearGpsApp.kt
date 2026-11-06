@@ -1721,6 +1721,12 @@ fun ClearGpsApp(
                         String(signature, Charsets.US_ASCII).startsWith("SQLite format 3\u0000")
                     if (isSqlite) database.importSqliteDatabase(buffered) else database.importRadioCsv(buffered)
                 }
+                if (result.observationsImported > 0) {
+                    val hasCellHistory = withContext(Dispatchers.IO) {
+                        database.listCellIdentitiesWithObservationHistory(limit = 1).isNotEmpty()
+                    }
+                    if (hasCellHistory) CellSiteRecalculationScheduler.enqueue(context)
+                }
                 refreshLocalUi()
                 Toast.makeText(
                     context,

@@ -62,6 +62,33 @@ class CellSiteDatabaseTest {
     }
 
     @Test
+    fun cachedSiteRecalculationReportsEveryMeasuredStage() {
+        val measuredStages = mutableListOf<Pair<String, Long>>()
+
+        val result = RadioRepository(database).calculateAndSaveCachedOpenCellIdCellSites(
+            nowMillis = 1_700_000_000_000L,
+            onStageTiming = { stage, elapsedMillis ->
+                measuredStages += stage to elapsedMillis
+            }
+        )
+
+        assertTrue(result.groups.isEmpty())
+        assertEquals(
+            listOf(
+                "identity-query",
+                "opencellid-evidence",
+                "timing-advance-query",
+                "timing-advance-fit",
+                "preliminary-fusion",
+                "osm-evidence",
+                "final-fusion-persist-sectors"
+            ),
+            measuredStages.map { it.first }
+        )
+        assertTrue(measuredStages.all { it.second >= 0L })
+    }
+
+    @Test
     fun savesMembersAndUpsertsSameStableGroupWithoutChangingDatabaseId() {
         val lte = identity(cellId = 987654L)
         val nr = identity(CellTechnology.NR, "01", 998877L)
