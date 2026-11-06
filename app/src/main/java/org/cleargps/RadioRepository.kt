@@ -185,7 +185,7 @@ internal class RadioRepository(
         }
     }
 
-    private inline fun <T> measureCellStage(
+    private fun <T> measureCellStage(
         stage: String,
         onStageTiming: ((String, Long) -> Unit)?,
         block: () -> T
