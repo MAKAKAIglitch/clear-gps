@@ -66,9 +66,93 @@ object CellSiteIntelligenceEngine {
                 )
                 .distinctBy { it.evidenceId }
                 .toList()
-            val externalEstimate = CellSiteCoordinateEstimator.estimate(combinedEvidence, estimatorConfig)
             val extraEstimates = sameIdentityCandidates.map { it.estimate }
-            val allEstimates = listOfNotNull(externalEstimate) + extraEstimates
+            val validLocalCandidates = sameIdentityCandidates
+                .filter { candidate ->
+                    val estimate = candidate.estimate
+                    estimate.latitude.isFinite() && estimate.latitude in -90.0..90.0 &&
+                        estimate.longitude.isFinite() && estimate.longitude in -180.0..180.0 &&
+                        estimate.uncertaintyRadiusMeters.isFinite() && estimate.uncertaintyRadiusMeters > 0.0 &&
+                        estimate.confidenceScore.isFinite() && estimate.confidenceScore in 0.0..1.0
+                }
+                .sortedWith(
+                    compareBy<CellSiteCandidate> { it.estimate.uncertaintyRadiusMeters }
+                        .thenByDescending { it.estimate.confidenceScore }
+                        .thenBy { it.estimate.algorithmVersion }
+                )
+            val osmEvidence = combinedEvidence.filter {
+                it.source == CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE
+            }
+            val nonOsmEstimate = CellSiteCoordinateEstimator.estimate(
+                combinedEvidence.filterNot {
+                    it.source == CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE
+                },
+                estimatorConfig
+            )
+
+            // A matched OSM mast must refine the local estimate, not compete with it as a
+            // separate "best coordinate". The previous selection-only path almost always kept
+            // the more precise LTE-TA candidate unchanged, so OSM had no visible effect.
+            val osmFusedEstimate = if (osmEvidence.isNotEmpty() && validLocalCandidates.isNotEmpty()) {
+                val primary = validLocalCandidates.first().estimate
+                val localEvidence = CellSiteCoordinateEvidence(
+                    evidenceId = "local-ta:$identityKey:${primary.algorithmVersion}",
+                    source = if (primary.lockedByUser) {
+                        CellEvidenceSource.USER_VERIFIED
+                    } else {
+                        CellEvidenceSource.LOCAL_TIMING_ADVANCE
+                    },
+                    latitude = primary.latitude,
+                    longitude = primary.longitude,
+                    uncertaintyMeters = primary.uncertaintyRadiusMeters,
+                    reliability = if (primary.lockedByUser) 1.0 else {
+                        primary.confidenceScore.coerceIn(0.05, 1.0)
+                    },
+                    dependencyGroup = "local-ta:$identityKey:${primary.algorithmVersion}",
+                    lockedByUser = primary.lockedByUser
+                )
+                CellSiteCoordinateEstimator.estimate(
+                    osmEvidence + localEvidence,
+                    estimatorConfig
+                )?.let { fused ->
+                    val conflictsWithOtherLocalCandidates = validLocalCandidates.drop(1).any { other ->
+                        CellSiteCoordinateEstimator.distanceMeters(
+                            primary.latitude, primary.longitude,
+                            other.estimate.latitude, other.estimate.longitude
+                        ) > primary.uncertaintyRadiusMeters + other.estimate.uncertaintyRadiusMeters
+                    }
+                    fused.copy(
+                        confidenceScore = if (fused.conflictDetected || conflictsWithOtherLocalCandidates) {
+                            minOf(primary.confidenceScore, fused.confidenceScore)
+                        } else {
+                            maxOf(primary.confidenceScore, fused.confidenceScore)
+                        },
+                        uncertaintyRadiusMeters = if (conflictsWithOtherLocalCandidates) {
+                            maxOf(
+                                fused.uncertaintyRadiusMeters,
+                                validLocalCandidates.maxOf { it.estimate.uncertaintyRadiusMeters }
+                            )
+                        } else fused.uncertaintyRadiusMeters,
+                        independentEvidenceCount = maxOf(
+                            primary.independentEvidenceCount,
+                            fused.independentEvidenceCount
+                        ),
+                        acceptedEvidenceIds = (primary.acceptedEvidenceIds + fused.acceptedEvidenceIds).distinct(),
+                        conflictDetected = fused.conflictDetected || conflictsWithOtherLocalCandidates,
+                        lockedByUser = primary.lockedByUser,
+                        algorithmVersion = "cell-site-osm-fusion-1"
+                    )
+                }
+            } else null
+
+            val externalEstimate = if (osmFusedEstimate == null) {
+                CellSiteCoordinateEstimator.estimate(combinedEvidence, estimatorConfig)
+            } else null
+            val allEstimates = if (osmFusedEstimate != null) {
+                listOfNotNull(osmFusedEstimate, nonOsmEstimate)
+            } else {
+                listOfNotNull(externalEstimate) + extraEstimates
+            }
             if (allEstimates.isEmpty()) {
                 exclusions[identityKey] = CellSitePositionExclusionReason.NO_VALID_COORDINATE_EVIDENCE
                 return@forEach
