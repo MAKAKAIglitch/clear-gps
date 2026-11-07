@@ -35,19 +35,22 @@ class OpenStreetMapCellSiteLookupPolicyTest {
     }
 
     @Test
-    fun onlyCertainUnlockedSitesAreQueued() {
+    fun queueAcceptsBoundedMediumConfidenceSitesButProtectsLockedAndAmbiguousIdentities() {
         assertTrue(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group()))
-        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(uncertainty = 251.0)))
-        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(confidence = 0.449)))
+        assertTrue(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(uncertainty = 251.0)))
+        assertTrue(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(confidence = 0.449)))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(uncertainty = 501.0)))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(confidence = 0.299)))
         assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(locked = true)))
         assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group(knownMncWidth = false)))
     }
 
     @Test
-    fun radiusGrowsWithUncertaintyButStaysInsideMatcherBounds() {
-        assertEquals(100, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(10.0))
-        assertEquals(100, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(50.0))
-        assertEquals(150, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(100.0))
-        assertEquals(150, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(250.0))
+    fun radiusGrowsWithUncertaintyAndRemainsBounded() {
+        assertEquals(200, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(10.0))
+        assertEquals(200, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(50.0))
+        assertEquals(250, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(100.0))
+        assertEquals(400, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(250.0))
+        assertEquals(650, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(500.0))
     }
 }
