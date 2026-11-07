@@ -98,6 +98,12 @@ internal class RadioRepository(
             objects = database.listCachedOpenStreetMapCellSiteObjects(nowMillis = nowMillis, limit = 2_000)
         )
 
+    fun loadCachedOpenStreetMapCellSiteObjects(
+        nowMillis: Long = System.currentTimeMillis(),
+        limit: Int = 2_000
+    ): List<OpenStreetMapCellSiteObject> =
+        database.listCachedOpenStreetMapCellSiteObjects(nowMillis = nowMillis, limit = limit)
+
     fun calculateCellSites(
         evidence: List<CellSiteEvidenceBundle>,
         estimatorConfig: CellSiteEstimatorConfig = CellSiteEstimatorConfig(),
