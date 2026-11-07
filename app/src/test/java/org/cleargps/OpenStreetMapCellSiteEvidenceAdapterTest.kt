@@ -114,7 +114,22 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
             )
         )
 
-        // Similar nearby representations are intentionally considered ambiguous.
+        // Co-located node/way representations are one physical structure, not independent evidence.
+        assertEquals(1, result.size)
+        assertEquals(1, result.single().evidence.size)
+    }
+
+    @Test
+    fun twoDistinctEquidistantOsmTowersRemainAmbiguousForOneSite() {
+        val site = group(identity(1004L), 51.5, -0.12, uncertainty = 150.0)
+        val result = OpenStreetMapCellSiteEvidenceAdapter.toEvidenceBundles(
+            listOf(site),
+            listOf(
+                osm(804L, 51.5009, -0.12),
+                osm(805L, 51.4991, -0.12)
+            )
+        )
+
         assertTrue(result.isEmpty())
     }
 
