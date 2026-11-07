@@ -65,7 +65,7 @@ internal object OpenStreetMapCellSiteProtocol {
         return """
             [out:json][timeout:$DEFAULT_TIMEOUT_SECONDS];
             (
-              nwr(around:$radiusMeters,$lat,$lon)["communication:mobile_phone"="yes"];
+              nwr(around:$radiusMeters,$lat,$lon)["communication:mobile_phone"];
               nwr(around:$radiusMeters,$lat,$lon)["tower:type"="communication"];
               nwr(around:$radiusMeters,$lat,$lon)["man_made"="communications_tower"];
               nwr(around:$radiusMeters,$lat,$lon)["telecom"="antenna"];
