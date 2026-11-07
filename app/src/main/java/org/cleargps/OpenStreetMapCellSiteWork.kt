@@ -36,6 +36,21 @@ internal object OpenStreetMapCellSiteLookupPolicy {
             group.confidenceScore.isFinite() &&
             group.confidenceScore in MIN_SITE_CONFIDENCE..1.0
 
+    /**
+     * Coarse candidates may discover nearby OSM infrastructure without assigning it to a cell.
+     * The map presents these objects as unverified until a tighter local estimate can match them.
+     */
+    fun shouldDiscover(group: org.cleargps.cell.CellSiteGroup): Boolean =
+        !group.lockedByUser &&
+            group.members.isNotEmpty() &&
+            group.members.all { it.mncLengthKnown } &&
+            group.latitude.isFinite() && group.latitude in -90.0..90.0 &&
+            group.longitude.isFinite() && group.longitude in -180.0..180.0 &&
+            group.uncertaintyRadiusMeters.isFinite() &&
+            group.uncertaintyRadiusMeters in 1.0..5_000.0 &&
+            group.confidenceScore.isFinite() &&
+            group.confidenceScore in 0.18..1.0
+
     fun searchRadiusMeters(uncertaintyMeters: Double): Int {
         require(uncertaintyMeters.isFinite() && uncertaintyMeters > 0.0)
         val requested = kotlin.math.ceil(
