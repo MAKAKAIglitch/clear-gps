@@ -107,18 +107,19 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
             val ordered = siteMatches.sortedWith(
                 compareBy<Match> { it.distanceMeters }.thenBy { it.osmObject.stableKey }
             )
-            if (ordered.size > 1 &&
-                ordered[1].distanceMeters - ordered[0].distanceMeters < config.minimumAmbiguityGapMeters
-            ) {
-                val separation = CellSiteCoordinateEstimator.distanceMeters(
-                    ordered[0].osmObject.latitude,
-                    ordered[0].osmObject.longitude,
-                    ordered[1].osmObject.latitude,
-                    ordered[1].osmObject.longitude
-                )
-                if (separation > config.maximumCoLocatedObjectSeparationMeters) null
-                else ordered.first()
-            } else ordered.first()
+            val nearest = ordered.first()
+            val nearTies = ordered.drop(1).filter {
+                it.distanceMeters - nearest.distanceMeters < config.minimumAmbiguityGapMeters
+            }
+            val containsSeparateTower = nearTies.any { candidate ->
+                CellSiteCoordinateEstimator.distanceMeters(
+                    nearest.osmObject.latitude,
+                    nearest.osmObject.longitude,
+                    candidate.osmObject.latitude,
+                    candidate.osmObject.longitude
+                ) > config.maximumCoLocatedObjectSeparationMeters
+            }
+            if (containsSeparateTower) null else nearest
         }
 
         val bundles = LinkedHashMap<String, MutableList<CellSiteCoordinateEvidence>>()
