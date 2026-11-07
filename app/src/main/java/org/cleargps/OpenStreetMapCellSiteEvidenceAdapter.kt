@@ -12,7 +12,7 @@ data class OpenStreetMapCellSiteEvidenceConfig(
     val maximumMatchDistanceMeters: Double = 500.0,
     val maximumSiteUncertaintyMeters: Double = 500.0,
     val minimumSiteConfidenceScore: Double = 0.30,
-    val uncertaintyMultiplier: Double = 1.5,
+    val uncertaintyMultiplier: Double = 0.75,
     val minimumAmbiguityGapMeters: Double = 75.0,
     val minimumEvidenceUncertaintyMeters: Double = 35.0
 ) {
