@@ -46,6 +46,26 @@ class OpenStreetMapCellSiteLookupPolicyTest {
     }
 
     @Test
+    fun coarseCandidatesDiscoverNearbyOsmObjectsWithoutBecomingMatchableSites() {
+        assertTrue(OpenStreetMapCellSiteLookupPolicy.shouldDiscover(
+            group(uncertainty = 5_000.0, confidence = 0.18)
+        ))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldDiscover(
+            group(uncertainty = 5_001.0, confidence = 0.5)
+        ))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldDiscover(
+            group(uncertainty = 100.0, confidence = 0.179)
+        ))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldDiscover(
+            group(uncertainty = 100.0, confidence = 0.5, locked = true)
+        ))
+        assertFalse(OpenStreetMapCellSiteLookupPolicy.shouldDiscover(
+            group(uncertainty = 100.0, confidence = 0.5, knownMncWidth = false)
+        ))
+        assertEquals(1_000, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(5_000.0))
+    }
+
+    @Test
     fun radiusGrowsWithUncertaintyAndRemainsBounded() {
         assertEquals(200, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(10.0))
         assertEquals(200, OpenStreetMapCellSiteLookupPolicy.searchRadiusMeters(50.0))
