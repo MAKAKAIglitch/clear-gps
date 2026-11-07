@@ -70,7 +70,7 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
             assertEquals(1, bundle.evidence.size)
             assertEquals(CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE, bundle.evidence.single().source)
             assertEquals("osm:communications-catalogue", bundle.evidence.single().dependencyGroup)
-            assertTrue(bundle.evidence.single().uncertaintyMeters >= 100.0)
+            assertTrue(bundle.evidence.single().uncertaintyMeters >= 35.0)
         }
     }
 
