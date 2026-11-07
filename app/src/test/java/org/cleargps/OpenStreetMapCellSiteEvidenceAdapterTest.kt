@@ -151,4 +151,31 @@ class OpenStreetMapCellSiteEvidenceAdapterTest {
 
         assertTrue(result.isEmpty())
     }
+
+    @Test
+    fun boundedMediumConfidenceSiteCanMatchTowerBeyondFormer150MeterLimit() {
+        val site = group(
+            identity(1003L),
+            latitude = 51.5,
+            longitude = -0.12,
+            uncertainty = 250.0,
+            confidence = 0.35
+        )
+        val tower = osm(
+            id = 903L,
+            latitude = 51.5023,
+            longitude = -0.12,
+            uncertainty = 30.0
+        )
+
+        val result = OpenStreetMapCellSiteEvidenceAdapter.toEvidenceBundles(
+            listOf(site),
+            listOf(tower)
+        )
+
+        assertEquals(1, result.size)
+        assertEquals("osm:node:903", result.single().evidence.single().evidenceId)
+        assertTrue(result.single().evidence.single().uncertaintyMeters < 250.0)
+    }
+
 }
