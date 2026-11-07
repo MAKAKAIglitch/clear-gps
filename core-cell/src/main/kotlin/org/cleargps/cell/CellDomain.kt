@@ -199,7 +199,7 @@ data class CellObservationSample(
 }
 
 enum class CellEvidenceSource(val defaultReliability: Double) {
-    USER_VERIFIED(1.0), OPENCELLID(0.55), IMPORTED_CATALOGUE(0.45),
+    USER_VERIFIED(1.0), LOCAL_TIMING_ADVANCE(0.85), OPENCELLID(0.55), IMPORTED_CATALOGUE(0.45),
     OSM_COMMUNICATIONS_STRUCTURE(0.22), OTHER_EXTERNAL(0.30)
 }
 
