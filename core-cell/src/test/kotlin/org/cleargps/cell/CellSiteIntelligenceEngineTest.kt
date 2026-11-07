@@ -264,6 +264,7 @@ class CellSiteIntelligenceEngineTest {
         assertFalse(fused.conflictDetected)
         assertEquals(timingEstimate.confidenceScore, fused.confidenceScore, 0.0)
         assertTrue(fused.independentEvidenceCount >= timingEstimate.independentEvidenceCount)
+        assertTrue(fused.acceptedEvidenceIds.contains("lte-ta-0"))
         assertEquals(1, result.groups.size)
     }
 
