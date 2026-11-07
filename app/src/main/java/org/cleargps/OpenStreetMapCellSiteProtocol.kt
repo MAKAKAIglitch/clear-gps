@@ -190,7 +190,7 @@ internal object OpenStreetMapCellSiteProtocol {
         mobilePhone: String?,
         telecom: String?
     ): Boolean {
-        if (mobilePhone.equals("yes", ignoreCase = true) ||
+        if ((mobilePhone != null && !mobilePhone.equals("no", ignoreCase = true)) ||
             towerType.equals("communication", ignoreCase = true) ||
             telecom.equals("antenna", ignoreCase = true)
         ) return true
