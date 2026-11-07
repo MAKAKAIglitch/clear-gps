@@ -16,13 +16,11 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
-/**
- * Keeps OSM lookups limited to candidates that can be matched without guessing.
- */
+/** Bounds OSM lookups for both precise cell matching and unassigned nearby-structure discovery. */
 internal object OpenStreetMapCellSiteLookupPolicy {
     const val MAX_SITE_UNCERTAINTY_METERS = 500.0
     const val MIN_SITE_CONFIDENCE = 0.30
-    private const val NODE_MATCH_ALLOWANCE_METERS = 150.0
+    private const val SEARCH_RADIUS_ALLOWANCE_METERS = 150.0
     private const val RADIUS_STEP_METERS = 50
 
     fun shouldEnqueue(group: org.cleargps.cell.CellSiteGroup): Boolean =
