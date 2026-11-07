@@ -18,7 +18,7 @@ class OpenStreetMapCellSiteProtocolTest {
 
         assertTrue(query.contains("[out:json][timeout:20]"))
         assertTrue(query.contains("around:750,51.500123,-0.120988"))
-        assertTrue(query.contains("[\"communication:mobile_phone\"=\"yes\"]"))
+        assertTrue(query.contains("[\"communication:mobile_phone\"]"))
         assertTrue(query.contains("[\"tower:type\"=\"communication\"]"))
         assertTrue(query.contains("[\"man_made\"=\"communications_tower\"]"))
         assertTrue(query.contains("[\"telecom\"=\"antenna\"]"))
@@ -91,6 +91,32 @@ class OpenStreetMapCellSiteProtocolTest {
         assertEquals(OpenStreetMapElementType.WAY, communicationsTower.elementType)
         assertEquals(100.0, communicationsTower.coordinateUncertaintyMeters, 0.0)
         assertNull(communicationsTower.mobilePhoneCapable)
+    }
+
+    @Test
+    fun parserKeepsUnknownMobilePhoneTagValuesAsUnclassifiedRatherThanRejectingThem() {
+        val body = """
+            {
+              "elements": [
+                {
+                  "type": "node",
+                  "id": 404,
+                  "lat": 52.0,
+                  "lon": 13.0,
+                  "tags": {
+                    "communication:mobile_phone": "LTE",
+                    "man_made": "mast"
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val response = OpenStreetMapCellSiteProtocol.parseResponse(200, body)
+
+        assertEquals(OpenStreetMapCellSiteLookupStatus.FOUND, response.status)
+        assertEquals(1, response.objects.size)
+        assertNull(response.objects.single().mobilePhoneCapable)
     }
 
     @Test
