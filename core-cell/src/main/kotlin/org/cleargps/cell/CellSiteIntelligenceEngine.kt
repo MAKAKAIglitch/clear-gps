@@ -121,6 +121,7 @@ object CellSiteIntelligenceEngine {
                             other.estimate.latitude, other.estimate.longitude
                         ) > primary.uncertaintyRadiusMeters + other.estimate.uncertaintyRadiusMeters
                     }
+                    val localEstimateAccepted = localEvidence.evidenceId in fused.acceptedEvidenceIds
                     fused.copy(
                         confidenceScore = if (fused.conflictDetected || conflictsWithOtherLocalCandidates) {
                             minOf(primary.confidenceScore, fused.confidenceScore)
@@ -137,7 +138,14 @@ object CellSiteIntelligenceEngine {
                             primary.independentEvidenceCount,
                             fused.independentEvidenceCount
                         ),
-                        acceptedEvidenceIds = (primary.acceptedEvidenceIds + fused.acceptedEvidenceIds).distinct(),
+                        acceptedEvidenceIds = (
+                            fused.acceptedEvidenceIds +
+                                if (localEstimateAccepted) primary.acceptedEvidenceIds else emptyList()
+                            ).distinct(),
+                        rejectedEvidenceIds = (
+                            fused.rejectedEvidenceIds +
+                                if (localEstimateAccepted) emptyList() else primary.acceptedEvidenceIds
+                            ).distinct(),
                         conflictDetected = fused.conflictDetected || conflictsWithOtherLocalCandidates,
                         lockedByUser = primary.lockedByUser,
                         algorithmVersion = "cell-site-osm-fusion-1"
