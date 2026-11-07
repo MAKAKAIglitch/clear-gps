@@ -425,6 +425,9 @@ fun ClearGpsApp(
     var mapPoints by remember { mutableStateOf(emptyList<RadioPointRecord>()) }
     var cellSiteRecords by remember { mutableStateOf(radioRepository.loadCellSites()) }
     var cellSiteSectorRecords by remember { mutableStateOf(radioRepository.loadCellSiteSectors()) }
+    var openStreetMapCellSiteObjects by remember {
+        mutableStateOf(radioRepository.loadCachedOpenStreetMapCellSiteObjects())
+    }
     var lastCellSiteRecalculationAt by remember { mutableStateOf(0L) }
     var mapPointsRevision by remember { mutableStateOf(0) }
     var mapPointLimit by remember {
@@ -716,6 +719,9 @@ fun ClearGpsApp(
         refreshMapPointsInCurrentCoroutine(mapPointLimit)
         cellSiteRecords = withContext(Dispatchers.IO) { radioRepository.loadCellSites() }
         cellSiteSectorRecords = withContext(Dispatchers.IO) { radioRepository.loadCellSiteSectors() }
+        openStreetMapCellSiteObjects = withContext(Dispatchers.IO) {
+            radioRepository.loadCachedOpenStreetMapCellSiteObjects()
+        }
         history = withContext(Dispatchers.IO) { database.listHistory(150) }
         radioSources = withContext(Dispatchers.IO) { database.listRadioSources() }
         sourceDaysBySource = withContext(Dispatchers.IO) { database.listRadioSourceDays().groupBy { it.sourceId } }
@@ -2589,10 +2595,15 @@ fun ClearGpsApp(
             ) {
                 // A completed worker must refresh the already-open map, not only SQLite.
                 val latestCellSites = withContext(Dispatchers.IO) {
-                    radioRepository.loadCellSites() to radioRepository.loadCellSiteSectors()
+                    Triple(
+                        radioRepository.loadCellSites(),
+                        radioRepository.loadCellSiteSectors(),
+                        radioRepository.loadCachedOpenStreetMapCellSiteObjects()
+                    )
                 }
                 cellSiteRecords = latestCellSites.first
                 cellSiteSectorRecords = latestCellSites.second
+                openStreetMapCellSiteObjects = latestCellSites.third
                 lastCellSiteRecalculationAt = completedCellSiteRecalculationAt
             }
 
@@ -2876,6 +2887,9 @@ fun ClearGpsApp(
     }
     LaunchedEffect(cellSiteSectorRecords) {
         mapController.updateCellSiteSectors(cellSiteSectorRecords)
+    }
+    LaunchedEffect(openStreetMapCellSiteObjects) {
+        mapController.updateOpenStreetMapCellSiteObjects(openStreetMapCellSiteObjects)
     }
     LaunchedEffect(mapLayerVisibility) {
         mapController.setLayerVisibility(mapLayerVisibility)
