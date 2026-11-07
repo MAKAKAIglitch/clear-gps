@@ -14,6 +14,7 @@ data class OpenStreetMapCellSiteEvidenceConfig(
     val minimumSiteConfidenceScore: Double = 0.30,
     val uncertaintyMultiplier: Double = 0.75,
     val minimumAmbiguityGapMeters: Double = 75.0,
+    val maximumCoLocatedObjectSeparationMeters: Double = 35.0,
     val minimumEvidenceUncertaintyMeters: Double = 35.0
 ) {
     init {
@@ -24,6 +25,7 @@ data class OpenStreetMapCellSiteEvidenceConfig(
         require(minimumSiteConfidenceScore.isFinite() && minimumSiteConfidenceScore in 0.0..1.0)
         require(uncertaintyMultiplier.isFinite() && uncertaintyMultiplier > 0.0)
         require(minimumAmbiguityGapMeters.isFinite() && minimumAmbiguityGapMeters >= 0.0)
+        require(maximumCoLocatedObjectSeparationMeters.isFinite() && maximumCoLocatedObjectSeparationMeters > 0.0)
         require(minimumEvidenceUncertaintyMeters.isFinite() && minimumEvidenceUncertaintyMeters > 0.0)
     }
 }
@@ -107,7 +109,16 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
             )
             if (ordered.size > 1 &&
                 ordered[1].distanceMeters - ordered[0].distanceMeters < config.minimumAmbiguityGapMeters
-            ) null else ordered.first()
+            ) {
+                val separation = CellSiteCoordinateEstimator.distanceMeters(
+                    ordered[0].osmObject.latitude,
+                    ordered[0].osmObject.longitude,
+                    ordered[1].osmObject.latitude,
+                    ordered[1].osmObject.longitude
+                )
+                if (separation > config.maximumCoLocatedObjectSeparationMeters) null
+                else ordered.first()
+            } else ordered.first()
         }
 
         val bundles = LinkedHashMap<String, MutableList<CellSiteCoordinateEvidence>>()
