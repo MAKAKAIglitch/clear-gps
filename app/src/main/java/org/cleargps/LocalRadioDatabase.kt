@@ -4184,7 +4184,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
                 keptSiteIds += siteId
                 group.members.forEach { identity -> insertCellSiteLink(db, siteId, identity) }
-                if (OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group)) {
+                if (OpenStreetMapCellSiteLookupPolicy.shouldEnqueue(group) ||
+                    OpenStreetMapCellSiteLookupPolicy.shouldDiscover(group)
+                ) {
                     osmLookupCandidates[group.stableKey] = group
                 }
                 if (group.lockedByUser) {
