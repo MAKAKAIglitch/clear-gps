@@ -247,7 +247,7 @@ class OpenStreetMapCellSiteQueueDatabaseTest {
     }
 
     @Test
-    fun savingQualifiedAutomaticSitesCreatesOsmTasksOnlyForSafeCandidates() {
+    fun savingAutomaticSitesQueuesPreciseAndCoarseDiscoveryButSkipsLockedSites() {
         fun site(
             cellId: Long,
             uncertainty: Double,
@@ -282,9 +282,15 @@ class OpenStreetMapCellSiteQueueDatabaseTest {
         )
 
         val queued = database.listOpenStreetMapCellSiteQueue()
-        assertEquals(1, queued.size)
-        assertTrue(queued.single().siteStableKey.contains("7001"))
-        assertEquals(150, queued.single().radiusMeters)
+        assertEquals(2, queued.size)
+
+        val precise = queued.single { it.siteStableKey.contains("7001") }
+        assertEquals(250, precise.radiusMeters)
+
+        val coarseDiscovery = queued.single { it.siteStableKey.contains("7002") }
+        assertEquals(450, coarseDiscovery.radiusMeters)
+
+        assertTrue(queued.none { it.siteStableKey.contains("7003") })
         assertEquals(1, database.listCellSites().count { it.lockedByUser })
     }
 

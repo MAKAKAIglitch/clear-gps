@@ -130,7 +130,7 @@ internal object OpenStreetMapCellSiteEvidenceAdapter {
                 config.minimumEvidenceUncertaintyMeters
             )
             val evidence = CellSiteCoordinateEvidence(
-                evidenceId = "osm:${match.osmObject.stableKey}",
+                evidenceId = match.osmObject.stableKey,
                 source = CellEvidenceSource.OSM_COMMUNICATIONS_STRUCTURE,
                 latitude = match.osmObject.latitude,
                 longitude = match.osmObject.longitude,
