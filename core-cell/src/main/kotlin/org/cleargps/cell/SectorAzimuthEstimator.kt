@@ -145,32 +145,8 @@ object SectorAzimuthEstimator {
         )
     }
 
-    private fun evaluate(samples: List<Located>, config: SectorAzimuthConfig): Evaluated? {
-        val native = CellRustBridge.evaluateSector(
-            bearings = samples.map { it.bearing }.toDoubleArray(),
-            distances = samples.map { it.distance }.toDoubleArray(),
-            rssi = samples.map { it.rssi }.toDoubleArray(),
-            angularBinDegrees = config.angularBinDegrees,
-            minimumOccupiedBins = config.minimumOccupiedBins,
-            minimumSignalContrastDb = config.minimumSignalContrastDb,
-            maximumModelSpreadDegrees = config.maximumModelSpreadDegrees
-        )
-        if (native != null) {
-            if (native.isEmpty() || native.size != 6 || native.any { !it.isFinite() }) return null
-            if (native[2] !in 0.0..1.0 || native[3].toInt() != samples.size ||
-                native[4] < 0.0 || native[4] > 360.0 || native[1] !in 0.0..180.0
-            ) return null
-            return Evaluated(
-                azimuth = normalize(native[0]),
-                width = native[1],
-                confidence = native[2],
-                sampleCount = native[3].toInt(),
-                bins = native[4].toInt(),
-                contrast = native[5]
-            )
-        }
-        return evaluateKotlin(samples, config)
-    }
+    private fun evaluate(samples: List<Located>, config: SectorAzimuthConfig): Evaluated? =
+        evaluateKotlin(samples, config)
 
     private fun evaluateKotlin(samples: List<Located>, config: SectorAzimuthConfig): Evaluated? {
         val binCount = 360 / config.angularBinDegrees

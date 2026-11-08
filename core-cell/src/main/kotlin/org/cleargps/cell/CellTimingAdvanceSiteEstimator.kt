@@ -205,30 +205,8 @@ object CellTimingAdvanceSiteEstimator {
         }
         if (measurements.size < config.minimumSpatialSamples) return null
 
-        val nativeFit = CellRustBridge.fitTimingAdvance(
-            x = measurements.map { it.x }.toDoubleArray(),
-            y = measurements.map { it.y }.toDoubleArray(),
-            ranges = measurements.map { it.rangeMeters }.toDoubleArray(),
-            sigmas = measurements.map { it.sigmaMeters }.toDoubleArray(),
-            maximumIterations = config.maximumIterations,
-            bearingBinDegrees = config.bearingBinDegrees
-        )
-        val fit = if (nativeFit == null) {
-            val initial = linearInitialGuess(measurements) ?: return null
-            robustGaussNewton(initial.first, initial.second, measurements, config) ?: return null
-        } else {
-            if (nativeFit.isEmpty() || nativeFit.size != 8 || nativeFit.any { !it.isFinite() }) return null
-            Fit(
-                x = nativeFit[0],
-                y = nativeFit[1],
-                h11 = nativeFit[2],
-                h12 = nativeFit[3],
-                h22 = nativeFit[4],
-                medianResidualMeters = nativeFit[5],
-                ninetiethResidualMeters = nativeFit[6],
-                occupiedBearingBins = nativeFit[7].toInt()
-            )
-        }
+        val initial = linearInitialGuess(measurements) ?: return null
+        val fit = robustGaussNewton(initial.first, initial.second, measurements, config) ?: return null
         if (fit.medianResidualMeters > config.maximumMedianResidualMeters ||
             fit.ninetiethResidualMeters > config.maximumNinetiethResidualMeters
         ) return null

@@ -10,15 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --version 4.1.2 --locked
-      - name: Test Rust kernels and build host JNI library
-        run: |
-          cargo test --manifest-path rust/cell-intelligence/Cargo.toml
-          cargo build --manifest-path rust/cell-intelligence/Cargo.toml --release
       - name: Validate Windows bootstrap PowerShell syntax
         shell: pwsh
         run: |
@@ -54,7 +45,7 @@ jobs:
           fi
           echo 'Gradle Wrapper JAR SHA-256 verified.'
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
-        run: ./gradlew --no-daemon --stacktrace -PrequireRustNative=true :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
       - name: Preserve Linux unit test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -75,17 +66,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-      - name: Install cargo-ndk
-        shell: pwsh
-        run: cargo install cargo-ndk --version 4.1.2 --locked
-      - name: Test Rust kernels and build host JNI library
-        shell: pwsh
-        run: |
-          cargo test --manifest-path rust/cell-intelligence/Cargo.toml
-          cargo build --manifest-path rust/cell-intelligence/Cargo.toml --release
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -109,7 +89,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\gradlew.bat --no-daemon --stacktrace -PrequireRustNative=true :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
+          & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
           if ($LASTEXITCODE -ne 0) { throw "Windows tests/build failed with exit code $LASTEXITCODE." }
       - name: Preserve Windows unit test reports
         if: always()

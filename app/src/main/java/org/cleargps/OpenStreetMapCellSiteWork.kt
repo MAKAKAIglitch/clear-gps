@@ -52,7 +52,7 @@ internal object OpenStreetMapCellSiteLookupPolicy {
     fun searchRadiusMeters(uncertaintyMeters: Double): Int {
         require(uncertaintyMeters.isFinite() && uncertaintyMeters > 0.0)
         val requested = kotlin.math.ceil(
-            (uncertaintyMeters + NODE_MATCH_ALLOWANCE_METERS) / RADIUS_STEP_METERS
+            (uncertaintyMeters + SEARCH_RADIUS_ALLOWANCE_METERS) / RADIUS_STEP_METERS
         ).toInt() * RADIUS_STEP_METERS
         return requested.coerceIn(
             OpenStreetMapCellSiteProtocol.MINIMUM_RADIUS_METERS,

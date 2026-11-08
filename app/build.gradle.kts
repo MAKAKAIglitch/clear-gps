@@ -1,37 +1,7 @@
-import org.gradle.api.tasks.Exec
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
-}
-
-val rustJniLibs = layout.buildDirectory.dir("generated/rustJniLibs")
-val buildCellRustAndroid by tasks.registering(Exec::class) {
-    val outputDirectory = rustJniLibs.get().asFile
-    workingDir(rootProject.file("rust/cell-intelligence"))
-    commandLine(
-        "cargo", "ndk",
-        "-t", "arm64-v8a",
-        "-t", "armeabi-v7a",
-        "-t", "x86_64",
-        "-o", outputDirectory.absolutePath,
-        "build",
-        "--release"
-    )
-    inputs.files(fileTree(rootProject.file("rust/cell-intelligence")) {
-        exclude("target/**")
-    })
-    outputs.dir(rustJniLibs)
-    onlyIf {
-        val available = runCatching {
-            project.exec { commandLine("cargo", "ndk", "--version") }
-        }.isSuccess
-        if (!available) logger.lifecycle(
-            "cargo-ndk is unavailable; Cell Intelligence uses its Kotlin numerical fallback."
-        )
-        available
-    }
 }
 
 android {
@@ -74,8 +44,6 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
-    sourceSets.getByName("main").jniLibs.srcDir(rustJniLibs)
-
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -86,10 +54,6 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
-}
-
-tasks.named("preBuild").configure {
-    dependsOn(buildCellRustAndroid)
 }
 
 dependencies {
