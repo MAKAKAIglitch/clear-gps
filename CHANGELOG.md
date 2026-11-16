@@ -1,3 +1,11 @@
+## 2026-11-17 — Fingerprint SQL benchmark подключён к Linux CI
+
+- `.github/workflows/android.yml` запускает стандартный Python-скрипт benchmark перед Android unit tests/build. Он проверяет идентичность результатов старого и нового SQL, expanded fingerprint rows и выбор compact-MAC expression index.
+- В CI печатаются времена обоих SQL-этапов на базах 1 тыс., 10 тыс. и 50 тыс. наблюдений. Время не используется как жёсткий pass/fail порог; CI падает только при несовпадении данных или отсутствии ожидаемого индекса.
+- Скрипт не добавляет runtime-зависимостей Android-приложения.
+
+---
+
 ## 2026-11-17 — Убран большой OR-предикат при поиске fingerprint
 
 - `loadFingerprintSamples()` заменяет до 80 ветвей `OR` на два табличных CTE: `requested_mac` для Wi-Fi/BLE и `requested_exact` для Cell и других точных идентификаторов. `UNION ALL` объединяет совпавшие строки перед прежней группировкой по времени.
