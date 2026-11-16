@@ -6627,7 +6627,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
     )
 
     private fun radioPointLookupKey(type: String, identifier: String): String =
-        "$type|\u0024{canonicalIdentifier(identifier)}"
+        type + "|" + canonicalIdentifier(identifier)
 
     /**
      * Load the active scan's points in two bounded queries instead of querying each radio

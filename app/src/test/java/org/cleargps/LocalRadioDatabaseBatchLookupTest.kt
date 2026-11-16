@@ -65,6 +65,14 @@ class LocalRadioDatabaseBatchLookupTest {
             observedAt = now
         )
         insertPoint(
+            type = "wifi",
+            identifier = "aa:bb:cc:dd:ee:02",
+            sourceId = sourceId,
+            latitude = 52.00002,
+            longitude = 4.00002,
+            observedAt = now
+        )
+        insertPoint(
             type = "cell",
             identifier = "lte:250:1:123:456789",
             sourceId = sourceId,
@@ -83,6 +91,7 @@ class LocalRadioDatabaseBatchLookupTest {
 
         val signals = listOf(
             RadioSignal("wifi", "aa:bb:cc:dd:ee:01", -51, 2412, "Home"),
+            RadioSignal("wifi", "aa:bb:cc:dd:ee:02", -56, 2437, "Home"),
             RadioSignal("cell", "lte:250:1:123:456789", -82, 0),
             RadioSignal("ble", "aa:bb:cc:dd:ee:03", -64, 0)
         )
@@ -94,8 +103,8 @@ class LocalRadioDatabaseBatchLookupTest {
             now = now
         )
 
-        assertEquals(3, counts.knownRadios)
-        assertEquals(2, counts.usableCoordinateRadios)
+        assertEquals(4, counts.knownRadios)
+        assertEquals(3, counts.usableCoordinateRadios)
 
         val estimate = database.estimatePosition(
             signals = signals,
@@ -104,7 +113,7 @@ class LocalRadioDatabaseBatchLookupTest {
             useBle = true
         )
         assertNotNull(estimate)
-        assertEquals(2, estimate!!.matchedCount)
+        assertEquals(3, estimate!!.matchedCount)
         assertEquals(setOf("wifi", "ble"), estimate.matchedRadioTypes)
         assertTrue(estimate.accuracyMeters > 0.0)
     }
@@ -112,8 +121,9 @@ class LocalRadioDatabaseBatchLookupTest {
     @Test
     fun exactIdentityQueryUsesExistingCompositeIndex() {
         val details = sqlite.rawQuery(
-            "EXPLAIN QUERY PLAN SELECT * FROM radio_points " +
-                "WHERE radio_type = ? AND identifier = ? LIMIT 1",
+            "EXPLAIN QUERY PLAN WITH requested(radio_type, identifier) AS (VALUES (?, ?)) " +
+                "SELECT p.* FROM requested JOIN radio_points p " +
+                "ON p.radio_type = requested.radio_type AND p.identifier = requested.identifier",
             arrayOf("wifi", "aa:bb:cc:dd:ee:01")
         ).use { cursor ->
             buildList {
