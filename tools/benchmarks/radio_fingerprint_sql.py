@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce Clear GPS fingerprint-candidate SQL timings (Python stdlib only).
+"""Reproduce both Clear GPS fingerprint SQL query timings (Python stdlib only).
 
 Run: python3 tools/benchmarks/radio_fingerprint_sql.py
 These are SQLite SQL microbenchmarks, not Android/device positioning timings.
@@ -193,6 +193,29 @@ def cte_query(keys):
     return sql, args
 
 
+def expansion_query(timestamps):
+    placeholders = ", ".join("?" for _ in timestamps)
+    args = [str(row[0]) for row in timestamps] + list(EXCLUDED)
+    sql = f"""
+      SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
+             o.accuracy / MAX(s.trust_weight * COALESCE(sg.trust_weight, 1.0), 0.01) AS effective_accuracy,
+             o.rssi, o.observed_at, o.position_source
+      FROM radio_observations o JOIN radio_sources s ON s.id=o.source_id
+      LEFT JOIN radio_source_segment_settings sg ON sg.source_id=o.source_id
+        AND sg.day_key=strftime('%Y-%m-%d',o.observed_at/1000,'unixepoch','localtime')
+        AND sg.radio_type=o.radio_type
+      WHERE s.enabled=1 AND s.trust_weight>0
+        AND (sg.enabled IS NULL OR sg.enabled=1)
+        AND (sg.trust_weight IS NULL OR sg.trust_weight>0)
+        AND o.observed_at IN ({placeholders})
+        AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+        AND o.position_source NOT IN (?,?,?)
+      ORDER BY observed_at DESC
+      LIMIT 20000
+    """
+    return sql, args
+
+
 def median_ms(db, sql, args, repeats):
     for _ in range(2):
         db.execute(sql, args).fetchall()
@@ -214,22 +237,32 @@ def run_size(size, repeats):
         old_index_ms, old_index_rows = median_ms(indexed, old_sql, old_args, repeats)
         new_ms, new_rows = median_ms(indexed, new_sql, new_args, repeats)
         if old_rows != old_index_rows or old_rows != new_rows:
-            raise RuntimeError(f"Query results differ at {size} observations")
+            raise RuntimeError(f"Candidate timestamps differ at {size} observations")
+
+        expand_sql, expand_args = expansion_query(new_rows)
+        old_expand_ms, old_samples = median_ms(baseline, expand_sql, expand_args, repeats)
+        new_expand_ms, new_samples = median_ms(indexed, expand_sql, expand_args, repeats)
+        if old_samples != new_samples:
+            raise RuntimeError(f"Expanded fingerprint rows differ at {size} observations")
+
         plan = " | ".join(row[3] for row in indexed.execute("EXPLAIN QUERY PLAN "+new_sql, new_args))
         if "radio_obs_radio_compact_time" not in plan:
             raise RuntimeError("SQLite did not select the compact MAC expression index")
+        old_total = old_ms + old_expand_ms
+        new_total = new_ms + new_expand_ms
         print(
-            f"rows={size:>7} timestamps={len(new_rows):>3} "
-            f"legacy_or_no_index={old_ms:>8.2f}ms "
-            f"legacy_or_with_index={old_index_ms:>8.2f}ms "
-            f"cte_with_index={new_ms:>7.2f}ms "
-            f"speedup={old_ms/new_ms:>5.2f}x"
+            f"rows={size:>7} timestamps={len(new_rows):>3} samples={len(new_samples):>5} "
+            f"legacy_candidate={old_ms:>8.2f}ms "
+            f"legacy_total_sql={old_total:>8.2f}ms "
+            f"cte_candidate={new_ms:>7.2f}ms "
+            f"expansion={new_expand_ms:>6.2f}ms "
+            f"cte_total_sql={new_total:>7.2f}ms "
+            f"speedup={old_total/new_total:>5.2f}x"
         )
         print("  CTE plan: "+plan[:1200])
     finally:
         baseline.close()
         indexed.close()
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
