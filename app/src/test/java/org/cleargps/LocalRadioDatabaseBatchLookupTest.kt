@@ -95,27 +95,47 @@ class LocalRadioDatabaseBatchLookupTest {
             RadioSignal("cell", "lte:250:1:123:456789", -82, 0),
             RadioSignal("ble", "aa:bb:cc:dd:ee:03", -64, 0)
         )
-        val counts = database.countMatchingPoints(
-            signals = signals,
-            useWifi = true,
-            useCells = true,
-            useBle = true,
-            now = now
-        )
-
-        assertEquals(4, counts.knownRadios)
-        assertEquals(3, counts.usableCoordinateRadios)
-
-        val estimate = database.estimatePosition(
+        val evaluation = database.evaluatePosition(
             signals = signals,
             useWifi = true,
             useCells = true,
             useBle = true
         )
+
+        assertEquals(4, evaluation.matchCounts.knownRadios)
+        assertEquals(3, evaluation.matchCounts.usableCoordinateRadios)
+        assertEquals(4, evaluation.candidateSignalCount)
+        assertTrue(evaluation.pointLookupDurationMillis >= 0L)
+        assertTrue(evaluation.elapsedMillis >= evaluation.pointLookupDurationMillis)
+
+        val estimate = evaluation.estimate
         assertNotNull(estimate)
         assertEquals(3, estimate!!.matchedCount)
         assertEquals(setOf("wifi", "ble"), estimate.matchedRadioTypes)
         assertTrue(estimate.accuracyMeters > 0.0)
+
+        // The compatibility entry points must produce the same result as the combined pass.
+        assertEquals(
+            evaluation.matchCounts,
+            database.countMatchingPoints(
+                signals = signals,
+                useWifi = true,
+                useCells = true,
+                useBle = true,
+                now = now
+            )
+        )
+        val standaloneEstimate = database.estimatePosition(
+            signals = signals,
+            useWifi = true,
+            useCells = true,
+            useBle = true
+        )
+        assertNotNull(standaloneEstimate)
+        assertEquals(estimate.matchedCount, standaloneEstimate!!.matchedCount)
+        assertEquals(estimate.matchedRadioTypes, standaloneEstimate.matchedRadioTypes)
+        assertEquals(estimate.latitude, standaloneEstimate.latitude, 0.000001)
+        assertEquals(estimate.longitude, standaloneEstimate.longitude, 0.000001)
     }
 
     @Test

@@ -129,15 +129,26 @@ class RadioGeolocationRepository(private val context: Context) {
             spoofZoneService.assess(latitude, longitude, accuracy).blocksRadioData
         }
 
-        val localEstimate = if (localSourceEnabled && !preferredPositionBlocked) {
+        val localEvaluation = if (localSourceEnabled && !preferredPositionBlocked) {
             withContext(Dispatchers.IO) {
-                database.estimatePosition(
+                database.evaluatePosition(
                     snapshot.signals, useWifi, useCells, useBle,
                     excludeCoordinate = excludeCoordinate
                 )
             }
         } else null
-        val localEstimateWithFreshness = localEstimate?.let { candidate ->
+        localEvaluation?.let { evaluation ->
+            DiagnosticLogStore.log(
+                context,
+                "RADIO_DB",
+                "Локальный проход: активных сигналов=${evaluation.candidateSignalCount}, " +
+                    "известно=${evaluation.matchCounts.knownRadios}, " +
+                    "с координатами=${evaluation.matchCounts.usableCoordinateRadios}, " +
+                    "поиск SQLite=${evaluation.pointLookupDurationMillis} мс, " +
+                    "весь проход=${evaluation.elapsedMillis} мс"
+            )
+        }
+        val localEstimateWithFreshness = localEvaluation?.estimate?.let { candidate ->
             val staleWifiPenalty = RadioFixReliability.wifiAgePenaltyMeters(
                 ageMillis = snapshot.wifiAgeMillis,
                 wifiSignalCount = snapshot.wifiCount,
@@ -247,13 +258,10 @@ class RadioGeolocationRepository(private val context: Context) {
         val selectedPositionAvailable = preferredPosition != null || estimate != null
         val radioDataAllowed = !preferredPositionBlocked && !combinedEstimateBlocked &&
             (selectedPositionAvailable || !spoofZoneService.requiresKnownPositionForRadioWrite())
+        // Match counts come from the same local SQLite snapshot as the estimate above.
+        // Do not issue a second set of point/source-trust queries for this scan.
         val matchCounts = if (localSourceEnabled && radioDataAllowed) {
-            withContext(Dispatchers.IO) {
-                database.countMatchingPoints(
-                    snapshot.signals, useWifi, useCells, useBle,
-                    excludeCoordinate = excludeCoordinate
-                )
-            }
+            localEvaluation?.matchCounts ?: RadioMatchCounts(0, 0)
         } else RadioMatchCounts(0, 0)
 
         // A radio scan inside a manual spoof zone or airport exclusion radius must not
