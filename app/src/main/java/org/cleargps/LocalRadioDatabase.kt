@@ -1924,48 +1924,91 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             .take(MAX_FINGERPRINT_KEYS)
         if (keys.size < 2) return emptyList()
 
-        val startTime = now - FINGERPRINT_HISTORY_AGE_MS
-        val keyPredicate = keys.joinToString(" OR ") { signal ->
-            val compactMac = if (signal.type == "wifi" || signal.type == "ble")
-                compactRadioMacIdentifier(signal.identifier) else null
-            if (compactMac != null) {
-                "(o.radio_type = ? AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = ?)"
-            } else {
-                "(o.radio_type = ? AND o.identifier = ?)"
+        val macKeys = keys.mapNotNull { signal ->
+            compactRadioMacIdentifier(signal.identifier)?.let { compact ->
+                signal.type to compact
             }
+        }.distinct()
+        val exactKeys = keys.filter { signal ->
+            compactRadioMacIdentifier(signal.identifier) == null
         }
+
+        // A key-value CTE avoids the large OR expression. SQLite can seek one radio at a
+        // time through the compact-MAC/radio-key indexes, then aggregate at most the matched
+        // observations. Empty CTEs use a blank sentinel that cannot match VALID_TYPES.
+        val requestedMacRows = if (macKeys.isEmpty()) {
+            "('', '')"
+        } else {
+            macKeys.joinToString(", ") { "(?, ?)" }
+        }
+        val requestedExactRows = if (exactKeys.isEmpty()) {
+            "('', '')"
+        } else {
+            exactKeys.joinToString(", ") { "(?, ?)" }
+        }
+        val startTime = now - FINGERPRINT_HISTORY_AGE_MS
         val timestampArguments = buildList {
+            macKeys.forEach { (type, compact) ->
+                add(type)
+                add(compact)
+            }
+            exactKeys.forEach { signal ->
+                add(signal.type)
+                add(signal.identifier)
+            }
             add(startTime.toString())
             add(now.toString())
             add("unlocated")
             add("local-radio-estimate")
             add("radio-estimate")
-            keys.forEach { signal ->
-                add(signal.type)
-                add(
-                    if (signal.type == "wifi" || signal.type == "ble")
-                        compactRadioMacIdentifier(signal.identifier) ?: signal.identifier
-                    else signal.identifier
-                )
-            }
+            add(startTime.toString())
+            add(now.toString())
+            add("unlocated")
+            add("local-radio-estimate")
+            add("radio-estimate")
             add(MAX_FINGERPRINT_SCANS.toString())
         }.toTypedArray()
         val timestamps = readableDatabase.rawQuery(
             """
-            SELECT o.observed_at
-            FROM radio_observations o
-            JOIN radio_sources s ON s.id = o.source_id
-            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
-              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
-              AND sg.radio_type = o.radio_type
-            WHERE s.enabled = 1 AND s.trust_weight > 0
-              AND (sg.enabled IS NULL OR sg.enabled = 1) AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
-              AND o.observed_at >= ? AND o.observed_at <= ?
-              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
-              AND o.position_source NOT IN (?, ?, ?)
-              AND ($keyPredicate)
-            GROUP BY o.observed_at
-            ORDER BY COUNT(DISTINCT o.radio_type || ':' || o.identifier) DESC, o.observed_at DESC
+            WITH requested_mac(radio_type, compact_identifier) AS (VALUES $requestedMacRows),
+            requested_exact(radio_type, identifier) AS (VALUES $requestedExactRows),
+            candidates AS (
+                SELECT o.observed_at, o.radio_type, o.identifier
+                FROM requested_mac r
+                JOIN radio_observations o ON o.radio_type = r.radio_type
+                  AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = r.compact_identifier
+                JOIN radio_sources s ON s.id = o.source_id
+                LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+                  AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+                  AND sg.radio_type = o.radio_type
+                WHERE s.enabled = 1 AND s.trust_weight > 0
+                  AND (sg.enabled IS NULL OR sg.enabled = 1)
+                  AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                  AND o.observed_at >= ? AND o.observed_at <= ?
+                  AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+                  AND o.position_source NOT IN (?, ?, ?)
+
+                UNION ALL
+
+                SELECT o.observed_at, o.radio_type, o.identifier
+                FROM requested_exact r
+                JOIN radio_observations o ON o.radio_type = r.radio_type
+                  AND o.identifier = r.identifier
+                JOIN radio_sources s ON s.id = o.source_id
+                LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+                  AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+                  AND sg.radio_type = o.radio_type
+                WHERE s.enabled = 1 AND s.trust_weight > 0
+                  AND (sg.enabled IS NULL OR sg.enabled = 1)
+                  AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                  AND o.observed_at >= ? AND o.observed_at <= ?
+                  AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+                  AND o.position_source NOT IN (?, ?, ?)
+            )
+            SELECT observed_at
+            FROM candidates
+            GROUP BY observed_at
+            ORDER BY COUNT(DISTINCT radio_type || ':' || identifier) DESC, observed_at DESC
             LIMIT ?
             """.trimIndent(),
             timestampArguments
