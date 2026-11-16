@@ -1656,7 +1656,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         now: Long = System.currentTimeMillis(),
         excludeCoordinate: ((Double, Double, Double?) -> Boolean)? = null
     ): RadioMatchCounts {
-        val current = prepareCurrentRadioSignals(signals, useWifi, useCells, useBle)
+        val current = prepareCurrentRadioSignals(
+            signals, useWifi, useCells, useBle, canonicalizeIdentifiers = true
+        )
         val matches = loadCurrentPointMatches(readableDatabase, current)
         return countMatchingPointsForCurrent(current, matches, now, excludeCoordinate)
     }
@@ -1674,22 +1676,34 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         excludeCoordinate: ((Double, Double, Double?) -> Boolean)? = null
     ): RadioPositionEvaluation {
         val startedAtNanos = System.nanoTime()
-        val current = prepareCurrentRadioSignals(signals, useWifi, useCells, useBle)
+        // Keep the legacy semantics: match counters deduplicate normalized MAC aliases,
+        // while fingerprint estimation historically kept distinct stored string forms.
+        val currentForCounts = prepareCurrentRadioSignals(
+            signals, useWifi, useCells, useBle, canonicalizeIdentifiers = true
+        )
+        val currentForEstimate = prepareCurrentRadioSignals(
+            signals, useWifi, useCells, useBle, canonicalizeIdentifiers = false
+        )
         val now = System.currentTimeMillis()
 
         val lookupStartedAtNanos = System.nanoTime()
-        val pointMatches = loadCurrentPointMatches(readableDatabase, current)
+        // loadCurrentPointMatches deduplicates normalized keys internally, so the union is
+        // fetched once while both callers can retain their previous list semantics.
+        val pointMatches = loadCurrentPointMatches(
+            readableDatabase,
+            currentForEstimate + currentForCounts
+        )
         val pointLookupDurationMillis =
             ((System.nanoTime() - lookupStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
 
         val matchCounts = countMatchingPointsForCurrent(
-            current = current,
+            current = currentForCounts,
             matches = pointMatches,
             now = now,
             excludeCoordinate = excludeCoordinate
         )
         val estimate = estimatePositionForCurrent(
-            current = current,
+            current = currentForEstimate,
             now = now,
             excludeCoordinate = excludeCoordinate,
             preloadedPointMatches = pointMatches
@@ -1698,7 +1712,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return RadioPositionEvaluation(
             estimate = estimate,
             matchCounts = matchCounts,
-            candidateSignalCount = current.size,
+            candidateSignalCount = currentForEstimate.size,
             pointLookupDurationMillis = pointLookupDurationMillis,
             elapsedMillis = ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         )
@@ -1708,7 +1722,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         signals: List<RadioSignal>, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
         excludeCoordinate: ((Double, Double, Double?) -> Boolean)? = null
     ): RadioEstimate? {
-        val current = prepareCurrentRadioSignals(signals, useWifi, useCells, useBle)
+        val current = prepareCurrentRadioSignals(
+            signals, useWifi, useCells, useBle, canonicalizeIdentifiers = false
+        )
         return estimatePositionForCurrent(
             current = current,
             now = System.currentTimeMillis(),
@@ -1721,7 +1737,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         signals: List<RadioSignal>,
         useWifi: Boolean,
         useCells: Boolean,
-        useBle: Boolean
+        useBle: Boolean,
+        canonicalizeIdentifiers: Boolean
     ): List<RadioSignal> {
         val enabledTypes = buildSet {
             if (useWifi) add("wifi")
@@ -1730,7 +1747,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
         return applyWifiSsidFilter(signals).asSequence()
             .filter { it.type in enabledTypes && it.identifier.isNotBlank() }
-            .distinctBy { it.type + "|" + canonicalIdentifier(it.identifier) }
+            .distinctBy {
+                val identifier = if (canonicalizeIdentifiers) {
+                    canonicalIdentifier(it.identifier)
+                } else {
+                    it.identifier
+                }
+                it.type + "|" + identifier
+            }
             .groupBy { it.type }
             .flatMap { (type, values) ->
                 val limit = when (type) {
