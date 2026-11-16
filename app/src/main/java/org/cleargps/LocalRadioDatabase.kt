@@ -1661,11 +1661,12 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 }
                 values.sortedByDescending { it.rssi }.take(limit)
             }
-        val db = readableDatabase
+        val matches = loadCurrentPointMatches(readableDatabase, current)
         var known = 0
         var located = 0
         current.forEach { signal ->
-            val point = findPoint(db, signal.type, signal.identifier) ?: return@forEach
+            val pointMatch = matches[radioPointLookupKey(signal.type, signal.identifier)] ?: return@forEach
+            val point = pointMatch.point
             val pointLatitude = point.latitude
             val pointLongitude = point.longitude
             if (pointLatitude != null && pointLongitude != null &&
@@ -1677,10 +1678,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 point.longitude?.let { it.isFinite() && it in -180.0..180.0 } == true
             val trustworthySource = !point.positionSource.equals("local-radio-estimate", ignoreCase = true) &&
                 !point.positionSource.equals("radio-estimate", ignoreCase = true)
-            val weight = point.sourceId?.let {
-                sourceTrust(db, it, point.type, point.positionObservedAt ?: point.lastSeen) ?: 0.0
-            } ?: 1.0
-            if (hasCoordinates && trustworthySource && weight > 0.0 && age in 0..radioAnchorMaxAgeMillis(signal.type)) {
+            if (hasCoordinates && trustworthySource && pointMatch.sourceTrustWeight > 0.0 &&
+                age in 0..radioAnchorMaxAgeMillis(signal.type)
+            ) {
                 located++
             }
         }
@@ -1742,20 +1742,25 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
         // Fallback for locally imported WiGLE points or manually geolocated radios.
         val matches = ArrayList<Pair<RadioSignal, RadioPointRecord>>()
-        val db = readableDatabase
+        val pointMatches = loadCurrentPointMatches(readableDatabase, current)
         current.forEach { signal ->
-            val point = findPoint(db, signal.type, signal.identifier)
-            if (point != null && point.latitude != null && point.longitude != null &&
+            val pointMatch = pointMatches[radioPointLookupKey(signal.type, signal.identifier)]
+                ?: return@forEach
+            val point = pointMatch.point
+            if (point.latitude != null && point.longitude != null &&
                 point.latitude.isFinite() && point.latitude in -90.0..90.0 &&
                 point.longitude.isFinite() && point.longitude in -180.0..180.0 &&
                 excludeCoordinate?.invoke(point.latitude, point.longitude, point.accuracyMeters) != true &&
-                (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)) {
-                val weight = point.sourceId?.let {
-                sourceTrust(db, it, point.type, point.positionObservedAt ?: point.lastSeen) ?: 0.0
-            } ?: 1.0
+                (now - point.lastSeen) in 0..radioAnchorMaxAgeMillis(signal.type)
+            ) {
+                val weight = pointMatch.sourceTrustWeight
                 if (weight > 0.0) {
                     val rawAccuracy = point.accuracyMeters ?: DEFAULT_IMPORTED_ACCURACY_METERS
-                    matches.add(signal to point.copy(accuracyMeters = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)))
+                    matches.add(
+                        signal to point.copy(
+                            accuracyMeters = RadioSourceTrustPolicy.effectiveAccuracy(rawAccuracy, weight)
+                        )
+                    )
                 }
             }
         }
@@ -6606,6 +6611,138 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             output.write(buffer, 0, read)
         }
         output.flush()
+    }
+
+    private data class CurrentPointLookupRequest(
+        val type: String,
+        val identifier: String,
+        val compactMac: String?
+    ) {
+        val key: String get() = radioPointLookupKey(type, identifier)
+    }
+
+    private data class CurrentPointMatch(
+        val point: RadioPointRecord,
+        val sourceTrustWeight: Double
+    )
+
+    private fun radioPointLookupKey(type: String, identifier: String): String =
+        "$type|\u0024{canonicalIdentifier(identifier)}"
+
+    /**
+     * Load the active scan's points in two bounded queries instead of querying each radio
+     * and its source/segment trust separately.
+     */
+    private fun loadCurrentPointMatches(
+        db: SQLiteDatabase,
+        signals: List<RadioSignal>
+    ): Map<String, CurrentPointMatch> {
+        val requests = signals.asSequence()
+            .filter { it.type in VALID_TYPES && it.identifier.isNotBlank() }
+            .map { signal ->
+                CurrentPointLookupRequest(
+                    type = signal.type,
+                    identifier = canonicalIdentifier(signal.identifier),
+                    compactMac = if (signal.type == "wifi" || signal.type == "ble") {
+                        compactRadioMacIdentifier(signal.identifier)
+                    } else null
+                )
+            }
+            .distinctBy { it.key }
+            .toList()
+        if (requests.isEmpty()) return emptyMap()
+
+        val result = LinkedHashMap<String, CurrentPointMatch>()
+
+        fun readMatches(
+            pending: List<CurrentPointLookupRequest>,
+            includeCompactMac: Boolean
+        ) {
+            val argumentMultiplier = if (includeCompactMac) 3 else 2
+            val arguments = ArrayList<String>(pending.size * argumentMultiplier)
+            val values = pending.joinToString(",") { request ->
+                arguments.add(request.type)
+                arguments.add(request.identifier)
+                if (includeCompactMac) arguments.add(request.compactMac.orEmpty())
+                if (includeCompactMac) "(?, ?, ?)" else "(?, ?)"
+            }
+            val requestColumns = if (includeCompactMac) {
+                "radio_type, identifier, compact_identifier"
+            } else {
+                "radio_type, identifier"
+            }
+            val pointPredicate = if (includeCompactMac) {
+                "p.radio_type = requested.radio_type AND " +
+                    "replace(replace(replace(lower(p.identifier), ':', ''), '-', ''), '.', '') = requested.compact_identifier"
+            } else {
+                "p.radio_type = requested.radio_type AND p.identifier = requested.identifier"
+            }
+            val sql = """
+                WITH requested($requestColumns) AS (VALUES $values)
+                SELECT requested.radio_type AS lookup_request_type,
+                       requested.identifier AS lookup_request_identifier,
+                       p.*,
+                       s.trust_weight AS lookup_source_weight,
+                       sg.enabled AS lookup_segment_enabled,
+                       sg.trust_weight AS lookup_segment_weight
+                FROM requested
+                JOIN radio_points p ON $pointPredicate
+                LEFT JOIN radio_sources s ON s.id = p.source_id AND s.enabled = 1
+                LEFT JOIN radio_source_segment_settings sg ON sg.source_id = p.source_id
+                  AND sg.day_key = strftime(
+                    '%Y-%m-%d',
+                    COALESCE(p.position_observed_at, p.last_seen) / 1000,
+                    'unixepoch',
+                    'localtime'
+                  )
+                  AND sg.radio_type = p.radio_type
+                ORDER BY requested.radio_type, requested.identifier, p.id
+            """.trimIndent()
+
+            db.rawQuery(sql, arguments.toTypedArray()).use { cursor ->
+                val typeIndex = cursor.getColumnIndexOrThrow("lookup_request_type")
+                val identifierIndex = cursor.getColumnIndexOrThrow("lookup_request_identifier")
+                while (cursor.moveToNext()) {
+                    val key = radioPointLookupKey(
+                        cursor.getString(typeIndex).orEmpty(),
+                        cursor.getString(identifierIndex).orEmpty()
+                    )
+                    if (key !in result) {
+                        val point = cursor.toRadioPoint()
+                        result[key] = CurrentPointMatch(
+                            point = point,
+                            sourceTrustWeight = cursor.currentPointSourceTrustWeight(point)
+                        )
+                    }
+                }
+            }
+        }
+
+        // The composite UNIQUE index handles normal identifiers. Only unresolved MACs need fallback.
+        readMatches(requests, includeCompactMac = false)
+        val missingLegacyMacs = requests.filter {
+            it.compactMac != null && it.key !in result
+        }
+        if (missingLegacyMacs.isNotEmpty()) {
+            readMatches(missingLegacyMacs, includeCompactMac = true)
+        }
+        return result
+    }
+
+    private fun Cursor.currentPointSourceTrustWeight(point: RadioPointRecord): Double {
+        if (point.sourceId == null) return 1.0
+        val sourceWeightIndex = getColumnIndexOrThrow("lookup_source_weight")
+        if (isNull(sourceWeightIndex)) return 0.0
+        var weight = RadioSourceTrustPolicy.normalizeWeight(getDouble(sourceWeightIndex))
+        val segmentEnabledIndex = getColumnIndexOrThrow("lookup_segment_enabled")
+        if (!isNull(segmentEnabledIndex)) {
+            if (getInt(segmentEnabledIndex) == 0) return 0.0
+            val segmentWeightIndex = getColumnIndexOrThrow("lookup_segment_weight")
+            if (!isNull(segmentWeightIndex)) {
+                weight *= RadioSourceTrustPolicy.normalizeWeight(getDouble(segmentWeightIndex))
+            }
+        }
+        return weight
     }
 
     private fun findPoint(db: SQLiteDatabase, type: String, identifier: String): RadioPointRecord? {
