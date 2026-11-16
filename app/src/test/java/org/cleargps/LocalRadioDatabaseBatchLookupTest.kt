@@ -139,6 +139,47 @@ class LocalRadioDatabaseBatchLookupTest {
     }
 
     @Test
+    fun evaluationPreservesLegacyDifferentMacStringFormsForEstimateButCountsOneRadio() {
+        val sourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val now = System.currentTimeMillis()
+        insertPoint(
+            type = "wifi",
+            identifier = "aabbccddee09",
+            sourceId = sourceId,
+            latitude = 52.1000,
+            longitude = 4.1000,
+            observedAt = now
+        )
+        insertPoint(
+            type = "ble",
+            identifier = "aa:bb:cc:dd:ee:0a",
+            sourceId = null,
+            latitude = 52.10005,
+            longitude = 4.10005,
+            observedAt = now
+        )
+
+        val evaluation = database.evaluatePosition(
+            signals = listOf(
+                RadioSignal("wifi", "aa:bb:cc:dd:ee:09", -50, 2412, "Home"),
+                RadioSignal("wifi", "AA-BB-CC-DD-EE-09", -53, 2437, "Home"),
+                RadioSignal("ble", "aa:bb:cc:dd:ee:0a", -62, 0)
+            ),
+            useWifi = true,
+            useCells = false,
+            useBle = true
+        )
+
+        assertEquals(2, evaluation.matchCounts.knownRadios)
+        assertEquals(2, evaluation.matchCounts.usableCoordinateRadios)
+        // The legacy estimator counted both stored string forms; the diagnostics path
+        // continued to regard them as one normalized radio identity.
+        assertEquals(3, evaluation.candidateSignalCount)
+        assertNotNull(evaluation.estimate)
+        assertEquals(3, evaluation.estimate!!.matchedCount)
+    }
+
+    @Test
     fun exactIdentityQueryUsesExistingCompositeIndex() {
         val details = sqlite.rawQuery(
             "EXPLAIN QUERY PLAN WITH requested(radio_type, identifier) AS (VALUES (?, ?)) " +
