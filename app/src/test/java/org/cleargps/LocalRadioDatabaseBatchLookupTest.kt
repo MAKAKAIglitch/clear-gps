@@ -305,6 +305,49 @@ class LocalRadioDatabaseBatchLookupTest {
     }
 
     @Test
+    fun fingerprintCandidateCteSupportsOnlyExactCellKeys() {
+        val sourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val observedAt = System.currentTimeMillis() - 5_000L
+        val identifiers = listOf(
+            "lte:250:1:123:456789",
+            "nr:250:1:321:987654"
+        )
+        identifiers.forEachIndexed { index, identifier ->
+            sqlite.insertOrThrow(
+                "radio_observations",
+                null,
+                ContentValues().apply {
+                    put("radio_type", "cell")
+                    put("identifier", identifier)
+                    put("latitude", 52.1000 + index * 0.0001)
+                    put("longitude", 4.1000 + index * 0.0001)
+                    put("accuracy", 12.0)
+                    put("rssi", -80 - index)
+                    put("frequency", 0)
+                    put("observed_at", observedAt)
+                    put("position_source", "manual-reference")
+                    put("source_id", sourceId)
+                }
+            )
+        }
+
+        val estimate = database.estimatePosition(
+            signals = identifiers.mapIndexed { index, identifier ->
+                RadioSignal("cell", identifier, -80 - index, 0)
+            },
+            useWifi = false,
+            useCells = true,
+            useBle = false
+        )
+
+        assertNotNull(estimate)
+        assertEquals(2, estimate!!.matchedCount)
+        assertEquals(setOf("cell"), estimate.matchedRadioTypes)
+        assertEquals(52.1000, estimate.latitude, 0.000001)
+        assertEquals(4.1000, estimate.longitude, 0.000001)
+    }
+
+    @Test
     fun exactIdentityQueryUsesExistingCompositeIndex() {
         val details = sqlite.rawQuery(
             "EXPLAIN QUERY PLAN WITH requested(radio_type, identifier) AS (VALUES (?, ?)) " +
