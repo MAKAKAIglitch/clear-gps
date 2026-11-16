@@ -1668,7 +1668,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
      * one batched point/source-trust snapshot. The two previous repository calls independently
      * repeated the same SQLite point lookup on every scan.
      */
-    fun evaluatePosition(
+    internal fun evaluatePosition(
         signals: List<RadioSignal>,
         useWifi: Boolean,
         useCells: Boolean,
