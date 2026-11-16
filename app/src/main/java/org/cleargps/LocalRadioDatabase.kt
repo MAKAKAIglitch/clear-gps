@@ -444,6 +444,10 @@ internal data class RadioPositionEvaluation(
     val matchCounts: RadioMatchCounts,
     val candidateSignalCount: Int,
     val pointLookupDurationMillis: Long,
+    val fingerprintQueryDurationMillis: Long,
+    val fingerprintScoringDurationMillis: Long,
+    val fallbackEstimateDurationMillis: Long,
+    val fingerprintSampleCount: Int,
     val elapsedMillis: Long
 )
 
@@ -1706,7 +1710,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             now = now,
             excludeCoordinate = excludeCoordinate
         )
-        val estimate = estimatePositionForCurrent(
+        val estimateCalculation = estimatePositionForCurrent(
             current = currentForEstimate,
             now = now,
             excludeCoordinate = excludeCoordinate,
@@ -1714,10 +1718,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         )
 
         return RadioPositionEvaluation(
-            estimate = estimate,
+            estimate = estimateCalculation.estimate,
             matchCounts = matchCounts,
             candidateSignalCount = currentForEstimate.size,
             pointLookupDurationMillis = pointLookupDurationMillis,
+            fingerprintQueryDurationMillis = estimateCalculation.fingerprintQueryDurationMillis,
+            fingerprintScoringDurationMillis = estimateCalculation.fingerprintScoringDurationMillis,
+            fallbackEstimateDurationMillis = estimateCalculation.fallbackEstimateDurationMillis,
+            fingerprintSampleCount = estimateCalculation.fingerprintSampleCount,
             elapsedMillis = ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         )
     }
@@ -1734,7 +1742,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             now = System.currentTimeMillis(),
             excludeCoordinate = excludeCoordinate,
             preloadedPointMatches = null
-        )
+        ).estimate
     }
 
     private fun prepareCurrentRadioSignals(
@@ -1801,28 +1809,43 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return RadioMatchCounts(known, located)
     }
 
+    private data class PositionEstimateCalculation(
+        val estimate: RadioEstimate?,
+        val fingerprintQueryDurationMillis: Long,
+        val fingerprintScoringDurationMillis: Long,
+        val fallbackEstimateDurationMillis: Long,
+        val fingerprintSampleCount: Int
+    )
+
     private fun estimatePositionForCurrent(
         current: List<RadioSignal>,
         now: Long,
         excludeCoordinate: ((Double, Double, Double?) -> Boolean)?,
         preloadedPointMatches: Map<String, CurrentPointMatch>?
-    ): RadioEstimate? {
+    ): PositionEstimateCalculation {
         if (current.size < 2) {
             DiagnosticLogStore.log(
                 appContext, "RADIO_DB",
                 "Расчёт пропущен: обнаружено только ${current.size} разных активных сигналов; требуется минимум 2"
             )
-            return null
+            return PositionEstimateCalculation(null, 0L, 0L, 0L, 0)
         }
 
         // Prefer a past scan fingerprint: its coordinates are where the phone was,
         // not an average of the physical positions of nearby transmitters.
+        val fingerprintQueryStartedAtNanos = System.nanoTime()
         val usableHistory = loadFingerprintSamples(current, now).filterNot { sample ->
             val latitude = sample.latitude ?: return@filterNot false
             val longitude = sample.longitude ?: return@filterNot false
             excludeCoordinate?.invoke(latitude, longitude, sample.accuracyMeters) == true
         }
+        val fingerprintQueryDurationMillis =
+            ((System.nanoTime() - fingerprintQueryStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+
+        val fingerprintScoringStartedAtNanos = System.nanoTime()
         val fingerprintLookup = lookupRadioFingerprintPosition(current, usableHistory, now)
+        val fingerprintScoringDurationMillis =
+            ((System.nanoTime() - fingerprintScoringStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         if (fingerprintLookup.estimate != null) {
             val estimate = fingerprintLookup.estimate
             DiagnosticLogStore.log(
@@ -1835,9 +1858,16 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 },
                 if (fingerprintLookup.ambiguous) "WARN" else "INFO"
             )
-            return estimate
+            return PositionEstimateCalculation(
+                estimate = estimate,
+                fingerprintQueryDurationMillis = fingerprintQueryDurationMillis,
+                fingerprintScoringDurationMillis = fingerprintScoringDurationMillis,
+                fallbackEstimateDurationMillis = 0L,
+                fingerprintSampleCount = usableHistory.size
+            )
         }
 
+        val fallbackStartedAtNanos = System.nanoTime()
         // Fallback for locally imported WiGLE points or manually geolocated radios.
         val matches = ArrayList<Pair<RadioSignal, RadioPointRecord>>()
         val pointMatches = preloadedPointMatches ?: loadCurrentPointMatches(readableDatabase, current)
@@ -1863,6 +1893,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             }
         }
         val anchorEstimate = estimateRadioAnchorPosition(matches, now)
+        val fallbackEstimateDurationMillis =
+            ((System.nanoTime() - fallbackStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         DiagnosticLogStore.log(
             appContext, "RADIO_DB",
             "Сопоставление с координатами базы: услышано сигналов=${current.size}, координатных записей совпало=${matches.size}, " +
@@ -1870,7 +1902,13 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     "оценка есть, совпадений в оценке=${it.matchedCount}, погрешность≈${it.accuracyMeters.toInt()} м"
                 } ?: "достоверная оценка не построена")
         )
-        return anchorEstimate
+        return PositionEstimateCalculation(
+            estimate = anchorEstimate,
+            fingerprintQueryDurationMillis = fingerprintQueryDurationMillis,
+            fingerprintScoringDurationMillis = fingerprintScoringDurationMillis,
+            fallbackEstimateDurationMillis = fallbackEstimateDurationMillis,
+            fingerprintSampleCount = usableHistory.size
+        )
     }
 
     /**

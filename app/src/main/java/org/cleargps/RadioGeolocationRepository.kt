@@ -144,8 +144,12 @@ class RadioGeolocationRepository(private val context: Context) {
                 "Локальный проход: активных сигналов=${evaluation.candidateSignalCount}, " +
                     "известно=${evaluation.matchCounts.knownRadios}, " +
                     "с координатами=${evaluation.matchCounts.usableCoordinateRadios}, " +
-                    "поиск SQLite=${evaluation.pointLookupDurationMillis} мс, " +
-                    "весь проход=${evaluation.elapsedMillis} мс"
+                    "поиск точек SQLite=${evaluation.pointLookupDurationMillis} мс, " +
+                    "fingerprint SQL=${evaluation.fingerprintQueryDurationMillis} мс, " +
+                    "оценка fingerprint=${evaluation.fingerprintScoringDurationMillis} мс " +
+                    "(${evaluation.fingerprintSampleCount} образцов), " +
+                    "fallback=${evaluation.fallbackEstimateDurationMillis} мс, " +
+                    "весь локальный проход=${evaluation.elapsedMillis} мс"
             )
         }
         val localEstimateWithFreshness = localEvaluation?.estimate?.let { candidate ->
@@ -250,7 +254,19 @@ class RadioGeolocationRepository(private val context: Context) {
                 add(RadioPositionFusion.SourceEstimate("opencellid", it, trustWeight = 0.30))
             }
         }
+        val fusionStartedAtNanos = System.nanoTime()
         val combinedEstimate = if (preferredPositionBlocked) null else RadioPositionFusion.combine(sourceEstimates)
+        val fusionDurationMillis =
+            ((System.nanoTime() - fusionStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        val snapshotProcessingAgeMillis =
+            ((SystemClock.elapsedRealtimeNanos() - snapshot.collectedAtElapsedRealtimeNanos) / 1_000_000L)
+                .coerceAtLeast(0L)
+        DiagnosticLogStore.log(
+            context,
+            "RADIO_FUSION",
+            "Источников оценки=${sourceEstimates.size}, fusion=${fusionDurationMillis} мс, " +
+                "обработка после сбора сводки=${snapshotProcessingAgeMillis} мс"
+        )
         val combinedEstimateBlocked = combinedEstimate?.let {
             spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
         } == true
