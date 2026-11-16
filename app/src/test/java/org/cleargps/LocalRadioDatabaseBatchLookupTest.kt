@@ -106,6 +106,10 @@ class LocalRadioDatabaseBatchLookupTest {
         assertEquals(3, evaluation.matchCounts.usableCoordinateRadios)
         assertEquals(4, evaluation.candidateSignalCount)
         assertTrue(evaluation.pointLookupDurationMillis >= 0L)
+        assertTrue(evaluation.fingerprintQueryDurationMillis >= 0L)
+        assertTrue(evaluation.fingerprintScoringDurationMillis >= 0L)
+        assertTrue(evaluation.fallbackEstimateDurationMillis >= 0L)
+        assertTrue(evaluation.fingerprintSampleCount >= 0)
         assertTrue(evaluation.elapsedMillis >= evaluation.pointLookupDurationMillis)
 
         val estimate = evaluation.estimate
@@ -180,6 +184,127 @@ class LocalRadioDatabaseBatchLookupTest {
     }
 
     @Test
+    fun fingerprintCandidateCteMatchesLegacyOrQueryForMacAliasesAndExactCellKeys() {
+        val sourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val now = System.currentTimeMillis()
+        val keys = listOf(
+            "aa:bb:cc:dd:ee:41" to "wifi",
+            "aabbccddee42" to "ble",
+            "lte:250:1:123:456789" to "cell"
+        )
+        val timestamps = listOf(now - 30_000L, now - 20_000L, now - 10_000L)
+        keys.forEachIndexed { index, (identifier, type) ->
+            sqlite.insertOrThrow(
+                "radio_observations",
+                null,
+                ContentValues().apply {
+                    put("radio_type", type)
+                    put("identifier", identifier)
+                    put("latitude", 52.0 + index * 0.0001)
+                    put("longitude", 4.0 + index * 0.0001)
+                    put("accuracy", 12.0)
+                    put("rssi", -55 - index)
+                    put("frequency", if (type == "wifi") 2412 else 0)
+                    put("observed_at", timestamps[index])
+                    put("position_source", "manual-reference")
+                    put("source_id", sourceId)
+                }
+            )
+        }
+
+        val legacySql = """
+            SELECT o.observed_at
+            FROM radio_observations o
+            JOIN radio_sources s ON s.id = o.source_id
+            LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+              AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+              AND sg.radio_type = o.radio_type
+            WHERE s.enabled = 1 AND s.trust_weight > 0
+              AND (sg.enabled IS NULL OR sg.enabled = 1)
+              AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+              AND o.observed_at >= ? AND o.observed_at <= ?
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+              AND o.position_source NOT IN (?, ?, ?)
+              AND (
+                (o.radio_type = ? AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = ?) OR
+                (o.radio_type = ? AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = ?) OR
+                (o.radio_type = ? AND o.identifier = ?)
+              )
+            GROUP BY o.observed_at
+            ORDER BY COUNT(DISTINCT o.radio_type || ':' || o.identifier) DESC, o.observed_at DESC
+            LIMIT ?
+        """.trimIndent()
+        val startTime = now - 90L * 24 * 60 * 60 * 1_000L
+        val commonArguments = listOf(
+            startTime.toString(), now.toString(),
+            "unlocated", "local-radio-estimate", "radio-estimate"
+        )
+        val legacyArguments = (
+            commonArguments + listOf(
+                "wifi", "aabbccddee41",
+                "ble", "aabbccddee42",
+                "cell", "lte:250:1:123:456789",
+                "250"
+            )
+        ).toTypedArray()
+        val cteSql = """
+            WITH requested_mac(radio_type, compact_identifier) AS (VALUES (?, ?), (?, ?)),
+                 requested_exact(radio_type, identifier) AS (VALUES (?, ?)),
+                 candidates AS (
+                    SELECT o.observed_at, o.radio_type, o.identifier
+                    FROM requested_mac r
+                    JOIN radio_observations o ON o.radio_type = r.radio_type
+                      AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = r.compact_identifier
+                    JOIN radio_sources s ON s.id = o.source_id
+                    LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+                      AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+                      AND sg.radio_type = o.radio_type
+                    WHERE s.enabled = 1 AND s.trust_weight > 0
+                      AND (sg.enabled IS NULL OR sg.enabled = 1)
+                      AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                      AND o.observed_at >= ? AND o.observed_at <= ?
+                      AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+                      AND o.position_source NOT IN (?, ?, ?)
+                    UNION ALL
+                    SELECT o.observed_at, o.radio_type, o.identifier
+                    FROM requested_exact r
+                    JOIN radio_observations o ON o.radio_type = r.radio_type AND o.identifier = r.identifier
+                    JOIN radio_sources s ON s.id = o.source_id
+                    LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
+                      AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
+                      AND sg.radio_type = o.radio_type
+                    WHERE s.enabled = 1 AND s.trust_weight > 0
+                      AND (sg.enabled IS NULL OR sg.enabled = 1)
+                      AND (sg.trust_weight IS NULL OR sg.trust_weight > 0)
+                      AND o.observed_at >= ? AND o.observed_at <= ?
+                      AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+                      AND o.position_source NOT IN (?, ?, ?)
+                 )
+            SELECT observed_at
+            FROM candidates
+            GROUP BY observed_at
+            ORDER BY COUNT(DISTINCT radio_type || ':' || identifier) DESC, observed_at DESC
+            LIMIT ?
+        """.trimIndent()
+        val cteArguments = (
+            listOf(
+                "wifi", "aabbccddee41",
+                "ble", "aabbccddee42",
+                "cell", "lte:250:1:123:456789"
+            ) + commonArguments + commonArguments + "250"
+        ).toTypedArray()
+
+        val legacyRows = sqlite.rawQuery(legacySql, legacyArguments).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) }
+        }
+        val cteRows = sqlite.rawQuery(cteSql, cteArguments).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getLong(0)) }
+        }
+        assertEquals(legacyRows, cteRows)
+        assertEquals(timestamps.sortedDescending(), cteRows)
+    }
+
+    @Test
     fun exactIdentityQueryUsesExistingCompositeIndex() {
         val details = sqlite.rawQuery(
             "EXPLAIN QUERY PLAN WITH requested(radio_type, identifier) AS (VALUES (?, ?)) " +
@@ -201,10 +326,16 @@ class LocalRadioDatabaseBatchLookupTest {
     fun fingerprintMacExpressionUsesCompactRadioIndex() {
         assertTrue(indexExists("radio_obs_radio_compact_time"))
         val plan = sqlite.rawQuery(
-            "EXPLAIN QUERY PLAN SELECT observed_at FROM radio_observations " +
-                "WHERE radio_type = ? AND " +
-                "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ? " +
-                "AND observed_at >= ? AND observed_at <= ?",
+            """
+            EXPLAIN QUERY PLAN
+            WITH requested_mac(radio_type, compact_identifier) AS (VALUES (?, ?)),
+                 requested_exact(radio_type, identifier) AS (VALUES ('', ''))
+            SELECT o.observed_at
+            FROM requested_mac r
+            JOIN radio_observations o ON o.radio_type = r.radio_type
+              AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = r.compact_identifier
+            WHERE o.observed_at >= ? AND o.observed_at <= ?
+            """.trimIndent(),
             arrayOf("wifi", "aabbccddee01", "0", Long.MAX_VALUE.toString())
         ).use { cursor ->
             buildList {

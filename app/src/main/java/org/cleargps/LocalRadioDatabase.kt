@@ -1925,12 +1925,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         if (keys.size < 2) return emptyList()
 
         val macKeys = keys.mapNotNull { signal ->
-            compactRadioMacIdentifier(signal.identifier)?.let { compact ->
-                signal.type to compact
-            }
+            val compact = if (signal.type == "wifi" || signal.type == "ble") {
+                compactRadioMacIdentifier(signal.identifier)
+            } else null
+            compact?.let { signal.type to it }
         }.distinct()
         val exactKeys = keys.filter { signal ->
-            compactRadioMacIdentifier(signal.identifier) == null
+            signal.type !in setOf("wifi", "ble") ||
+                compactRadioMacIdentifier(signal.identifier) == null
         }
 
         // A key-value CTE avoids the large OR expression. SQLite can seek one radio at a
