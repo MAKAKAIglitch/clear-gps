@@ -321,7 +321,7 @@ class LocalRadioDatabaseBatchLookupTest {
                     put("identifier", identifier)
                     put("latitude", 52.1000 + index * 0.0001)
                     put("longitude", 4.1000 + index * 0.0001)
-                    put("accuracy", 12.0)
+                    put("accuracy", if (index == 0) 12.0 else 18.0)
                     put("rssi", -80 - index)
                     put("frequency", 0)
                     put("observed_at", observedAt)
