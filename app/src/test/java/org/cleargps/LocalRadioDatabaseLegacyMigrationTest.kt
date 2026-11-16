@@ -106,7 +106,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(19, sqlite!!.version)
+        assertEquals(20, sqlite!!.version)
         assertTrue(sqlite!!.rawQuery(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cell_site_sectors'", null
         ).use { it.moveToFirst() })
@@ -156,11 +156,71 @@ class LocalRadioDatabaseLegacyMigrationTest {
         assertTrue(indexExists("radio_obs_source_time"))
         assertTrue(indexExists("radio_points_source"))
         assertTrue(indexExists("radio_obs_radio_time"))
+        assertTrue(indexExists("radio_obs_radio_compact_time"))
         assertTrue(tableExists("cell_observation_details"))
         assertFalse(queryHasRow("PRAGMA foreign_key_check"))
         assertEquals(0, countRows("radio_source_segment_settings", "1 = 1"))
         assertEquals(6, countRows("sqlite_master", "type = ? AND name LIKE 'radio_deletion_undo%'", "table"))
         assertEquals(1, countRows("radio_sources", "id = ?", localSource.id.toString()))
+    }
+
+    @Test
+    fun v19UpgradeAddsCompactMacIndexWithoutChangingStoredObservations() {
+        database = LocalRadioDatabase(context)
+        sqlite = database!!.writableDatabase
+        val sourceId = database!!.listRadioSources().single { it.kind == "local" }.id
+        val observedAt = 1_790_000_000_000L
+        val observationId = sqlite!!.insertOrThrow(
+            "radio_observations",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", "aabbccddee99")
+                put("latitude", 52.1)
+                put("longitude", 4.1)
+                put("accuracy", 20.0)
+                put("rssi", -55)
+                put("frequency", 2412)
+                put("observed_at", observedAt)
+                put("position_source", "manual-reference")
+                put("source_id", sourceId)
+            }
+        )
+
+        // Turn the newly created schema into the precise pre-migration state.
+        sqlite!!.execSQL("DROP INDEX radio_obs_radio_compact_time")
+        sqlite!!.version = 19
+        database!!.close()
+        database = null
+        sqlite = null
+
+        database = LocalRadioDatabase(context)
+        sqlite = database!!.writableDatabase
+
+        assertEquals(20, sqlite!!.version)
+        assertTrue(indexExists("radio_obs_radio_compact_time"))
+        assertEquals(1, countRows("radio_observations", "id = ?", observationId.toString()))
+        assertEquals(
+            "aabbccddee99",
+            sqlite!!.rawQuery(
+                "SELECT identifier FROM radio_observations WHERE id = ?",
+                arrayOf(observationId.toString())
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                cursor.getString(0)
+            }
+        )
+        val plan = sqlite!!.rawQuery(
+            "EXPLAIN QUERY PLAN SELECT observed_at FROM radio_observations " +
+                "WHERE radio_type = ? AND " +
+                "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ?",
+            arrayOf("wifi", "aabbccddee99")
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getString(3).orEmpty())
+            }.joinToString(" ")
+        }
+        assertTrue(plan.contains("radio_obs_radio_compact_time"))
     }
 
     private fun createVersion1Schema(db: SQLiteDatabase) {
@@ -337,7 +397,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         database = LocalRadioDatabase(context)
         sqlite = database!!.writableDatabase
 
-        assertEquals(19, sqlite!!.version)
+        assertEquals(20, sqlite!!.version)
         assertTrue(sqlite!!.isWriteAheadLoggingEnabled)
         assertTrue(tableExists("cell_sites"))
         assertTrue(tableExists("cell_site_links"))
@@ -400,6 +460,7 @@ class LocalRadioDatabaseLegacyMigrationTest {
         assertTrue(indexExists("radio_obs_source_time"))
         assertTrue(indexExists("radio_points_source"))
         assertTrue(indexExists("radio_obs_radio_time"))
+        assertTrue(indexExists("radio_obs_radio_compact_time"))
         assertFalse(queryHasRow("PRAGMA foreign_key_check"))
     }
 

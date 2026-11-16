@@ -66,7 +66,7 @@ BeaconDB contributes only the coordinate in the current in-memory lookup result;
 
 ## Local radio database and provenance
 
-`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **19**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
+`LocalRadioDatabase` currently extends Android `SQLiteOpenHelper`; the schema is version **20**, uses WAL and enables foreign-key enforcement. This is the implementation today, not Room yet.
 
 Core tables and catalogues:
 
@@ -82,7 +82,7 @@ Core tables and catalogues:
 - `radio_auto_refinement_attempts` — provider/fingerprint retry and backoff state for automatic refinement;
 - `radio_deletion_undo` and its `*_keys`, `*_points`, `*_observations`, `*_history` and `*_segments` tables — short-lived snapshots for undoing scoped deletions.
 
-Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, the OpenCellID checked-time index, and lookup/backoff indexes for automatic refinement. Migrations are additive. The current schema version 19 includes the isolated OpenCellID catalogue, import-deduplication index, independently stored automatic-refinement batches, RAT-specific cell observation metadata, physical cell sites, site membership and derived sector models. Existing points, observations and scan history are preserved by these upgrades.
+Important indexes include point last-seen/source indexes, observation time/source-time/radio-key-time indexes, the normalized Wi-Fi/BLE MAC expression index on `(radio_type, replace(lower(identifier), separators), observed_at)`, the import-deduplication index on `(source_id, radio_type, identifier, observed_at, rssi, frequency)`, the OpenCellID checked-time index, and lookup/backoff indexes for automatic refinement. Migrations are additive. The current schema version 20 includes the isolated OpenCellID catalogue, import-deduplication and normalized MAC lookup indexes, independently stored automatic-refinement batches, RAT-specific cell observation metadata, physical cell sites, site membership and derived sector models. Existing points, observations and scan history are preserved by these upgrades.
 
 Storage limits are independent:
 

@@ -197,6 +197,27 @@ class LocalRadioDatabaseBatchLookupTest {
         assertTrue(details.contains("identifier", ignoreCase = true))
     }
 
+    @Test
+    fun fingerprintMacExpressionUsesCompactRadioIndex() {
+        assertTrue(indexExists("radio_obs_radio_compact_time"))
+        val plan = sqlite.rawQuery(
+            "EXPLAIN QUERY PLAN SELECT observed_at FROM radio_observations " +
+                "WHERE radio_type = ? AND " +
+                "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', '') = ? " +
+                "AND observed_at >= ? AND observed_at <= ?",
+            arrayOf("wifi", "aabbccddee01", "0", Long.MAX_VALUE.toString())
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getString(3).orEmpty())
+            }.joinToString(" ")
+        }
+
+        assertTrue(
+            "Expected compact MAC expression index, got: $plan",
+            plan.contains("radio_obs_radio_compact_time")
+        )
+    }
+
     private fun insertSegment(
         sourceId: Long,
         dayKey: String,
@@ -249,6 +270,12 @@ class LocalRadioDatabaseBatchLookupTest {
             }
         )
     }
+
+    private fun indexExists(index: String): Boolean =
+        sqlite.rawQuery(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            arrayOf(index)
+        ).use { it.moveToFirst() }
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"

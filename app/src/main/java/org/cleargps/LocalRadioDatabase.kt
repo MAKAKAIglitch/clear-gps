@@ -1008,6 +1008,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL("CREATE INDEX radio_obs_time ON radio_observations(observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
+        createRadioObservationCompactMacIndex(db)
         db.execSQL("CREATE INDEX radio_obs_import_dedupe ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         createCellObservationDetailsTable(db)
@@ -1130,6 +1131,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
         if (oldVersion < 19) {
             createCellSiteSectorTables(db)
+        }
+        if (oldVersion < 20) {
+            createRadioObservationCompactMacIndex(db)
         }
     }
 
@@ -1979,6 +1983,20 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
     }
 
+
+    /**
+     * Supports the normalized Wi-Fi/BLE MAC expression used by fingerprint candidate lookup.
+     * The expression intentionally matches loadFingerprintSamples() byte-for-byte so SQLite
+     * can use this index instead of scanning every observation of a radio type.
+     */
+    private fun createRadioObservationCompactMacIndex(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_obs_radio_compact_time ON radio_observations(" +
+                "radio_type, " +
+                "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', ''), " +
+                "observed_at DESC)"
+        )
+    }
 
     private fun createRadioSourcesTable(db: SQLiteDatabase) {
         db.execSQL(
@@ -6931,7 +6949,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 19
+        private const val DB_VERSION = 20
         private const val OPEN_CELL_OSM_MIN_RADIUS_METERS = 100
         private const val OPEN_CELL_OSM_MAX_RADIUS_METERS = 5_000
         private const val OPEN_CELL_OSM_MAX_ATTEMPTS_PER_DAY = 2
