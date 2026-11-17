@@ -445,6 +445,14 @@ internal data class RadioPositionEvaluation(
     val candidateSignalCount: Int,
     val pointLookupDurationMillis: Long,
     val fingerprintQueryDurationMillis: Long,
+    val fingerprintCandidateQueryDurationMillis: Long,
+    val fingerprintExpansionQueryDurationMillis: Long,
+    val fingerprintCandidateTimestampCount: Int,
+    val fingerprintMacKeyCount: Int,
+    val fingerprintExactKeyCount: Int,
+    val fingerprintDatabaseVersion: Int,
+    val compactMacIndexAvailable: Boolean,
+    val candidatePlanUsesCompactMacIndex: Boolean?,
     val fingerprintScoringDurationMillis: Long,
     val fallbackEstimateDurationMillis: Long,
     val fingerprintSampleCount: Int,
@@ -1723,6 +1731,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             candidateSignalCount = currentForEstimate.size,
             pointLookupDurationMillis = pointLookupDurationMillis,
             fingerprintQueryDurationMillis = estimateCalculation.fingerprintQueryDurationMillis,
+            fingerprintCandidateQueryDurationMillis = estimateCalculation.fingerprintCandidateQueryDurationMillis,
+            fingerprintExpansionQueryDurationMillis = estimateCalculation.fingerprintExpansionQueryDurationMillis,
+            fingerprintCandidateTimestampCount = estimateCalculation.fingerprintCandidateTimestampCount,
+            fingerprintMacKeyCount = estimateCalculation.fingerprintMacKeyCount,
+            fingerprintExactKeyCount = estimateCalculation.fingerprintExactKeyCount,
+            fingerprintDatabaseVersion = estimateCalculation.fingerprintDatabaseVersion,
+            compactMacIndexAvailable = estimateCalculation.compactMacIndexAvailable,
+            candidatePlanUsesCompactMacIndex = estimateCalculation.candidatePlanUsesCompactMacIndex,
             fingerprintScoringDurationMillis = estimateCalculation.fingerprintScoringDurationMillis,
             fallbackEstimateDurationMillis = estimateCalculation.fallbackEstimateDurationMillis,
             fingerprintSampleCount = estimateCalculation.fingerprintSampleCount,
@@ -1809,12 +1825,32 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         return RadioMatchCounts(known, located)
     }
 
+    private data class FingerprintSampleLoadResult(
+        val samples: List<RadioFingerprintSample> = emptyList(),
+        val candidateQueryDurationMillis: Long = 0L,
+        val expansionQueryDurationMillis: Long = 0L,
+        val candidateTimestampCount: Int = 0,
+        val macKeyCount: Int = 0,
+        val exactKeyCount: Int = 0,
+        val databaseVersion: Int = 0,
+        val compactMacIndexAvailable: Boolean = false,
+        val candidatePlanUsesCompactMacIndex: Boolean? = null
+    )
+
     private data class PositionEstimateCalculation(
         val estimate: RadioEstimate?,
         val fingerprintQueryDurationMillis: Long,
         val fingerprintScoringDurationMillis: Long,
         val fallbackEstimateDurationMillis: Long,
-        val fingerprintSampleCount: Int
+        val fingerprintSampleCount: Int,
+        val fingerprintCandidateQueryDurationMillis: Long = 0L,
+        val fingerprintExpansionQueryDurationMillis: Long = 0L,
+        val fingerprintCandidateTimestampCount: Int = 0,
+        val fingerprintMacKeyCount: Int = 0,
+        val fingerprintExactKeyCount: Int = 0,
+        val fingerprintDatabaseVersion: Int = 0,
+        val compactMacIndexAvailable: Boolean = false,
+        val candidatePlanUsesCompactMacIndex: Boolean? = null
     )
 
     private fun estimatePositionForCurrent(
@@ -1834,7 +1870,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         // Prefer a past scan fingerprint: its coordinates are where the phone was,
         // not an average of the physical positions of nearby transmitters.
         val fingerprintQueryStartedAtNanos = System.nanoTime()
-        val usableHistory = loadFingerprintSamples(current, now).filterNot { sample ->
+        val fingerprintLoad = loadFingerprintSamples(current, now)
+        val usableHistory = fingerprintLoad.samples.filterNot { sample ->
             val latitude = sample.latitude ?: return@filterNot false
             val longitude = sample.longitude ?: return@filterNot false
             excludeCoordinate?.invoke(latitude, longitude, sample.accuracyMeters) == true
@@ -1863,7 +1900,15 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 fingerprintQueryDurationMillis = fingerprintQueryDurationMillis,
                 fingerprintScoringDurationMillis = fingerprintScoringDurationMillis,
                 fallbackEstimateDurationMillis = 0L,
-                fingerprintSampleCount = usableHistory.size
+                fingerprintSampleCount = usableHistory.size,
+                fingerprintCandidateQueryDurationMillis = fingerprintLoad.candidateQueryDurationMillis,
+                fingerprintExpansionQueryDurationMillis = fingerprintLoad.expansionQueryDurationMillis,
+                fingerprintCandidateTimestampCount = fingerprintLoad.candidateTimestampCount,
+                fingerprintMacKeyCount = fingerprintLoad.macKeyCount,
+                fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
+                fingerprintDatabaseVersion = fingerprintLoad.databaseVersion,
+                compactMacIndexAvailable = fingerprintLoad.compactMacIndexAvailable,
+                candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex
             )
         }
 
@@ -1907,7 +1952,15 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             fingerprintQueryDurationMillis = fingerprintQueryDurationMillis,
             fingerprintScoringDurationMillis = fingerprintScoringDurationMillis,
             fallbackEstimateDurationMillis = fallbackEstimateDurationMillis,
-            fingerprintSampleCount = usableHistory.size
+            fingerprintSampleCount = usableHistory.size,
+            fingerprintCandidateQueryDurationMillis = fingerprintLoad.candidateQueryDurationMillis,
+            fingerprintExpansionQueryDurationMillis = fingerprintLoad.expansionQueryDurationMillis,
+            fingerprintCandidateTimestampCount = fingerprintLoad.candidateTimestampCount,
+            fingerprintMacKeyCount = fingerprintLoad.macKeyCount,
+            fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
+            fingerprintDatabaseVersion = fingerprintLoad.databaseVersion,
+            compactMacIndexAvailable = fingerprintLoad.compactMacIndexAvailable,
+            candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex
         )
     }
 
@@ -1916,13 +1969,16 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
      * The second query expands those scan timestamps to complete fingerprints, so the match
      * score accounts for both shared and missing radios without loading the full history per scan.
      */
-    private fun loadFingerprintSamples(signals: List<RadioSignal>, now: Long): List<RadioFingerprintSample> {
+    private fun loadFingerprintSamples(
+        signals: List<RadioSignal>,
+        now: Long
+    ): FingerprintSampleLoadResult {
         val keys = signals.asSequence()
             .filter { it.type in VALID_TYPES && it.identifier.isNotBlank() }
             .distinctBy { it.type + "|" + it.identifier }
             .toList()
             .take(MAX_FINGERPRINT_KEYS)
-        if (keys.size < 2) return emptyList()
+        if (keys.size < 2) return FingerprintSampleLoadResult()
 
         val macKeys = keys.mapNotNull { signal ->
             val compact = if (signal.type == "wifi" || signal.type == "ble") {
@@ -1934,10 +1990,17 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             signal.type !in setOf("wifi", "ble") ||
                 compactRadioMacIdentifier(signal.identifier) == null
         }
+        val db = readableDatabase
+        val databaseVersion = db.version
+        val compactMacIndexAvailable = if (macKeys.isNotEmpty()) {
+            db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
+                arrayOf("radio_obs_radio_compact_time")
+            ).use { it.moveToFirst() }
+        } else false
 
-        // A key-value CTE avoids the large OR expression. SQLite can seek one radio at a
-        // time through the compact-MAC/radio-key indexes, then aggregate at most the matched
-        // observations. Empty CTEs use a blank sentinel that cannot match VALID_TYPES.
+        // A key-value CTE lets SQLite seek the existing radio/time indexes per heard identity.
+        // Empty CTEs use a blank sentinel that cannot match VALID_TYPES.
         val requestedMacRows = if (macKeys.isEmpty()) {
             "('', '')"
         } else {
@@ -1970,8 +2033,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             add("radio-estimate")
             add(MAX_FINGERPRINT_SCANS.toString())
         }.toTypedArray()
-        val timestamps = readableDatabase.rawQuery(
-            """
+        val candidateSql = """
             WITH requested_mac(radio_type, compact_identifier) AS (VALUES $requestedMacRows),
             requested_exact(radio_type, identifier) AS (VALUES $requestedExactRows),
             candidates AS (
@@ -2012,21 +2074,51 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             GROUP BY observed_at
             ORDER BY COUNT(DISTINCT radio_type || ':' || identifier) DESC, observed_at DESC
             LIMIT ?
-            """.trimIndent(),
-            timestampArguments
-        ).use { cursor ->
+        """.trimIndent()
+
+        val candidateQueryStartedAtNanos = System.nanoTime()
+        val timestamps = db.rawQuery(candidateSql, timestampArguments).use { cursor ->
             buildList {
                 while (cursor.moveToNext()) add(cursor.getLong(0))
             }
         }
-        if (timestamps.isEmpty()) return emptyList()
+        val candidateQueryDurationMillis =
+            ((System.nanoTime() - candidateQueryStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+
+        // Only ask SQLite for an execution plan after a slow candidate search; this is diagnostic
+        // and keeps EXPLAIN out of the normal scan hot path.
+        val candidatePlanUsesCompactMacIndex = if (
+            macKeys.isNotEmpty() && candidateQueryDurationMillis >= SLOW_FINGERPRINT_QUERY_PLAN_THRESHOLD_MS
+        ) {
+            runCatching {
+                db.rawQuery("EXPLAIN QUERY PLAN $candidateSql", timestampArguments).use { cursor ->
+                    var used = false
+                    while (cursor.moveToNext()) {
+                        val detail = cursor.getString(3).orEmpty()
+                        if (detail.contains("radio_obs_radio_compact_time")) used = true
+                    }
+                    used
+                }
+            }.getOrNull()
+        } else null
+
+        if (timestamps.isEmpty()) {
+            return FingerprintSampleLoadResult(
+                candidateQueryDurationMillis = candidateQueryDurationMillis,
+                candidateTimestampCount = 0,
+                macKeyCount = macKeys.size,
+                exactKeyCount = exactKeys.size,
+                databaseVersion = databaseVersion,
+                compactMacIndexAvailable = compactMacIndexAvailable,
+                candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
+            )
+        }
 
         val placeholders = timestamps.joinToString(",") { "?" }
         val arguments = (timestamps.map(Long::toString) + listOf(
             "unlocated", "local-radio-estimate", "radio-estimate"
         )).toTypedArray()
-        return readableDatabase.rawQuery(
-            """
+        val expansionSql = """
             SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
                    o.accuracy / MAX(s.trust_weight * COALESCE(sg.trust_weight, 1.0), 0.01) AS effective_accuracy,
                    o.rssi, o.observed_at, o.position_source
@@ -2041,9 +2133,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
               AND o.position_source NOT IN (?, ?, ?)
             ORDER BY observed_at DESC
             LIMIT 20000
-            """.trimIndent(),
-            arguments
-        ).use { cursor ->
+        """.trimIndent()
+        val expansionQueryStartedAtNanos = System.nanoTime()
+        val samples = db.rawQuery(expansionSql, arguments).use { cursor ->
             val result = ArrayList<RadioFingerprintSample>()
             while (cursor.moveToNext()) {
                 val latIndex = cursor.getColumnIndexOrThrow("latitude")
@@ -2064,8 +2156,21 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             }
             result
         }
-    }
+        val expansionQueryDurationMillis =
+            ((System.nanoTime() - expansionQueryStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
 
+        return FingerprintSampleLoadResult(
+            samples = samples,
+            candidateQueryDurationMillis = candidateQueryDurationMillis,
+            expansionQueryDurationMillis = expansionQueryDurationMillis,
+            candidateTimestampCount = timestamps.size,
+            macKeyCount = macKeys.size,
+            exactKeyCount = exactKeys.size,
+            databaseVersion = databaseVersion,
+            compactMacIndexAvailable = compactMacIndexAvailable,
+            candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
+        )
+    }
 
     /**
      * Supports the normalized Wi-Fi/BLE MAC expression used by fingerprint candidate lookup.
@@ -7053,6 +7158,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         private const val MAX_SIGNAL_SAMPLE_ACCURACY_METERS = 50.0
         private const val MIN_SIGNAL_POINT_ACCURACY_METERS = 20.0
         private const val FINGERPRINT_HISTORY_AGE_MS = 90L * 24 * 60 * 60 * 1_000L
+        private const val SLOW_FINGERPRINT_QUERY_PLAN_THRESHOLD_MS = 500L
         private const val MAX_FINGERPRINT_KEYS = 80
         private const val MAX_FINGERPRINT_SCANS = 250
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024

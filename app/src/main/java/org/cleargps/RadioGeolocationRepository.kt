@@ -145,9 +145,16 @@ class RadioGeolocationRepository(private val context: Context) {
                     "известно=${evaluation.matchCounts.knownRadios}, " +
                     "с координатами=${evaluation.matchCounts.usableCoordinateRadios}, " +
                     "поиск точек SQLite=${evaluation.pointLookupDurationMillis} мс, " +
-                    "fingerprint SQL=${evaluation.fingerprintQueryDurationMillis} мс, " +
-                    "оценка fingerprint=${evaluation.fingerprintScoringDurationMillis} мс " +
-                    "(${evaluation.fingerprintSampleCount} образцов), " +
+                    "fingerprint SQL=${evaluation.fingerprintQueryDurationMillis} мс " +
+                    "(кандидаты=${evaluation.fingerprintCandidateQueryDurationMillis} мс / " +
+                    "${evaluation.fingerprintCandidateTimestampCount} времён, " +
+                    "раскрытие=${evaluation.fingerprintExpansionQueryDurationMillis} мс / " +
+                    "${evaluation.fingerprintSampleCount} образцов, " +
+                    "ключи MAC/точные=${evaluation.fingerprintMacKeyCount}/${evaluation.fingerprintExactKeyCount}, " +
+                    "SQLite schema=${evaluation.fingerprintDatabaseVersion}, " +
+                    "compact-index=${if (evaluation.compactMacIndexAvailable) "yes" else "NO"}, " +
+                    "план использует индекс=${evaluation.candidatePlanUsesCompactMacIndex?.let { if (it) "yes" else "no" } ?: "не проверялся"}), " +
+                    "оценка fingerprint=${evaluation.fingerprintScoringDurationMillis} мс, " +
                     "fallback=${evaluation.fallbackEstimateDurationMillis} мс, " +
                     "весь локальный проход=${evaluation.elapsedMillis} мс"
             )

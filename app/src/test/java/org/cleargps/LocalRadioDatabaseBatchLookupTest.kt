@@ -107,6 +107,18 @@ class LocalRadioDatabaseBatchLookupTest {
         assertEquals(4, evaluation.candidateSignalCount)
         assertTrue(evaluation.pointLookupDurationMillis >= 0L)
         assertTrue(evaluation.fingerprintQueryDurationMillis >= 0L)
+        assertTrue(evaluation.fingerprintCandidateQueryDurationMillis >= 0L)
+        assertTrue(evaluation.fingerprintExpansionQueryDurationMillis >= 0L)
+        assertTrue(
+            evaluation.fingerprintCandidateQueryDurationMillis +
+                evaluation.fingerprintExpansionQueryDurationMillis <=
+                evaluation.fingerprintQueryDurationMillis + 1L
+        )
+        assertTrue(evaluation.fingerprintCandidateTimestampCount <= 250)
+        assertEquals(20, evaluation.fingerprintDatabaseVersion)
+        assertTrue(evaluation.compactMacIndexAvailable)
+        assertTrue(evaluation.fingerprintMacKeyCount > 0)
+        assertTrue(evaluation.fingerprintExactKeyCount > 0)
         assertTrue(evaluation.fingerprintScoringDurationMillis >= 0L)
         assertTrue(evaluation.fallbackEstimateDurationMillis >= 0L)
         assertTrue(evaluation.fingerprintSampleCount >= 0)

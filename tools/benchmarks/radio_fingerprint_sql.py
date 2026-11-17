@@ -266,7 +266,7 @@ def run_size(size, repeats):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sizes", nargs="+", type=int, default=[1000,10000,50000])
+    parser.add_argument("--sizes", nargs="+", type=int, default=[1000,10000,50000,500000])
     parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
     if any(size < MAX_FINGERPRINT_KEYS for size in args.sizes):
