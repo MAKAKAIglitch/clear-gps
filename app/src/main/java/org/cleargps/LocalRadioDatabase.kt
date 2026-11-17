@@ -6811,10 +6811,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
     private data class CurrentPointLookupRequest(
         val type: String,
         val identifier: String,
-        val compactMac: String?
-    ) {
-        val key: String get() = radioPointLookupKey(type, identifier)
-    }
+        val compactMac: String?,
+        val key: String
+    )
 
     private data class CurrentPointMatch(
         val point: RadioPointRecord,
@@ -6835,12 +6834,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val requests = signals.asSequence()
             .filter { it.type in VALID_TYPES && it.identifier.isNotBlank() }
             .map { signal ->
+                val identifier = canonicalIdentifier(signal.identifier)
                 CurrentPointLookupRequest(
                     type = signal.type,
-                    identifier = canonicalIdentifier(signal.identifier),
+                    identifier = identifier,
                     compactMac = if (signal.type == "wifi" || signal.type == "ble") {
                         compactRadioMacIdentifier(signal.identifier)
-                    } else null
+                    } else null,
+                    key = radioPointLookupKey(signal.type, identifier)
                 )
             }
             .distinctBy { it.key }
