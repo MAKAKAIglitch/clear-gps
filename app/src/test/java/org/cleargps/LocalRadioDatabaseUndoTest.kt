@@ -140,6 +140,7 @@ class LocalRadioDatabaseUndoTest {
         UNDO_TABLES.forEach { table -> sqlite.execSQL("DROP TABLE $table") }
         sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_radio_time")
         sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_import_dedupe")
+        sqlite.execSQL("DROP INDEX IF EXISTS radio_obs_radio_compact_time")
         // Recreate the real v7 schema: later migrations must add these objects.
         sqlite.execSQL("DROP TABLE IF EXISTS radio_auto_refinement_attempts")
         sqlite.execSQL("DROP TABLE IF EXISTS radio_auto_refinements")
@@ -150,7 +151,7 @@ class LocalRadioDatabaseUndoTest {
         database = LocalRadioDatabase(context)
         sqlite = database.writableDatabase
 
-        assertEquals(19, sqlite.version)
+        assertEquals(20, sqlite.version)
         assertTrue(sqlite.rawQuery(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cell_site_sectors'", null
         ).use { it.moveToFirst() })
@@ -160,6 +161,7 @@ class LocalRadioDatabaseUndoTest {
         assertTrue("missing automatic refinement attempt table", tableExists("radio_auto_refinement_attempts"))
         assertTrue("missing radio-key/time index", indexExists("radio_obs_radio_time"))
         assertTrue("missing import-deduplication index", indexExists("radio_obs_import_dedupe"))
+        assertTrue("missing compact-MAC/time index", indexExists("radio_obs_radio_compact_time"))
         assertTrue("missing automatic-refinement lookup index", indexExists("radio_auto_refinement_lookup"))
         assertTrue("missing refinement backoff index", indexExists("radio_auto_refinement_attempts_next"))
         assertTrue("write-ahead logging should be enabled", sqlite.isWriteAheadLoggingEnabled)
