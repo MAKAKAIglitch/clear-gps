@@ -143,7 +143,7 @@ internal class NavigationMapController {
     private fun renderCurrentPosition() {
         if (!styleReady) return
         val point = currentPosition?.takeIf { it.isValid() }
-        val features = if (point == null) {
+        val features: Array<Feature> = if (point == null) {
             emptyArray()
         } else {
             arrayOf(
