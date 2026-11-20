@@ -1212,6 +1212,7 @@ class LocationMonitorService : Service(), LocationListener {
             while (isActive && prefs.getBoolean(KEY_MONITORING, false) &&
                 (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") in setOf("radio", "radio_obd2") ||
                     isAutoRadioFallbackActive())) {
+                val cycleStartedAtElapsedMillis = SystemClock.elapsedRealtime()
                 try {
                     val result = repository.scan(
                         // Persist the same observations the UI recording toggle requests, but
@@ -1487,8 +1488,15 @@ class LocationMonitorService : Service(), LocationListener {
                 val profile = BatteryProfile.fromKey(
                     prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)
                 )
-                val nextInterval = BatteryProfilePolicy.intervalSeconds(baseInterval, obdSpeedKmh, adaptive, profile)
-                delay(nextInterval * 1_000L)
+                val nextIntervalMillis = BatteryProfilePolicy.intervalSeconds(
+                    baseInterval, obdSpeedKmh, adaptive, profile
+                ) * 1_000L
+                val remainingDelayMillis = BatteryProfilePolicy.remainingDelayMillis(
+                    nextIntervalMillis,
+                    cycleStartedAtElapsedMillis,
+                    SystemClock.elapsedRealtime()
+                )
+                if (remainingDelayMillis > 0L) delay(remainingDelayMillis)
             }
         }
     }
@@ -1766,13 +1774,21 @@ class LocationMonitorService : Service(), LocationListener {
 
         radioFusionJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
+            var previousCycleStartedAtElapsedMillis = SystemClock.elapsedRealtime()
             while (isActive &&
                 prefs.getBoolean(KEY_MONITORING, false) &&
                 prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto"
             ) {
                 // Wi-Fi, cell and BLE collectors enforce their own refresh cooldowns.
-                // Re-evaluate the local position at the user's selected cadence using timestamped caches.
-                delay(configuredRadioScanIntervalMillis())
+                // Keep a start-to-start cadence without overlapping position evaluations.
+                val intervalMillis = configuredRadioScanIntervalMillis()
+                val remainingDelayMillis = BatteryProfilePolicy.remainingDelayMillis(
+                    intervalMillis,
+                    previousCycleStartedAtElapsedMillis,
+                    SystemClock.elapsedRealtime()
+                )
+                if (remainingDelayMillis > 0L) delay(remainingDelayMillis)
+                previousCycleStartedAtElapsedMillis = SystemClock.elapsedRealtime()
                 if (!radioScanEvidenceCurrentlyAllowed()) continue
 
                 try {

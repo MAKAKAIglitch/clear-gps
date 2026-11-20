@@ -27,6 +27,15 @@ enum class BatteryProfile(
  * detector regardless of this request-cadence profile.
  */
 internal object BatteryProfilePolicy {
+    fun remainingDelayMillis(
+        intervalMillis: Long,
+        cycleStartedAtElapsedMillis: Long,
+        nowElapsedMillis: Long
+    ): Long {
+        val elapsedMillis = (nowElapsedMillis - cycleStartedAtElapsedMillis).coerceAtLeast(0L)
+        return (intervalMillis - elapsedMillis).coerceAtLeast(0L)
+    }
+
     fun profiledIntervalSeconds(configuredSeconds: Int, profile: BatteryProfile): Int =
         intervalSeconds(configuredSeconds, speedKmh = null, adaptive = false, profile = profile)
 

@@ -2803,6 +2803,12 @@ fun ClearGpsApp(
             while (scanBusy && appVisible && !monitorEnabled) delay(100L)
             if (!appVisible || monitorEnabled || !hasAnyLocationPermission(context)) break
 
+            val cycleStartedAtElapsedMillis = SystemClock.elapsedRealtime()
+            val speedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
+            val updateIntervalMillis = ForegroundRadioPositionSearchPolicy.intervalMillis(
+                scanIntervalSeconds, speedKmh, adaptiveScan, batteryProfile
+            )
+
             // Periodic position searches never save a new radio observation/fingerprint (R5).
             performScan(false, awaitFreshWifiScan = false)
 
@@ -2835,12 +2841,12 @@ fun ClearGpsApp(
             }
 
             if (!appVisible || monitorEnabled) break
-            val speedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
-            delay(
-                ForegroundRadioPositionSearchPolicy.intervalMillis(
-                    scanIntervalSeconds, speedKmh, adaptiveScan, batteryProfile
-                )
+            val remainingDelayMillis = BatteryProfilePolicy.remainingDelayMillis(
+                updateIntervalMillis,
+                cycleStartedAtElapsedMillis,
+                SystemClock.elapsedRealtime()
             )
+            if (remainingDelayMillis > 0L) delay(remainingDelayMillis)
         }
     }
 

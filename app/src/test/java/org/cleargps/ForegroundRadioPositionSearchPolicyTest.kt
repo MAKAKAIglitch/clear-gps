@@ -123,6 +123,14 @@ class ForegroundRadioPositionSearchPolicyTest {
     }
 
     @Test
+    fun updateCadenceCountsWorkTimeInsideConfiguredInterval() {
+        assertEquals(3_750L, BatteryProfilePolicy.remainingDelayMillis(5_000L, 1_000L, 2_250L))
+        assertEquals(0L, BatteryProfilePolicy.remainingDelayMillis(5_000L, 1_000L, 7_000L))
+        assertEquals(5_000L, BatteryProfilePolicy.remainingDelayMillis(5_000L, 2_000L, 1_000L))
+        assertEquals(0L, BatteryProfilePolicy.remainingDelayMillis(0L, 1_000L, 1_000L))
+    }
+
+    @Test
     fun openCellIdFallbackRequiresNoFreshEstimateAndEveryConsentGate() {
         fun allowed(
             hasCurrentEstimate: Boolean = false,
