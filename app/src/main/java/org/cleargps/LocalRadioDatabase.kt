@@ -506,6 +506,7 @@ object ClearGpsPreferences {
     const val KEY_POWER_SAVING_ENABLED = "power_saving_enabled"
     const val KEY_LOW_BATTERY_THRESHOLD_PERCENT = "low_battery_threshold_percent"
     const val KEY_MAP_SOURCE = "map_source_mode"
+    const val KEY_NAVIGATION_MAP_ACTIVE = "navigation_map_active"
     const val KEY_MAP_RADIO_POINT_LIMIT = "map_radio_point_limit"
     const val KEY_LAST_LAT = "radio_last_lat"
     const val KEY_LAST_LON = "radio_last_lon"
