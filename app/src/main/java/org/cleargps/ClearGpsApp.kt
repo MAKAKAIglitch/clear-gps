@@ -297,7 +297,8 @@ private fun openBatteryOptimizationExemption(context: Context) {
 @Composable
 fun ClearGpsApp(
     onMapViewCreated: (MapView) -> Unit,
-    onMapViewDisposed: (MapView) -> Unit
+    onMapViewDisposed: (MapView) -> Unit,
+    onBackToNavigation: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -3062,6 +3063,7 @@ fun ClearGpsApp(
             showZoneNameDialog -> showZoneNameDialog = false
             mapTapMode != MapTapMode.NONE -> { mapTapMode = MapTapMode.NONE; draftZone = emptyList() }
             selectedTab != AppTab.HOME -> { navigateToTab(AppTab.HOME); backExitArmed = false }
+            onBackToNavigation != null -> onBackToNavigation()
             !backExitArmed -> {
                 backExitArmed = true
                 Toast.makeText(context, "Нажми «Назад» ещё раз в течение 2 секунд, чтобы выйти.", Toast.LENGTH_SHORT).show()
@@ -8489,7 +8491,7 @@ private fun SettingSwitch(title: String, description: String, checked: Boolean, 
 }
 
 @Composable
-private fun ClearGpsTheme(dark: Boolean, content: @Composable () -> Unit) {
+internal fun ClearGpsTheme(dark: Boolean, content: @Composable () -> Unit) {
     val context = LocalContext.current
     val scheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
