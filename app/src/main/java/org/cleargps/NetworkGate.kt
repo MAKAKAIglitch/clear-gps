@@ -186,6 +186,11 @@ internal object NetworkGate {
      */
     fun installMapLibre(context: Context) {
         val appContext = context.applicationContext
+        // A stale flag must not keep map downloads enabled after a process restart.
+        appContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(ClearGpsPreferences.KEY_NAVIGATION_MAP_ACTIVE, false)
+            .apply()
         val client = OkHttpClient.Builder()
             .addNetworkInterceptor { chain ->
                 val request = chain.request()
