@@ -222,9 +222,11 @@ internal object NetworkGate {
                 .versionName
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: "unknown"
 
-    private fun isOnlineMapEnabled(context: Context): Boolean =
-        context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
-            .getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") == "online"
+    private fun isOnlineMapEnabled(context: Context): Boolean {
+        val preferences = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+        return preferences.getBoolean(ClearGpsPreferences.KEY_NAVIGATION_MAP_ACTIVE, false) ||
+            preferences.getString(ClearGpsPreferences.KEY_MAP_SOURCE, "online") == "online"
+    }
 
     private fun validateOpenCellIdQuery(rawQuery: String?) {
         val parts = rawQuery?.split('&') ?: reject()
