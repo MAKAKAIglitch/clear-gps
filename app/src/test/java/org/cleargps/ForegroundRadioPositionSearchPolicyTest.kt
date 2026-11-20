@@ -103,8 +103,23 @@ class ForegroundRadioPositionSearchPolicyTest {
     }
 
     @Test
-    fun periodicSearchIntervalIsOneMinute() {
-        assertEquals(60_000L, ForegroundRadioPositionSearchPolicy.INTERVAL_MILLIS)
+    fun periodicSearchIntervalUsesConfiguredCadenceAndPowerProfile() {
+        assertEquals(
+            1_000L,
+            ForegroundRadioPositionSearchPolicy.intervalMillis(1, null, false, BatteryProfile.NORMAL)
+        )
+        assertEquals(
+            5_000L,
+            ForegroundRadioPositionSearchPolicy.intervalMillis(5, null, false, BatteryProfile.NORMAL)
+        )
+        assertEquals(
+            2_000L,
+            ForegroundRadioPositionSearchPolicy.intervalMillis(1, null, false, BatteryProfile.ECO)
+        )
+        assertEquals(
+            1_000L,
+            ForegroundRadioPositionSearchPolicy.intervalMillis(4, 30f, true, BatteryProfile.MAX)
+        )
     }
 
     @Test

@@ -92,7 +92,8 @@ class RadioGeolocationRepository(private val context: Context) {
         mode: String,
         useWifi: Boolean,
         useCells: Boolean,
-        useBle: Boolean
+        useBle: Boolean,
+        awaitFreshWifiScan: Boolean = true
     ): RadioLookupResult = scanMutex.withLock {
         DiagnosticLogStore.log(context, "RADIO", "Сканирование начато; mode=$mode, Wi-Fi=$useWifi, соты=$useCells, BLE=$useBle, запись=$record")
         // The UI, recording loop and foreground service can all request a scan. Serialize
@@ -108,7 +109,12 @@ class RadioGeolocationRepository(private val context: Context) {
             " Precise location permission is required for this app to use nearby Wi‑Fi, cellular and Bluetooth identifiers for positioning. Grant Precise location in app permissions. Radio-only mode still does not request GPS fixes."
         } else ""
         val snapshot = withContext(Dispatchers.Main.immediate) {
-            collectSnapshot(useWifi = useWifi, useCells = useCells, useBle = useBle)
+            collectSnapshot(
+                useWifi = useWifi,
+                useCells = useCells,
+                useBle = useBle,
+                awaitFreshWifiScan = awaitFreshWifiScan
+            )
         }
         val localSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, true)
         val beaconSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true)
@@ -152,6 +158,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     "${evaluation.fingerprintSampleCount} образцов, " +
                     "ключи MAC/точные=${evaluation.fingerprintMacKeyCount}/${evaluation.fingerprintExactKeyCount}, " +
                     "SQLite schema=${evaluation.fingerprintDatabaseVersion}, " +
+                    "fingerprint-cache=${if (evaluation.fingerprintCacheHit) "HIT" else "MISS"}, " +
                     "compact-index=${if (evaluation.compactMacIndexAvailable) "yes" else "NO"}, " +
                     "план использует индекс=${evaluation.candidatePlanUsesCompactMacIndex?.let { if (it) "yes" else "no" } ?: "не проверялся"}), " +
                     "оценка fingerprint=${evaluation.fingerprintScoringDurationMillis} мс, " +
@@ -1085,11 +1092,12 @@ class RadioGeolocationRepository(private val context: Context) {
         useCells: Boolean,
         useBle: Boolean,
         refreshCellInfo: Boolean = false,
-        passiveBleOnly: Boolean = false
+        passiveBleOnly: Boolean = false,
+        awaitFreshWifiScan: Boolean = true
     ): ScanSnapshot = coroutineScope {
         // The modem query is asynchronous on Android 10+; collect it concurrently with Wi-Fi/BLE.
         val wifiTask = async {
-            if (useWifi) collectWifi() else TimedRadioSignals(emptyList(), null)
+            if (useWifi) collectWifi(awaitFreshResult = awaitFreshWifiScan) else TimedRadioSignals(emptyList(), null)
         }
         val bleTask = async {
             if (useBle) collectBluetooth(passiveBleOnly) else TimedRadioSignals(emptyList(), null)
@@ -1116,7 +1124,7 @@ class RadioGeolocationRepository(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    private suspend fun collectWifi(): TimedRadioSignals {
+    private suspend fun collectWifi(awaitFreshResult: Boolean = true): TimedRadioSignals {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
         if (!RadioPermissionPolicy.canReadWifiScan(fineGranted)) {
@@ -1162,7 +1170,7 @@ class RadioGeolocationRepository(private val context: Context) {
         catch (_: SecurityException) { emptyList() }
         catch (_: RuntimeException) { emptyList() }
 
-        if (scanRequested) {
+        if (scanRequested && awaitFreshResult) {
             val deadline = SystemClock.elapsedRealtime() + WIFI_SCAN_WAIT_MS
             while (SystemClock.elapsedRealtime() < deadline) {
                 delay(WIFI_SCAN_POLL_MS)
@@ -1175,6 +1183,11 @@ class RadioGeolocationRepository(private val context: Context) {
                 }
                 rawResults = latest
             }
+        } else if (scanRequested) {
+            DiagnosticLogStore.log(
+                context, "RADIO_WIFI",
+                "Периодический поиск: не ждём завершения Wi-Fi scan; используем текущий системный кэш с проверкой меток времени"
+            )
         }
 
         val nowMicros = SystemClock.elapsedRealtimeNanos() / 1_000L

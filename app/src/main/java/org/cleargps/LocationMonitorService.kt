@@ -519,6 +519,16 @@ class LocationMonitorService : Service(), LocationListener {
         return BatteryProfilePolicy.profiledIntervalSeconds(configured, profile) * 1_000L
     }
 
+    private fun configuredRadioScanIntervalMillis(): Long {
+        val baseInterval = prefs.getInt(ClearGpsPreferences.KEY_SCAN_INTERVAL_SECONDS, 15).coerceIn(1, 30)
+        val adaptive = prefs.getBoolean(ClearGpsPreferences.KEY_ADAPTIVE_SCAN, true)
+        val speedKmh = if (adaptive) Obd2SharedState.freshSpeedKmh(prefs)?.toFloat() else null
+        val profile = BatteryProfile.fromKey(
+            prefs.getString(ClearGpsPreferences.KEY_BATTERY_PROFILE, BatteryProfile.NORMAL.key)
+        )
+        return BatteryProfilePolicy.intervalSeconds(baseInterval, speedKmh, adaptive, profile) * 1_000L
+    }
+
     /**
      * Broadcast one explicitly requested BeaconDB cell-only estimate for a short, bounded window.
      * No additional BeaconDB request is made here. Both mock providers are updated while all
@@ -1211,7 +1221,8 @@ class LocationMonitorService : Service(), LocationListener {
                         mode = "radio",
                         useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
                         useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
-                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true),
+                        awaitFreshWifiScan = false
                     )
                     val estimate = result.estimate
                     val currentSignalCount = result.wifiCount + result.cellCount + result.beaconCount
@@ -1759,9 +1770,9 @@ class LocationMonitorService : Service(), LocationListener {
                 prefs.getBoolean(KEY_MONITORING, false) &&
                 prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto"
             ) {
-                // Android throttles Wi-Fi scans. Do not turn the configured fix interval into a
-                // one-second radio scan loop; keep this source deliberately low cadence.
-                delay(maxOf(configuredUpdateIntervalMillis(), RadioFixReliability.WIFI_MIN_REQUEST_INTERVAL_MS))
+                // Wi-Fi, cell and BLE collectors enforce their own refresh cooldowns.
+                // Re-evaluate the local position at the user's selected cadence using timestamped caches.
+                delay(configuredRadioScanIntervalMillis())
                 if (!radioScanEvidenceCurrentlyAllowed()) continue
 
                 try {
@@ -1771,7 +1782,8 @@ class LocationMonitorService : Service(), LocationListener {
                         mode = "auto",
                         useWifi = prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true),
                         useCells = prefs.getBoolean(ClearGpsPreferences.KEY_USE_CELLS, true),
-                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true)
+                        useBle = prefs.getBoolean(ClearGpsPreferences.KEY_USE_BLE, true),
+                        awaitFreshWifiScan = false
                     )
                     val nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                     val radioEstimate = scan.estimate

@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -33,6 +34,119 @@ class LocalRadioDatabaseBatchLookupTest {
     fun tearDown() {
         if (::database.isInitialized) database.close()
         if (::context.isInitialized) context.deleteDatabase(DB_NAME)
+    }
+
+    @Test
+    fun fingerprintCacheReusesSamplesAndInvalidatesOnLocatedObservationChanges() {
+        val sourceId = database.listRadioSources().single { it.kind == "local" }.id
+        val observedAt = System.currentTimeMillis() - 5_000L
+        insertFingerprintObservation("wifi", "aa:bb:cc:dd:ee:71", sourceId, observedAt, 52.0, 4.0)
+        insertFingerprintObservation("cell", "lte:250:1:123:456789", sourceId, observedAt, 52.0001, 4.0001)
+
+        val signals = listOf(
+            RadioSignal("wifi", "aa:bb:cc:dd:ee:71", -52, 2412, "Test"),
+            RadioSignal("cell", "lte:250:1:123:456789", -82, 0)
+        )
+        val first = database.evaluatePosition(signals, useWifi = true, useCells = true, useBle = false)
+        assertNotNull(first.estimate)
+        assertFalse(first.fingerprintCacheHit)
+
+        val second = database.evaluatePosition(signals, useWifi = true, useCells = true, useBle = false)
+        assertTrue(second.fingerprintCacheHit)
+        assertEquals(0L, second.fingerprintCandidateQueryDurationMillis)
+        assertEquals(0L, second.fingerprintExpansionQueryDurationMillis)
+        assertEquals(first.fingerprintSampleCount, second.fingerprintSampleCount)
+
+        // Unlocated passive observations cannot affect historical fingerprints or their cache.
+        sqlite.insertOrThrow(
+            "radio_observations",
+            null,
+            ContentValues().apply {
+                put("radio_type", "wifi")
+                put("identifier", "aa:bb:cc:dd:ee:72")
+                putNull("latitude")
+                putNull("longitude")
+                put("rssi", -70)
+                put("frequency", 2412)
+                put("observed_at", observedAt)
+                put("position_source", "unlocated")
+                put("source_id", sourceId)
+            }
+        )
+        val afterUnlocatedInsert = database.evaluatePosition(
+            signals, useWifi = true, useCells = true, useBle = false
+        )
+        assertTrue(afterUnlocatedInsert.fingerprintCacheHit)
+
+        val wifiObservationId = sqlite.rawQuery(
+            "SELECT id FROM radio_observations WHERE radio_type = 'wifi' AND identifier = ?",
+            arrayOf("aa:bb:cc:dd:ee:71")
+        ).use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            cursor.getLong(0)
+        }
+        sqlite.update(
+            "radio_observations",
+            ContentValues().apply { put("rssi", -35) },
+            "id = ?",
+            arrayOf(wifiObservationId.toString())
+        )
+        val afterLocatedUpdate = database.evaluatePosition(
+            signals, useWifi = true, useCells = true, useBle = false
+        )
+        assertFalse(afterLocatedUpdate.fingerprintCacheHit)
+    }
+
+    @Test
+    fun locatedFingerprintIndexesAreUsedByAllSqlStages() {
+        assertTrue(indexExists("radio_obs_radio_compact_located_time"))
+        assertTrue(indexExists("radio_obs_radio_exact_located_time"))
+        assertTrue(indexExists("radio_obs_located_time"))
+
+        val compactPlan = sqlite.rawQuery(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT o.observed_at
+            FROM (SELECT ? AS radio_type, ? AS compact_identifier) r
+            JOIN radio_observations o INDEXED BY radio_obs_radio_compact_located_time
+              ON o.radio_type = r.radio_type
+              AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = r.compact_identifier
+            WHERE o.observed_at >= ? AND o.observed_at <= ?
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+            """.trimIndent(),
+            arrayOf("wifi", "aabbccddeeff", "0", Long.MAX_VALUE.toString())
+        ).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(3).orEmpty()) }.joinToString(" ")
+        }
+        assertTrue(compactPlan.contains("radio_obs_radio_compact_located_time"))
+
+        val exactPlan = sqlite.rawQuery(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT o.observed_at
+            FROM (SELECT ? AS radio_type, ? AS identifier) r
+            JOIN radio_observations o INDEXED BY radio_obs_radio_exact_located_time
+              ON o.radio_type = r.radio_type AND o.identifier = r.identifier
+            WHERE o.observed_at >= ? AND o.observed_at <= ?
+              AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+            """.trimIndent(),
+            arrayOf("cell", "lte:250:1:123:456789", "0", Long.MAX_VALUE.toString())
+        ).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(3).orEmpty()) }.joinToString(" ")
+        }
+        assertTrue(exactPlan.contains("radio_obs_radio_exact_located_time"))
+
+        val expansionPlan = sqlite.rawQuery(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT o.id FROM radio_observations o INDEXED BY radio_obs_located_time
+            WHERE o.observed_at IN (?) AND o.latitude IS NOT NULL AND o.longitude IS NOT NULL
+            """.trimIndent(),
+            arrayOf("1")
+        ).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(cursor.getString(3).orEmpty()) }.joinToString(" ")
+        }
+        assertTrue(expansionPlan.contains("radio_obs_located_time"))
     }
 
     @Test
@@ -115,7 +229,7 @@ class LocalRadioDatabaseBatchLookupTest {
                 evaluation.fingerprintQueryDurationMillis + 1L
         )
         assertTrue(evaluation.fingerprintCandidateTimestampCount <= 250)
-        assertEquals(20, evaluation.fingerprintDatabaseVersion)
+        assertEquals(21, evaluation.fingerprintDatabaseVersion)
         assertTrue(evaluation.compactMacIndexAvailable)
         assertTrue(evaluation.fingerprintMacKeyCount > 0)
         assertTrue(evaluation.fingerprintExactKeyCount > 0)
@@ -420,6 +534,32 @@ class LocalRadioDatabaseBatchLookupTest {
                 put("radio_type", radioType)
                 put("enabled", if (enabled) 1 else 0)
                 put("trust_weight", weight)
+            }
+        )
+    }
+
+    private fun insertFingerprintObservation(
+        type: String,
+        identifier: String,
+        sourceId: Long,
+        observedAt: Long,
+        latitude: Double,
+        longitude: Double
+    ) {
+        sqlite.insertOrThrow(
+            "radio_observations",
+            null,
+            ContentValues().apply {
+                put("radio_type", type)
+                put("identifier", identifier)
+                put("latitude", latitude)
+                put("longitude", longitude)
+                put("accuracy", 12.0)
+                put("rssi", -60)
+                put("frequency", if (type == "wifi") 2412 else 0)
+                put("observed_at", observedAt)
+                put("position_source", "manual-reference")
+                put("source_id", sourceId)
             }
         )
     }

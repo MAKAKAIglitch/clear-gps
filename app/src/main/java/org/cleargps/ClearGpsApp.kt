@@ -958,7 +958,7 @@ fun ClearGpsApp(
         if (mode.usesRadio) showRadioOnlyInfo = true
     }
 
-    val performScan: suspend (Boolean) -> Unit = { recordNow ->
+    suspend fun performScan(recordNow: Boolean, awaitFreshWifiScan: Boolean = true) {
         if (positionMode.gpsOnly) {
             // Hard guard: no route to RadioGeolocationRepository from GPS-only mode,
             // including stale callbacks that fire after the user changes mode.
@@ -1002,7 +1002,11 @@ fun ClearGpsApp(
                 val result = repository.scan(
                     record = recordNow && !insideRiskZone,
                     reference = if (insideRiskZone) null else reference,
-                    mode = positionMode.key, useWifi = useWifi, useCells = useCells, useBle = useBle
+                    mode = positionMode.key,
+                    useWifi = useWifi,
+                    useCells = useCells,
+                    useBle = useBle,
+                    awaitFreshWifiScan = awaitFreshWifiScan
                 )
                 lastRadioScanHadFreshEstimate = result.estimate != null
                 wifiCount = result.wifiCount
@@ -2491,7 +2495,7 @@ fun ClearGpsApp(
         if (recording && !positionMode.gpsOnly && appVisible && hasAnyLocationPermission(context) &&
             !(positionMode.usesRadio && monitorEnabled)) {
             while (recording && appVisible && !positionMode.gpsOnly) {
-                performScan(true)
+                performScan(true, awaitFreshWifiScan = false)
                 val obdSpeedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
                 val locationSpeedKmh = if (positionMode.usesRadio) null else liveLocation?.takeIf {
                     System.currentTimeMillis() - it.time in 0..30_000L && it.hasSpeed()
@@ -2783,7 +2787,11 @@ fun ClearGpsApp(
         openCellIdPositionSourceEnabled,
         openCellIdEnabled,
         openCellIdKeyConfigured,
-        hasAnyLocationPermission(context)
+        hasAnyLocationPermission(context),
+        scanIntervalSeconds,
+        adaptiveScan,
+        batteryProfile,
+        obd2Telemetry.updatedAt
     ) {
         if (!shouldRunForegroundRadioSearch) return@LaunchedEffect
 
@@ -2796,7 +2804,7 @@ fun ClearGpsApp(
             if (!appVisible || monitorEnabled || !hasAnyLocationPermission(context)) break
 
             // Periodic position searches never save a new radio observation/fingerprint (R5).
-            performScan(false)
+            performScan(false, awaitFreshWifiScan = false)
 
             val shouldFallbackToOpenCellId =
                 ForegroundRadioPositionSearchPolicy.shouldUseOpenCellIdFallback(
@@ -2821,13 +2829,18 @@ fun ClearGpsApp(
                     while (scanBusy && appVisible && !monitorEnabled) delay(100L)
                     if (appVisible && !monitorEnabled) {
                         // Re-run the read-only position estimate against the newly cached cells.
-                        performScan(false)
+                        performScan(false, awaitFreshWifiScan = false)
                     }
                 }
             }
 
             if (!appVisible || monitorEnabled) break
-            delay(ForegroundRadioPositionSearchPolicy.INTERVAL_MILLIS)
+            val speedKmh = Obd2SharedState.freshSpeedKmh(prefs)?.toFloat()
+            delay(
+                ForegroundRadioPositionSearchPolicy.intervalMillis(
+                    scanIntervalSeconds, speedKmh, adaptiveScan, batteryProfile
+                )
+            )
         }
     }
 
@@ -8154,7 +8167,7 @@ private fun SettingsScreen(
                         color = colors.onSurfaceVariant
                     )
                     Divider(color = colors.outlineVariant)
-                    Text("Интервал обновления фикса: " + pendingScanInterval.roundToInt() + " с", style = MaterialTheme.typography.titleSmall)
+                    Text("Интервал обновления положения: " + pendingScanInterval.roundToInt() + " с", style = MaterialTheme.typography.titleSmall)
                     Slider(
                         value = pendingScanInterval,
                         onValueChange = { pendingScanInterval = it },
@@ -8170,7 +8183,7 @@ private fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "Интервал применяется к GPS-обновлениям и повторному радиопоиску. Android может ограничивать фактическую частоту Wi‑Fi/Bluetooth-сканов.",
+                        "Интервал управляет повторной оценкой положения на карте и в фоновой службе. Для периодических проходов не ожидается завершение Wi‑Fi-скана; используются только системные результаты с проверкой времени. Android отдельно ограничивает частоту новых Wi‑Fi/сотовых/BLE-измерений.",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
@@ -8195,7 +8208,7 @@ private fun SettingsScreen(
                         }
                     }
                     Text(
-                        "Профиль меняет интервал запросов фикса и повторного радиопоиска: Eco ×2, Normal — заданный интервал, Max примерно ÷2. Сырые GNSS callback-и не прореживаются, чтобы не терять данные детектора. Фактические Wi‑Fi/BLE-сканы ограничиваются Android.",
+                        "Профиль меняет интервал повторной оценки: Eco ×2, Normal — заданный интервал, Max примерно ÷2. Сырые GNSS callback-и не прореживаются. Частота новых радиоизмерений остаётся под контролем Android.",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )

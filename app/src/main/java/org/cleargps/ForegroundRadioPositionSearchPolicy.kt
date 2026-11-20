@@ -5,7 +5,14 @@ package org.cleargps
  * Scheduled foreground-service scans keep ownership whenever monitoring is enabled.
  */
 internal object ForegroundRadioPositionSearchPolicy {
-    const val INTERVAL_MILLIS = 60_000L
+    fun intervalMillis(
+        configuredSeconds: Int,
+        speedKmh: Float?,
+        adaptive: Boolean,
+        profile: BatteryProfile
+    ): Long = BatteryProfilePolicy.intervalSeconds(
+        configuredSeconds, speedKmh, adaptive, profile
+    ) * 1_000L
 
     private const val AUTO_MODE = "auto"
     private const val RADIO_MODE = "radio"

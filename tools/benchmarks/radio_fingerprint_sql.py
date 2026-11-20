@@ -62,6 +62,11 @@ def database(size, expression_index):
       CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type,identifier,observed_at DESC);
       CREATE INDEX radio_obs_import_dedupe
         ON radio_observations(source_id,radio_type,identifier,observed_at,rssi,frequency);
+      CREATE INDEX radio_obs_radio_exact_located_time
+        ON radio_observations(radio_type,identifier,observed_at DESC)
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
+      CREATE INDEX radio_obs_located_time ON radio_observations(observed_at DESC)
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
       INSERT INTO radio_sources VALUES(1,1,1.0);
     """)
     rng = random.Random(20261117)
@@ -106,6 +111,13 @@ def database(size, expression_index):
             replace(replace(replace(lower(identifier),':',''),'-',''),'.',''),
             observed_at DESC
           )
+        """)
+        db.execute("""
+          CREATE INDEX radio_obs_radio_compact_located_time ON radio_observations(
+            radio_type,
+            replace(replace(replace(lower(identifier),':',''),'-',''),'.',''),
+            observed_at DESC
+          ) WHERE latitude IS NOT NULL AND longitude IS NOT NULL
         """)
     return db
 
@@ -158,7 +170,8 @@ def cte_query(keys):
            candidates AS (
         SELECT o.observed_at,o.radio_type,o.identifier
         FROM requested_mac r
-        JOIN radio_observations o ON o.radio_type=r.radio_type
+        JOIN radio_observations o INDEXED BY radio_obs_radio_compact_located_time
+          ON o.radio_type=r.radio_type
           AND replace(replace(replace(lower(o.identifier),':',''),'-',''),'.','')=r.compact_identifier
         JOIN radio_sources s ON s.id=o.source_id
         LEFT JOIN radio_source_segment_settings sg ON sg.source_id=o.source_id
@@ -173,7 +186,8 @@ def cte_query(keys):
         UNION ALL
         SELECT o.observed_at,o.radio_type,o.identifier
         FROM requested_exact r
-        JOIN radio_observations o ON o.radio_type=r.radio_type AND o.identifier=r.identifier
+        JOIN radio_observations o INDEXED BY radio_obs_radio_exact_located_time
+          ON o.radio_type=r.radio_type AND o.identifier=r.identifier
         JOIN radio_sources s ON s.id=o.source_id
         LEFT JOIN radio_source_segment_settings sg ON sg.source_id=o.source_id
           AND sg.day_key=strftime('%Y-%m-%d',o.observed_at/1000,'unixepoch','localtime')
@@ -200,7 +214,7 @@ def expansion_query(timestamps):
       SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
              o.accuracy / MAX(s.trust_weight * COALESCE(sg.trust_weight, 1.0), 0.01) AS effective_accuracy,
              o.rssi, o.observed_at, o.position_source
-      FROM radio_observations o JOIN radio_sources s ON s.id=o.source_id
+      FROM radio_observations o INDEXED BY radio_obs_located_time JOIN radio_sources s ON s.id=o.source_id
       LEFT JOIN radio_source_segment_settings sg ON sg.source_id=o.source_id
         AND sg.day_key=strftime('%Y-%m-%d',o.observed_at/1000,'unixepoch','localtime')
         AND sg.radio_type=o.radio_type
@@ -246,7 +260,7 @@ def run_size(size, repeats):
             raise RuntimeError(f"Expanded fingerprint rows differ at {size} observations")
 
         plan = " | ".join(row[3] for row in indexed.execute("EXPLAIN QUERY PLAN "+new_sql, new_args))
-        if "radio_obs_radio_compact_time" not in plan:
+        if "radio_obs_radio_compact_located_time" not in plan:
             raise RuntimeError("SQLite did not select the compact MAC expression index")
         old_total = old_ms + old_expand_ms
         new_total = new_ms + new_expand_ms

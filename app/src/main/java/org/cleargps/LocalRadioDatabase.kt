@@ -451,6 +451,7 @@ internal data class RadioPositionEvaluation(
     val fingerprintMacKeyCount: Int,
     val fingerprintExactKeyCount: Int,
     val fingerprintDatabaseVersion: Int,
+    val fingerprintCacheHit: Boolean,
     val compactMacIndexAvailable: Boolean,
     val candidatePlanUsesCompactMacIndex: Boolean?,
     val fingerprintScoringDurationMillis: Long,
@@ -970,6 +971,15 @@ internal fun estimateRadioAnchorPosition(
 class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQLiteOpenHelper(context.applicationContext, databaseName, null, DB_VERSION) {
     private val appContext = context.applicationContext
 
+    private data class FingerprintCacheEntry(
+        val generation: Long,
+        val loadedAtNanos: Long,
+        val candidateTimestamps: List<Long>,
+        val result: FingerprintSampleLoadResult
+    )
+    private val fingerprintCacheLock = Any()
+    private val fingerprintCache = LinkedHashMap<String, FingerprintCacheEntry>()
+
     init {
         // WAL allows readers to keep working while the serialized scan writer commits updates.
         setWriteAheadLoggingEnabled(true)
@@ -1021,6 +1031,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         db.execSQL("CREATE INDEX radio_obs_source_time ON radio_observations(source_id, observed_at DESC)")
         db.execSQL("CREATE INDEX radio_obs_radio_time ON radio_observations(radio_type, identifier, observed_at DESC)")
         createRadioObservationCompactMacIndex(db)
+        createRadioFingerprintPerformanceSupport(db)
         db.execSQL("CREATE INDEX radio_obs_import_dedupe ON radio_observations(source_id, radio_type, identifier, observed_at, rssi, frequency)")
         db.execSQL("CREATE INDEX radio_points_source ON radio_points(source_id)")
         createCellObservationDetailsTable(db)
@@ -1146,6 +1157,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
         if (oldVersion < 20) {
             createRadioObservationCompactMacIndex(db)
+        }
+        if (oldVersion < 21) {
+            createRadioFingerprintPerformanceSupport(db)
         }
     }
 
@@ -1737,6 +1751,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             fingerprintMacKeyCount = estimateCalculation.fingerprintMacKeyCount,
             fingerprintExactKeyCount = estimateCalculation.fingerprintExactKeyCount,
             fingerprintDatabaseVersion = estimateCalculation.fingerprintDatabaseVersion,
+            fingerprintCacheHit = estimateCalculation.fingerprintCacheHit,
             compactMacIndexAvailable = estimateCalculation.compactMacIndexAvailable,
             candidatePlanUsesCompactMacIndex = estimateCalculation.candidatePlanUsesCompactMacIndex,
             fingerprintScoringDurationMillis = estimateCalculation.fingerprintScoringDurationMillis,
@@ -1834,7 +1849,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val exactKeyCount: Int = 0,
         val databaseVersion: Int = 0,
         val compactMacIndexAvailable: Boolean = false,
-        val candidatePlanUsesCompactMacIndex: Boolean? = null
+        val candidatePlanUsesCompactMacIndex: Boolean? = null,
+        val cacheHit: Boolean = false
     )
 
     private data class PositionEstimateCalculation(
@@ -1850,7 +1866,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val fingerprintExactKeyCount: Int = 0,
         val fingerprintDatabaseVersion: Int = 0,
         val compactMacIndexAvailable: Boolean = false,
-        val candidatePlanUsesCompactMacIndex: Boolean? = null
+        val candidatePlanUsesCompactMacIndex: Boolean? = null,
+        val fingerprintCacheHit: Boolean = false
     )
 
     private fun estimatePositionForCurrent(
@@ -1908,7 +1925,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
                 fingerprintDatabaseVersion = fingerprintLoad.databaseVersion,
                 compactMacIndexAvailable = fingerprintLoad.compactMacIndexAvailable,
-                candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex
+                candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex,
+                fingerprintCacheHit = fingerprintLoad.cacheHit
             )
         }
 
@@ -1960,7 +1978,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
             fingerprintDatabaseVersion = fingerprintLoad.databaseVersion,
             compactMacIndexAvailable = fingerprintLoad.compactMacIndexAvailable,
-            candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex
+            candidatePlanUsesCompactMacIndex = fingerprintLoad.candidatePlanUsesCompactMacIndex,
+            fingerprintCacheHit = fingerprintLoad.cacheHit
         )
     }
 
@@ -1992,10 +2011,21 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
         val db = readableDatabase
         val databaseVersion = db.version
+        val startTime = now - FINGERPRINT_HISTORY_AGE_MS
+        val cacheKey = fingerprintCacheKey(keys)
+        val cacheGeneration = readFingerprintCacheGeneration(db)
+        getCachedFingerprintSamples(cacheKey, cacheGeneration, startTime)?.let { cached ->
+            return cached.copy(
+                databaseVersion = databaseVersion,
+                candidateQueryDurationMillis = 0L,
+                expansionQueryDurationMillis = 0L,
+                cacheHit = true
+            )
+        }
         val compactMacIndexAvailable = if (macKeys.isNotEmpty()) {
             db.rawQuery(
                 "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
-                arrayOf("radio_obs_radio_compact_time")
+                arrayOf("radio_obs_radio_compact_located_time")
             ).use { it.moveToFirst() }
         } else false
 
@@ -2011,7 +2041,6 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         } else {
             exactKeys.joinToString(", ") { "(?, ?)" }
         }
-        val startTime = now - FINGERPRINT_HISTORY_AGE_MS
         val timestampArguments = buildList {
             macKeys.forEach { (type, compact) ->
                 add(type)
@@ -2039,7 +2068,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             candidates AS (
                 SELECT o.observed_at, o.radio_type, o.identifier
                 FROM requested_mac r
-                JOIN radio_observations o ON o.radio_type = r.radio_type
+                JOIN radio_observations o INDEXED BY radio_obs_radio_compact_located_time
+                  ON o.radio_type = r.radio_type
                   AND replace(replace(replace(lower(o.identifier), ':', ''), '-', ''), '.', '') = r.compact_identifier
                 JOIN radio_sources s ON s.id = o.source_id
                 LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
@@ -2056,7 +2086,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
                 SELECT o.observed_at, o.radio_type, o.identifier
                 FROM requested_exact r
-                JOIN radio_observations o ON o.radio_type = r.radio_type
+                JOIN radio_observations o INDEXED BY radio_obs_radio_exact_located_time
+                  ON o.radio_type = r.radio_type
                   AND o.identifier = r.identifier
                 JOIN radio_sources s ON s.id = o.source_id
                 LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
@@ -2095,7 +2126,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                     var used = false
                     while (cursor.moveToNext()) {
                         val detail = cursor.getString(3).orEmpty()
-                        if (detail.contains("radio_obs_radio_compact_time")) used = true
+                        if (detail.contains("radio_obs_radio_compact_located_time")) used = true
                     }
                     used
                 }
@@ -2103,7 +2134,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         } else null
 
         if (timestamps.isEmpty()) {
-            return FingerprintSampleLoadResult(
+            val emptyResult = FingerprintSampleLoadResult(
                 candidateQueryDurationMillis = candidateQueryDurationMillis,
                 candidateTimestampCount = 0,
                 macKeyCount = macKeys.size,
@@ -2112,6 +2143,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 compactMacIndexAvailable = compactMacIndexAvailable,
                 candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
             )
+            cacheFingerprintSamples(cacheKey, cacheGeneration, timestamps, emptyResult)
+            return emptyResult
         }
 
         val placeholders = timestamps.joinToString(",") { "?" }
@@ -2122,7 +2155,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             SELECT o.radio_type, o.identifier, o.latitude, o.longitude,
                    o.accuracy / MAX(s.trust_weight * COALESCE(sg.trust_weight, 1.0), 0.01) AS effective_accuracy,
                    o.rssi, o.observed_at, o.position_source
-            FROM radio_observations o JOIN radio_sources s ON s.id = o.source_id
+            FROM radio_observations o INDEXED BY radio_obs_located_time
+            JOIN radio_sources s ON s.id = o.source_id
             LEFT JOIN radio_source_segment_settings sg ON sg.source_id = o.source_id
               AND sg.day_key = strftime('%Y-%m-%d', o.observed_at / 1000, 'unixepoch', 'localtime')
               AND sg.radio_type = o.radio_type
@@ -2159,7 +2193,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val expansionQueryDurationMillis =
             ((System.nanoTime() - expansionQueryStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
 
-        return FingerprintSampleLoadResult(
+        val result = FingerprintSampleLoadResult(
             samples = samples,
             candidateQueryDurationMillis = candidateQueryDurationMillis,
             expansionQueryDurationMillis = expansionQueryDurationMillis,
@@ -2170,6 +2204,66 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             compactMacIndexAvailable = compactMacIndexAvailable,
             candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
         )
+        cacheFingerprintSamples(cacheKey, cacheGeneration, timestamps, result)
+        return result
+    }
+
+    private fun fingerprintCacheKey(keys: List<RadioSignal>): String =
+        TimeZone.getDefault().id + "|" +
+        keys.asSequence().map { signal ->
+            val compactMac = if (signal.type == "wifi" || signal.type == "ble") {
+                compactRadioMacIdentifier(signal.identifier)
+            } else null
+            if (compactMac != null) "${signal.type}|mac|$compactMac"
+            else "${signal.type}|exact|${signal.identifier}"
+        }.distinct().sorted().joinToString("\u001f")
+
+    private fun readFingerprintCacheGeneration(db: SQLiteDatabase): Long =
+        db.rawQuery(
+            "SELECT generation FROM radio_fingerprint_state WHERE id = 1",
+            null
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else 0L }
+
+    private fun getCachedFingerprintSamples(
+        key: String,
+        generation: Long,
+        startTime: Long
+    ): FingerprintSampleLoadResult? = synchronized(fingerprintCacheLock) {
+        val entry = fingerprintCache.remove(key) ?: return@synchronized null
+        val ageNanos = System.nanoTime() - entry.loadedAtNanos
+        val oldestCandidateStillEligible = entry.candidateTimestamps.minOrNull()
+            ?.let { it >= startTime } ?: true
+        if (entry.generation != generation || ageNanos !in 0..FINGERPRINT_CACHE_TTL_NANOS ||
+            !oldestCandidateStillEligible
+        ) return@synchronized null
+        fingerprintCache[key] = entry
+        entry.result
+    }
+
+    private fun cacheFingerprintSamples(
+        key: String,
+        generation: Long,
+        timestamps: List<Long>,
+        result: FingerprintSampleLoadResult
+    ) {
+        if (result.samples.size > MAX_FINGERPRINT_CACHE_SAMPLES) return
+        synchronized(fingerprintCacheLock) {
+            fingerprintCache.remove(key)
+            fingerprintCache[key] = FingerprintCacheEntry(
+                generation = generation,
+                loadedAtNanos = System.nanoTime(),
+                candidateTimestamps = timestamps.toList(),
+                result = result.copy(cacheHit = false)
+            )
+            while (fingerprintCache.size > MAX_FINGERPRINT_CACHE_ENTRIES ||
+                fingerprintCache.values.sumOf { it.result.samples.size } > MAX_FINGERPRINT_CACHE_SAMPLES
+            ) {
+                val oldest = fingerprintCache.entries.iterator()
+                if (!oldest.hasNext()) break
+                oldest.next()
+                oldest.remove()
+            }
+        }
     }
 
     /**
@@ -2183,6 +2277,73 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 "radio_type, " +
                 "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', ''), " +
                 "observed_at DESC)"
+        )
+    }
+
+    private fun createRadioFingerprintPerformanceSupport(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_obs_radio_compact_located_time ON radio_observations(" +
+                "radio_type, " +
+                "replace(replace(replace(lower(identifier), ':', ''), '-', ''), '.', ''), " +
+                "observed_at DESC) WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_obs_radio_exact_located_time ON " +
+                "radio_observations(radio_type, identifier, observed_at DESC) " +
+                "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS radio_obs_located_time ON radio_observations(observed_at DESC) " +
+                "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS radio_fingerprint_state (" +
+                "id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execSQL("INSERT OR IGNORE INTO radio_fingerprint_state(id, generation) VALUES(1, 0)")
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_observation_insert " +
+                "AFTER INSERT ON radio_observations " +
+                "WHEN NEW.latitude IS NOT NULL AND NEW.longitude IS NOT NULL " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_observation_update " +
+                "AFTER UPDATE ON radio_observations " +
+                "WHEN (OLD.latitude IS NOT NULL AND OLD.longitude IS NOT NULL) OR " +
+                "(NEW.latitude IS NOT NULL AND NEW.longitude IS NOT NULL) " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_observation_delete " +
+                "AFTER DELETE ON radio_observations " +
+                "WHEN OLD.latitude IS NOT NULL AND OLD.longitude IS NOT NULL " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_source_update " +
+                "AFTER UPDATE OF enabled, trust_weight ON radio_sources " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_source_delete " +
+                "AFTER DELETE ON radio_sources " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_segment_insert " +
+                "AFTER INSERT ON radio_source_segment_settings " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_segment_update " +
+                "AFTER UPDATE OF enabled, trust_weight ON radio_source_segment_settings " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
+        )
+        db.execSQL(
+            "CREATE TRIGGER IF NOT EXISTS radio_fingerprint_segment_delete " +
+                "AFTER DELETE ON radio_source_segment_settings " +
+                "BEGIN UPDATE radio_fingerprint_state SET generation = generation + 1 WHERE id = 1; END"
         )
     }
 
@@ -7138,7 +7299,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     companion object {
         private const val DB_NAME = "clear_gps_radio.sqlite"
-        private const val DB_VERSION = 20
+        private const val DB_VERSION = 21
         private const val OPEN_CELL_OSM_MIN_RADIUS_METERS = 100
         private const val OPEN_CELL_OSM_MAX_RADIUS_METERS = 5_000
         private const val OPEN_CELL_OSM_MAX_ATTEMPTS_PER_DAY = 2
@@ -7161,6 +7322,9 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         private const val SLOW_FINGERPRINT_QUERY_PLAN_THRESHOLD_MS = 500L
         private const val MAX_FINGERPRINT_KEYS = 80
         private const val MAX_FINGERPRINT_SCANS = 250
+        private const val FINGERPRINT_CACHE_TTL_NANOS = 5_000_000_000L
+        private const val MAX_FINGERPRINT_CACHE_ENTRIES = 4
+        private const val MAX_FINGERPRINT_CACHE_SAMPLES = 20_000
         private const val MAX_IMPORT_BYTES = 32 * 1024 * 1024
         private const val MAX_IMPORTED_RADIO_AGE_MS = 365L * 24 * 60 * 60 * 1_000L
         private const val MAX_SQLITE_IMPORT_BYTES = 128 * 1024 * 1024
