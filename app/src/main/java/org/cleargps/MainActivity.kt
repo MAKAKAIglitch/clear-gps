@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
         // Configure the resource interceptor only after the SDK has initialized its HTTP module.
         NetworkGate.installMapLibre(applicationContext)
         setContent {
-            ClearGpsApp(onMapViewCreated = ::attachMapView, onMapViewDisposed = ::detachMapView)
+            ClearGpsNavigationShell(onMapViewCreated = ::attachMapView, onMapViewDisposed = ::detachMapView)
         }
     }
 
