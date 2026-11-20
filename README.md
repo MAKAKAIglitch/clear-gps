@@ -6,15 +6,15 @@ Clear GPS is an experimental open-source Android application built with Kotlin, 
 
 ## Navigation interface
 
-The app opens in a dedicated navigation-first screen. Its visual language is **Material Design 3**: adaptive light/dark colours, rounded surfaces, tonal elevation and compact floating controls. The map is the main canvas rather than a page inside the legacy radio-surveying interface.
+The app opens in a dedicated, Waze-style map-first navigation screen. Its visual language is **Material Design 3**: adaptive light/dark colours, rounded surfaces, tonal elevation and compact floating controls. The map is the main canvas rather than a page inside the legacy radio-surveying interface.
 
-- **Map canvas:** a separate MapLibre map with the OpenFreeMap basemap and the published current-position marker. The navigation map does not display Wi-Fi, cell or BLE observations, Cell Intelligence overlays, spoofing zones, radio-analysis layers or the legacy layer menu.
+- **Map canvas:** a separate MapLibre map with the OpenFreeMap basemap and the last available published-position snapshot as its marker. The navigation map does not display Wi-Fi, cell or BLE observations, Cell Intelligence overlays, spoofing zones, radio-analysis layers or the legacy layer menu.
 - **Floating controls:** a rounded search island at the top, compact zoom and recenter controls at the right, and a route/status card above the bottom controls.
 - **Bottom navigation island:** a compact floating Material 3 pill centred near the bottom edge. Its tabs are **Карта**, **Поиск** and **Настройки**; it is intentionally not a full-width system-style navigation bar.
 - **Settings sections:** the settings sheet has separate **Общие**, **Карта** and **Местоположение** sections. **Местоположение** opens the existing ClearGPS Compose interface from the dev-based application code, preserving its location modes, monitoring, positioning and diagnostics screens. Android Back from the root of that interface returns to the navigation map.
 - **Separation of responsibilities:** navigation owns the clean map and navigation UI. The existing ClearGPS interface remains the place for location-source configuration and the advanced radio/GNSS tools; those technical layers are not inserted into the navigation map.
 
-The navigation shell is an evolving prototype. Search currently accepts text but does not geocode it; route calculation, turn-by-turn guidance and saved offline map regions are not implemented. OpenFreeMap is the current online basemap; expanded configurable caching and downloadable offline packs remain planned. If no published location fix is available, the map currently uses a temporary Helsinki starting coordinate; that coordinate is a visual fallback, not a device-location measurement.
+The navigation shell is an evolving prototype. Search currently accepts text but does not geocode it; route calculation, turn-by-turn guidance and saved offline map regions are not implemented. OpenFreeMap is the current online basemap; expanded configurable caching and downloadable offline packs remain planned. The marker is currently loaded from the saved published-position snapshot when the navigation screen opens; continuous live-location updates have not yet been connected. If no published location fix is available, the map uses a temporary Helsinki starting coordinate; that coordinate is a visual fallback, not a device-location measurement.
 
 
 ## Features
