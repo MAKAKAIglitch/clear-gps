@@ -198,7 +198,7 @@ class NetworkGateTest {
             "https://tiles.openfreemap.org/natural_earth/ne2sr/3/4/2.png",
             "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json",
             "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.png",
-            "https://tiles.openfreemap.org/fonts/Open Sans Regular/0-255.pbf"
+            "https://tiles.openfreemap.org/fonts/Open%20Sans%20Regular/0-255.pbf"
         )
         urls.forEach { url ->
             assertEquals(
