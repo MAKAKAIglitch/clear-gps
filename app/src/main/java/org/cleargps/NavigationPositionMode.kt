@@ -81,8 +81,8 @@ internal object NavigationPositionPolicy {
 }
 
 /**
- * Read the actual coordinate published by LocationMonitorService after ClearGPS's
- * trust/fusion pipeline. KEY_MOCK_OUTPUT_ACTIVE is intentionally not required:
+ * Read ClearGPS's active calculated position first (GPS or radio), then a recent physical
+ * GPS coordinate as a map-only fallback. KEY_MOCK_OUTPUT_ACTIVE is intentionally not required:
  * the map must work even when Android mock-location publishing is disabled.
  */
 internal fun readNavigationPosition(
