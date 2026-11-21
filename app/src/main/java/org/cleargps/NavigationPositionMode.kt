@@ -51,7 +51,7 @@ internal object NavigationPositionPolicy {
         return when (mode) {
             NavigationPositionMode.GPS_ONLY ->
                 normalized == "GPS" || normalized == "LAST_TRUSTED" ||
-                    normalized == "OBD2_DEAD_RECKONING" || normalized == "BEACONDB"
+                    normalized == "OBD2_DEAD_RECKONING"
             NavigationPositionMode.RADIO_ONLY ->
                 normalized == "LOCAL_RADIO" || normalized == "LOCAL_RADIO_STALE" || normalized == "BEACONDB"
             NavigationPositionMode.AUTO ->
