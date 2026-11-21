@@ -786,7 +786,7 @@ class LocationMonitorService : Service(), LocationListener {
             gpsAcquisitionJob?.cancel()
             gpsAcquisitionJob = null
             mock?.disable()
-            saveServiceStatus("Для режима «Только GPS» требуется разрешение «Точное местоположение».")
+            saveServiceStatus("Для режима «Авто» и «Только GPS» требуется разрешение «Точное местоположение».")
             DiagnosticLogStore.log(
                 this, "SERVICE",
                 "GPS-only monitoring refused: ACCESS_FINE_LOCATION is not granted.",
@@ -2561,7 +2561,7 @@ class LocationMonitorService : Service(), LocationListener {
                 }
             }
         } catch (_: SecurityException) {
-            saveServiceStatus("Для режима «Только GPS» требуется разрешение «Точное местоположение».")
+            saveServiceStatus("Для режима «Авто» и «Только GPS» требуется разрешение «Точное местоположение».")
         } catch (_: IllegalArgumentException) {
             saveServiceStatus("GPS-провайдер недоступен на этом устройстве.")
         }
