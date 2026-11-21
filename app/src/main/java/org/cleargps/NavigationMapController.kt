@@ -134,6 +134,7 @@ internal class NavigationMapController {
                         PropertyFactory.iconRotate(Expression.get(BEARING_PROPERTY)),
                         PropertyFactory.iconRotationAlignment("map"),
                         PropertyFactory.iconPitchAlignment("map"),
+                        PropertyFactory.iconSize(0.8333333f),
                         PropertyFactory.iconAllowOverlap(true),
                         PropertyFactory.iconIgnorePlacement(true)
                     )
@@ -268,8 +269,7 @@ internal class NavigationMapController {
 
     fun centerOnCurrentPosition(): Boolean {
         val point = currentPosition?.takeIf { it.isValid() } ?: return false
-        val mapObject = map ?: return false
-        if (!styleReady) return false
+        if (map == null || !styleReady) return false
         isFollowingUser = true
         hasCenteredOnFirstPosition = true
         moveCameraToUser(point, FOLLOW_ZOOM, animated = true)
@@ -318,35 +318,42 @@ internal class NavigationMapController {
         FeatureCollection.fromFeatures(emptyArray())
 
     private fun createNavigationPuckBitmap(): Bitmap {
-        // Draw a north-facing arrow. MapLibre rotates it from the trusted ClearGPS course property.
+        // Match Ferrostar's 80dp white puck and compact north-facing arrow.
+        // MapLibre rotates the image using the trusted ClearGPS course property.
         val size = 96
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val center = size / 2f
+        val minDimension = size.toFloat()
+        val center = minDimension / 2f
+        val haloRadius = minDimension * 0.5f
+        val puckRadius = minDimension * 0.359375f
+        val borderWidth = minDimension * 0.012f
 
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.argb(38, 0, 0, 0)
+            color = android.graphics.Color.argb(26, 0, 0, 0)
         }
-        canvas.drawCircle(center, center, 43f, shadowPaint)
+        canvas.drawCircle(center, center, haloRadius, shadowPaint)
 
         val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
             style = Paint.Style.FILL
         }
-        canvas.drawCircle(center, center - 4f, 35f, whitePaint)
+        canvas.drawCircle(center, center, puckRadius, whitePaint)
 
         val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.rgb(229, 229, 234)
             style = Paint.Style.STROKE
-            strokeWidth = 1.8f
+            strokeWidth = borderWidth
         }
-        canvas.drawCircle(center, center - 4f, 34.2f, borderPaint)
+        canvas.drawCircle(center, center, puckRadius, borderPaint)
 
+        val arrowHeight = minDimension * 0.34f
+        val arrowWidth = minDimension * 0.26f
         val arrowPath = Path().apply {
-            moveTo(center, 17f)
-            lineTo(67f, 69f)
-            lineTo(center, 57f)
-            lineTo(29f, 69f)
+            moveTo(center, center - arrowHeight * 0.55f)
+            lineTo(center + arrowWidth * 0.5f, center + arrowHeight * 0.35f)
+            lineTo(center, center + arrowHeight * 0.1f)
+            lineTo(center - arrowWidth * 0.5f, center + arrowHeight * 0.35f)
             close()
         }
         val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
