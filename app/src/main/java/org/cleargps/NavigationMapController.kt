@@ -120,8 +120,13 @@ internal class NavigationMapController {
         if (!styleReady || !delta.isFinite()) return
         val camera = mapObject.cameraPosition
         val nextZoom = (camera.zoom + delta).coerceIn(MIN_ZOOM, MAX_ZOOM)
+        val target = camera.target
+            ?: currentPosition?.takeIf { it.isValid() }?.let {
+                LatLng(it.latitude, it.longitude)
+            }
+            ?: LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
         mapObject.easeCamera(
-            CameraUpdateFactory.newLatLngZoom(camera.target, nextZoom),
+            CameraUpdateFactory.newLatLngZoom(target, nextZoom),
             CAMERA_ANIMATION_MS
         )
     }
