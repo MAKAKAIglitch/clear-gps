@@ -1,7 +1,7 @@
 package org.cleargps
 
 /**
- * Describes why GPS-only mode has not received its first physical GNSS location.
+ * Describes why GPS-backed modes have not received their first physical GNSS location.
  * This is diagnostic state only: it does not synthesize or lower the requirements for a fix.
  */
 internal object GpsFixAcquisitionPolicy {
@@ -10,7 +10,7 @@ internal object GpsFixAcquisitionPolicy {
     const val LAST_KNOWN_MAX_AGE_NANOS = 15_000_000_000L
 
     fun requiresPreciseLocationPermission(positionModeKey: String): Boolean =
-        positionModeKey == "gps" || positionModeKey == "gps_obd2"
+        positionModeKey in setOf("auto", "gps", "gps_obd2")
 
     fun waitingStatus(
         hasFineLocationPermission: Boolean,
@@ -19,7 +19,7 @@ internal object GpsFixAcquisitionPolicy {
         elapsedSinceTrackingStartedMs: Long
     ): String = when {
         !hasFineLocationPermission ->
-            "Для режима «Только GPS» требуется разрешение «Точное местоположение»."
+            "Для режима «Авто» и «Только GPS» требуется разрешение «Точное местоположение»."
         !providerAvailable ->
             "GPS-провайдер недоступен на этом устройстве."
         !providerEnabled ->
