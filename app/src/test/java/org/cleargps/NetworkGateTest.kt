@@ -190,6 +190,30 @@ class NetworkGateTest {
     }
 
     @Test
+    fun allowsEveryOpenFreeMapLibertyResourceFamily() {
+        val urls = listOf(
+            "https://tiles.openfreemap.org/styles/liberty",
+            "https://tiles.openfreemap.org/planet",
+            "https://tiles.openfreemap.org/planet/14/9644/5580.pbf",
+            "https://tiles.openfreemap.org/natural_earth/ne2sr/3/4/2.png",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.png",
+            "https://tiles.openfreemap.org/fonts/Open Sans Regular/0-255.pbf"
+        )
+        urls.forEach { url ->
+            assertEquals(
+                "tiles.openfreemap.org",
+                NetworkGate.validateRequest(
+                    url,
+                    "GET",
+                    NetworkGate.Operation.MAP_RESOURCE,
+                    mapOnline = true
+                ).host
+            )
+        }
+    }
+
+    @Test
     fun mapRequestsAreBlockedWhenOfflineOrRedirectedOutsideTheAllowlist() {
         assertThrows(SecurityException::class.java) {
             NetworkGate.validateRequest(
