@@ -1,6 +1,7 @@
 package org.cleargps
 
 import android.content.Context
+import android.os.SystemClock
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -115,4 +116,49 @@ class NavigationPositionModeTest {
         assertFalse(NavigationPositionPolicy.canProvideHeading("LOCAL_RADIO"))
         assertFalse(NavigationPositionPolicy.canProvideHeading("BEACONDB"))
     }
+    @Test
+    fun keepsRecentTrustedGpsVisibleWhileAutoIsAcquiringANewFix() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_last_trusted", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, "48.1372")
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, "11.5756")
+            .putFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, 6f)
+            .putLong(
+                LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
+            )
+            .commit()
+
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
+
+        assertEquals(48.1372, snapshot.coordinate.latitude, 0.000001)
+        assertEquals(11.5756, snapshot.coordinate.longitude, 0.000001)
+        assertEquals("LAST_TRUSTED", snapshot.source)
+        assertEquals(6.0, snapshot.accuracyMeters!!, 0.001)
+        assertEquals(null, snapshot.bearingDegrees)
+        prefs.edit().clear().commit()
+    }
+
+    @Test
+    fun doesNotUseLastTrustedGpsInRadioOnlyMode() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_last_trusted_radio", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "radio")
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, "48.1372")
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, "11.5756")
+            .putLong(
+                LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
+            )
+            .commit()
+
+        assertEquals(null, readNavigationPosition(prefs))
+        prefs.edit().clear().commit()
+    }
+
 }
