@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBars
@@ -740,6 +741,7 @@ private fun NavigationPrototypeScreen(
                     val currentPositionDescription = navigationPosition?.let { position ->
                         val sourceTitle = when (position.source.uppercase()) {
                             "GPS" -> "GPS после фильтра ClearGPS"
+                            "LAST_TRUSTED" -> "Последняя доверенная GPS-позиция"
                             "NETWORK" -> "Сеть Android"
                             "LOCAL_RADIO" -> "Радиорасчёт ClearGPS"
                             "LOCAL_RADIO_STALE" -> "Последняя радиопозиция ClearGPS"
