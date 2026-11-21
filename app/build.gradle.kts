@@ -9,7 +9,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "org.cleargps"
+        applicationId = "org.cleargps.nav"
         minSdk = 26
         targetSdk = 35
         versionCode = 4
