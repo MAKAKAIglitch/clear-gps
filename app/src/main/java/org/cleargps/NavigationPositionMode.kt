@@ -27,7 +27,7 @@ internal enum class NavigationPositionMode(
     RADIO_ONLY(
         "radio",
         "Радио",
-        "Координаты рассчитываются ClearGPS по Wi‑Fi, сотовым сетям, Bluetooth и доступной радиобазе."
+        "Координаты рассчитываются ClearGPS по Wi‑Fi, сотовым сетям, Bluetooth и доступной радиобазе. Требуется точное разрешение геолокации; GPS-фиксы в этом режиме не запрашиваются."
     );
 
     companion object {
