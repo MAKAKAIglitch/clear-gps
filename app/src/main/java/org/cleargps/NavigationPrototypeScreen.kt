@@ -437,7 +437,7 @@ private fun NavigationPrototypeScreen(
                     .align(Alignment.BottomEnd)
                     .padding(
                         end = 12.dp,
-                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 184.dp
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 176.dp
                     ),
                 shape = CircleShape,
                 color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
