@@ -151,7 +151,7 @@ class LocalRadioDatabaseUndoTest {
         database = LocalRadioDatabase(context)
         sqlite = database.writableDatabase
 
-        assertEquals(20, sqlite.version)
+        assertEquals(21, sqlite.version)
         assertTrue(sqlite.rawQuery(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cell_site_sectors'", null
         ).use { it.moveToFirst() })
