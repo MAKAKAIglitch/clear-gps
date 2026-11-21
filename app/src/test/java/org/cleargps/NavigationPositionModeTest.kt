@@ -94,6 +94,31 @@ class NavigationPositionModeTest {
     }
 
     @Test
+    fun autoModeShowsRecentPhysicalGpsWhenRadioFallbackHasNoEstimate() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_auto_gps_fallback", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, "60.1699")
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, "24.9384")
+            .putFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, 18f)
+            .putLong(
+                LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 60_000_000_000L
+            )
+            .commit()
+
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
+        assertEquals(60.1699, snapshot.coordinate.latitude, 0.000001)
+        assertEquals(24.9384, snapshot.coordinate.longitude, 0.000001)
+        assertEquals("GPS_UNVERIFIED", snapshot.source)
+        assertEquals(18.0, snapshot.accuracyMeters!!, 0.001)
+        prefs.edit().clear().commit()
+    }
+
+    @Test
     fun doesNotUseUnverifiedGpsInRadioOnlyModeOrAfterExpiry() {
         val context = RuntimeEnvironment.getApplication()
         val prefs = context.getSharedPreferences("navigation_position_unverified_gps_expired", Context.MODE_PRIVATE)
@@ -112,7 +137,7 @@ class NavigationPositionModeTest {
             .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
             .putLong(
                 LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
-                SystemClock.elapsedRealtimeNanos() - 31_000_000_000L
+                SystemClock.elapsedRealtimeNanos() - 121_000_000_000L
             )
             .commit()
         assertEquals(null, readNavigationPosition(prefs))
