@@ -94,6 +94,33 @@ class NavigationPositionModeTest {
     }
 
     @Test
+    fun autoModePrefersClearGpsRadioDatabaseEstimateOverDisplayOnlyGpsFallback() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_auto_radio_priority", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, true)
+            .putString(LocationMonitorService.KEY_SOURCE, "LOCAL_RADIO")
+            .putString(LocationMonitorService.KEY_LAT, "60.1701")
+            .putString(LocationMonitorService.KEY_LON, "24.9386")
+            .putFloat(LocationMonitorService.KEY_ACCURACY, 75f)
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, "60.1699")
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, "24.9384")
+            .putLong(
+                LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
+            )
+            .commit()
+
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
+        assertEquals(60.1701, snapshot.coordinate.latitude, 0.000001)
+        assertEquals(24.9386, snapshot.coordinate.longitude, 0.000001)
+        assertEquals("LOCAL_RADIO", snapshot.source)
+        prefs.edit().clear().commit()
+    }
+
+    @Test
     fun autoModeShowsRecentPhysicalGpsWhenRadioFallbackHasNoEstimate() {
         val context = RuntimeEnvironment.getApplication()
         val prefs = context.getSharedPreferences("navigation_position_auto_gps_fallback", Context.MODE_PRIVATE)
