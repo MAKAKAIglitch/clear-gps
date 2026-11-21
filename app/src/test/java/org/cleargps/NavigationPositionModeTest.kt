@@ -26,6 +26,7 @@ class NavigationPositionModeTest {
             .putString(LocationMonitorService.KEY_LAT, "60.1699")
             .putString(LocationMonitorService.KEY_LON, "24.9384")
             .putFloat(LocationMonitorService.KEY_ACCURACY, 85f)
+            .putFloat(LocationMonitorService.KEY_BEARING, 180f)
             .commit()
 
         val snapshot = requireNotNull(readNavigationPosition(prefs))
@@ -34,6 +35,7 @@ class NavigationPositionModeTest {
         assertEquals(24.9384, snapshot.coordinate.longitude, 0.000001)
         assertEquals(85.0, snapshot.accuracyMeters!!, 0.001)
         assertEquals("LOCAL_RADIO", snapshot.source)
+        assertEquals(null, snapshot.bearingDegrees)
         prefs.edit().clear().commit()
     }
 
@@ -50,6 +52,7 @@ class NavigationPositionModeTest {
             .putString(LocationMonitorService.KEY_LAT, "52.5200")
             .putString(LocationMonitorService.KEY_LON, "13.4050")
             .putFloat(LocationMonitorService.KEY_ACCURACY, 4.5f)
+            .putFloat(LocationMonitorService.KEY_BEARING, 72.5f)
             .commit()
 
         val snapshot = requireNotNull(readNavigationPosition(prefs))
@@ -58,6 +61,7 @@ class NavigationPositionModeTest {
         assertEquals(13.4050, snapshot.coordinate.longitude, 0.000001)
         assertEquals(4.5, snapshot.accuracyMeters!!, 0.001)
         assertEquals("GPS", snapshot.source)
+        assertEquals(72.5, snapshot.bearingDegrees!!, 0.001)
         prefs.edit().clear().commit()
     }
 
@@ -105,5 +109,10 @@ class NavigationPositionModeTest {
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "LOCAL_RADIO"))
         assertFalse(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "NONE"))
         assertFalse(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "EXTERNAL_MOCK"))
+        assertTrue(NavigationPositionPolicy.canProvideHeading("GPS"))
+        assertTrue(NavigationPositionPolicy.canProvideHeading("LAST_TRUSTED"))
+        assertTrue(NavigationPositionPolicy.canProvideHeading("OBD2_DEAD_RECKONING"))
+        assertFalse(NavigationPositionPolicy.canProvideHeading("LOCAL_RADIO"))
+        assertFalse(NavigationPositionPolicy.canProvideHeading("BEACONDB"))
     }
 }
