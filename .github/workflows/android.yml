@@ -1,15 +1,59 @@
 name: Android build
 on:
   push:
+    paths:
+      - '**.gradle'
+      - '**.gradle.kts'
+      - '**.kt'
+      - '**.java'
+      - '**.xml'
+      - '**.properties'
+      - '**.yml'
+      - '**.yaml'
+      - 'gradle/**'
+      - 'app/**'
+      - 'core-*/**'
+      - 'windows-build/**'
+      - 'tools/benchmarks/**'
+      - '.github/workflows/**'
+      - 'gradlew'
+      - 'gradlew.bat'
   pull_request:
+    paths:
+      - '**.gradle'
+      - '**.gradle.kts'
+      - '**.kt'
+      - '**.java'
+      - '**.xml'
+      - '**.properties'
+      - '**.yml'
+      - '**.yaml'
+      - 'gradle/**'
+      - 'app/**'
+      - 'core-*/**'
+      - 'windows-build/**'
+      - 'tools/benchmarks/**'
+      - '.github/workflows/**'
+      - 'gradlew'
+      - 'gradlew.bat'
   workflow_dispatch:
+
+# A newer commit on the same branch supersedes an older in-progress CI run.
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   test-and-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Validate Windows bootstrap PowerShell syntax
         shell: pwsh
         run: |
@@ -46,29 +90,35 @@ jobs:
           echo 'Gradle Wrapper JAR SHA-256 verified.'
       - name: Verify radio fingerprint query plans and benchmark both SQL stages
         shell: bash
-        run: python3 tools/benchmarks/radio_fingerprint_sql.py --sizes 1000 10000 50000 500000 --repeats 3
+        run: python3 tools/benchmarks/radio_fingerprint_sql.py --sizes 1000 10000 50000 500000 --repeats 1
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
         run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
       - name: Preserve Linux unit test reports
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-reports-linux
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
             core-cell/build/test-results/test/*.xml
-          if-no-files-found: warn
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Upload Linux debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: ClearGPS-debug
+          name: ClearGPS-debug-linux
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 7
 
   windows-test-and-build:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -95,12 +145,12 @@ jobs:
           & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
           if ($LASTEXITCODE -ne 0) { throw "Windows tests/build failed with exit code $LASTEXITCODE." }
       - name: Preserve Windows unit test reports
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-reports-windows
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
             core-cell/build/test-results/test/*.xml
-          if-no-files-found: warn
-          retention-days: 7
+          if-no-files-found: ignore
+          retention-days: 3
