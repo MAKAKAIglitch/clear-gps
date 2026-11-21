@@ -2253,20 +2253,22 @@ class LocationMonitorService : Service(), LocationListener {
             return
         }
         val gpsFix = location.provider.equals(LocationManager.GPS_PROVIDER, true)
-        if (gpsFix && isAutoRadioFallbackActive() && !isAutoGpsProbeActive()) {
-            DiagnosticLogStore.log(this, "AUTO_MODE", "Late GPS callback ignored while Auto RADIO is active outside its scheduled probe.")
-            return
-        }
         if (gpsFix) {
-            // Keep the latest real Android GPS fix available to the navigation map even when
-            // the anti-spoofing filter has not trusted it yet. This is display-only evidence:
-            // it is never fed into fusion or Mock GPS publication.
+            // Keep a fresh physical GPS coordinate available to the map independently of
+            // trust/fallback decisions. In Auto/RADIO this must happen before the early return:
+            // the radio calculation remains authoritative when available, GPS is the display fallback.
             prefs.edit()
                 .putString(KEY_LAST_OBSERVED_GPS_LAT, location.latitude.toString())
                 .putString(KEY_LAST_OBSERVED_GPS_LON, location.longitude.toString())
                 .putFloat(KEY_LAST_OBSERVED_GPS_ACCURACY, location.accuracy)
                 .putLong(KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, location.elapsedRealtimeNanos)
                 .apply()
+        }
+        if (gpsFix && isAutoRadioFallbackActive() && !isAutoGpsProbeActive()) {
+            DiagnosticLogStore.log(this, "AUTO_MODE", "Late GPS callback ignored while Auto RADIO is active outside its scheduled probe.")
+            return
+        }
+        if (gpsFix) {
             lastGpsLocationElapsedRealtimeNanos = maxOf(
                 lastGpsLocationElapsedRealtimeNanos, location.elapsedRealtimeNanos
             )
