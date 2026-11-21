@@ -1,10 +1,44 @@
 package org.cleargps
 
+import android.content.Context
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class NavigationPositionModeTest {
+    @Test
+    fun readsClearGpsCalculatedRadioPositionWhenMockGpsPublishingIsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_test", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "radio")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, true)
+            .putBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putString(LocationMonitorService.KEY_SOURCE, "LOCAL_RADIO")
+            .putString(LocationMonitorService.KEY_LAT, "60.1699")
+            .putString(LocationMonitorService.KEY_LON, "24.9384")
+            .putFloat(LocationMonitorService.KEY_ACCURACY, 85f)
+            .commit()
+
+        val snapshot = readNavigationPosition(prefs)
+
+        assertNotNull(snapshot)
+        assertEquals(60.1699, snapshot!!.coordinate.latitude, 0.000001)
+        assertEquals(24.9384, snapshot.coordinate.longitude, 0.000001)
+        assertEquals(85.0, snapshot.accuracyMeters!!, 0.001)
+        assertEquals("LOCAL_RADIO", snapshot.source)
+        prefs.edit().clear().commit()
+    }
+
     @Test
     fun readsLegacyAndCurrentPositionModeKeys() {
         assertTrue(
