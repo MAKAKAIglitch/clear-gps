@@ -1,17 +1,21 @@
 package org.cleargps
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,22 +27,24 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -90,7 +97,6 @@ private fun NavigationPrototypeScreen(
     val initialPosition = remember { readNavigationPosition(context) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showSearch by rememberSaveable { mutableStateOf(false) }
-    var selectedSettingsSection by rememberSaveable { mutableStateOf("Общие") }
     var selectedNavigationTab by rememberSaveable { mutableStateOf("Карта") }
     var destinationQuery by rememberSaveable { mutableStateOf("") }
 
@@ -165,6 +171,7 @@ private fun NavigationPrototypeScreen(
                     }
                     IconButton(onClick = {
                         selectedNavigationTab = "Настройки"
+                        showSearch = false
                         showSettings = true
                     }) {
                         Icon(
@@ -179,8 +186,11 @@ private fun NavigationPrototypeScreen(
             // Compact zoom and location controls.
             Column(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 12.dp),
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        end = 12.dp,
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 205.dp
+                    ),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -452,173 +462,23 @@ private fun NavigationPrototypeScreen(
             }
         }
 
+        BackHandler(enabled = showSettings) {
+            showSettings = false
+            selectedNavigationTab = "Карта"
+        }
+
         if (showSettings) {
-            ModalBottomSheet(
-                onDismissRequest = {
+            NavigationSettingsScreen(
+                onBack = {
                     showSettings = false
                     selectedNavigationTab = "Карта"
                 },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = colors.surfaceContainerHigh
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp)
-                        .padding(bottom = 26.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Настройки", style = MaterialTheme.typography.headlineSmall)
-                            Text(
-                                "ClearGPS Navigation",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant
-                            )
-                        }
-                        IconButton(onClick = {
-                            showSettings = false
-                            selectedNavigationTab = "Карта"
-                        }) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Закрыть")
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
-                    ) {
-                        listOf("Общие", "Карта", "Местоположение").forEach { section ->
-                            val selected = selectedSettingsSection == section
-                            Surface(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { selectedSettingsSection = section },
-                                shape = RoundedCornerShape(15.dp),
-                                color = if (selected) colors.secondaryContainer else colors.surfaceContainer
-                            ) {
-                                Box(
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 11.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        section,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = if (selected) {
-                                            colors.onSecondaryContainer
-                                        } else {
-                                            colors.onSurfaceVariant
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    when (selectedSettingsSection) {
-                        "Местоположение" -> {
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        showSettings = false
-                                        selectedNavigationTab = "Карта"
-                                        onOpenLocationSettings()
-                                    },
-                                shape = RoundedCornerShape(18.dp),
-                                color = colors.surfaceContainer
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Surface(
-                                        modifier = Modifier.size(46.dp),
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = colors.secondaryContainer
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                Icons.Outlined.MyLocation,
-                                                contentDescription = null,
-                                                tint = colors.onSecondaryContainer
-                                            )
-                                        }
-                                    }
-                                    Column(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .padding(start = 13.dp),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                                    ) {
-                                        Text(
-                                            "Открыть настройки местоположения",
-                                            style = MaterialTheme.typography.titleMedium
-                                        )
-                                        Text(
-                                            "Перейти в существующий интерфейс ClearGPS",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colors.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                            Text(
-                                "Здесь находятся режимы GPS / Auto / Radio, управление фиксацией, источники позиции и диагностика ClearGPS.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant
-                            )
-                        }
-
-                        "Карта" -> {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(18.dp),
-                                color = colors.surfaceContainer
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Text("Онлайн-карта", style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        "OpenFreeMap загружается по мере просмотра. Увеличенный настраиваемый кэш и загрузка офлайн-пакетов — следующие этапы.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colors.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-
-                        else -> {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(18.dp),
-                                color = colors.surfaceContainer
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Text("Навигационная оболочка", style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        "Чистая карта, поиск и маршрутный интерфейс отделены от радиоаналитики. Панель вкладок находится в виде плавающего островка по центру снизу.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colors.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Text(
-                        "Поиск адресов, построение маршрутов и подсказки манёвров пока представлены интерфейсным прототипом.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.onSurfaceVariant
-                    )
+                onOpenLocationSettings = {
+                    showSettings = false
+                    selectedNavigationTab = "Карта"
+                    onOpenLocationSettings()
                 }
-            }
+            )
         }
 
         if (showSearch) {
@@ -666,6 +526,207 @@ private fun NavigationPrototypeScreen(
             }
         }
     }
+}
+
+@Composable
+private fun NavigationSettingsScreen(
+    onBack: () -> Unit,
+    onOpenLocationSettings: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.surfaceContainerHigh,
+            tonalElevation = 2.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = 8.dp,
+                        end = 18.dp,
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 6.dp,
+                        bottom = 12.dp
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Outlined.Close, contentDescription = "Назад")
+                }
+                Column(modifier = Modifier.padding(start = 8.dp)) {
+                    Text(
+                        "Настройки",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = colors.onSurface
+                    )
+                    Text(
+                        "ClearGPS Navigation",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp)
+                .padding(top = 22.dp, bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 24.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Всё для удобной поездки",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = colors.onBackground
+                )
+                Text(
+                    "Управляйте картой, позиционированием и параметрами навигации.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant
+                )
+            }
+
+            NavigationSettingsGroup("ПОЕЗДКА") {
+                NavigationSettingsItem(
+                    title = "Местоположение и GPS",
+                    subtitle = "Режимы GPS, Auto, Radio и диагностика",
+                    icon = Icons.Outlined.MyLocation,
+                    onClick = onOpenLocationSettings
+                )
+            }
+
+            NavigationSettingsGroup("КАРТА И ОТОБРАЖЕНИЕ") {
+                NavigationSettingsItem(
+                    title = "Вид карты",
+                    subtitle = "Светлая или тёмная тема по настройкам системы",
+                    icon = Icons.Outlined.Map
+                )
+                NavigationSettingsDivider()
+                NavigationSettingsItem(
+                    title = "Источник карты",
+                    subtitle = "OpenFreeMap · картографические данные OpenStreetMap",
+                    icon = Icons.Outlined.Map
+                )
+            }
+
+            NavigationSettingsGroup("НАВИГАЦИЯ") {
+                NavigationSettingsItem(
+                    title = "Поиск и маршруты",
+                    subtitle = "Интерфейс поиска есть; построение маршрутов ещё не подключено",
+                    icon = Icons.Outlined.Navigation
+                )
+                NavigationSettingsDivider()
+                NavigationSettingsItem(
+                    title = "Голосовые подсказки",
+                    subtitle = "Станут доступны после подключения движка маршрутизации",
+                    icon = Icons.Outlined.VolumeUp
+                )
+            }
+
+            NavigationSettingsGroup("О ПРИЛОЖЕНИИ") {
+                NavigationSettingsItem(
+                    title = "ClearGPS Navigation",
+                    subtitle = "Версия 0.4.0 · Навигационный интерфейс",
+                    icon = Icons.Outlined.Info
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavigationSettingsGroup(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 1.dp
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+@Composable
+private fun NavigationSettingsItem(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    onClick: (() -> Unit)? = null
+) {
+    val colors = MaterialTheme.colorScheme
+    val clickModifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(clickModifier)
+            .padding(horizontal = 16.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.size(44.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = colors.secondaryContainer
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = colors.onSecondaryContainer)
+            }
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 14.dp, end = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = colors.onSurface
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant
+            )
+        }
+        if (onClick != null) {
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = "Открыть",
+                tint = colors.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun NavigationSettingsDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 74.dp, end = 16.dp)
+            .size(width = 1.dp, height = 1.dp)
+            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    )
 }
 
 private fun readNavigationPosition(context: Context): NavigationCoordinate? {
