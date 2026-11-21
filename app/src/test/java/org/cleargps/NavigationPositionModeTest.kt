@@ -67,6 +67,59 @@ class NavigationPositionModeTest {
     }
 
     @Test
+    fun showsRecentPhysicalGpsFixOnNavigationBeforeTrustFilterAcceptsIt() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_unverified_gps", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "gps")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, "55.7558")
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, "37.6173")
+            .putFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, 12f)
+            .putLong(
+                LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
+            )
+            .commit()
+
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
+
+        assertEquals(55.7558, snapshot.coordinate.latitude, 0.000001)
+        assertEquals(37.6173, snapshot.coordinate.longitude, 0.000001)
+        assertEquals("GPS_UNVERIFIED", snapshot.source)
+        assertEquals(12.0, snapshot.accuracyMeters!!, 0.001)
+        assertEquals(null, snapshot.bearingDegrees)
+        prefs.edit().clear().commit()
+    }
+
+    @Test
+    fun doesNotUseUnverifiedGpsInRadioOnlyModeOrAfterExpiry() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_unverified_gps_expired", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "radio")
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, "55.7558")
+            .putString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, "37.6173")
+            .putLong(
+                LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
+            )
+            .commit()
+        assertEquals(null, readNavigationPosition(prefs))
+
+        prefs.edit()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            .putLong(
+                LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 31_000_000_000L
+            )
+            .commit()
+        assertEquals(null, readNavigationPosition(prefs))
+        prefs.edit().clear().commit()
+    }
+
+    @Test
     fun readsLegacyAndCurrentPositionModeKeys() {
         assertTrue(
             NavigationPositionMode.fromStoredKey("auto") == NavigationPositionMode.AUTO
