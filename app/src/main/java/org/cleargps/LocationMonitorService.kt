@@ -614,6 +614,7 @@ class LocationMonitorService : Service(), LocationListener {
                         .putString(KEY_LAT, latitude.toString())
                         .putString(KEY_LON, longitude.toString())
                         .putFloat(KEY_ACCURACY, effectiveAccuracy.toFloat())
+                        .remove(KEY_BEARING)
                         .apply()
 
                     val remainingSeconds = ((deadlineElapsed - nowElapsed).coerceAtLeast(0L) + 999L) / 1_000L
@@ -1000,6 +1001,7 @@ class LocationMonitorService : Service(), LocationListener {
                             .putString(KEY_LAT, projected.latitude.toString())
                             .putString(KEY_LON, projected.longitude.toString())
                             .putFloat(KEY_ACCURACY, projected.accuracy)
+                            .putFloat(KEY_BEARING, projected.bearing)
                             .apply()
                         obd2FallbackPublished = true
                         if (!wasAlreadyPublished) {
@@ -1327,7 +1329,10 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putBoolean(KEY_HAS_OUTPUT, true)
                                 .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, mockRequested)
                                 .putString(KEY_LAT, output.latitude.toString())
-                                .putString(KEY_LON, output.longitude.toString()).putFloat(KEY_ACCURACY, output.accuracy).apply()
+                                .putString(KEY_LON, output.longitude.toString())
+                                .putFloat(KEY_ACCURACY, output.accuracy)
+                                .remove(KEY_BEARING)
+                                .apply()
                             saveServiceStatus(
                                 (if (mockRequested) radioMockProviderStatus() else "Radio estimate only") +
                                     (if (result.fromCache) " · cached radio data" else "") +
@@ -1380,6 +1385,7 @@ class LocationMonitorService : Service(), LocationListener {
                                     .putString(KEY_LAT, held.latitude.toString())
                                     .putString(KEY_LON, held.longitude.toString())
                                     .putFloat(KEY_ACCURACY, held.accuracy)
+                                    .remove(KEY_BEARING)
                                     .apply()
                                 saveServiceStatus(
                                     radioMockProviderStatus() + " · scan missed · holding last fix for " +
@@ -1450,6 +1456,7 @@ class LocationMonitorService : Service(), LocationListener {
                                 .putFloat(KEY_ACCURACY, held.accuracy)
                                 .putString(KEY_LAT, held.latitude.toString())
                                 .putString(KEY_LON, held.longitude.toString())
+                                .remove(KEY_BEARING)
                                 .putString(KEY_REASONS, "Ошибка радиосканирования; используется краткий резерв.")
                                 .apply()
                             saveServiceStatus(
@@ -1882,12 +1889,17 @@ class LocationMonitorService : Service(), LocationListener {
                     val mockRequested = prefs.getBoolean(KEY_MOCK_ENABLED, false)
                     // Persist the current valid estimate even if the optional system mock-provider
                     // publication fails; otherwise the map would keep exposing an older coordinate.
-                    prefs.edit()
+                    val fusedEdit = prefs.edit()
                         .putBoolean(KEY_HAS_OUTPUT, true)
                         .putString(KEY_LAT, fusedLocation.latitude.toString())
                         .putString(KEY_LON, fusedLocation.longitude.toString())
                         .putFloat(KEY_ACCURACY, fusedLocation.accuracy)
-                        .apply()
+                    if (fusedLocation.hasBearing() && fusedLocation.bearing.isFinite()) {
+                        fusedEdit.putFloat(KEY_BEARING, ((fusedLocation.bearing % 360f) + 360f) % 360f)
+                    } else {
+                        fusedEdit.remove(KEY_BEARING)
+                    }
+                    fusedEdit.apply()
                     if (mockRequested && mock?.publish(fusedLocation, publishGpsProvider = false) != true) {
                         prefs.edit().putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false).apply()
                         val reason = mock?.lastError ?: "Mock-location output unavailable"
@@ -2782,8 +2794,13 @@ class LocationMonitorService : Service(), LocationListener {
         result.outputLocation?.let {
             edit.putString(KEY_LAT, it.latitude.toString()).putString(KEY_LON, it.longitude.toString())
                 .putFloat(KEY_ACCURACY, if (it.hasAccuracy()) it.accuracy else -1f)
+            if (it.hasBearing() && it.bearing.isFinite()) {
+                edit.putFloat(KEY_BEARING, ((it.bearing % 360f) + 360f) % 360f)
+            } else {
+                edit.remove(KEY_BEARING)
+            }
         } ?: run {
-            edit.remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY)
+            edit.remove(KEY_LAT).remove(KEY_LON).remove(KEY_ACCURACY).remove(KEY_BEARING)
         }
         edit.apply()
         RiskBreakdownStore.write(prefs, result.riskBreakdown, SystemClock.elapsedRealtimeNanos())
@@ -2827,6 +2844,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LAT = "lat"
         const val KEY_LON = "lon"
         const val KEY_ACCURACY = "accuracy"
+        const val KEY_BEARING = "bearing_degrees"
         const val KEY_PUBLISH_LOW_ACCURACY = "publish_low_accuracy"
         const val KEY_SERVICE_STATUS = "service_status"
         const val KEY_GNSS_ENVIRONMENT = "gnss_environment"
