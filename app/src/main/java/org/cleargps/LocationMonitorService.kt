@@ -2258,6 +2258,15 @@ class LocationMonitorService : Service(), LocationListener {
             return
         }
         if (gpsFix) {
+            // Keep the latest real Android GPS fix available to the navigation map even when
+            // the anti-spoofing filter has not trusted it yet. This is display-only evidence:
+            // it is never fed into fusion or Mock GPS publication.
+            prefs.edit()
+                .putString(KEY_LAST_OBSERVED_GPS_LAT, location.latitude.toString())
+                .putString(KEY_LAST_OBSERVED_GPS_LON, location.longitude.toString())
+                .putFloat(KEY_LAST_OBSERVED_GPS_ACCURACY, location.accuracy)
+                .putLong(KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, location.elapsedRealtimeNanos)
+                .apply()
             lastGpsLocationElapsedRealtimeNanos = maxOf(
                 lastGpsLocationElapsedRealtimeNanos, location.elapsedRealtimeNanos
             )
@@ -2893,6 +2902,10 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LAST_TRUSTED_GPS_LON = "last_trusted_physical_gps_lon"
         const val KEY_LAST_TRUSTED_GPS_ACCURACY = "last_trusted_physical_gps_accuracy"
         const val KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS = "last_trusted_physical_gps_elapsed_nanos"
+        const val KEY_LAST_OBSERVED_GPS_LAT = "last_observed_physical_gps_lat"
+        const val KEY_LAST_OBSERVED_GPS_LON = "last_observed_physical_gps_lon"
+        const val KEY_LAST_OBSERVED_GPS_ACCURACY = "last_observed_physical_gps_accuracy"
+        const val KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS = "last_observed_physical_gps_elapsed_nanos"
 
         /**
          * Notify the existing foreground monitor when the user starts/stops an opt-in replay.
