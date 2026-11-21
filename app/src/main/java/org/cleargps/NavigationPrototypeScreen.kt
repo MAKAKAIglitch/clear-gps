@@ -139,7 +139,8 @@ private fun NavigationPrototypeScreen(
             LocationMonitorService.KEY_SOURCE,
             LocationMonitorService.KEY_LAT,
             LocationMonitorService.KEY_LON,
-            LocationMonitorService.KEY_ACCURACY
+            LocationMonitorService.KEY_ACCURACY,
+        LocationMonitorService.KEY_BEARING
         )
     }
     DisposableEffect(positionPreferences) {
@@ -156,7 +157,7 @@ private fun NavigationPrototypeScreen(
     }
 
     LaunchedEffect(navigationPosition) {
-        controller.updatePosition(navigationPosition?.coordinate)
+        controller.updatePosition(navigationPosition)
     }
     LaunchedEffect(navigationPosition, centerOnNextPosition) {
         if (centerOnNextPosition && navigationPosition != null) {
@@ -274,7 +275,7 @@ private fun NavigationPrototypeScreen(
                             mapView = view,
                             context = viewContext,
                             initialDarkMode = systemDark,
-                            initialPosition = navigationPosition?.coordinate
+                            initialPosition = navigationPosition
                         )
                     }
                 },
