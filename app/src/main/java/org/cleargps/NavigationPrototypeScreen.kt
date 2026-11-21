@@ -1,25 +1,33 @@
 package org.cleargps
 
-import android.content.Context
+import android.Manifest
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.shape.CircleShape
@@ -41,6 +49,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -48,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -96,11 +108,150 @@ private fun NavigationPrototypeScreen(
     val context = LocalContext.current
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val controller = remember { NavigationMapController() }
-    val initialPosition = remember { readNavigationPosition(context) }
+    val positionPreferences = remember {
+        context.getSharedPreferences(ClearGpsPreferences.PREFS, android.content.Context.MODE_PRIVATE)
+    }
+    var selectedPositionMode by remember {
+        mutableStateOf(
+            NavigationPositionMode.fromStoredKey(
+                positionPreferences.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            )
+        )
+    }
+    var navigationPosition by remember {
+        mutableStateOf(readNavigationPosition(positionPreferences))
+    }
+    var zoomLevel by remember { mutableStateOf(controller.currentZoom().toFloat()) }
+    var centerOnNextPosition by remember { mutableStateOf(false) }
+    var showLocationModePicker by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var selectedNavigationTab by rememberSaveable { mutableStateOf("Карта") }
     var destinationQuery by rememberSaveable { mutableStateOf("") }
+    var pendingPositionMode by remember { mutableStateOf<NavigationPositionMode?>(null) }
+
+    val watchedPositionKeys = remember {
+        setOf(
+            ClearGpsPreferences.KEY_POSITION_MODE,
+            LocationMonitorService.KEY_MONITORING,
+            LocationMonitorService.KEY_HAS_OUTPUT,
+            LocationMonitorService.KEY_SOURCE,
+            LocationMonitorService.KEY_LAT,
+            LocationMonitorService.KEY_LON,
+            LocationMonitorService.KEY_ACCURACY
+        )
+    }
+    DisposableEffect(positionPreferences) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key in watchedPositionKeys) {
+                selectedPositionMode = NavigationPositionMode.fromStoredKey(
+                    positionPreferences.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+                )
+                navigationPosition = readNavigationPosition(positionPreferences)
+            }
+        }
+        positionPreferences.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { positionPreferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    LaunchedEffect(navigationPosition) {
+        controller.updatePosition(navigationPosition?.coordinate)
+    }
+    LaunchedEffect(navigationPosition, centerOnNextPosition) {
+        if (centerOnNextPosition && navigationPosition != null) {
+            controller.centerOnCurrentPosition()
+            centerOnNextPosition = false
+        }
+    }
+    DisposableEffect(controller) {
+        controller.setOnZoomChangedListener { zoom ->
+            zoomLevel = zoom.toFloat().coerceIn(2f, 20f)
+        }
+        onDispose { controller.setOnZoomChangedListener(null) }
+    }
+
+    fun commitPositionMode(mode: NavigationPositionMode) {
+        val monitoringWasActive = positionPreferences.getBoolean(
+            LocationMonitorService.KEY_MONITORING,
+            false
+        )
+        val error = applyNavigationPositionMode(context, mode)
+        selectedPositionMode = mode
+        navigationPosition = readNavigationPosition(positionPreferences)
+        showLocationModePicker = false
+        centerOnNextPosition = true
+        when {
+            error != null -> Toast.makeText(
+                context,
+                "Не удалось применить режим: $error",
+                Toast.LENGTH_LONG
+            ).show()
+            !monitoringWasActive -> Toast.makeText(
+                context,
+                "Режим сохранён. Включите мониторинг ClearGPS в настройках, чтобы получать координаты.",
+                Toast.LENGTH_LONG
+            ).show()
+            else -> Toast.makeText(
+                context,
+                "Режим «${mode.title}»: ожидаю новый расчёт ClearGPS.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val positionModePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val requestedMode = pendingPositionMode
+        pendingPositionMode = null
+        if (requestedMode != null) {
+            val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+            val anyGranted = fineGranted ||
+                context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+            val allowed = if (requestedMode == NavigationPositionMode.GPS_ONLY) fineGranted else anyGranted
+            if (allowed) {
+                commitPositionMode(requestedMode)
+            } else {
+                Toast.makeText(
+                    context,
+                    if (requestedMode == NavigationPositionMode.GPS_ONLY) {
+                        "Для обычного GPS необходимо разрешение «Точное местоположение»."
+                    } else {
+                        "Для расчёта местоположения необходимо разрешение геолокации."
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    fun selectPositionMode(mode: NavigationPositionMode) {
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val anyGranted = fineGranted ||
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val needsPermission = (mode == NavigationPositionMode.GPS_ONLY && !fineGranted) || !anyGranted
+        if (needsPermission) {
+            pendingPositionMode = mode
+            positionModePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        } else {
+            commitPositionMode(mode)
+        }
+    }
+
+    fun stepZoom(delta: Float) {
+        val nextZoom = (controller.currentZoom().toFloat() + delta).coerceIn(2f, 20f)
+        zoomLevel = nextZoom
+        controller.setZoom(nextZoom.toDouble())
+    }
 
     ClearGpsTheme(dark = systemDark) {
         val colors = MaterialTheme.colorScheme
@@ -117,7 +268,7 @@ private fun NavigationPrototypeScreen(
                             mapView = view,
                             context = viewContext,
                             initialDarkMode = systemDark,
-                            initialPosition = initialPosition
+                            initialPosition = navigationPosition?.coordinate
                         )
                     }
                 },
@@ -185,64 +336,98 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
-            // Compact zoom and location controls.
-            Column(
+            // Full-height zoom control: plus, a vertical slider, and minus.
+            BoxWithConstraints(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 7.dp)
+                    .fillMaxHeight()
                     .padding(
-                        end = 12.dp,
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 142.dp,
                         bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 205.dp
-                    ),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    )
+                    .width(54.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(18.dp),
-                    color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
-                    tonalElevation = 3.dp,
-                    shadowElevation = 5.dp
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(onClick = { controller.zoomBy(1.0) }) {
-                            Icon(Icons.Outlined.Add, contentDescription = "Приблизить")
+                    Surface(
+                        modifier = Modifier.size(44.dp),
+                        shape = CircleShape,
+                        color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
+                        tonalElevation = 3.dp,
+                        shadowElevation = 5.dp
+                    ) {
+                        IconButton(onClick = { stepZoom(1f) }) {
+                            Icon(Icons.Outlined.Add, contentDescription = "Приблизить карту")
                         }
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 9.dp),
-                            color = colors.outlineVariant.copy(alpha = 0.7f)
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        shape = RoundedCornerShape(24.dp),
+                        color = colors.surfaceContainerHigh.copy(alpha = 0.92f),
+                        tonalElevation = 2.dp,
+                        shadowElevation = 4.dp
+                    ) {
+                        BoxWithConstraints(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Spacer(Modifier.size(width = 25.dp, height = 1.dp))
+                            val sliderLength = (maxHeight - 18.dp).coerceAtLeast(120.dp)
+                            Slider(
+                                value = zoomLevel,
+                                onValueChange = { value ->
+                                    zoomLevel = value
+                                    controller.setZoom(value.toDouble())
+                                },
+                                valueRange = 2f..20f,
+                                modifier = Modifier
+                                    .rotate(270f)
+                                    .requiredWidth(sliderLength)
+                                    .height(44.dp)
+                            )
                         }
-                        IconButton(onClick = { controller.zoomBy(-1.0) }) {
-                            Icon(Icons.Outlined.Remove, contentDescription = "Отдалить")
+                    }
+                    Surface(
+                        modifier = Modifier.size(44.dp),
+                        shape = CircleShape,
+                        color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
+                        tonalElevation = 3.dp,
+                        shadowElevation = 5.dp
+                    ) {
+                        IconButton(onClick = { stepZoom(-1f) }) {
+                            Icon(Icons.Outlined.Remove, contentDescription = "Отдалить карту")
                         }
                     }
                 }
-                Surface(
-                    shape = CircleShape,
-                    color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
-                    tonalElevation = 3.dp,
-                    shadowElevation = 5.dp
+            }
+
+            // The location button opens the live GPS / Radio / Auto source selector.
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 78.dp,
+                        end = 12.dp
+                    ),
+                shape = CircleShape,
+                color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
+                tonalElevation = 3.dp,
+                shadowElevation = 5.dp
+            ) {
+                IconButton(
+                    onClick = { showLocationModePicker = true },
+                    modifier = Modifier.size(50.dp)
                 ) {
-                    IconButton(
-                        onClick = {
-                            if (!controller.centerOnCurrentPosition()) {
-                                Toast.makeText(
-                                    context,
-                                    "Пока нет доступной координаты. Откройте настройки местоположения.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        modifier = Modifier.size(50.dp)
-                    ) {
-                        Icon(
-                            Icons.Outlined.MyLocation,
-                            contentDescription = "Моё местоположение",
-                            tint = colors.primary
-                        )
-                    }
+                    Icon(
+                        Icons.Outlined.MyLocation,
+                        contentDescription = "Источник местоположения: ${selectedPositionMode.title}",
+                        tint = if (navigationPosition != null) colors.primary else colors.onSurfaceVariant
+                    )
                 }
             }
 
@@ -464,9 +649,168 @@ private fun NavigationPrototypeScreen(
             }
         }
 
-        BackHandler(enabled = showSettings) {
-            showSettings = false
-            selectedNavigationTab = "Карта"
+        BackHandler(enabled = showSettings || showLocationModePicker) {
+            if (showSettings) {
+                showSettings = false
+                selectedNavigationTab = "Карта"
+            } else {
+                showLocationModePicker = false
+            }
+        }
+
+        if (showLocationModePicker) {
+            ModalBottomSheet(
+                onDismissRequest = { showLocationModePicker = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = colors.surfaceContainerHigh
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .padding(bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        "Источник местоположения",
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        "Карта использует готовую позицию из расчётов ClearGPS. Здесь можно переключать тот же режим, что и в основном приложении.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+
+                    NavigationPositionMode.values().forEach { mode ->
+                        val selected = selectedPositionMode == mode
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            color = if (selected) colors.secondaryContainer else colors.surfaceContainer
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectPositionMode(mode) }
+                                    .padding(horizontal = 14.dp, vertical = 13.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    modifier = Modifier.size(42.dp),
+                                    shape = RoundedCornerShape(13.dp),
+                                    color = if (selected) colors.primary else colors.surfaceContainerHigh
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            when (mode) {
+                                                NavigationPositionMode.AUTO -> Icons.Outlined.Navigation
+                                                NavigationPositionMode.GPS_ONLY -> Icons.Outlined.MyLocation
+                                                NavigationPositionMode.RADIO_ONLY -> Icons.Outlined.Map
+                                            },
+                                            contentDescription = null,
+                                            tint = if (selected) colors.onPrimary else colors.onSurface
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 13.dp, end = 6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Text(
+                                        mode.title,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = if (selected) colors.onSecondaryContainer else colors.onSurface
+                                    )
+                                    Text(
+                                        mode.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
+                                    )
+                                }
+                                RadioButton(
+                                    selected = selected,
+                                    onClick = { selectPositionMode(mode) }
+                                )
+                            }
+                        }
+                    }
+
+                    val currentPositionDescription = navigationPosition?.let { position ->
+                        val sourceTitle = when (position.source.uppercase()) {
+                            "GPS" -> "GPS после фильтра ClearGPS"
+                            "NETWORK" -> "Сеть Android"
+                            "LOCAL_RADIO" -> "Радиорасчёт ClearGPS"
+                            "LOCAL_RADIO_STALE" -> "Последняя радиопозиция ClearGPS"
+                            "OBD2_DEAD_RECKONING" -> "GPS + прогноз по OBD-II"
+                            "BEACONDB" -> "Радиооценка BeaconDB"
+                            "MANUAL_ANCHOR" -> "Ручной ориентир ClearGPS"
+                            else -> position.source
+                        }
+                        sourceTitle + (position.accuracyMeters?.let { " · ±${it.toInt()} м" } ?: "")
+                    } ?: if (
+                        positionPreferences.getBoolean(LocationMonitorService.KEY_MONITORING, false)
+                    ) {
+                        "ClearGPS ожидает надёжную координату"
+                    } else {
+                        "Мониторинг ClearGPS выключен"
+                    }
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color = colors.surfaceContainer
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                "Текущая позиция",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = colors.onSurfaceVariant
+                            )
+                            Text(
+                                currentPositionDescription,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurface
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (controller.centerOnCurrentPosition()) {
+                                    showLocationModePicker = false
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "ClearGPS пока не выдал координату для выбранного режима.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            enabled = navigationPosition != null
+                        ) {
+                            Text("Показать на карте")
+                        }
+                        TextButton(
+                            onClick = {
+                                showLocationModePicker = false
+                                onOpenLocationSettings()
+                            }
+                        ) {
+                            Text("Настройки ClearGPS")
+                        }
+                    }
+                }
+            }
         }
 
         if (showSettings) {
@@ -731,18 +1075,3 @@ private fun NavigationSettingsDivider() {
     )
 }
 
-private fun readNavigationPosition(context: Context): NavigationCoordinate? {
-    val prefs = context.applicationContext.getSharedPreferences(
-        ClearGpsPreferences.PREFS,
-        Context.MODE_PRIVATE
-    )
-    if (!prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false) ||
-        !prefs.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
-    ) return null
-
-    val latitude = prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull()
-        ?: return null
-    val longitude = prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull()
-        ?: return null
-    return NavigationCoordinate(latitude, longitude).takeIf { it.isValid() }
-}
