@@ -400,6 +400,7 @@ class LocationMonitorService : Service(), LocationListener {
                     .remove(KEY_LAT)
                     .remove(KEY_LON)
                     .remove(KEY_ACCURACY)
+                    .remove(KEY_BEARING)
                     .apply()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -1045,6 +1046,7 @@ class LocationMonitorService : Service(), LocationListener {
             .remove(KEY_LAT)
             .remove(KEY_LON)
             .remove(KEY_ACCURACY)
+            .remove(KEY_BEARING)
             .apply()
         obd2FallbackPublished = false
         saveServiceStatus(reason)
@@ -1607,6 +1609,7 @@ class LocationMonitorService : Service(), LocationListener {
             .remove(KEY_LAT)
             .remove(KEY_LON)
             .remove(KEY_ACCURACY)
+            .remove(KEY_BEARING)
             .apply()
         startRadioOnlyLoop()
         val reason = "Авто: физический GNSS остаётся недоверенным; включено радио. Проверка GPS — каждые 120 с, окно до 30 с."
@@ -2109,6 +2112,7 @@ class LocationMonitorService : Service(), LocationListener {
             .remove(KEY_LAT)
             .remove(KEY_LON)
             .remove(KEY_ACCURACY)
+            .remove(KEY_BEARING)
             .apply()
         lastRadioMockFix = null
         lastRadioMockFixAtElapsedMs = 0L
@@ -2776,6 +2780,7 @@ class LocationMonitorService : Service(), LocationListener {
                 .remove(KEY_LAT)
                 .remove(KEY_LON)
                 .remove(KEY_ACCURACY)
+                .remove(KEY_BEARING)
                 .apply()
             RiskBreakdownStore.write(prefs, result.riskBreakdown, SystemClock.elapsedRealtimeNanos())
             return
