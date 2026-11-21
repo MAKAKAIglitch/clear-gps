@@ -395,8 +395,8 @@ internal class NavigationMapController {
         const val FOLLOW_ZOOM = 16.0
         const val MIN_ZOOM = 2.0
         const val MAX_ZOOM = 20.0
-        const val CAMERA_ANIMATION_MS = 420
-        const val FOLLOW_CAMERA_ANIMATION_MS = 360
+        const val CAMERA_ANIMATION_MS = 680
+        const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
         const val ACCURACY_RING_SEGMENTS = 64
