@@ -135,7 +135,8 @@ internal class NavigationMapController {
                         PropertyFactory.circleRadius(12f),
                         PropertyFactory.circleColor("#000000"),
                         PropertyFactory.circleOpacity(0.20f),
-                        PropertyFactory.circleBlur(1f)
+                        PropertyFactory.circleBlur(1f),
+                        PropertyFactory.circleTranslate(arrayOf(0f, 1f))
                     )
                 )
                 style.addLayer(
