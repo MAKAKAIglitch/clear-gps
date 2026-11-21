@@ -38,6 +38,30 @@ class NavigationPositionModeTest {
     }
 
     @Test
+    fun readsFilteredGpsPositionWhenMockGpsPublishingIsDisabled() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_test_gps", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "gps")
+            .putBoolean(LocationMonitorService.KEY_MONITORING, true)
+            .putBoolean(LocationMonitorService.KEY_HAS_OUTPUT, true)
+            .putBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
+            .putString(LocationMonitorService.KEY_SOURCE, "GPS")
+            .putString(LocationMonitorService.KEY_LAT, "52.5200")
+            .putString(LocationMonitorService.KEY_LON, "13.4050")
+            .putFloat(LocationMonitorService.KEY_ACCURACY, 4.5f)
+            .commit()
+
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
+
+        assertEquals(52.5200, snapshot.coordinate.latitude, 0.000001)
+        assertEquals(13.4050, snapshot.coordinate.longitude, 0.000001)
+        assertEquals(4.5, snapshot.accuracyMeters!!, 0.001)
+        assertEquals("GPS", snapshot.source)
+        prefs.edit().clear().commit()
+    }
+
+    @Test
     fun readsLegacyAndCurrentPositionModeKeys() {
         assertTrue(
             NavigationPositionMode.fromStoredKey("auto") == NavigationPositionMode.AUTO
