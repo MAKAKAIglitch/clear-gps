@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 HISTORY_MS = 90 * 24 * 60 * 60 * 1000
 MAX_SCANS = 250
+MAX_FINGERPRINT_KEYS = 80  # 48 Wi-Fi + 16 BLE + 16 cellular keys from make_keys()
 EXCLUDED = ("unlocated", "local-radio-estimate", "radio-estimate")
 NOW = 1_800_000_000_000
 
