@@ -54,8 +54,6 @@ internal class NavigationMapController {
     private var cameraInitialized = false
     private var hasCenteredOnFirstPosition = false
     private var isFollowingUser = true
-    private var onZoomChanged: ((Double) -> Unit)? = null
-    private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
     private var cameraMoveStartedListener: MapLibreMap.OnCameraMoveStartedListener? = null
 
     fun attach(
@@ -84,13 +82,6 @@ internal class NavigationMapController {
         mapView.getMapAsync { mapObject ->
             if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
-
-            cameraIdleListener?.let(mapObject::removeOnCameraIdleListener)
-            val idleListener = MapLibreMap.OnCameraIdleListener {
-                if (map === mapObject) onZoomChanged?.invoke(mapObject.cameraPosition.zoom)
-            }
-            cameraIdleListener = idleListener
-            mapObject.addOnCameraIdleListener(idleListener)
 
             cameraMoveStartedListener?.let(mapObject::removeOnCameraMoveStartedListener)
             val moveStartedListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
@@ -183,7 +174,6 @@ internal class NavigationMapController {
                     hasCenteredOnFirstPosition = initialFix != null
                     cameraInitialized = true
                 }
-                onZoomChanged?.invoke(mapObject.cameraPosition.zoom)
             }
         }
     }
@@ -195,7 +185,6 @@ internal class NavigationMapController {
         dotSource = null
         bearingSource = null
         val oldMap = map
-        cameraIdleListener?.let { listener -> oldMap?.removeOnCameraIdleListener(listener) }
         cameraMoveStartedListener?.let { listener -> oldMap?.removeOnCameraMoveStartedListener(listener) }
         cameraIdleListener = null
         cameraMoveStartedListener = null
@@ -236,28 +225,8 @@ internal class NavigationMapController {
         animateZoom(mapObject, nextZoom)
     }
 
-    fun setZoom(zoom: Double) {
-        val mapObject = map ?: return
-        if (!styleReady || !zoom.isFinite()) return
-        val camera = mapObject.cameraPosition
-        val target = camera.target
-            ?: currentPosition?.takeIf { it.isValid() }?.let {
-                LatLng(it.latitude, it.longitude)
-            }
-            ?: LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
-        // Slider drag is continuous: move immediately rather than queueing overlapping animations.
-        mapObject.moveCamera(
-            CameraUpdateFactory.newLatLngZoom(target, zoom.coerceIn(MIN_ZOOM, MAX_ZOOM))
-        )
-    }
-
     fun currentZoom(): Double =
         map?.cameraPosition?.zoom?.takeIf { it.isFinite() } ?: DEFAULT_ZOOM
-
-    fun setOnZoomChangedListener(listener: ((Double) -> Unit)?) {
-        onZoomChanged = listener
-        map?.let { listener?.invoke(it.cameraPosition.zoom) }
-    }
 
     private fun animateZoom(mapObject: MapLibreMap, zoom: Double) {
         val camera = mapObject.cameraPosition
@@ -427,7 +396,7 @@ internal class NavigationMapController {
         const val FOLLOW_ZOOM = 16.0
         const val MIN_ZOOM = 2.0
         const val MAX_ZOOM = 20.0
-        const val CAMERA_ANIMATION_MS = 240
+        const val CAMERA_ANIMATION_MS = 420
         const val FOLLOW_CAMERA_ANIMATION_MS = 360
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
