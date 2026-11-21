@@ -61,13 +61,14 @@ internal object NavigationPositionPolicy {
         return when (mode) {
             NavigationPositionMode.GPS_ONLY ->
                 normalized == "GPS" || normalized == "LAST_TRUSTED" ||
-                    normalized == "OBD2_DEAD_RECKONING"
+                    normalized == "GPS_UNVERIFIED" || normalized == "OBD2_DEAD_RECKONING"
             NavigationPositionMode.RADIO_ONLY ->
                 normalized == "LOCAL_RADIO" || normalized == "LOCAL_RADIO_STALE" || normalized == "BEACONDB"
             NavigationPositionMode.AUTO ->
                 normalized in setOf(
                     "GPS",
                     "LAST_TRUSTED",
+                    "GPS_UNVERIFIED",
                     "NETWORK",
                     "LOCAL_RADIO",
                     "LOCAL_RADIO_STALE",
@@ -118,22 +119,38 @@ internal fun readNavigationPosition(
     // Keep the last genuinely trusted physical GPS fix visible while a new fix is acquired.
     // It expires quickly and is never used in Radio-only mode.
     if (mode == NavigationPositionMode.RADIO_ONLY) return null
-    val fixElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS, 0L)
-    val ageNanos = SystemClock.elapsedRealtimeNanos() - fixElapsedNanos
-    if (fixElapsedNanos <= 0L || ageNanos !in 0L..LAST_TRUSTED_GPS_MAX_AGE_NANOS) return null
+    val nowNanos = SystemClock.elapsedRealtimeNanos()
+    val trustedElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS, 0L)
+    val trustedAgeNanos = nowNanos - trustedElapsedNanos
+    if (trustedElapsedNanos > 0L && trustedAgeNanos in 0L..LAST_TRUSTED_GPS_MAX_AGE_NANOS) {
+        val latitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, null)?.toDoubleOrNull()
+        val longitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, null)?.toDoubleOrNull()
+        if (latitude != null && longitude != null) {
+            val coordinate = NavigationCoordinate(latitude, longitude)
+            if (coordinate.isValid()) {
+                val accuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, -1f)
+                    .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+                return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null)
+            }
+        }
+    }
 
-    val latitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, null)
-        ?.toDoubleOrNull() ?: return null
-    val longitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, null)
-        ?.toDoubleOrNull() ?: return null
-    val coordinate = NavigationCoordinate(latitude, longitude)
-    if (!coordinate.isValid()) return null
-    val accuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, -1f)
+    // If no trusted fix exists yet, still place the device on the map using Android's
+    // latest valid physical GPS callback. This is display-only and explicitly unverified.
+    val observedElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, 0L)
+    val observedAgeNanos = nowNanos - observedElapsedNanos
+    if (observedElapsedNanos <= 0L || observedAgeNanos !in 0L..LAST_OBSERVED_GPS_MAX_AGE_NANOS) return null
+    val observedLatitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, null)?.toDoubleOrNull() ?: return null
+    val observedLongitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, null)?.toDoubleOrNull() ?: return null
+    val observedCoordinate = NavigationCoordinate(observedLatitude, observedLongitude)
+    if (!observedCoordinate.isValid()) return null
+    val observedAccuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, -1f)
         .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-    return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null)
+    return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED", null)
 }
 
 private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
+private const val LAST_OBSERVED_GPS_MAX_AGE_NANOS = 30_000_000_000L
 
 /**
  * Mirrors ClearGpsApp.applyPositionMode(): update the one shared mode, then ask the
