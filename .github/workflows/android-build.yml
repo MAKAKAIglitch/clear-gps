@@ -1,10 +1,13 @@
 name: Android build and unit tests
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # The main Android workflow already builds and tests both Linux and Windows.
+  # Keep this dedicated bootstrap-script pipeline available for manual checks.
   workflow_dispatch:
+
+concurrency:
+  group: android-build-manual-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,6 +19,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Build APK and run unit tests
         shell: pwsh
@@ -28,4 +33,4 @@ jobs:
           name: ClearGPS-debug
           path: dist/ClearGPS-debug.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
