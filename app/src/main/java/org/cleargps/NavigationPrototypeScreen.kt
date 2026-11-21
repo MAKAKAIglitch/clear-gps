@@ -70,6 +70,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.maps.MapView
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun ClearGpsNavigationShell(
@@ -150,6 +151,20 @@ private fun NavigationPrototypeScreen(
         onDispose { positionPreferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
+    // Keep the map in sync with the monitor even if Android batches/drops a preference callback.
+    // This is especially important after the user explicitly requests a fresh GPS fix.
+    LaunchedEffect(positionPreferences) {
+        while (true) {
+            val latestMode = NavigationPositionMode.fromStoredKey(
+                positionPreferences.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            )
+            val latestPosition = readNavigationPosition(positionPreferences)
+            if (latestMode != selectedPositionMode) selectedPositionMode = latestMode
+            if (latestPosition != navigationPosition) navigationPosition = latestPosition
+            delay(500L)
+        }
+    }
+
     LaunchedEffect(navigationPosition) {
         controller.updatePosition(navigationPosition)
     }
@@ -191,6 +206,9 @@ private fun NavigationPrototypeScreen(
     fun startLocationAcquisition() {
         centerOnNextPosition = true
         navigationPosition = readNavigationPosition(positionPreferences)
+        // Re-enable follow mode immediately when we already have a usable fix; if not,
+        // the pending flag above will center the camera as soon as the next fix is published.
+        controller.centerOnCurrentPosition()
         val intent = android.content.Intent(context, LocationMonitorService::class.java)
             .setAction(LocationMonitorService.ACTION_LOCATE)
         try {
@@ -413,13 +431,13 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
-            // Short tap recentres/requests GPS; a long press opens the source selector.
+            // Location control stays in the lower-right corner, above the bottom navigation panel.
             Surface(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
+                    .align(Alignment.BottomEnd)
                     .padding(
-                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 78.dp,
-                        end = 12.dp
+                        end = 12.dp,
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 184.dp
                     ),
                 shape = CircleShape,
                 color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
