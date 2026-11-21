@@ -36,6 +36,8 @@ internal class NavigationMapController {
     private var currentPosition: NavigationCoordinate? = null
     private var styleReady = false
     private var cameraInitialized = false
+    private var onZoomChanged: ((Double) -> Unit)? = null
+    private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
 
     fun attach(
         mapView: MapView,
@@ -58,6 +60,12 @@ internal class NavigationMapController {
         mapView.getMapAsync { mapObject ->
             if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
+            cameraIdleListener?.let(mapObject::removeOnCameraIdleListener)
+            val idleListener = MapLibreMap.OnCameraIdleListener {
+                if (map === mapObject) onZoomChanged?.invoke(mapObject.cameraPosition.zoom)
+            }
+            cameraIdleListener = idleListener
+            mapObject.addOnCameraIdleListener(idleListener)
             mapObject.setStyle(
                 Style.Builder().fromUri(if (initialDarkMode) DARK_STYLE_URI else LIGHT_STYLE_URI)
             ) { style ->
@@ -103,6 +111,9 @@ internal class NavigationMapController {
         if (attachedMapView !== mapView) return
         styleReady = false
         locationSource = null
+        val oldMap = map
+        cameraIdleListener?.let { listener -> oldMap?.removeOnCameraIdleListener(listener) }
+        cameraIdleListener = null
         map = null
         attachedMapView = null
         contextPreferences(mapView).edit()
@@ -118,15 +129,33 @@ internal class NavigationMapController {
     fun zoomBy(delta: Double) {
         val mapObject = map ?: return
         if (!styleReady || !delta.isFinite()) return
+        val nextZoom = (mapObject.cameraPosition.zoom + delta).coerceIn(MIN_ZOOM, MAX_ZOOM)
+        animateZoom(mapObject, nextZoom)
+    }
+
+    fun setZoom(zoom: Double) {
+        val mapObject = map ?: return
+        if (!styleReady || !zoom.isFinite()) return
+        animateZoom(mapObject, zoom.coerceIn(MIN_ZOOM, MAX_ZOOM))
+    }
+
+    fun currentZoom(): Double =
+        map?.cameraPosition?.zoom?.takeIf { it.isFinite() } ?: DEFAULT_ZOOM
+
+    fun setOnZoomChangedListener(listener: ((Double) -> Unit)?) {
+        onZoomChanged = listener
+        map?.let { listener?.invoke(it.cameraPosition.zoom) }
+    }
+
+    private fun animateZoom(mapObject: MapLibreMap, zoom: Double) {
         val camera = mapObject.cameraPosition
-        val nextZoom = (camera.zoom + delta).coerceIn(MIN_ZOOM, MAX_ZOOM)
         val target = camera.target
             ?: currentPosition?.takeIf { it.isValid() }?.let {
                 LatLng(it.latitude, it.longitude)
             }
             ?: LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
         mapObject.easeCamera(
-            CameraUpdateFactory.newLatLngZoom(target, nextZoom),
+            CameraUpdateFactory.newLatLngZoom(target, zoom),
             CAMERA_ANIMATION_MS
         )
     }
