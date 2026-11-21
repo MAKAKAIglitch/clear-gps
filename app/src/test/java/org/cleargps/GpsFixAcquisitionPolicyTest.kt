@@ -7,17 +7,17 @@ import org.junit.Test
 
 class GpsFixAcquisitionPolicyTest {
     @Test
-    fun precisePermissionIsRequiredOnlyForGpsBackedModes() {
+    fun precisePermissionIsRequiredForAutoAndGpsBackedModes() {
+        assertTrue(GpsFixAcquisitionPolicy.requiresPreciseLocationPermission("auto"))
         assertTrue(GpsFixAcquisitionPolicy.requiresPreciseLocationPermission("gps"))
         assertTrue(GpsFixAcquisitionPolicy.requiresPreciseLocationPermission("gps_obd2"))
-        assertFalse(GpsFixAcquisitionPolicy.requiresPreciseLocationPermission("auto"))
         assertFalse(GpsFixAcquisitionPolicy.requiresPreciseLocationPermission("radio"))
     }
 
     @Test
     fun missingPrecisePermissionHasActionableStatus() {
         assertEquals(
-            "Для режима «Только GPS» требуется разрешение «Точное местоположение».",
+            "Для режима «Авто» и «Только GPS» требуется разрешение «Точное местоположение».",
             GpsFixAcquisitionPolicy.waitingStatus(
                 hasFineLocationPermission = false,
                 providerAvailable = true,
