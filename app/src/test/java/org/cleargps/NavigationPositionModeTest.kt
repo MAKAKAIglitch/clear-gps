@@ -27,8 +27,10 @@ class NavigationPositionModeTest {
     @Test
     fun gpsModeAcceptsOnlyGpsPipelineOutputs() {
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.GPS_ONLY, "GPS"))
+        assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.GPS_ONLY, "LAST_TRUSTED"))
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.GPS_ONLY, "OBD2_DEAD_RECKONING"))
         assertFalse(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.GPS_ONLY, "LOCAL_RADIO"))
+        assertFalse(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.GPS_ONLY, "BEACONDB"))
     }
 
     @Test
@@ -42,6 +44,7 @@ class NavigationPositionModeTest {
     @Test
     fun autoModeAcceptsEitherTrustedGpsOrRadioFallback() {
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "GPS"))
+        assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "LAST_TRUSTED"))
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "NETWORK"))
         assertTrue(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "LOCAL_RADIO"))
         assertFalse(NavigationPositionPolicy.acceptsSource(NavigationPositionMode.AUTO, "NONE"))
