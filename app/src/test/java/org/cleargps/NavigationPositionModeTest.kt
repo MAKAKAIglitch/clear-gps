@@ -133,7 +133,7 @@ class NavigationPositionModeTest {
             .putFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, 18f)
             .putLong(
                 LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
-                SystemClock.elapsedRealtimeNanos() - 60_000_000_000L
+                SystemClock.elapsedRealtimeNanos() - 1_000_000L
             )
             .commit()
 
