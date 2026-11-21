@@ -91,8 +91,14 @@ internal object NetworkGate {
 
             Operation.MAP_RESOURCE -> {
                 val path = uri.rawPath.orEmpty()
-                val approvedPath = path.startsWith("/styles/") ||
+                // OpenFreeMap's Liberty/Dark styles load several resource families:
+                // style JSON, vector TileJSON/tiles, Natural Earth raster tiles, sprites and glyphs.
+                // Keep the host and GET-only checks strict while allowing only those exact roots.
+                val approvedPath = path == "/planet" || path.startsWith("/planet/") ||
+                    path == "/natural_earth" || path.startsWith("/natural_earth/") ||
+                    path.startsWith("/styles/") ||
                     path.startsWith("/data/") ||
+                    path.startsWith("/sprites/") ||
                     path.startsWith("/fonts/") ||
                     path.startsWith("/assets/")
                 if (!mapOnline || normalizedMethod != "GET" ||
