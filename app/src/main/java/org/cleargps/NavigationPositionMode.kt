@@ -50,12 +50,14 @@ internal object NavigationPositionPolicy {
         val normalized = source?.trim()?.uppercase().orEmpty()
         return when (mode) {
             NavigationPositionMode.GPS_ONLY ->
-                normalized == "GPS" || normalized == "OBD2_DEAD_RECKONING" || normalized == "BEACONDB"
+                normalized == "GPS" || normalized == "LAST_TRUSTED" ||
+                    normalized == "OBD2_DEAD_RECKONING" || normalized == "BEACONDB"
             NavigationPositionMode.RADIO_ONLY ->
                 normalized == "LOCAL_RADIO" || normalized == "LOCAL_RADIO_STALE" || normalized == "BEACONDB"
             NavigationPositionMode.AUTO ->
                 normalized in setOf(
                     "GPS",
+                    "LAST_TRUSTED",
                     "NETWORK",
                     "LOCAL_RADIO",
                     "LOCAL_RADIO_STALE",
