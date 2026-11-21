@@ -211,16 +211,20 @@ private fun NavigationPrototypeScreen(
             val anyGranted = fineGranted ||
                 context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-            val allowed = if (requestedMode == NavigationPositionMode.GPS_ONLY) fineGranted else anyGranted
+            val preciseRequired = requestedMode != NavigationPositionMode.AUTO
+            val allowed = if (preciseRequired) fineGranted else anyGranted
             if (allowed) {
                 commitPositionMode(requestedMode)
             } else {
                 Toast.makeText(
                     context,
-                    if (requestedMode == NavigationPositionMode.GPS_ONLY) {
-                        "Для обычного GPS необходимо разрешение «Точное местоположение»."
-                    } else {
-                        "Для расчёта местоположения необходимо разрешение геолокации."
+                    when (requestedMode) {
+                        NavigationPositionMode.GPS_ONLY ->
+                            "Для обычного GPS необходимо разрешение «Точное местоположение»."
+                        NavigationPositionMode.RADIO_ONLY ->
+                            "Для радиопозиционирования необходимо разрешение «Точное местоположение»."
+                        NavigationPositionMode.AUTO ->
+                            "Для расчёта местоположения необходимо разрешение геолокации."
                     },
                     Toast.LENGTH_LONG
                 ).show()
@@ -234,7 +238,8 @@ private fun NavigationPrototypeScreen(
         val anyGranted = fineGranted ||
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        val needsPermission = (mode == NavigationPositionMode.GPS_ONLY && !fineGranted) || !anyGranted
+        val preciseRequired = mode != NavigationPositionMode.AUTO
+        val needsPermission = !anyGranted || (preciseRequired && !fineGranted)
         if (needsPermission) {
             pendingPositionMode = mode
             positionModePermissionLauncher.launch(
