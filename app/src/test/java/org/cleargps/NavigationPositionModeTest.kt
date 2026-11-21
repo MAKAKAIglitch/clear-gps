@@ -161,4 +161,22 @@ class NavigationPositionModeTest {
         prefs.edit().clear().commit()
     }
 
+    @Test
+    fun ignoresExpiredTrustedGpsFallback() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("navigation_position_expired_gps", Context.MODE_PRIVATE)
+        prefs.edit().clear()
+            .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, "48.1372")
+            .putString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, "11.5756")
+            .putLong(
+                LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS,
+                SystemClock.elapsedRealtimeNanos() - 180_000_000_000L
+            )
+            .commit()
+
+        assertEquals(null, readNavigationPosition(prefs))
+        prefs.edit().clear().commit()
+    }
+
 }
