@@ -186,7 +186,6 @@ internal class NavigationMapController {
         bearingSource = null
         val oldMap = map
         cameraMoveStartedListener?.let { listener -> oldMap?.removeOnCameraMoveStartedListener(listener) }
-        cameraIdleListener = null
         cameraMoveStartedListener = null
         map = null
         attachedMapView = null
