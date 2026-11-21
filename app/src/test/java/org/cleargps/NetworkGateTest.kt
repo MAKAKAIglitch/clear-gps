@@ -231,6 +231,14 @@ class NetworkGateTest {
                 mapOnline = true
             )
         }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://tiles.openfreemap.org/private/config.json",
+                "GET",
+                NetworkGate.Operation.MAP_RESOURCE,
+                mapOnline = true
+            )
+        }
     }
 
     @Test
