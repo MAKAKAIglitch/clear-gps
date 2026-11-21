@@ -137,7 +137,16 @@ internal class NavigationMapController {
     fun setZoom(zoom: Double) {
         val mapObject = map ?: return
         if (!styleReady || !zoom.isFinite()) return
-        animateZoom(mapObject, zoom.coerceIn(MIN_ZOOM, MAX_ZOOM))
+        val camera = mapObject.cameraPosition
+        val target = camera.target
+            ?: currentPosition?.takeIf { it.isValid() }?.let {
+                LatLng(it.latitude, it.longitude)
+            }
+            ?: LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
+        // Slider drag is continuous: move immediately rather than queueing overlapping animations.
+        mapObject.moveCamera(
+            CameraUpdateFactory.newLatLngZoom(target, zoom.coerceIn(MIN_ZOOM, MAX_ZOOM))
+        )
     }
 
     fun currentZoom(): Double =
