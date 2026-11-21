@@ -108,7 +108,7 @@ internal class NavigationMapController {
                 style.addSource(newDotSource)
                 style.addSource(newPuckSource)
 
-                // A soft location halo mirrors the accuracy emphasis in navigation map UIs.
+                // A soft location halo gives the puck a little separation from map labels.
                 style.addLayer(
                     CircleLayer(HALO_LAYER, HALO_SOURCE).withProperties(
                         PropertyFactory.circleRadius(22f),
@@ -190,8 +190,7 @@ internal class NavigationMapController {
         renderCurrentPosition()
 
         val point = currentPosition ?: return
-        val mapObject = map ?: return
-        if (!styleReady) return
+        if (map == null || !styleReady) return
 
         if (!hasCenteredOnFirstPosition) {
             hasCenteredOnFirstPosition = true
