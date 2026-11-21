@@ -103,6 +103,7 @@ internal class NavigationMapController {
                         .build()
                     cameraInitialized = true
                 }
+                onZoomChanged?.invoke(mapObject.cameraPosition.zoom)
             }
         }
     }
