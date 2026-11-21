@@ -42,10 +42,19 @@ internal enum class NavigationPositionMode(
 internal data class NavigationPositionSnapshot(
     val coordinate: NavigationCoordinate,
     val accuracyMeters: Double?,
-    val source: String
+    val source: String,
+    val bearingDegrees: Double?
 )
 
 internal object NavigationPositionPolicy {
+    fun canProvideHeading(source: String?): Boolean =
+        source?.trim()?.uppercase() in setOf(
+            "GPS",
+            "LAST_TRUSTED",
+            "NETWORK",
+            "OBD2_DEAD_RECKONING"
+        )
+
     fun acceptsSource(mode: NavigationPositionMode, source: String?): Boolean {
         val normalized = source?.trim()?.uppercase().orEmpty()
         return when (mode) {
@@ -96,7 +105,13 @@ internal fun readNavigationPosition(
 
     val accuracy = prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
         ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-    return NavigationPositionSnapshot(coordinate, accuracy, source)
+    val bearing = if (NavigationPositionPolicy.canProvideHeading(source)) {
+        prefs.all[LocationMonitorService.KEY_BEARING]?.toString()?.toDoubleOrNull()
+            ?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+    } else {
+        null
+    }
+    return NavigationPositionSnapshot(coordinate, accuracy, source, bearing)
 }
 
 /**
@@ -129,6 +144,7 @@ internal fun applyNavigationPositionMode(
             .remove(LocationMonitorService.KEY_LAT)
             .remove(LocationMonitorService.KEY_LON)
             .remove(LocationMonitorService.KEY_ACCURACY)
+            .remove(LocationMonitorService.KEY_BEARING)
     }
     edit.apply()
 
