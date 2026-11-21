@@ -484,6 +484,36 @@ class LocationMonitorService : Service(), LocationListener {
                 startTracking()
                 return START_STICKY
             }
+            ACTION_LOCATE -> {
+                startForeground(NOTIFICATION_ID, notification("Acquiring current physical GPS location"))
+                val nowElapsedMs = SystemClock.elapsedRealtime()
+                prefs.edit()
+                    .putBoolean(KEY_MONITORING, true)
+                    .putLong(ServiceRecoveryWatchdog.KEY_SERVICE_HEARTBEAT_ELAPSED_MS, nowElapsedMs)
+                    .apply()
+                ServiceRecoveryWatchdog.ensureScheduled(this)
+
+                // A map-location request in Auto mode explicitly retries physical GPS,
+                // even when the automatic policy had previously fallen back to radio.
+                if (prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto") == "auto") {
+                    autoPositionModeJob?.cancel()
+                    autoPositionModeJob = null
+                    autoPositionModeState = AutoPositionModePolicy.initialState()
+                    autoPositionModeStartedAtElapsedMs = nowElapsedMs
+                    autoGpsFixEverReceived = false
+                    lastGpsLocationElapsedRealtimeNanos = 0L
+                    lastGpsProbeLocation = null
+                    gpsFirstFixReceived = false
+                    gpsAcquisitionStartedAtElapsedMs = nowElapsedMs
+                    autoRadioMotionAnchor = null
+                    autoRadioPositionFusionEngine.reset()
+                    positionFusionEngine.reset()
+                    prefs.edit().putBoolean(KEY_AUTO_RADIO_FALLBACK_ACTIVE, false).apply()
+                }
+
+                startTracking()
+                return START_STICKY
+            }
             ACTION_START -> {
                 startForeground(NOTIFICATION_ID, notification("Starting location monitor"))
                 prefs.edit()
@@ -899,6 +929,7 @@ class LocationMonitorService : Service(), LocationListener {
                             this
                         )
                         registerGnssStatus()
+                        if (!autoRadioFallback) seedFreshLastKnownGpsFix()
                     }
                     val networkAvailable = manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)
                     if (!autoRadioFallback && networkAvailable &&
@@ -2824,6 +2855,7 @@ class LocationMonitorService : Service(), LocationListener {
 
     companion object {
         const val ACTION_START = "org.cleargps.START"
+        const val ACTION_LOCATE = "org.cleargps.LOCATE"
         const val ACTION_RECOVER = "org.cleargps.RECOVER"
         const val ACTION_STOP = "org.cleargps.STOP"
         const val ACTION_DISABLE_MOCK = "org.cleargps.DISABLE_MOCK"
