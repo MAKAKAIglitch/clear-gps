@@ -150,7 +150,7 @@ internal fun readNavigationPosition(
 }
 
 private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
-private const val LAST_OBSERVED_GPS_MAX_AGE_NANOS = 30_000_000_000L
+private const val LAST_OBSERVED_GPS_MAX_AGE_NANOS = 120_000_000_000L
 
 /**
  * Mirrors ClearGpsApp.applyPositionMode(): update the one shared mode, then ask the
