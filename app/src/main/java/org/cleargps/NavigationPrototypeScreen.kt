@@ -135,7 +135,11 @@ private fun NavigationPrototypeScreen(
             LocationMonitorService.KEY_LAT,
             LocationMonitorService.KEY_LON,
             LocationMonitorService.KEY_ACCURACY,
-        LocationMonitorService.KEY_BEARING
+            LocationMonitorService.KEY_BEARING,
+            LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT,
+            LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON,
+            LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY,
+            LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS
         )
     }
     DisposableEffect(positionPreferences) {
