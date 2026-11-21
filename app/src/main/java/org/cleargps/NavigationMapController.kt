@@ -36,6 +36,7 @@ internal class NavigationMapController {
     private var currentPosition: NavigationCoordinate? = null
     private var styleReady = false
     private var cameraInitialized = false
+    private var hasCenteredOnFirstPosition = false
     private var onZoomChanged: ((Double) -> Unit)? = null
     private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
 
@@ -50,6 +51,7 @@ internal class NavigationMapController {
         currentPosition = initialPosition?.takeIf { it.isValid() }
         styleReady = false
         cameraInitialized = false
+        hasCenteredOnFirstPosition = false
 
         context.applicationContext
             .getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
@@ -93,14 +95,15 @@ internal class NavigationMapController {
                 renderCurrentPosition()
 
                 if (!cameraInitialized) {
-                    val target = currentPosition
-                        ?.takeIf { it.isValid() }
+                    val initialFix = currentPosition?.takeIf { it.isValid() }
+                    val target = initialFix
                         ?.let { LatLng(it.latitude, it.longitude) }
                         ?: LatLng(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
                     mapObject.cameraPosition = CameraPosition.Builder()
                         .target(target)
                         .zoom(DEFAULT_ZOOM)
                         .build()
+                    hasCenteredOnFirstPosition = initialFix != null
                     cameraInitialized = true
                 }
                 onZoomChanged?.invoke(mapObject.cameraPosition.zoom)
@@ -125,6 +128,20 @@ internal class NavigationMapController {
     fun updatePosition(position: NavigationCoordinate?) {
         currentPosition = position?.takeIf { it.isValid() }
         renderCurrentPosition()
+        if (styleReady && !hasCenteredOnFirstPosition) {
+            val firstFix = currentPosition
+            val mapObject = map
+            if (firstFix != null && mapObject != null) {
+                mapObject.easeCamera(
+                    CameraUpdateFactory.newLatLngZoom(
+                        LatLng(firstFix.latitude, firstFix.longitude),
+                        FOLLOW_ZOOM
+                    ),
+                    CAMERA_ANIMATION_MS
+                )
+                hasCenteredOnFirstPosition = true
+            }
+        }
     }
 
     fun zoomBy(delta: Double) {
