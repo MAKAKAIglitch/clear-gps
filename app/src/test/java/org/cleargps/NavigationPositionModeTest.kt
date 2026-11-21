@@ -3,7 +3,6 @@ package org.cleargps
 import android.content.Context
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,10 +28,9 @@ class NavigationPositionModeTest {
             .putFloat(LocationMonitorService.KEY_ACCURACY, 85f)
             .commit()
 
-        val snapshot = readNavigationPosition(prefs)
+        val snapshot = requireNotNull(readNavigationPosition(prefs))
 
-        assertNotNull(snapshot)
-        assertEquals(60.1699, snapshot!!.coordinate.latitude, 0.000001)
+        assertEquals(60.1699, snapshot.coordinate.latitude, 0.000001)
         assertEquals(24.9384, snapshot.coordinate.longitude, 0.000001)
         assertEquals(85.0, snapshot.accuracyMeters!!, 0.001)
         assertEquals("LOCAL_RADIO", snapshot.source)
