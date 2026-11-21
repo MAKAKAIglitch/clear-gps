@@ -201,7 +201,7 @@ private fun NavigationPrototypeScreen(
             }
             Toast.makeText(
                 context,
-                "Запрашиваю GPS. Карта переместится после получения координат.",
+                "Запускаю расчёт местоположения («${selectedPositionMode.title}»). Карта переместится после получения координат.",
                 Toast.LENGTH_SHORT
             ).show()
         } catch (error: Exception) {
@@ -226,7 +226,7 @@ private fun NavigationPrototypeScreen(
             } else {
                 Toast.makeText(
                     context,
-                    "Для GPS в режиме «Авто» разрешите точное местоположение.",
+                    "Для выбранного источника разрешите точное местоположение.",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -257,11 +257,7 @@ private fun NavigationPrototypeScreen(
         if (requestedMode != null) {
             val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-            val anyGranted = fineGranted ||
-                context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
-            val preciseRequired = true
-            val allowed = if (preciseRequired) fineGranted else anyGranted
+            val allowed = fineGranted
             if (allowed) {
                 commitPositionMode(requestedMode)
             } else {
@@ -284,11 +280,7 @@ private fun NavigationPrototypeScreen(
     fun selectPositionMode(mode: NavigationPositionMode) {
         val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        val anyGranted = fineGranted ||
-            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-        val preciseRequired = true
-        val needsPermission = !anyGranted || (preciseRequired && !fineGranted)
+        val needsPermission = !fineGranted
         if (needsPermission) {
             pendingPositionMode = mode
             positionModePermissionLauncher.launch(
