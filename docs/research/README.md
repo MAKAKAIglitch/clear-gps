@@ -33,4 +33,5 @@ For codebase reviews, link to the exact repository files and identify the review
 
 ## Research index
 
+- [2026-11-21 — Cloud APK build options: Superpowers and Railway](2026-11-21-cloud-apk-build-options.md)
 - [2026-11-21 — Navigation UI baseline review](2026-11-21-navigation-ui-baseline.md)
