@@ -2845,6 +2845,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LON = "lon"
         const val KEY_ACCURACY = "accuracy"
         const val KEY_BEARING = "bearing_degrees"
+        const val KEY_BEARING = "bearing_degrees"
         const val KEY_PUBLISH_LOW_ACCURACY = "publish_low_accuracy"
         const val KEY_SERVICE_STATUS = "service_status"
         const val KEY_GNSS_ENVIRONMENT = "gnss_environment"
