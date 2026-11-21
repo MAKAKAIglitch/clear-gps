@@ -9,26 +9,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.shape.CircleShape
@@ -51,7 +47,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -69,7 +64,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -122,7 +116,6 @@ private fun NavigationPrototypeScreen(
     var navigationPosition by remember {
         mutableStateOf(readNavigationPosition(positionPreferences))
     }
-    var zoomLevel by remember { mutableStateOf(controller.currentZoom().toFloat()) }
     var centerOnNextPosition by remember { mutableStateOf(false) }
     var showLocationModePicker by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -130,6 +123,7 @@ private fun NavigationPrototypeScreen(
     var selectedNavigationTab by rememberSaveable { mutableStateOf("Карта") }
     var destinationQuery by rememberSaveable { mutableStateOf("") }
     var pendingPositionMode by remember { mutableStateOf<NavigationPositionMode?>(null) }
+    var pendingCenterAfterPermission by remember { mutableStateOf(false) }
 
     val watchedPositionKeys = remember {
         setOf(
@@ -165,13 +159,6 @@ private fun NavigationPrototypeScreen(
             centerOnNextPosition = false
         }
     }
-    DisposableEffect(controller) {
-        controller.setOnZoomChangedListener { zoom ->
-            zoomLevel = zoom.toFloat().coerceIn(2f, 20f)
-        }
-        onDispose { controller.setOnZoomChangedListener(null) }
-    }
-
     fun commitPositionMode(mode: NavigationPositionMode) {
         val monitoringWasActive = positionPreferences.getBoolean(
             LocationMonitorService.KEY_MONITORING,
@@ -201,6 +188,67 @@ private fun NavigationPrototypeScreen(
         }
     }
 
+    fun startLocationAcquisition() {
+        centerOnNextPosition = true
+        navigationPosition = readNavigationPosition(positionPreferences)
+        val intent = android.content.Intent(context, LocationMonitorService::class.java)
+            .setAction(LocationMonitorService.ACTION_LOCATE)
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            Toast.makeText(
+                context,
+                "Запрашиваю GPS. Карта переместится после получения координат.",
+                Toast.LENGTH_SHORT
+            ).show()
+        } catch (error: Exception) {
+            centerOnNextPosition = false
+            Toast.makeText(
+                context,
+                "Не удалось запустить геолокацию: ${error.message ?: error.javaClass.simpleName}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    val locationActionPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (pendingCenterAfterPermission) {
+            pendingCenterAfterPermission = false
+            if (fineGranted) {
+                startLocationAcquisition()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Для GPS в режиме «Авто» разрешите точное местоположение.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    fun requestMapLocation() {
+        val fineGranted = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        if (fineGranted) {
+            startLocationAcquisition()
+        } else {
+            pendingCenterAfterPermission = true
+            locationActionPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
     val positionModePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
@@ -212,7 +260,7 @@ private fun NavigationPrototypeScreen(
             val anyGranted = fineGranted ||
                 context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-            val preciseRequired = requestedMode != NavigationPositionMode.AUTO
+            val preciseRequired = true
             val allowed = if (preciseRequired) fineGranted else anyGranted
             if (allowed) {
                 commitPositionMode(requestedMode)
@@ -225,7 +273,7 @@ private fun NavigationPrototypeScreen(
                         NavigationPositionMode.RADIO_ONLY ->
                             "Для радиопозиционирования необходимо разрешение «Точное местоположение»."
                         NavigationPositionMode.AUTO ->
-                            "Для расчёта местоположения необходимо разрешение геолокации."
+                            "Для режима «Авто» требуется разрешение «Точное местоположение», чтобы получать GPS."
                     },
                     Toast.LENGTH_LONG
                 ).show()
@@ -239,7 +287,7 @@ private fun NavigationPrototypeScreen(
         val anyGranted = fineGranted ||
             context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
-        val preciseRequired = mode != NavigationPositionMode.AUTO
+        val preciseRequired = true
         val needsPermission = !anyGranted || (preciseRequired && !fineGranted)
         if (needsPermission) {
             pendingPositionMode = mode
@@ -254,10 +302,8 @@ private fun NavigationPrototypeScreen(
         }
     }
 
-    fun stepZoom(delta: Float) {
-        val nextZoom = (controller.currentZoom().toFloat() + delta).coerceIn(2f, 20f)
-        zoomLevel = nextZoom
-        controller.setZoom(nextZoom.toDouble())
+    fun stepZoom(delta: Double) {
+        controller.zoomBy(delta)
     }
 
     ClearGpsTheme(dark = systemDark) {
@@ -343,77 +389,39 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
-            // Full-height zoom control: plus, a vertical slider, and minus.
-            BoxWithConstraints(
+            // Smooth zoom controls; no slider.
+            Column(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 7.dp)
-                    .fillMaxHeight()
-                    .padding(
-                        top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 142.dp,
-                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 205.dp
-                    )
-                    .width(54.dp)
+                    .padding(end = 12.dp, bottom = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceBetween
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
+                    tonalElevation = 3.dp,
+                    shadowElevation = 5.dp
                 ) {
-                    Surface(
-                        modifier = Modifier.size(44.dp),
-                        shape = CircleShape,
-                        color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
-                        tonalElevation = 3.dp,
-                        shadowElevation = 5.dp
-                    ) {
-                        IconButton(onClick = { stepZoom(1f) }) {
-                            Icon(Icons.Outlined.Add, contentDescription = "Приблизить карту")
-                        }
+                    IconButton(onClick = { stepZoom(1.0) }) {
+                        Icon(Icons.Outlined.Add, contentDescription = "Приблизить карту")
                     }
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        shape = RoundedCornerShape(24.dp),
-                        color = colors.surfaceContainerHigh.copy(alpha = 0.92f),
-                        tonalElevation = 2.dp,
-                        shadowElevation = 4.dp
-                    ) {
-                        BoxWithConstraints(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val sliderLength = (maxHeight - 18.dp).coerceAtLeast(120.dp)
-                            Slider(
-                                value = zoomLevel,
-                                onValueChange = { value ->
-                                    zoomLevel = value
-                                    controller.setZoom(value.toDouble())
-                                },
-                                valueRange = 2f..20f,
-                                modifier = Modifier
-                                    .rotate(270f)
-                                    .requiredWidth(sliderLength)
-                                    .height(44.dp)
-                            )
-                        }
-                    }
-                    Surface(
-                        modifier = Modifier.size(44.dp),
-                        shape = CircleShape,
-                        color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
-                        tonalElevation = 3.dp,
-                        shadowElevation = 5.dp
-                    ) {
-                        IconButton(onClick = { stepZoom(-1f) }) {
-                            Icon(Icons.Outlined.Remove, contentDescription = "Отдалить карту")
-                        }
+                }
+                Surface(
+                    modifier = Modifier.size(44.dp),
+                    shape = CircleShape,
+                    color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
+                    tonalElevation = 3.dp,
+                    shadowElevation = 5.dp
+                ) {
+                    IconButton(onClick = { stepZoom(-1.0) }) {
+                        Icon(Icons.Outlined.Remove, contentDescription = "Отдалить карту")
                     }
                 }
             }
 
-            // The location button opens the live GPS / Radio / Auto source selector.
+            // Short tap recentres/requests GPS; a long press opens the source selector.
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -426,13 +434,18 @@ private fun NavigationPrototypeScreen(
                 tonalElevation = 3.dp,
                 shadowElevation = 5.dp
             ) {
-                IconButton(
-                    onClick = { showLocationModePicker = true },
-                    modifier = Modifier.size(50.dp)
+                Box(
+                    modifier = Modifier
+                        .size(50.dp)
+                        .combinedClickable(
+                            onClick = { requestMapLocation() },
+                            onLongClick = { showLocationModePicker = true }
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Outlined.MyLocation,
-                        contentDescription = "Источник местоположения: ${selectedPositionMode.title}",
+                        contentDescription = "Моё местоположение; удерживайте для выбора источника",
                         tint = if (navigationPosition != null) colors.primary else colors.onSurfaceVariant
                     )
                 }
