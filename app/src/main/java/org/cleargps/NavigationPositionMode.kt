@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.SystemClock
 
 /**
  * The navigation surface uses the same position-mode preference and foreground monitor
@@ -86,33 +87,53 @@ internal object NavigationPositionPolicy {
 internal fun readNavigationPosition(
     prefs: SharedPreferences
 ): NavigationPositionSnapshot? {
-    if (!prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false) ||
-        !prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
-    ) return null
-
     val mode = NavigationPositionMode.fromStoredKey(
         prefs.getString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
     )
-    val source = prefs.getString(LocationMonitorService.KEY_SOURCE, "NONE") ?: "NONE"
-    if (!NavigationPositionPolicy.acceptsSource(mode, source)) return null
+    val monitoring = prefs.getBoolean(LocationMonitorService.KEY_MONITORING, false)
+    val hasOutput = prefs.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
 
-    val latitude = prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull()
-        ?: return null
-    val longitude = prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull()
-        ?: return null
+    if (monitoring && hasOutput) {
+        val source = prefs.getString(LocationMonitorService.KEY_SOURCE, "NONE") ?: "NONE"
+        if (NavigationPositionPolicy.acceptsSource(mode, source)) {
+            val latitude = prefs.all[LocationMonitorService.KEY_LAT]?.toString()?.toDoubleOrNull()
+            val longitude = prefs.all[LocationMonitorService.KEY_LON]?.toString()?.toDoubleOrNull()
+            if (latitude != null && longitude != null) {
+                val coordinate = NavigationCoordinate(latitude, longitude)
+                if (coordinate.isValid()) {
+                    val accuracy = prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
+                        ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+                    val bearing = if (NavigationPositionPolicy.canProvideHeading(source)) {
+                        prefs.all[LocationMonitorService.KEY_BEARING]?.toString()?.toDoubleOrNull()
+                            ?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+                    } else {
+                        null
+                    }
+                    return NavigationPositionSnapshot(coordinate, accuracy, source, bearing)
+                }
+            }
+        }
+    }
+
+    // Keep the last genuinely trusted physical GPS fix visible while a new fix is acquired.
+    // It expires quickly and is never used in Radio-only mode.
+    if (mode == NavigationPositionMode.RADIO_ONLY) return null
+    val fixElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ELAPSED_NANOS, 0L)
+    val ageNanos = SystemClock.elapsedRealtimeNanos() - fixElapsedNanos
+    if (fixElapsedNanos <= 0L || ageNanos !in 0L..LAST_TRUSTED_GPS_MAX_AGE_NANOS) return null
+
+    val latitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, null)
+        ?.toDoubleOrNull() ?: return null
+    val longitude = prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, null)
+        ?.toDoubleOrNull() ?: return null
     val coordinate = NavigationCoordinate(latitude, longitude)
     if (!coordinate.isValid()) return null
-
-    val accuracy = prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
-        ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-    val bearing = if (NavigationPositionPolicy.canProvideHeading(source)) {
-        prefs.all[LocationMonitorService.KEY_BEARING]?.toString()?.toDoubleOrNull()
-            ?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
-    } else {
-        null
-    }
-    return NavigationPositionSnapshot(coordinate, accuracy, source, bearing)
+    val accuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, -1f)
+        .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+    return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null)
 }
+
+private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
 
 /**
  * Mirrors ClearGpsApp.applyPositionMode(): update the one shared mode, then ask the
