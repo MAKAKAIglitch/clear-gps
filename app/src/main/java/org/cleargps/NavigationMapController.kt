@@ -55,6 +55,10 @@ internal class NavigationMapController {
     private var hasCenteredOnFirstPosition = false
     private var isFollowingUser = true
     private var cameraMoveStartedListener: MapLibreMap.OnCameraMoveStartedListener? = null
+    private var mapTapListener: MapLibreMap.OnMapClickListener? = null
+    private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
+    private var destinationSource: GeoJsonSource? = null
+    private var destination: NavigationCoordinate? = null
 
     fun attach(
         mapView: MapView,
@@ -83,6 +87,14 @@ internal class NavigationMapController {
             if (attachedMapView !== mapView) return@getMapAsync
             map = mapObject
 
+            mapTapListener?.let(mapObject::removeOnMapClickListener)
+            val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
+                onMapTap?.invoke(NavigationCoordinate(coordinate.latitude, coordinate.longitude))
+                true
+            }
+            mapTapListener = tapListener
+            mapObject.addOnMapClickListener(tapListener)
+
             cameraMoveStartedListener?.let(mapObject::removeOnCameraMoveStartedListener)
             val moveStartedListener = MapLibreMap.OnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
@@ -101,9 +113,11 @@ internal class NavigationMapController {
                 val newAccuracySource = GeoJsonSource(ACCURACY_SOURCE, emptyFeatureCollection())
                 val newDotSource = GeoJsonSource(DOT_SOURCE, emptyFeatureCollection())
                 val newBearingSource = GeoJsonSource(BEARING_SOURCE, emptyFeatureCollection())
+                val newDestinationSource = GeoJsonSource(DESTINATION_SOURCE, emptyFeatureCollection())
                 style.addSource(newAccuracySource)
                 style.addSource(newDotSource)
                 style.addSource(newBearingSource)
+                style.addSource(newDestinationSource)
 
                 // Ferrostar's browsing puck shows its true horizontal uncertainty in metres.
                 style.addLayer(
@@ -154,11 +168,22 @@ internal class NavigationMapController {
                     )
                 )
 
+                style.addLayer(
+                    CircleLayer(DESTINATION_LAYER, DESTINATION_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(8f),
+                        PropertyFactory.circleColor("#D94B45"),
+                        PropertyFactory.circleStrokeColor("#FFFFFF"),
+                        PropertyFactory.circleStrokeWidth(3f)
+                    )
+                )
+
                 accuracySource = newAccuracySource
                 dotSource = newDotSource
                 bearingSource = newBearingSource
+                destinationSource = newDestinationSource
                 styleReady = true
                 renderCurrentPosition()
+                renderDestination()
 
                 if (!cameraInitialized) {
                     val initialFix = currentPosition?.takeIf { it.isValid() }
@@ -184,7 +209,10 @@ internal class NavigationMapController {
         accuracySource = null
         dotSource = null
         bearingSource = null
+        destinationSource = null
         val oldMap = map
+        mapTapListener?.let { listener -> oldMap?.removeOnMapClickListener(listener) }
+        mapTapListener = null
         cameraMoveStartedListener?.let { listener -> oldMap?.removeOnCameraMoveStartedListener(listener) }
         cameraMoveStartedListener = null
         map = null
@@ -215,6 +243,15 @@ internal class NavigationMapController {
             // release the camera, and the user can re-enable following with the location action.
             moveCameraToUser(point, currentZoom(), animated = true)
         }
+    }
+
+    fun setOnMapTapListener(listener: ((NavigationCoordinate) -> Unit)?) {
+        onMapTap = listener
+    }
+
+    fun updateDestination(coordinate: NavigationCoordinate?) {
+        destination = coordinate?.takeIf { it.isValid() }
+        renderDestination()
     }
 
     fun zoomBy(delta: Double) {
@@ -309,6 +346,16 @@ internal class NavigationMapController {
         map?.triggerRepaint()
     }
 
+    private fun renderDestination() {
+        if (!styleReady) return
+        val point = destination?.takeIf { it.isValid() }
+        destinationSource?.setGeoJson(
+            point?.let { FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)))) }
+                ?: emptyFeatureCollection()
+        )
+        map?.triggerRepaint()
+    }
+
     private fun accuracyCollection(
         center: NavigationCoordinate,
         accuracyMeters: Double
@@ -379,11 +426,13 @@ internal class NavigationMapController {
         const val ACCURACY_SOURCE = "cleargps-navigation-accuracy"
         const val DOT_SOURCE = "cleargps-navigation-dot"
         const val BEARING_SOURCE = "cleargps-navigation-bearing"
+        const val DESTINATION_SOURCE = "cleargps-navigation-destination"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
         const val DOT_SHADOW_LAYER = "cleargps-navigation-dot-shadow"
         const val DOT_LAYER = "cleargps-navigation-dot"
         const val BEARING_LAYER = "cleargps-navigation-bearing-indicator"
+        const val DESTINATION_LAYER = "cleargps-navigation-destination-marker"
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
         const val BEARING_ICON_SIZE = 0.25f
