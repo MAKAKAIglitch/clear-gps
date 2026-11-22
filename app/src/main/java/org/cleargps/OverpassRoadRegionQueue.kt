@@ -264,7 +264,12 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
     companion object { private const val MAX_BYTES = 256L * 1024 * 1024 }
 }
 
-private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {\n    val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)\n    val dp = Math.toRadians(lat2 - lat1); val dl = Math.toRadians(lon2 - lon1)\n    val a = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2)\n    return 6_371_000.0 * 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))\n}\n\nprivate fun validatedInternet(context: Context): Boolean {
+private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+    val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)
+    val dp = Math.toRadians(lat2 - lat1); val dl = Math.toRadians(lon2 - lon1)
+    val a = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2)
+    return 6_371_000.0 * 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))
+}\n\nprivate fun validatedInternet(context: Context): Boolean {
     val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val network = manager.activeNetwork ?: return false
     val caps = manager.getNetworkCapabilities(network) ?: return false
