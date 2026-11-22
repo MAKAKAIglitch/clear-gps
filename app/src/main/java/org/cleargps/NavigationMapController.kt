@@ -336,6 +336,23 @@ internal class NavigationMapController {
                     }
                 }
 
+                // Water polygons and waterways use the OpenMapTiles source layers.
+                val waterBodies = FillLayer("cleargps-water-bodies", "openmaptiles")
+                    .apply { setSourceLayer("water") }
+                    .withProperties(
+                        PropertyFactory.fillColor("#287FA8"),
+                        PropertyFactory.fillOpacity(0.92f)
+                    )
+                val waterways = LineLayer("cleargps-waterway-lines", "openmaptiles")
+                    .apply { setSourceLayer("waterway") }
+                    .withProperties(
+                        PropertyFactory.lineColor("#287FA8"),
+                        PropertyFactory.lineWidth(2.2f),
+                        PropertyFactory.lineOpacity(0.96f),
+                        PropertyFactory.lineCap("round"),
+                        PropertyFactory.lineJoin("round")
+                    )
+
                 // Keep water above land-cover overlays, with river/canal strokes above water polygons.
                 if (style.getLayer("building") != null) {
                     style.addLayerBelow(waterBodies, "building")
