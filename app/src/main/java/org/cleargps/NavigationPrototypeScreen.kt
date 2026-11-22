@@ -7,6 +7,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
+import android.speech.tts.TextToSpeech
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -72,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.maps.MapView
 import kotlinx.coroutines.delay
+import java.util.Locale
 
 @Composable
 internal fun ClearGpsNavigationShell(
@@ -131,6 +133,14 @@ internal fun NavigationPrototypeScreen(
     var selectedRouteIndex by remember { mutableStateOf(0) }
     var routeLoading by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
+    var isNavigating by rememberSaveable { mutableStateOf(false) }
+    var activeRoute by remember { mutableStateOf<NavigationRouteAlternative?>(null) }
+    var guidance by remember { mutableStateOf<NavigationGuidanceSnapshot?>(null) }
+    var lastAnnouncedStepIndex by remember { mutableStateOf(-1) }
+    var offRouteFixCount by remember { mutableStateOf(0) }
+    var lastRerouteAtMs by remember { mutableStateOf(0L) }
+    var speechEngine by remember { mutableStateOf<TextToSpeech?>(null) }
+    var speechReady by remember { mutableStateOf(false) }
     var showRouteOptions by rememberSaveable { mutableStateOf(false) }
     var routeOptionsExpanded by rememberSaveable { mutableStateOf(false) }
     var showMapPointSheet by rememberSaveable { mutableStateOf(false) }
