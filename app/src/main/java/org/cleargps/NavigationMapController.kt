@@ -740,7 +740,7 @@ internal class NavigationMapController {
                 (target.longitude + longitudeDelta).coerceAtMost(180.0)
             ) { loaded ->
                 if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= CAMERA_MIN_ZOOM) {
-                    val currentTarget = mapObject.cameraPosition.target
+                    val currentTarget = mapObject.cameraPosition.target ?: return@load
                     // A slow Overpass response must not repaint markers from an old camera target.
                     pois = loaded.filter { poi ->
                         NavigationGuidanceEngine.distanceMeters(
