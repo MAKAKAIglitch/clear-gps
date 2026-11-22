@@ -121,12 +121,22 @@ jobs:
       - name: Verify radio fingerprint query plans and benchmark both SQL stages
         shell: bash
         run: python3 tools/benchmarks/radio_fingerprint_sql.py --sizes 1000 10000 --repeats 3
+      - name: Cache Rust dependencies and compiled artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/offline-routing/target
+          key: ${{ runner.os }}-rust-stable-${{ hashFiles('rust/offline-routing/Cargo.toml', 'rust/offline-routing/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-stable-
       - name: Test Rust offline routing core
         run: |
           rustup toolchain install stable --profile minimal
           cargo +stable test --manifest-path rust/offline-routing/Cargo.toml
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
-        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest
       - name: Preserve Linux unit test reports
         if: failure()
         uses: actions/upload-artifact@v4
@@ -172,7 +182,7 @@ jobs:
           & .\gradlew.bat --version
           if ($LASTEXITCODE -ne 0) { throw "Gradle argument-forwarding smoke test failed with exit code $LASTEXITCODE." }
           Remove-Item Env:CLEARGPS_GRADLE_JVM_ARGS -ErrorAction SilentlyContinue
-      - name: Run unit tests and build debug APK on Windows
+      - name: Run unit tests on Windows
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -180,7 +190,7 @@ jobs:
           # Keep its temp root short to stay below the Windows MAX_PATH limit.
           $env:JAVA_TOOL_OPTIONS = "-Djava.io.tmpdir=$env:RUNNER_TEMP"
           & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
-          if ($LASTEXITCODE -ne 0) { throw "Windows tests/build failed with exit code $LASTEXITCODE." }
+          if ($LASTEXITCODE -ne 0) { throw "Windows unit tests failed with exit code $LASTEXITCODE." }
           Remove-Item Env:JAVA_TOOL_OPTIONS -ErrorAction SilentlyContinue
       - name: Preserve Windows unit test reports
         if: failure()
