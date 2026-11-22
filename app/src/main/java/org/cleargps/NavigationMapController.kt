@@ -136,6 +136,37 @@ internal class NavigationMapController {
                     onLocationTap?.invoke()
                     return@OnMapClickListener true
                 }
+                val houseNumberFeature = mapObject.queryRenderedFeatures(hitBox, HOUSE_NUMBER_LAYER_ID).firstOrNull()
+                val houseNumberProperties = houseNumberFeature?.properties()
+                val houseNumberGeometry = houseNumberFeature?.geometry() as? Point
+                val houseNumber = houseNumberProperties?.get("housenumber")
+                    ?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+                if (houseNumber != null && houseNumberGeometry != null) {
+                    val latitude = houseNumberGeometry.latitude()
+                    val longitude = houseNumberGeometry.longitude()
+                    val matchingAddress = pois.minByOrNull { item ->
+                        val latMeters = (item.latitude - latitude) * 111_000.0
+                        val lonMeters = (item.longitude - longitude) *
+                            111_000.0 * kotlin.math.cos(Math.toRadians(latitude))
+                        kotlin.math.hypot(latMeters, lonMeters)
+                    }?.takeIf { item ->
+                        item.tags["addr:housenumber"] == houseNumber &&
+                            NavigationGuidanceEngine.distanceMeters(
+                                NavigationCoordinate(latitude, longitude), item.coordinate
+                            ) <= 65.0
+                    }
+                    val addressPoi = matchingAddress ?: NavigationPoi(
+                        id = "tile-address:$houseNumber:$latitude:$longitude",
+                        name = "Дом $houseNumber",
+                        category = NavigationPoiCategory.SHOP,
+                        latitude = latitude,
+                        longitude = longitude,
+                        address = houseNumber,
+                        tags = mapOf("addr:housenumber" to houseNumber, "cleargps:address_only" to "yes")
+                    )
+                    onPoiTap?.invoke(addressPoi)
+                    return@OnMapClickListener true
+                }
                 val routeHitRadiusPx = ROUTE_HIT_RADIUS_DP * mapView.context.resources.displayMetrics.density
                 val routeHitBox = RectF(
                     screenPoint.x - routeHitRadiusPx,
@@ -389,6 +420,26 @@ internal class NavigationMapController {
                     style.addLayer(laneLines)
                     style.addLayer(laneArrows)
                 }
+
+                // OpenMapTiles carries OSM addr:housenumber as a dedicated vector layer.
+                // Keep labels quiet and let MapLibre collision detection prevent clutter.
+                style.addLayer(
+                    SymbolLayer(HOUSE_NUMBER_LAYER_ID, "openmaptiles")
+                        .apply {
+                            setSourceLayer("housenumber")
+                            setMinZoom(HOUSE_NUMBER_MIN_ZOOM)
+                        }
+                        .withProperties(
+                            PropertyFactory.textField(Expression.get("housenumber")),
+                            PropertyFactory.textSize(11f),
+                            PropertyFactory.textColor("#DCE5EF"),
+                            PropertyFactory.textHaloColor("#172333"),
+                            PropertyFactory.textHaloWidth(1.35f),
+                            PropertyFactory.textAllowOverlap(false),
+                            PropertyFactory.textIgnorePlacement(false),
+                            PropertyFactory.textAnchor("center")
+                        )
+                )
 
                 for (index in 0..2) {
                     style.addLayer(
@@ -737,6 +788,7 @@ internal class NavigationMapController {
     private fun renderPois() {
         if (!styleReady) return
         val features = pois.asSequence()
+            .filter { it.tags["cleargps:address_only"] != "yes" }
             .map { poi ->
                 Feature.fromGeometry(Point.fromLngLat(poi.longitude, poi.latitude)).apply {
                     addStringProperty(POI_ID_PROPERTY, poi.id)
@@ -1404,6 +1456,8 @@ internal class NavigationMapController {
         const val ROUTE_INDEX_PROPERTY = "route_index"
         val ROUTE_LAYER_IDS = (0..2).map { routeLayerId(it) }.toTypedArray()
         const val POI_SOURCE = "cleargps-navigation-pois"
+        const val HOUSE_NUMBER_LAYER_ID = "cleargps-house-number-labels"
+        const val HOUSE_NUMBER_MIN_ZOOM = 16.0f
         const val LANE_LINE_SOURCE = "cleargps-osm-lane-lines"
         const val LANE_ARROW_SOURCE = "cleargps-osm-lane-arrows"
         const val LANE_LINES_LAYER = "cleargps-osm-lane-lines-layer"

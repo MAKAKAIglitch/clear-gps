@@ -121,9 +121,14 @@ internal class NavigationPoiRepository {
         lastRequestKey = key
 
         val bbox = "$south,$west,$north,$east"
+        // Address records are dense: request them only for close-up viewports.
+        val addressQuery = if ((north - south) * (east - west) <= 0.0025) {
+            """nwr["addr:housenumber"]($bbox);"""
+        } else ""
         val query = """
             [out:json][timeout:18];
             (
+              $addressQuery
               nwr["amenity"~"^(fuel|charging_station|pharmacy|restaurant|cafe|fast_food|bar|parking|atm)$"]($bbox);
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
             )->.pois;
@@ -235,7 +240,10 @@ internal class NavigationPoiRepository {
                 }
             }
             if (tags.isEmpty()) return@forEach
-            val category = NavigationPoiCategory.fromTags(tags) ?: return@forEach
+            val addressOnly = NavigationPoiCategory.fromTags(tags) == null &&
+                !tags["addr:housenumber"].isNullOrBlank()
+            val category = NavigationPoiCategory.fromTags(tags)
+                ?: if (addressOnly) NavigationPoiCategory.SHOP else return@forEach
             val point = if (lat != null && lon != null) lat to lon else return@forEach
             val (pointLat, pointLon) = point
             if (!pointLat.isFinite() || pointLat !in -90.0..90.0 ||
@@ -243,7 +251,9 @@ internal class NavigationPoiRepository {
             ) return@forEach
             val label = tags["name"]?.takeIf { it.isNotBlank() }
                 ?: tags["brand"]?.takeIf { it.isNotBlank() }
-            val name = label ?: category.title
+            val houseNumber = tags["addr:housenumber"]?.takeIf { it.isNotBlank() }
+            val name = label ?: if (addressOnly) "Дом $houseNumber" else category.title
+            val retainedTags = if (addressOnly) tags + ("cleargps:address_only" to "yes") else tags
             val street = tags["addr:street"]
             val house = tags["addr:housenumber"]
             val city = tags["addr:city"]
@@ -266,7 +276,7 @@ internal class NavigationPoiRepository {
                 cuisine = tags["cuisine"]?.takeIf { it.isNotBlank() },
                 operator = tags["operator"]?.takeIf { it.isNotBlank() },
                 wheelchair = tags["wheelchair"]?.takeIf { it.isNotBlank() },
-                tags = tags
+                tags = retainedTags
             )
         }
         relationDevices.forEach { (deviceId, category, relationTags) ->

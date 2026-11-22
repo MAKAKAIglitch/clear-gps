@@ -1297,7 +1297,7 @@ internal fun NavigationPrototypeScreen(
                     )
                     if (poiForSheet != null) {
                         Text(
-                            poiForSheet.category.title,
+                            if (poiForSheet.tags["cleargps:address_only"] == "yes") "Адрес здания" else poiForSheet.category.title,
                             style = MaterialTheme.typography.labelLarge,
                             color = colors.primary
                         )
@@ -1308,13 +1308,34 @@ internal fun NavigationPrototypeScreen(
                             "name", "brand", "opening_hours", "phone", "contact:phone",
                             "website", "contact:website", "url", "email", "contact:email",
                             "cuisine", "operator", "wheelchair", "addr:street",
-                            "addr:housenumber", "addr:city"
+                            "addr:housenumber", "addr:city", "addr:postcode", "addr:district",
+                            "addr:suburb", "addr:country", "addr:state", "addr:province",
+                            "building", "building:levels", "building:flats", "addr:unit",
+                            "addr:floor", "entrance"
                         )
                         val extraTagRows = poiForSheet.tags
                             .filter { (key, value) -> key !in knownTagKeys && value.isNotBlank() }
                             .toSortedMap()
                             .map { (key, value) -> "OSM · $key" to value }
-                        val detailRows = listOfNotNull(
+                        val addressRows = if (poiForSheet.tags["cleargps:address_only"] == "yes") {
+                            listOfNotNull(
+                                poiForSheet.tags["addr:street"]?.let { "Улица" to it },
+                                poiForSheet.tags["addr:housenumber"]?.let { "Номер дома" to it },
+                                poiForSheet.tags["addr:postcode"]?.let { "Индекс" to it },
+                                poiForSheet.tags["addr:city"]?.let { "Город" to it },
+                                poiForSheet.tags["addr:district"]?.let { "Район" to it },
+                                poiForSheet.tags["addr:suburb"]?.let { "Микрорайон" to it },
+                                poiForSheet.tags["addr:state"]?.let { "Регион" to it },
+                                poiForSheet.tags["addr:country"]?.let { "Страна" to it },
+                                poiForSheet.tags["building"]?.let { "Тип здания" to it },
+                                poiForSheet.tags["building:levels"]?.let { "Этажей" to it },
+                                poiForSheet.tags["building:flats"]?.let { "Квартир" to it },
+                                poiForSheet.tags["addr:unit"]?.let { "Помещение" to it },
+                                poiForSheet.tags["addr:floor"]?.let { "Этаж" to it },
+                                poiForSheet.tags["entrance"]?.let { "Вход" to it }
+                            )
+                        } else emptyList()
+                        val detailRows = addressRows + listOfNotNull(
                             poiForSheet.openingHours?.let { "Часы работы" to it },
                             poiForSheet.phone?.let { "Телефон" to it },
                             poiForSheet.website?.let { "Сайт" to it },
