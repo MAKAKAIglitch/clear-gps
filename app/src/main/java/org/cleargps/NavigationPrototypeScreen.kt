@@ -689,6 +689,78 @@ internal fun NavigationPrototypeScreen(
                     }
                 }
             }
+            if (routeDestination != null && isNavigating) {
+                val maneuver = guidance
+                val instruction = maneuver?.instruction ?: "Определяем следующий манёвр"
+                val maneuverGlyph = when {
+                    instruction.contains("налево", ignoreCase = true) -> "↰"
+                    instruction.contains("направо", ignoreCase = true) -> "↱"
+                    instruction.contains("развернитесь", ignoreCase = true) -> "⤴"
+                    instruction.contains("кругов", ignoreCase = true) -> "⟳"
+                    instruction.contains("съезд", ignoreCase = true) || instruction.contains("съезжайте", ignoreCase = true) -> "↗"
+                    else -> "↑"
+                }
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp)
+                        .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 91.dp)
+                        .shadow(9.dp, RoundedCornerShape(22.dp)),
+                    shape = RoundedCornerShape(22.dp),
+                    color = colors.primaryContainer.copy(alpha = 0.98f),
+                    tonalElevation = 5.dp
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(58.dp),
+                            shape = RoundedCornerShape(17.dp),
+                            color = colors.primary
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    maneuverGlyph,
+                                    style = MaterialTheme.typography.headlineLarge,
+                                    color = colors.onPrimary
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                maneuver?.let { "ЧЕРЕЗ ${formatRouteDistance(it.distanceToManeuverMeters)}" } ?: "ОЖИДАНИЕ ПОЗИЦИИ",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.onPrimaryContainer
+                            )
+                            Text(
+                                instruction,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = colors.onPrimaryContainer,
+                                maxLines = 2
+                            )
+                        }
+                        IconButton(
+                            enabled = speechEnabled && speechReady,
+                            onClick = {
+                                speechEngine?.speak(
+                                    instruction,
+                                    TextToSpeech.QUEUE_FLUSH,
+                                    null,
+                                    "cleargps-repeat-top"
+                                )
+                            }
+                        ) {
+                            Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку", tint = colors.onPrimaryContainer)
+                        }
+                    }
+                }
+            }
+
             // Smooth zoom controls; no slider.
             Column(
                 modifier = Modifier
@@ -1089,26 +1161,6 @@ internal fun NavigationPrototypeScreen(
                         Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.Navigation, contentDescription = null, tint = colors.primary, modifier = Modifier.size(32.dp))
-                            Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(progress?.instruction ?: "Ведение по маршруту", style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
-                                Text(
-                                    progress?.let { "Через ${formatRouteDistance(it.distanceToManeuverMeters)} · осталось ${formatRouteDistance(it.remainingDistanceMeters)}" } ?: "Ожидаю позицию ClearGPS",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = colors.onSurfaceVariant
-                                )
-                            }
-                            IconButton(
-                                enabled = speechEnabled && speechReady,
-                                onClick = {
-                                    speechEngine?.speak(
-                                        progress?.instruction ?: "Продолжайте движение",
-                                        TextToSpeech.QUEUE_FLUSH, null, "cleargps-repeat"
-                                    )
-                                }
-                            ) { Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку") }
-                        }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
                                 Text("ОСТАЛОСЬ", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
