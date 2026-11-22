@@ -539,13 +539,17 @@ internal class NavigationMapController {
         val mapObject = map ?: return
         if (!styleReady || !point.isValid() || !isFollowingUser) return
         isNavigationCameraMode = true
-        val previousTarget = mapObject.cameraPosition.target
+        val currentCamera = mapObject.cameraPosition
+        val bearing = bearingDegrees?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+            ?: currentCamera.bearing
+        val previousTarget = currentCamera.target
         if (previousTarget != null) {
             val previous = NavigationCoordinate(previousTarget.latitude, previousTarget.longitude)
-            if (NavigationGuidanceEngine.distanceMeters(previous, point) < 4.0) return
+            val samePosition = NavigationGuidanceEngine.distanceMeters(previous, point) < 4.0
+            val alreadyIn3d = currentCamera.tilt >= 54.0 &&
+                kotlin.math.abs(((currentCamera.bearing - bearing + 540.0) % 360.0) - 180.0) < 2.0
+            if (samePosition && alreadyIn3d) return
         }
-        val bearing = bearingDegrees?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
-            ?: mapObject.cameraPosition.bearing
         val camera = CameraPosition.Builder()
             .target(LatLng(point.latitude, point.longitude))
             .zoom(maxOf(currentZoom(), 16.5).coerceAtMost(MAX_ZOOM))
