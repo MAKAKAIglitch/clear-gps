@@ -1578,7 +1578,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                 }
             }
             Text(
-                "Сейчас сохраняется сжатый исходный ответ Overpass. Компактный граф Rust и офлайн-построение маршрутов подключаются следующим этапом.",
+                "Сейчас сохраняется сжатый исходный ответ Overpass. Компактный граф Rust и офлайн-построение маршрутов подключаются следующим этапом. Данные: © OpenStreetMap contributors, лицензия ODbL.",
                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
             )
         }
