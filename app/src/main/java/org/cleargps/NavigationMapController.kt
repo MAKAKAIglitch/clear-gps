@@ -108,37 +108,10 @@ internal class NavigationMapController {
             mapTapListener?.let(mapObject::removeOnMapClickListener)
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
-                val poiHitBox = RectF(
-                    screenPoint.x - POI_HIT_RADIUS_PX,
-                    screenPoint.y - POI_HIT_RADIUS_PX,
-                    screenPoint.x + POI_HIT_RADIUS_PX,
-                    screenPoint.y + POI_HIT_RADIUS_PX
-                )
-                // The rendered blue dot is deliberately small. Hit-test a larger
-                // density-independent area around the actual position as well, so
-                // taps near its edge still open the location diagnostics sheet.
-                val locationScreenPoint = currentPosition
-                    ?.takeIf { it.isValid() }
-                    ?.let { mapObject.projection.toScreenLocation(LatLng(it.latitude, it.longitude)) }
-                val locationHitRadiusPx = LOCATION_HIT_RADIUS_DP * mapView.resources.displayMetrics.density
-                val isNearLocation = locationScreenPoint?.let { point ->
-                    val dx = screenPoint.x - point.x
-                    val dy = screenPoint.y - point.y
-                    dx * dx + dy * dy <= locationHitRadiusPx * locationHitRadiusPx
-                } == true
-                val locationHitBox = locationScreenPoint?.let { point ->
-                    RectF(
-                        point.x - locationHitRadiusPx,
-                        point.y - locationHitRadiusPx,
-                        point.x + locationHitRadiusPx,
-                        point.y + locationHitRadiusPx
-                    )
-                }
-                val locationFeature = locationHitBox?.let {
-                    mapObject.queryRenderedFeatures(it, DOT_LAYER, BEARING_LAYER).firstOrNull()
-                }
-                val poiFeature = mapObject.queryRenderedFeatures(poiHitBox, *POI_LAYER_IDS).firstOrNull()
-                if (isNearLocation || locationFeature != null) {
+                val hitBox = RectF(screenPoint.x - POI_HIT_RADIUS_PX, screenPoint.y - POI_HIT_RADIUS_PX, screenPoint.x + POI_HIT_RADIUS_PX, screenPoint.y + POI_HIT_RADIUS_PX)
+                val locationFeature = mapObject.queryRenderedFeatures(hitBox, DOT_LAYER, BEARING_LAYER).firstOrNull()
+                val poiFeature = mapObject.queryRenderedFeatures(hitBox, *POI_LAYER_IDS).firstOrNull()
+                if (locationFeature != null) {
                     onLocationTap?.invoke()
                     return@OnMapClickListener true
                 }
@@ -724,7 +697,6 @@ internal class NavigationMapController {
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val MIN_POI_ZOOM = 12.0
         const val POI_HIT_RADIUS_PX = 24f
-        const val LOCATION_HIT_RADIUS_DP = 36f
         const val POI_REFRESH_DEBOUNCE_MS = 850L
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0

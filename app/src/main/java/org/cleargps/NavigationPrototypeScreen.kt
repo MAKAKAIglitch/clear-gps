@@ -81,6 +81,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -1442,12 +1443,23 @@ private fun NavigationSettingsScreen(
     val colors = MaterialTheme.colorScheme
     var showRegionDownloads by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     if (showRegionDownloads) {
         OverpassRegionDownloadsScreen(onBack = { showRegionDownloads = false })
         return
     }
     if (showDiagnostics) {
         NavigationDiagnosticsScreen(onBack = { showDiagnostics = false })
+        return
+    }
+    if (showAbout) {
+        NavigationAboutScreen(
+            onBack = { showAbout = false },
+            onOpenDiagnostics = {
+                showAbout = false
+                showDiagnostics = true
+            }
+        )
         return
     }
 
@@ -1560,9 +1572,16 @@ private fun NavigationSettingsScreen(
 
             NavigationSettingsGroup("О ПРИЛОЖЕНИИ") {
                 NavigationSettingsItem(
-                    title = "ClearGPS Navigation",
-                    subtitle = "Версия 0.4.0 · Подробные журналы и диагностика",
+                    title = "О ClearGPS",
+                    subtitle = "Возможности, приватность, версия и информация о проекте",
                     icon = Icons.Outlined.Info,
+                    onClick = { showAbout = true }
+                )
+                NavigationSettingsDivider()
+                NavigationSettingsItem(
+                    title = "Диагностика навигатора",
+                    subtitle = "Состояние журналов и техническая информация",
+                    icon = Icons.Outlined.Sync,
                     onClick = { showDiagnostics = true }
                 )
             }
@@ -1570,6 +1589,153 @@ private fun NavigationSettingsScreen(
     }
 }
 
+
+@Composable
+private fun NavigationAboutScreen(
+    onBack: () -> Unit,
+    onOpenDiagnostics: () -> Unit
+) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "не определена"
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(colors.background)) {
+        Surface(modifier = Modifier.fillMaxWidth(), color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(
+                    start = 8.dp, end = 18.dp,
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 6.dp,
+                    bottom = 12.dp
+                ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, contentDescription = "Назад") }
+                Column(modifier = Modifier.padding(start = 8.dp)) {
+                    Text("О приложении", style = MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                    Text("ClearGPS · информация о проекте", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp)
+                .padding(top = 20.dp, bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 28.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+                    .background(Brush.linearGradient(listOf(colors.primary, colors.tertiary)), RoundedCornerShape(28.dp))
+                    .padding(horizontal = 22.dp, vertical = 26.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(shape = RoundedCornerShape(18.dp), color = colors.onPrimary.copy(alpha = 0.14f)) {
+                    Icon(Icons.Outlined.Navigation, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.padding(13.dp).size(30.dp))
+                }
+                Text("ClearGPS", style = MaterialTheme.typography.headlineLarge, color = colors.onPrimary)
+                Text("Местоположение — под вашим контролем.", style = MaterialTheme.typography.titleMedium, color = colors.onPrimary)
+                Text(
+                    "Экспериментальный Android-проект, который объединяет навигацию, спутниковое позиционирование и анализ радиосреды.",
+                    style = MaterialTheme.typography.bodyMedium, color = colors.onPrimary.copy(alpha = 0.88f)
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(shape = RoundedCornerShape(50), color = colors.onPrimary.copy(alpha = 0.16f)) {
+                        Text("ANDROID", modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = colors.onPrimary)
+                    }
+                    Surface(shape = RoundedCornerShape(50), color = colors.onPrimary.copy(alpha = 0.16f)) {
+                        Text("OPEN SOURCE", modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = colors.onPrimary)
+                    }
+                }
+            }
+
+            AboutInfoCard(
+                title = "Что умеет ClearGPS",
+                subtitle = "Инструменты для навигации и изучения качества позиционирования."
+            ) {
+                AboutFeatureRow(Icons.Outlined.MyLocation, "Несколько источников позиции", "GPS, Auto и Radio. В радиорежиме оценка может использовать локальную базу Wi-Fi, сотовых сетей и BLE-маяков.")
+                NavigationSettingsDivider()
+                AboutFeatureRow(Icons.Outlined.Map, "Карта и маршруты", "Карта на базе MapLibre, варианты маршрута, визуальные и голосовые подсказки.")
+                NavigationSettingsDivider()
+                AboutFeatureRow(Icons.Outlined.Info, "Диагностика", "Информация об источнике координат, состоянии мониторинга и работе позиционирования.")
+            }
+
+            AboutInfoCard(
+                title = "Приватность и контроль",
+                subtitle = "Радионаблюдения хранятся в закрытой базе приложения на устройстве. Обращение к внешним источникам позиционирования зависит от отдельных разрешений и переключателей согласия."
+            ) {
+                Text(
+                    "ClearGPS не отправляет записи радионаблюдений в базы сбора данных. При включении сетевых оценок соответствующие провайдеры получают запросы с устройства; карта и построение маршрутов также используют сетевые сервисы.",
+                    style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+                )
+            }
+
+            AboutInfoCard(
+                title = "Статус проекта",
+                subtitle = "ClearGPS активно развивается и остаётся экспериментальным приложением."
+            ) {
+                Text(
+                    "Загрузка дорожных данных регионов уже предусмотрена, но полноценное построение маршрутов без интернета ещё находится в разработке. Текущая карта и онлайн-маршрутизация требуют подключения к сети.",
+                    style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+                )
+            }
+
+            Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = colors.surfaceContainerHigh) {
+                Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Версия приложения", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                    Text(versionName, style = MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                    Text("Android · ClearGPS Navigation", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+            }
+
+            Button(
+                onClick = {
+                    runCatching {
+                        context.startActivity(android.content.Intent(
+                            android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse("https://github.com/MAKAKAIglitch/clear-gps")
+                        ))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Открыть проект на GitHub") }
+            TextButton(onClick = onOpenDiagnostics, modifier = Modifier.fillMaxWidth()) {
+                Text("Открыть диагностику")
+            }
+            Text(
+                "Картографические данные © OpenStreetMap contributors. Проект не является сертифицированным средством навигации или безопасности.",
+                style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutInfoCard(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun AboutFeatureRow(icon: ImageVector, title: String, description: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 2.dp).size(22.dp))
+        Column(modifier = Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
 
 @Composable
 private fun NavigationDiagnosticsScreen(onBack: () -> Unit) {
