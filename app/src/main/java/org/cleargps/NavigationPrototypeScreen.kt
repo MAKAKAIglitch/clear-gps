@@ -864,6 +864,7 @@ private fun NavigationPrototypeScreen(
         }
 
 
+        val selectedPointForSheet = selectedMapPoint
         if (showMapPointSheet && selectedPointForSheet != null) {
             val poiForSheet = selectedPoi
             ModalBottomSheet(
