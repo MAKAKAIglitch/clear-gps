@@ -31,9 +31,13 @@ internal object OverpassRoadRegionQueue {
         val oldLat = p.getString("last_queue_lat", null)?.toDoubleOrNull()
         val oldLon = p.getString("last_queue_lon", null)?.toDoubleOrNull()
         val oldAt = p.getLong("last_queue_at", 0L)
-        if (!force && oldLat != null && oldLon != null && now - oldAt < 6L * 60 * 60 * 1000) {
-            val moved = haversineMeters(oldLat, oldLon, lat, lon)
-            if (moved < 2_000.0) return
+        if (!force && oldAt > 0L) {
+            val elapsed = now - oldAt
+            // A moving device must not turn location callbacks into a stream of Overpass queries.
+            if (elapsed < 30L * 60 * 1000) return
+            if (oldLat != null && oldLon != null && elapsed < 6L * 60 * 60 * 1000) {
+                if (haversineMeters(oldLat, oldLon, lat, lon) < 1_000.0) return
+            }
         }
         p.edit().putString("last_queue_lat", lat.toString()).putString("last_queue_lon", lon.toString())
             .putLong("last_queue_at", now).apply()
