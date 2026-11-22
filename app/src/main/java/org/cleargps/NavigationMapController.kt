@@ -359,6 +359,7 @@ internal class NavigationMapController {
                     PropertyFactory.textColor("#FFFFFF"),
                     PropertyFactory.textHaloColor("#152333"),
                     PropertyFactory.textHaloWidth(1.5f),
+                    PropertyFactory.textRotate(Expression.get("bearing")),
                     PropertyFactory.textAllowOverlap(true),
                     PropertyFactory.textIgnorePlacement(true),
                     PropertyFactory.textRotationAlignment("map"),

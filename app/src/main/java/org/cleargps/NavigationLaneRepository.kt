@@ -16,6 +16,7 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.round
@@ -223,8 +224,19 @@ internal class NavigationLaneRepository {
             val glyph = turnGlyph(laneValue) ?: return@forEachIndexed
             val lateral = ((lanes.size - 1) / 2.0 - index) * LANE_WIDTH_METERS
             val point = offsetPoint(center, coordinates, lateral)
+            val middle = (coordinates.size / 2).coerceIn(0, coordinates.lastIndex)
+            val from = coordinates[(middle - 1).coerceAtLeast(0)]
+            val to = coordinates[(middle + 1).coerceAtMost(coordinates.lastIndex)]
+            val latitudeRadians = Math.toRadians(center.second)
+            val bearing = Math.toDegrees(
+                atan2(
+                    (to.first - from.first) * cos(latitudeRadians),
+                    to.second - from.second
+                )
+            )
             output += Feature.fromGeometry(Point.fromLngLat(point.first, point.second)).apply {
                 addStringProperty("glyph", glyph)
+                addNumberProperty("bearing", bearing)
                 addStringProperty("osm_way_id", wayId)
             }
         }
