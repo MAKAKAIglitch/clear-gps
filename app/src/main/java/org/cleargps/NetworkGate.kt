@@ -29,7 +29,8 @@ internal object NetworkGate {
         OPENCELLID_LOOKUP,
         MAP_RESOURCE,
         AIRPORT_CATALOG_READ,
-        OPENSTREETMAP_CELL_SITE_LOOKUP
+        OPENSTREETMAP_CELL_SITE_LOOKUP,
+        ROUTE_LOOKUP
     }
 
     private const val BEACONDB_HOST = "api.beacondb.net"
@@ -41,6 +42,7 @@ internal object NetworkGate {
     private const val AIRPORT_CATALOG_PATH = "/ourairports-data/airports.csv"
     private const val OPENSTREETMAP_HOST = "overpass-api.de"
     private const val OPENSTREETMAP_PATH = "/api/interpreter"
+    private const val ROUTING_HOST = "router.project-osrm.org"
     private const val MAX_OPENSTREETMAP_QUERY_LENGTH = 16_384
     private const val MAP_LOG_INTERVAL_MS = 60_000L
 
@@ -118,6 +120,14 @@ internal object NetworkGate {
                     host != OPENSTREETMAP_HOST || uri.rawPath != OPENSTREETMAP_PATH
                 ) reject()
                 validateOpenStreetMapQuery(uri.rawQuery)
+            }
+            Operation.ROUTE_LOOKUP -> {
+                val path = uri.rawPath.orEmpty()
+                val coordinatePath = Regex("^/route/v1/driving/-?[0-9.]+,-?[0-9.]+;-?[0-9.]+,-?[0-9.]+$").matches(path)
+                val query = uri.rawQuery.orEmpty().split("&").associate { it.substringBefore("=") to it.substringAfter("=", "") }
+                if (normalizedMethod != "GET" || host != ROUTING_HOST || !coordinatePath ||
+                    query != mapOf("alternatives" to "2", "steps" to "true", "overview" to "full", "geometries" to "geojson")
+                ) reject()
             }
         }
         return uri
