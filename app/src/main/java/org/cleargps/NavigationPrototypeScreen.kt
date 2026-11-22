@@ -97,10 +97,13 @@ internal fun ClearGpsNavigationShell(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NavigationPrototypeScreen(
+internal fun NavigationPrototypeScreen(
     onMapViewCreated: (MapView) -> Unit,
     onMapViewDisposed: (MapView) -> Unit,
-    onOpenLocationSettings: () -> Unit
+    onOpenLocationSettings: () -> Unit,
+    initialRouteDestination: NavigationCoordinate? = null,
+    initialDestinationName: String? = null,
+    onClosePreview: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
@@ -121,7 +124,8 @@ private fun NavigationPrototypeScreen(
     var centerOnNextPosition by remember { mutableStateOf(false) }
     var selectedMapPoint by remember { mutableStateOf<NavigationCoordinate?>(null) }
     var selectedPoi by remember { mutableStateOf<NavigationPoi?>(null) }
-    var routeDestination by remember { mutableStateOf<NavigationCoordinate?>(null) }
+    var routeDestination by remember(initialRouteDestination) { mutableStateOf(initialRouteDestination) }
+    var routeDestinationName by remember(initialDestinationName) { mutableStateOf(initialDestinationName) }
     val routingRepository = remember { NavigationRoutingRepository() }
     var calculatedRoutes by remember { mutableStateOf<List<NavigationRouteAlternative>>(emptyList()) }
     var selectedRouteIndex by remember { mutableStateOf(0) }
@@ -472,10 +476,20 @@ private fun NavigationPrototypeScreen(
 
             if (routeDestination != null) {
                 Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp).shadow(7.dp, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.98f), tonalElevation = 4.dp) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
-                        Text("Моя геопозиция  →  " + (selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
-                        Text(if (navigationPosition != null) "От текущей позиции ClearGPS" else "Ожидаю геопозицию ClearGPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
+                            Text("Моя геопозиция  →  " + (routeDestinationName ?: selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
+                            Text(if (navigationPosition != null) "От текущей позиции ClearGPS" else "Ожидаю геопозицию ClearGPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                        if (onClosePreview != null) {
+                            IconButton(onClick = onClosePreview) {
+                                Icon(Icons.Outlined.Close, contentDescription = "Закрыть маршрут")
+                            }
+                        }
                     }
                 }
             }
@@ -854,7 +868,16 @@ private fun NavigationPrototypeScreen(
                 showRouteOptions -> showRouteOptions = false
                 routeOptionsExpanded -> routeOptionsExpanded = false
                 showMapPointSheet -> showMapPointSheet = false
-                routeDestination != null -> { routeDestination = null; calculatedRoutes = emptyList(); controller.updateDestination(null); controller.updateRoutes(emptyList()) }
+                routeDestination != null -> {
+                    if (onClosePreview != null) onClosePreview()
+                    else {
+                        routeDestination = null
+                        routeDestinationName = null
+                        calculatedRoutes = emptyList()
+                        controller.updateDestination(null)
+                        controller.updateRoutes(emptyList())
+                    }
+                }
                 showSettings -> {
                     showSettings = false
                     selectedNavigationTab = "Карта"
@@ -907,7 +930,11 @@ private fun NavigationPrototypeScreen(
                     )
                     Button(
                         onClick = {
-                            routeDestination = selectedPointForSheet
+                            val intent = android.content.Intent(context, NavigationRoutePreviewActivity::class.java)
+                                .putExtra(NavigationRoutePreviewActivity.EXTRA_LATITUDE, selectedPointForSheet.latitude)
+                                .putExtra(NavigationRoutePreviewActivity.EXTRA_LONGITUDE, selectedPointForSheet.longitude)
+                                .putExtra(NavigationRoutePreviewActivity.EXTRA_DESTINATION_NAME, poiForSheet?.name ?: "Точка на карте")
+                            context.startActivity(intent)
                             showMapPointSheet = false
                         },
                         modifier = Modifier.fillMaxWidth()
