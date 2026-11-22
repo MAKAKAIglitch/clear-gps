@@ -499,6 +499,37 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
+            // OpenStreetMap attribution for POI data (ODbL).
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(
+                        start = 12.dp,
+                        bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 178.dp
+                    ),
+                shape = RoundedCornerShape(8.dp),
+                color = colors.surfaceContainerHigh.copy(alpha = 0.92f),
+                tonalElevation = 2.dp
+            ) {
+                Text(
+                    "© OpenStreetMap contributors · ODbL",
+                    modifier = Modifier
+                        .clickable {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse("https://www.openstreetmap.org/copyright")
+                                    )
+                                )
+                            }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant
+                )
+            }
+
             // Location control stays in the lower-right corner, above the bottom navigation panel.
             Surface(
                 modifier = Modifier
