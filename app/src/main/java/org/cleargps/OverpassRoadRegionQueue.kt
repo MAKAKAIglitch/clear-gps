@@ -196,14 +196,15 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
 
     private fun findRegion(lat: Double, lon: Double): Pair<Long, String>? {
         val query = "[out:json][timeout:35];is_in($lat,$lon)->.a;relation(pivot.a)[\"boundary\"=\"administrative\"][\"admin_level\"=\"4\"];out tags;"
+        var found: Pair<Long, String>? = null
         withOverpassFallback(query) { response ->
             val body = response.body ?: throw IOException("Empty Overpass response")
             JsonReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
                 reader.beginObject()
-                while (reader.hasNext()) {
+                while (reader.hasNext() && found == null) {
                     if (reader.nextName() != "elements") { reader.skipValue(); continue }
                     reader.beginArray()
-                    while (reader.hasNext()) {
+                    while (reader.hasNext() && found == null) {
                         var id = -1L; var level = ""; var name = ""
                         reader.beginObject()
                         while (reader.hasNext()) {
@@ -223,14 +224,14 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
                             }
                         }
                         reader.endObject()
-                        if (id > 0 && level == "4" && name.isNotBlank()) return id to name
+                        if (id > 0 && level == "4" && name.isNotBlank()) found = id to name
                     }
                     reader.endArray()
                 }
                 reader.endObject()
             }
         }
-        return null
+        return found
     }
 
     private fun download(id: Long, name: String, force: Boolean, isCurrent: Boolean): Result {
