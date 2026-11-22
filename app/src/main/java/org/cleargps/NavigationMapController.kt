@@ -149,15 +149,20 @@ internal class NavigationMapController {
                 val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
                 val geometry = poiFeature?.geometry() as? Point
                 if (properties != null && category != null && geometry != null) {
+                    val label = properties.get(POI_NAME_PROPERTY)
+                        ?.takeIf { !it.isJsonNull }
+                        ?.asString
+                        ?.takeIf { it.isNotBlank() }
                     val address = properties.get(POI_ADDRESS_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
                     onPoiTap?.invoke(
                         NavigationPoi(
                             properties.get(POI_ID_PROPERTY).asString,
-                            properties.get(POI_NAME_PROPERTY).asString,
+                            label ?: category.title,
                             category,
                             geometry.latitude(),
                             geometry.longitude(),
-                            address
+                            address,
+                            label
                         )
                     )
                 } else {
@@ -219,20 +224,46 @@ internal class NavigationMapController {
                 }
 
                 NavigationPoiCategory.values().forEach { category ->
-                    style.addLayer(
-                        CircleLayer(poiLayerId(category), POI_SOURCE)
-                            .withFilter(Expression.eq(Expression.get(POI_CATEGORY_PROPERTY), Expression.literal(category.name)))
-                            .withProperties(
-                                PropertyFactory.circleRadius(7f),
-                                PropertyFactory.circleColor(poiColor(category)),
-                                PropertyFactory.circleStrokeColor("#FFFFFF"),
-                                PropertyFactory.circleStrokeWidth(2f),
-                                PropertyFactory.circleOpacity(0.96f),
-                                PropertyFactory.circlePitchAlignment("map"),
-                                PropertyFactory.circlePitchScale("map")
+                    val poiLayer = CircleLayer(poiLayerId(category), POI_SOURCE)
+                        .apply { setMinZoom(MIN_POI_ZOOM.toFloat()) }
+                        .withFilter(
+                            Expression.eq(
+                                Expression.get(POI_CATEGORY_PROPERTY),
+                                Expression.literal(category.name)
                             )
-                    )
+                        )
+                        .withProperties(
+                            // Keep markers screen-sized and readable with the tilted 3D camera.
+                            PropertyFactory.circleRadius(8f),
+                            PropertyFactory.circleColor(poiColor(category)),
+                            PropertyFactory.circleStrokeColor("#FFFFFF"),
+                            PropertyFactory.circleStrokeWidth(2.5f),
+                            PropertyFactory.circleOpacity(1f),
+                            PropertyFactory.circlePitchAlignment("viewport"),
+                            PropertyFactory.circlePitchScale("viewport")
+                        )
+                    style.addLayer(poiLayer)
                 }
+
+                // Only named places receive labels; unnamed POIs remain clean category markers.
+                style.addLayer(
+                    SymbolLayer(POI_NAME_LAYER_ID, POI_SOURCE)
+                        .apply { setMinZoom(POI_LABEL_MIN_ZOOM) }
+                        .withProperties(
+                            PropertyFactory.textField(Expression.get(POI_NAME_PROPERTY)),
+                            PropertyFactory.textSize(11f),
+                            PropertyFactory.textColor("#F4F7FB"),
+                            PropertyFactory.textHaloColor("#101720"),
+                            PropertyFactory.textHaloWidth(1.25f),
+                            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
+                            PropertyFactory.textAnchor("top"),
+                            PropertyFactory.textMaxWidth(12f),
+                            PropertyFactory.textAllowOverlap(false),
+                            PropertyFactory.textIgnorePlacement(false),
+                            PropertyFactory.textPitchAlignment("viewport"),
+                            PropertyFactory.textRotationAlignment("viewport")
+                        )
+                )
                 for (index in 0..2) {
                     style.addLayer(
                         LineLayer(routeLayerId(index), ROUTE_SOURCE)
@@ -433,6 +464,7 @@ internal class NavigationMapController {
         val task = Runnable {
             val mapObject = map ?: return@Runnable
             if (!styleReady || mapObject.cameraPosition.zoom < MIN_POI_ZOOM) {
+                poiRepository.cancel()
                 pois = emptyList()
                 renderPois()
                 return@Runnable
@@ -444,8 +476,13 @@ internal class NavigationMapController {
                 bounds.latitudeNorth,
                 bounds.longitudeEast
             ) { loaded ->
-                if (map === mapObject && styleReady) {
-                    pois = loaded
+                if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= MIN_POI_ZOOM) {
+                    val currentBounds = mapObject.projection.visibleRegion.latLngBounds
+                    // A slow Overpass response must not repaint markers from an old viewport.
+                    pois = loaded.filter { poi ->
+                        poi.latitude in currentBounds.latitudeSouth..currentBounds.latitudeNorth &&
+                            poi.longitude in currentBounds.longitudeWest..currentBounds.longitudeEast
+                    }
                     renderPois()
                 }
             }
@@ -460,7 +497,9 @@ internal class NavigationMapController {
             .map { poi ->
                 Feature.fromGeometry(Point.fromLngLat(poi.longitude, poi.latitude)).apply {
                     addStringProperty(POI_ID_PROPERTY, poi.id)
-                    addStringProperty(POI_NAME_PROPERTY, poi.name)
+                    poi.label?.takeIf { it.isNotBlank() }?.let {
+                        addStringProperty(POI_NAME_PROPERTY, it)
+                    }
                     addStringProperty(POI_CATEGORY_PROPERTY, poi.category.name)
                     poi.address?.let { addStringProperty(POI_ADDRESS_PROPERTY, it) }
                 }
@@ -908,6 +947,7 @@ internal class NavigationMapController {
         const val ROUTE_INDEX_PROPERTY = "route_index"
         val ROUTE_LAYER_IDS = (0..2).map { routeLayerId(it) }.toTypedArray()
         const val POI_SOURCE = "cleargps-navigation-pois"
+        const val POI_NAME_LAYER_ID = "cleargps-poi-names"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
         const val DOT_SHADOW_LAYER = "cleargps-navigation-dot-shadow"
@@ -920,7 +960,7 @@ internal class NavigationMapController {
         const val POI_NAME_PROPERTY = "poi_name"
         const val POI_CATEGORY_PROPERTY = "poi_category"
         const val POI_ADDRESS_PROPERTY = "poi_address"
-        val POI_LAYER_IDS = NavigationPoiCategory.values().map { poiLayerId(it) }.toTypedArray()
+        val POI_LAYER_IDS = (NavigationPoiCategory.values().map { poiLayerId(it) } + POI_NAME_LAYER_ID).toTypedArray()
 
         fun poiLayerId(category: NavigationPoiCategory) = "cleargps-poi-${category.name.lowercase()}"
         fun poiColor(category: NavigationPoiCategory) = when (category) {
@@ -949,6 +989,7 @@ internal class NavigationMapController {
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
+        const val POI_LABEL_MIN_ZOOM = 15.0f
         const val POI_HIT_RADIUS_PX = 24f
         const val ROUTE_HIT_RADIUS_DP = 18f
         const val LOCATION_HIT_RADIUS_DP = 36f

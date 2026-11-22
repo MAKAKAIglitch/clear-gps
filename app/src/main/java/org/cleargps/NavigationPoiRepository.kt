@@ -44,7 +44,8 @@ internal data class NavigationPoi(
     val category: NavigationPoiCategory,
     val latitude: Double,
     val longitude: Double,
-    val address: String?
+    val address: String?,
+    val label: String? = null
 ) {
     val coordinate: NavigationCoordinate
         get() = NavigationCoordinate(latitude, longitude)
@@ -142,9 +143,9 @@ internal class NavigationPoiRepository {
             if (!lat.isFinite() || lat !in -90.0..90.0 || !lon.isFinite() || lon !in -180.0..180.0) return@forEach
             val type = obj.get("type")?.asString ?: "osm"
             val id = obj.get("id")?.asString ?: return@forEach
-            val name = tags["name"]?.takeIf { it.isNotBlank() }
+            val label = tags["name"]?.takeIf { it.isNotBlank() }
                 ?: tags["brand"]?.takeIf { it.isNotBlank() }
-                ?: category.title
+            val name = label ?: category.title
             val street = tags["addr:street"]
             val house = tags["addr:housenumber"]
             val city = tags["addr:city"]
@@ -152,7 +153,7 @@ internal class NavigationPoiRepository {
                 listOfNotNull(street, house).joinToString(" ").takeIf { it.isNotBlank() },
                 city?.takeIf { it.isNotBlank() }
             ).joinToString(", ").takeIf { it.isNotBlank() }
-            result["$type/$id"] = NavigationPoi("$type/$id", name, category, lat, lon, address)
+            result["$type/$id"] = NavigationPoi("$type/$id", name, category, lat, lon, address, label)
         }
         return result.values.toList()
     }
