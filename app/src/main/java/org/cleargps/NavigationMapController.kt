@@ -232,7 +232,7 @@ internal class NavigationMapController {
                 val buildings3d = FillExtrusionLayer("cleargps-buildings-3d", "openmaptiles")
                     .apply { setSourceLayer("building") }
                     .withProperties(
-                        PropertyFactory.fillExtrusionColor("#26364A"),
+                        PropertyFactory.fillExtrusionColor("#14263D"),
                         PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
                         PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
                         PropertyFactory.fillExtrusionOpacity(0.70f)
@@ -242,6 +242,89 @@ internal class NavigationMapController {
                     style.addLayerAbove(buildings3d, "building")
                 } else {
                     style.addLayer(buildings3d)
+                }
+
+                // Distinct medical buildings use a deeper red than ordinary dark-blue buildings.
+                val medicalBuildings = FillExtrusionLayer("cleargps-medical-buildings-3d", "openmaptiles")
+                    .apply { setSourceLayer("building") }
+                    .withFilter(
+                        Expression.any(
+                            Expression.eq(Expression.get("class"), Expression.literal("hospital")),
+                            Expression.eq(Expression.get("class"), Expression.literal("clinic")),
+                            Expression.eq(Expression.get("subclass"), Expression.literal("hospital")),
+                            Expression.eq(Expression.get("subclass"), Expression.literal("clinic")),
+                            Expression.eq(Expression.get("building"), Expression.literal("hospital")),
+                            Expression.eq(Expression.get("building"), Expression.literal("clinic")),
+                            Expression.eq(Expression.get("building"), Expression.literal("healthcare")),
+                            Expression.eq(Expression.get("amenity"), Expression.literal("hospital")),
+                            Expression.eq(Expression.get("amenity"), Expression.literal("clinic")),
+                            Expression.eq(Expression.get("healthcare"), Expression.literal("hospital")),
+                            Expression.eq(Expression.get("healthcare"), Expression.literal("clinic"))
+                        )
+                    )
+                    .withProperties(
+                        PropertyFactory.fillExtrusionColor("#651F32"),
+                        PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
+                        PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
+                        PropertyFactory.fillExtrusionOpacity(0.88f)
+                    )
+                medicalBuildings.setMinZoom(14f)
+                style.addLayer(medicalBuildings)
+
+                // Thematic land areas: hospital grounds, sandy beaches and forest cover.
+                val hospitalGrounds = FillLayer("cleargps-hospital-grounds", "openmaptiles")
+                    .apply { setSourceLayer("landuse") }
+                    .withFilter(
+                        Expression.eq(Expression.get("class"), Expression.literal("hospital"))
+                    )
+                    .withProperties(
+                        PropertyFactory.fillColor("#7B293B"),
+                        PropertyFactory.fillOpacity(0.48f)
+                    )
+                val beaches = FillLayer("cleargps-beaches", "openmaptiles")
+                    .apply { setSourceLayer("landcover") }
+                    .withFilter(
+                        Expression.any(
+                            Expression.eq(Expression.get("class"), Expression.literal("sand")),
+                            Expression.eq(Expression.get("class"), Expression.literal("beach"))
+                        )
+                    )
+                    .withProperties(
+                        PropertyFactory.fillColor("#C7A875"),
+                        PropertyFactory.fillOpacity(0.78f)
+                    )
+                val forestCover = FillLayer("cleargps-forest-cover", "openmaptiles")
+                    .apply { setSourceLayer("landcover") }
+                    .withFilter(
+                        Expression.any(
+                            Expression.eq(Expression.get("class"), Expression.literal("wood")),
+                            Expression.eq(Expression.get("class"), Expression.literal("forest"))
+                        )
+                    )
+                    .withProperties(
+                        PropertyFactory.fillColor("#183D32"),
+                        PropertyFactory.fillOpacity(0.68f)
+                    )
+                val forestLanduse = FillLayer("cleargps-forest-landuse", "openmaptiles")
+                    .apply { setSourceLayer("landuse") }
+                    .withFilter(
+                        Expression.any(
+                            Expression.eq(Expression.get("class"), Expression.literal("wood")),
+                            Expression.eq(Expression.get("class"), Expression.literal("forest"))
+                        )
+                    )
+                    .withProperties(
+                        PropertyFactory.fillColor("#183D32"),
+                        PropertyFactory.fillOpacity(0.58f)
+                    )
+
+                // Insert thematic polygons beneath buildings and labels so they never hide map details.
+                listOf(hospitalGrounds, beaches, forestCover, forestLanduse).forEach { layer ->
+                    if (style.getLayer("building") != null) {
+                        style.addLayerBelow(layer, "building")
+                    } else {
+                        style.addLayer(layer)
+                    }
                 }
 
                 for (index in 0..2) {
