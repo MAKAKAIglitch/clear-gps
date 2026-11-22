@@ -364,7 +364,7 @@ class LocationMonitorService : Service(), LocationListener {
         imuMotionReader = AndroidImuMotionReader(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(NotificationChannel(CHANNEL, "Claire Maps monitoring", NotificationManager.IMPORTANCE_LOW))
+                .createNotificationChannel(NotificationChannel(CHANNEL, "Clear Maps monitoring", NotificationManager.IMPORTANCE_LOW))
         }
         startServiceHeartbeatLoop()
     }
