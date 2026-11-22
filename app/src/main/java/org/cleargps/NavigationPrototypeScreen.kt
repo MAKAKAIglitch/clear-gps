@@ -1036,6 +1036,7 @@ internal fun NavigationPrototypeScreen(
                         val sourceTitle = when (position.source.uppercase()) {
                             "GPS" -> "GPS после фильтра ClearGPS"
                             "GPS_UNVERIFIED" -> "GPS-позиция · ещё не проверена фильтром"
+                            "GPS_UNVERIFIED_STALE" -> "Последняя GPS-позиция · давно не обновлялась, не проверена фильтром"
                             "LAST_TRUSTED" -> "Последняя доверенная GPS-позиция"
                             "NETWORK" -> "Сеть Android"
                             "LOCAL_RADIO" -> "Радиорасчёт ClearGPS"
