@@ -125,6 +125,12 @@ private fun NavigationPrototypeScreen(
     var selectedPoi by remember { mutableStateOf<NavigationPoi?>(null) }
     var enabledPoiCategories by remember { mutableStateOf(NavigationPoiCategory.values().toSet()) }
     var routeDestination by remember { mutableStateOf<NavigationCoordinate?>(null) }
+    val routingRepository = remember { NavigationRoutingRepository() }
+    var calculatedRoutes by remember { mutableStateOf<List<NavigationRouteAlternative>>(emptyList()) }
+    var selectedRouteIndex by remember { mutableStateOf(0) }
+    var routeLoading by remember { mutableStateOf(false) }
+    var routeError by remember { mutableStateOf<String?>(null) }
+    var showRouteOptions by rememberSaveable { mutableStateOf(false) }
     var showMapPointSheet by rememberSaveable { mutableStateOf(false) }
     var showLocationModePicker by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -202,6 +208,38 @@ private fun NavigationPrototypeScreen(
     }
     LaunchedEffect(routeDestination) {
         controller.updateDestination(routeDestination)
+    }
+
+    LaunchedEffect(routeDestination, navigationPosition?.coordinate) {
+        calculatedRoutes = emptyList()
+        selectedRouteIndex = 0
+        routeError = null
+        controller.updateRoutes(emptyList())
+        val destination = routeDestination
+        val origin = navigationPosition?.coordinate
+        if (destination != null) {
+            if (origin == null) {
+                routeError = "Нет текущих координат. Сначала получите местоположение ClearGPS."
+            } else {
+                routeLoading = true
+                routingRepository.findRoutes(origin, destination) { result ->
+                    routeLoading = false
+                    result.onSuccess { alternatives ->
+                        calculatedRoutes = alternatives.take(3)
+                        selectedRouteIndex = 0
+                        controller.updateRoutes(calculatedRoutes)
+                        showRouteOptions = true
+                    }.onFailure { error ->
+                        routeError = error.message ?: "Не удалось построить маршрут"
+                    }
+                }
+            }
+        } else {
+            routeLoading = false
+        }
+    }
+    DisposableEffect(routingRepository) {
+        onDispose { routingRepository.cancel() }
     }
     LaunchedEffect(navigationPosition, centerOnNextPosition) {
         if (centerOnNextPosition && navigationPosition != null) {
@@ -606,17 +644,35 @@ private fun NavigationPrototypeScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                if (routeDestination == null) "Маршрут не выбран" else "Пункт назначения выбран",
+                                when {
+                                    routeLoading -> "Строю варианты маршрута…"
+                                    calculatedRoutes.isNotEmpty() -> "Самый быстрый маршрут"
+                                    routeError != null -> "Не удалось построить маршрут"
+                                    routeDestination != null -> "Пункт назначения выбран"
+                                    else -> "Маршрут не выбран"
+                                },
                                 style = MaterialTheme.typography.titleSmall,
                                 color = colors.onSurface
                             )
                             Text(
-                                routeDestination?.let { point ->
-                                    "Цель: ${String.format(java.util.Locale.US, "%.5f, %.5f", point.latitude, point.longitude)} · маршрут ещё не рассчитан"
-                                } ?: "Нажмите на карту, чтобы выбрать точку назначения",
+                                when {
+                                    calculatedRoutes.isNotEmpty() -> {
+                                        val route = calculatedRoutes[selectedRouteIndex.coerceIn(0, calculatedRoutes.lastIndex)]
+                                        "${formatRouteDuration(route.durationSeconds)} · ${formatRouteDistance(route.distanceMeters)} · ${calculatedRoutes.size} вариантов"
+                                    }
+                                    routeLoading -> "Запрашиваю до трёх маршрутов"
+                                    routeError != null -> routeError!!
+                                    routeDestination != null -> "Ожидаю координаты отправления"
+                                    else -> "Нажмите на карту, чтобы выбрать точку назначения"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant
                             )
+                        }
+                        if (calculatedRoutes.isNotEmpty()) {
+                            TextButton(onClick = { showRouteOptions = true }) {
+                                Text("Маршруты")
+                            }
                         }
                     }
                 }
@@ -788,6 +844,54 @@ private fun NavigationPrototypeScreen(
                     selectedNavigationTab = "Карта"
                 }
                 else -> showLocationModePicker = false
+            }
+        }
+
+
+        if (showRouteOptions && calculatedRoutes.isNotEmpty()) {
+            ModalBottomSheet(
+                onDismissRequest = { showRouteOptions = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = colors.surfaceContainerHigh
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 30.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Выберите маршрут", style = MaterialTheme.typography.headlineSmall)
+                    Text("Показаны до трёх вариантов. По умолчанию выбран самый быстрый.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    calculatedRoutes.forEachIndexed { index, route ->
+                        val selected = index == selectedRouteIndex
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                selectedRouteIndex = index
+                                val ordered = listOf(route) + calculatedRoutes.filterIndexed { otherIndex, _ -> otherIndex != index }
+                                controller.updateRoutes(ordered)
+                                showRouteOptions = false
+                            },
+                            shape = RoundedCornerShape(18.dp),
+                            color = if (selected) colors.secondaryContainer else colors.surfaceContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = selected, onClick = {
+                                    selectedRouteIndex = index
+                                    val ordered = listOf(route) + calculatedRoutes.filterIndexed { otherIndex, _ -> otherIndex != index }
+                                    controller.updateRoutes(ordered)
+                                    showRouteOptions = false
+                                })
+                                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                                    Text(if (index == 0) "Самый быстрый" else "Вариант ${index + 1}", style = MaterialTheme.typography.titleMedium)
+                                    Text("${formatRouteDuration(route.durationSeconds)} · ${formatRouteDistance(route.distanceMeters)}", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                                }
+                                if (selected) Text("Выбран", color = colors.primary, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                    Button(onClick = { showRouteOptions = false }, modifier = Modifier.fillMaxWidth()) { Text("Готово") }
+                }
             }
         }
 
@@ -1272,3 +1376,13 @@ private fun NavigationSettingsDivider() {
     )
 }
 
+
+private fun formatRouteDuration(seconds: Double): String {
+    val minutes = (seconds / 60.0).toInt().coerceAtLeast(1)
+    val hours = minutes / 60
+    return if (hours > 0) "${hours} ч ${minutes % 60} мин" else "${minutes} мин"
+}
+
+private fun formatRouteDistance(meters: Double): String =
+    if (meters >= 1000.0) String.format(java.util.Locale.getDefault(), "%.1f км", meters / 1000.0)
+    else "${meters.toInt()} м"
