@@ -207,7 +207,9 @@ internal class NavigationMapController {
                                 PropertyFactory.circleColor(poiColor(category)),
                                 PropertyFactory.circleStrokeColor("#FFFFFF"),
                                 PropertyFactory.circleStrokeWidth(2f),
-                                PropertyFactory.circleOpacity(0.96f)
+                                PropertyFactory.circleOpacity(0.96f),
+                                PropertyFactory.circlePitchAlignment("map"),
+                                PropertyFactory.circlePitchScale("map")
                             )
                     )
                 }
@@ -240,14 +242,16 @@ internal class NavigationMapController {
                     )
                 )
 
-                // Soft shadow, blue centre dot, white outline, and a small bearing wedge.
+                // Location and map-point circles lie on the map plane, so map pitch foreshortens them naturally.
                 style.addLayer(
                     CircleLayer(DOT_SHADOW_LAYER, DOT_SOURCE).withProperties(
                         PropertyFactory.circleRadius(12f),
                         PropertyFactory.circleColor("#000000"),
                         PropertyFactory.circleOpacity(0.20f),
                         PropertyFactory.circleBlur(1f),
-                        PropertyFactory.circleTranslate(arrayOf(0f, 1f))
+                        PropertyFactory.circleTranslate(arrayOf(0f, 1f)),
+                        PropertyFactory.circlePitchAlignment("map"),
+                        PropertyFactory.circlePitchScale("map")
                     )
                 )
                 style.addLayer(
@@ -255,7 +259,9 @@ internal class NavigationMapController {
                         PropertyFactory.circleRadius(6f),
                         PropertyFactory.circleColor("#3583DD"),
                         PropertyFactory.circleStrokeColor("#FFFFFF"),
-                        PropertyFactory.circleStrokeWidth(3f)
+                        PropertyFactory.circleStrokeWidth(3f),
+                        PropertyFactory.circlePitchAlignment("map"),
+                        PropertyFactory.circlePitchScale("map")
                     )
                 )
 
@@ -279,7 +285,9 @@ internal class NavigationMapController {
                         PropertyFactory.circleRadius(8f),
                         PropertyFactory.circleColor("#D94B45"),
                         PropertyFactory.circleStrokeColor("#FFFFFF"),
-                        PropertyFactory.circleStrokeWidth(3f)
+                        PropertyFactory.circleStrokeWidth(3f),
+                        PropertyFactory.circlePitchAlignment("map"),
+                        PropertyFactory.circlePitchScale("map")
                     )
                 )
 
@@ -289,7 +297,9 @@ internal class NavigationMapController {
                         PropertyFactory.circleRadius(9f),
                         PropertyFactory.circleColor("#E34D59"),
                         PropertyFactory.circleStrokeColor("#FFFFFF"),
-                        PropertyFactory.circleStrokeWidth(3f)
+                        PropertyFactory.circleStrokeWidth(3f),
+                        PropertyFactory.circlePitchAlignment("map"),
+                        PropertyFactory.circlePitchScale("map")
                     )
                 )
 
