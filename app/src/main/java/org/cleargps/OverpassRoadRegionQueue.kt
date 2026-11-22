@@ -92,16 +92,14 @@ internal object OverpassRoadRegionQueue {
 internal class OverpassRoadRefreshWorker(c: Context, p: WorkerParameters) : Worker(c, p) {
     override fun doWork(): Result {
         if (!validatedInternet(applicationContext)) return Result.retry()
-        val prefs = applicationContext.getSharedPreferences("clear_gps", Context.MODE_PRIVATE)
         if (inputData.getString("mode") == "current") {
-            val lat = prefs.getString(LocationMonitorService.KEY_LAT, null)?.toDoubleOrNull()
-                ?: prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT, null)?.toDoubleOrNull()
-                ?: prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, null)?.toDoubleOrNull()
-            val lon = prefs.getString(LocationMonitorService.KEY_LON, null)?.toDoubleOrNull()
-                ?: prefs.getString(LocationMonitorService.KEY_LAST_TRUSTED_GPS_LON, null)?.toDoubleOrNull()
-                ?: prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, null)?.toDoubleOrNull()
-            if (lat == null || lon == null) return Result.retry()
-            OverpassRoadRegionQueue.enqueueCurrent(applicationContext, lat, lon)
+            val prefs = applicationContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            val position = readNavigationPosition(prefs) ?: return Result.retry()
+            OverpassRoadRegionQueue.enqueueCurrent(
+                applicationContext,
+                position.coordinate.latitude,
+                position.coordinate.longitude
+            )
         } else {
             val current = OverpassRoadRegionQueue.currentId(applicationContext)
             OverpassRoadRegionQueue.ids(applicationContext).filter { it != current }.forEach { id ->
