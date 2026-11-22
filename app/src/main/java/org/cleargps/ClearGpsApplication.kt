@@ -4,10 +4,14 @@ import android.app.Application
 import android.content.pm.ApplicationInfo
 import android.os.Process
 import android.os.StrictMode
+import androidx.work.Configuration
 import kotlin.system.exitProcess
 
 /** Installs a minimal, privacy-preserving crash-loop guard before UI or services start. */
-class ClearGpsApplication : Application() {
+class ClearGpsApplication : Application(), Configuration.Provider {
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().build()
+
     private val openStreetMapConsentListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == ClearGpsPreferences.KEY_OPENSTREETMAP_CELL_SITE_LOOKUP_ENABLED) {
