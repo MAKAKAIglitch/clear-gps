@@ -94,6 +94,7 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 private const val KEY_NAV_VOICE_ENABLED = "navigation_voice_enabled"
+private const val GOOGLE_TTS_ENGINE_PACKAGE = "com.google.android.tts"
 
 @Composable
 internal fun ClearGpsNavigationShell(
@@ -248,24 +249,50 @@ internal fun NavigationPrototypeScreen(
         }
     }
 
-    DisposableEffect(context) {
-        val engine = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    val activeEngine = speechEngine
-                    if (activeEngine != null) {
-                        val language = activeEngine.setLanguage(Locale("ru", "RU"))
-                        speechReady = language >= TextToSpeech.LANG_AVAILABLE
-                    }
-                }
-            }
-        }
-        speechEngine = engine
-        onDispose {
-            engine.stop()
-            engine.shutdown()
+    // The Google TTS service exists only while voice guidance is enabled.
+    DisposableEffect(context, speechEnabled) {
+        if (!speechEnabled) {
+            speechEngine?.stop()
+            speechEngine?.shutdown()
             speechEngine = null
             speechReady = false
+            onDispose { }
+        } else {
+            lateinit var engine: TextToSpeech
+            try {
+                engine = TextToSpeech(context, { status ->
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (speechEngine !== engine || !speechEnabled) return@post
+                        if (status == TextToSpeech.SUCCESS) {
+                            val language = engine.setLanguage(Locale("ru", "RU"))
+                            speechReady = language >= TextToSpeech.LANG_AVAILABLE
+                            if (!speechReady) {
+                                DiagnosticLogStore.log(context, "NAV_VOICE", "Google Text-to-Speech не поддерживает русский язык на этом устройстве.", "WARN")
+                            }
+                        } else {
+                            speechReady = false
+                            DiagnosticLogStore.log(context, "NAV_VOICE", "Не удалось инициализировать Google Text-to-Speech: status=" + status, "WARN")
+                            Toast.makeText(context, "Google Text-to-Speech недоступен", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }, GOOGLE_TTS_ENGINE_PACKAGE)
+                speechEngine = engine
+                speechReady = false
+            } catch (error: Exception) {
+                speechEngine = null
+                speechReady = false
+                DiagnosticLogStore.log(context, "NAV_VOICE", "Ошибка запуска Google Text-to-Speech: " + error.javaClass.simpleName + ": " + (error.message ?: "без описания"), "ERROR")
+                Toast.makeText(context, "Не удалось запустить Google Text-to-Speech", Toast.LENGTH_LONG).show()
+                onDispose { }
+            }
+            onDispose {
+                if (speechEngine === engine) {
+                    speechEngine = null
+                    speechReady = false
+                }
+                engine.stop()
+                engine.shutdown()
+            }
         }
     }
 
@@ -1047,12 +1074,15 @@ internal fun NavigationPrototypeScreen(
                                     color = colors.onSurfaceVariant
                                 )
                             }
-                            IconButton(onClick = {
-                                if (speechEnabled && speechReady) speechEngine?.speak(
-                                    progress?.instruction ?: "Продолжайте движение",
-                                    TextToSpeech.QUEUE_FLUSH, null, "cleargps-repeat"
-                                )
-                            }) { Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку") }
+                            IconButton(
+                                enabled = speechEnabled && speechReady,
+                                onClick = {
+                                    speechEngine?.speak(
+                                        progress?.instruction ?: "Продолжайте движение",
+                                        TextToSpeech.QUEUE_FLUSH, null, "cleargps-repeat"
+                                    )
+                                }
+                            ) { Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку") }
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column {
@@ -1563,8 +1593,13 @@ private fun NavigationSettingsScreen(
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.VolumeUp, contentDescription = null, tint = colors.primary, modifier = Modifier.size(28.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Голосовые подсказки", style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
-                        Text(if (speechEnabled) "Озвучивание манёвров включено" else "Только визуальные подсказки", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        Text("Google Text-to-Speech", style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
+                        Text(
+                            if (speechEnabled) "Движок включён · озвучивание манёвров активно"
+                            else "Движок выключен · только визуальные подсказки",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant
+                        )
                     }
                     Switch(checked = speechEnabled, onCheckedChange = onSpeechEnabledChange)
                 }
