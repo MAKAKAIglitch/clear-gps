@@ -70,7 +70,7 @@ internal class NavigationLaneRepository {
               way["highway"]["turn:lanes:forward"]($bbox);
               way["highway"]["turn:lanes:backward"]($bbox);
             );
-            out geom tags;
+            out geom($bbox) tags;
         """.trimIndent()
         requestAtEndpoint(key, query, 0, callback)
     }
@@ -219,7 +219,7 @@ internal class NavigationLaneRepository {
         val lanes = laneTags.split('|')
         val length = polylineLength(coordinates)
         if (length < 24.0) return
-        val center = pointAtDistance(coordinates, length * 0.56) ?: return
+        val center = pointAtDistance(coordinates, length * 0.78) ?: return
         lanes.forEachIndexed { index, laneValue ->
             val glyph = turnGlyph(laneValue) ?: return@forEachIndexed
             val lateral = ((lanes.size - 1) / 2.0 - index) * LANE_WIDTH_METERS
