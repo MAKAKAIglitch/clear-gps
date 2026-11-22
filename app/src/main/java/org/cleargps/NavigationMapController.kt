@@ -80,8 +80,13 @@ internal class NavigationMapController {
     private var destination: NavigationCoordinate? = null
     private var poiSource: GeoJsonSource? = null
     private val poiRepository = NavigationPoiRepository()
+    private val laneRepository = NavigationLaneRepository()
     private val poiHandler = Handler(Looper.getMainLooper())
+    private val laneHandler = Handler(Looper.getMainLooper())
     private var poiRefreshRunnable: Runnable? = null
+    private var laneRefreshRunnable: Runnable? = null
+    private var laneLineSource: GeoJsonSource? = null
+    private var laneArrowSource: GeoJsonSource? = null
     private var pois: List<NavigationPoi> = emptyList()
     private var onPoiTap: ((NavigationPoi) -> Unit)? = null
     private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
@@ -204,7 +209,7 @@ internal class NavigationMapController {
             cameraMoveStartedListener = moveStartedListener
             mapObject.addOnCameraMoveStartedListener(moveStartedListener)
             cameraIdleListener?.let(mapObject::removeOnCameraIdleListener)
-            val idleListener = MapLibreMap.OnCameraIdleListener { schedulePoiRefresh() }
+            val idleListener = MapLibreMap.OnCameraIdleListener { schedulePoiRefresh(); scheduleLaneRefresh() }
             cameraIdleListener = idleListener
             mapObject.addOnCameraIdleListener(idleListener)
 
@@ -220,6 +225,8 @@ internal class NavigationMapController {
                 val newSelectedPointSource = GeoJsonSource(SELECTED_POINT_SOURCE, emptyFeatureCollection())
                 val newRouteSource = GeoJsonSource(ROUTE_SOURCE, emptyFeatureCollection())
                 val newPoiSource = GeoJsonSource(POI_SOURCE, emptyFeatureCollection())
+                val newLaneLineSource = GeoJsonSource(LANE_LINE_SOURCE, emptyFeatureCollection())
+                val newLaneArrowSource = GeoJsonSource(LANE_ARROW_SOURCE, emptyFeatureCollection())
                 style.addSource(newAccuracySource)
                 style.addSource(newDotSource)
                 style.addSource(newBearingSource)
@@ -227,6 +234,8 @@ internal class NavigationMapController {
                 style.addSource(newSelectedPointSource)
                 style.addSource(newRouteSource)
                 style.addSource(newPoiSource)
+                style.addSource(newLaneLineSource)
+                style.addSource(newLaneArrowSource)
 
                 // 3D building footprints from OpenFreeMap's OpenMapTiles vector source.
                 val buildings3d = FillExtrusionLayer("cleargps-buildings-3d", "openmaptiles")
@@ -334,6 +343,33 @@ internal class NavigationMapController {
                 } else {
                     style.addLayer(waterBodies)
                     style.addLayer(waterways)
+                }
+
+                // OSM lane separators and turn arrows, below route and navigation overlays.
+                val laneLines = LineLayer(LANE_LINES_LAYER, LANE_LINE_SOURCE).withProperties(
+                    PropertyFactory.lineColor("#E7EDF5"),
+                    PropertyFactory.lineWidth(1.15f),
+                    PropertyFactory.lineOpacity(0.66f),
+                    PropertyFactory.lineCap("round"),
+                    PropertyFactory.lineJoin("round")
+                ).apply { setMinZoom(LANE_MIN_ZOOM) }
+                val laneArrows = SymbolLayer(LANE_ARROWS_LAYER, LANE_ARROW_SOURCE).withProperties(
+                    PropertyFactory.textField(Expression.get("glyph")),
+                    PropertyFactory.textSize(17f),
+                    PropertyFactory.textColor("#FFFFFF"),
+                    PropertyFactory.textHaloColor("#152333"),
+                    PropertyFactory.textHaloWidth(1.5f),
+                    PropertyFactory.textAllowOverlap(true),
+                    PropertyFactory.textIgnorePlacement(true),
+                    PropertyFactory.textRotationAlignment("map"),
+                    PropertyFactory.textPitchAlignment("map")
+                ).apply { setMinZoom(LANE_ARROW_MIN_ZOOM) }
+                if (style.getLayer("building") != null) {
+                    style.addLayerBelow(laneLines, "building")
+                    style.addLayerAbove(laneArrows, LANE_LINES_LAYER)
+                } else {
+                    style.addLayer(laneLines)
+                    style.addLayer(laneArrows)
                 }
 
                 for (index in 0..2) {
@@ -482,12 +518,15 @@ internal class NavigationMapController {
                 selectedPointSource = newSelectedPointSource
                 routeSource = newRouteSource
                 poiSource = newPoiSource
+                laneLineSource = newLaneLineSource
+                laneArrowSource = newLaneArrowSource
                 styleReady = true
                 renderCurrentPosition()
                 renderDestination()
                 renderSelectedMapPoint()
                 renderRoutes()
                 renderPois()
+                renderLaneData(NavigationLaneRepository.RenderData(emptyFeatureCollection(), emptyFeatureCollection()))
 
                 if (!cameraInitialized) {
                     val initialFix = currentPosition?.takeIf { it.isValid() }
@@ -507,6 +546,7 @@ internal class NavigationMapController {
                 // initial camera has been installed and the view has completed layout.
                 scheduleRouteFit()
                 schedulePoiRefresh()
+                scheduleLaneRefresh()
             }
         }
     }
@@ -521,6 +561,11 @@ internal class NavigationMapController {
         selectedPointSource = null
         routeSource = null
         poiSource = null
+        laneLineSource = null
+        laneArrowSource = null
+        laneRefreshRunnable?.let(laneHandler::removeCallbacks)
+        laneRefreshRunnable = null
+        laneRepository.cancel()
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
         poiRefreshRunnable = null
         poiRepository.cancel()
@@ -611,6 +656,46 @@ internal class NavigationMapController {
         }
         poiRefreshRunnable = task
         poiHandler.postDelayed(task, POI_REFRESH_DEBOUNCE_MS)
+    }
+
+    private fun scheduleLaneRefresh() {
+        laneRefreshRunnable?.let(laneHandler::removeCallbacks)
+        val task = Runnable {
+            val mapObject = map ?: return@Runnable
+            if (!styleReady || mapObject.cameraPosition.zoom < LANE_MIN_ZOOM) {
+                laneRepository.cancel()
+                renderLaneData(NavigationLaneRepository.RenderData(emptyFeatureCollection(), emptyFeatureCollection()))
+                return@Runnable
+            }
+            val bounds = mapObject.projection.visibleRegion.latLngBounds
+            val requestedViewport = listOf(
+                bounds.latitudeSouth, bounds.longitudeWest, bounds.latitudeNorth, bounds.longitudeEast
+            ).joinToString(":") { (kotlin.math.round(it * 1000.0) / 1000.0).toString() }
+            laneRepository.load(
+                bounds.latitudeSouth,
+                bounds.longitudeWest,
+                bounds.latitudeNorth,
+                bounds.longitudeEast
+            ) { data ->
+                val currentBounds = mapObject.projection.visibleRegion.latLngBounds
+                val currentViewport = listOf(
+                    currentBounds.latitudeSouth, currentBounds.longitudeWest,
+                    currentBounds.latitudeNorth, currentBounds.longitudeEast
+                ).joinToString(":") { (kotlin.math.round(it * 1000.0) / 1000.0).toString() }
+                if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= LANE_MIN_ZOOM &&
+                    requestedViewport == currentViewport
+                ) renderLaneData(data)
+            }
+        }
+        laneRefreshRunnable = task
+        laneHandler.postDelayed(task, LANE_REFRESH_DEBOUNCE_MS)
+    }
+
+    private fun renderLaneData(data: NavigationLaneRepository.RenderData) {
+        if (!styleReady) return
+        laneLineSource?.setGeoJson(data.laneLines)
+        laneArrowSource?.setGeoJson(data.turnArrows)
+        map?.triggerRepaint()
     }
 
     private fun categoryFromVectorTile(properties: JsonObject): NavigationPoiCategory? {
@@ -1301,6 +1386,10 @@ internal class NavigationMapController {
         const val ROUTE_INDEX_PROPERTY = "route_index"
         val ROUTE_LAYER_IDS = (0..2).map { routeLayerId(it) }.toTypedArray()
         const val POI_SOURCE = "cleargps-navigation-pois"
+        const val LANE_LINE_SOURCE = "cleargps-osm-lane-lines"
+        const val LANE_ARROW_SOURCE = "cleargps-osm-lane-arrows"
+        const val LANE_LINES_LAYER = "cleargps-osm-lane-lines-layer"
+        const val LANE_ARROWS_LAYER = "cleargps-osm-lane-arrows-layer"
         const val POI_LOG_TAG = "ClearGPS_POI_MAP"
         const val POI_NAME_LAYER_ID = "cleargps-poi-names"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
@@ -1392,6 +1481,9 @@ internal class NavigationMapController {
         const val ROUTE_HIT_RADIUS_DP = 18f
         const val LOCATION_HIT_RADIUS_DP = 36f
         const val POI_REFRESH_DEBOUNCE_MS = 850L
+        const val LANE_MIN_ZOOM = 15.2f
+        const val LANE_ARROW_MIN_ZOOM = 16.0f
+        const val LANE_REFRESH_DEBOUNCE_MS = 1100L
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
         const val ACCURACY_RING_SEGMENTS = 64
