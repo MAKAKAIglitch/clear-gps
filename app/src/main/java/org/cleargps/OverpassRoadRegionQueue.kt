@@ -266,3 +266,69 @@ private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Doub
     return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
         caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 }
+
+
+internal data class OverpassRegionChoice(val relationId: Long, val name: String)
+
+internal object OverpassRegionSearch {
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS).build()
+
+    fun search(rawName: String): List<OverpassRegionChoice> {
+        val term = rawName.trim().take(48)
+            .replace(Regex("[^\\p{L}\\p{N} .'-]"), "")
+            .trim()
+        if (term.length < 2) return emptyList()
+        val escaped = term.replace("\\", "\\\\").replace("\"", "\\\"")
+        val query = "[out:json][timeout:25];relation[\"boundary\"=\"administrative\"][\"admin_level\"=\"4\"][\"name\"~\"$escaped\",i];out tags 30;"
+        val url = HttpUrl.Builder().scheme("https").host("overpass-api.de")
+            .addPathSegments("api/interpreter").addQueryParameter("data", query).build()
+        val request = Request.Builder().url(url)
+            .header("User-Agent", "ClearMaps-Android/0.5 (read-only OSM region search)")
+            .header("Accept", "application/json").get().build()
+        NetworkGate.validateRequest(url.toString(), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
+        client.newCall(request).execute().use { response ->
+            if (response.code == 429 || response.code >= 500) throw IOException("Overpass временно недоступен")
+            if (!response.isSuccessful) throw IOException("Overpass HTTP ${response.code}")
+            val body = response.body ?: throw IOException("Пустой ответ Overpass")
+            val found = ArrayList<OverpassRegionChoice>()
+            JsonReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    if (reader.nextName() != "elements") { reader.skipValue(); continue }
+                    reader.beginArray()
+                    while (reader.hasNext()) {
+                        var id = -1L; var name = ""; var russianName = ""; var level = ""
+                        reader.beginObject()
+                        while (reader.hasNext()) {
+                            when (reader.nextName()) {
+                                "id" -> id = reader.nextLong()
+                                "tags" -> {
+                                    reader.beginObject()
+                                    while (reader.hasNext()) when (reader.nextName()) {
+                                        "name:ru" -> russianName = reader.nextString()
+                                        "name" -> name = reader.nextString()
+                                        "admin_level" -> level = reader.nextString()
+                                        else -> reader.skipValue()
+                                    }
+                                    reader.endObject()
+                                }
+                                else -> reader.skipValue()
+                            }
+                        }
+                        reader.endObject()
+                        val label = russianName.ifBlank { name }
+                        if (id > 0 && level == "4" && label.isNotBlank()) {
+                            found.add(OverpassRegionChoice(id, label))
+                        }
+                    }
+                    reader.endArray()
+                }
+                reader.endObject()
+            }
+            return found.distinctBy { it.relationId }.take(30)
+        }
+    }
+}
