@@ -30,16 +30,23 @@ internal object NavigationGuidanceEngine {
         val nearest = nearestRouteSegment(position, route.coordinates)
         val nextIndex = route.steps.indexOfFirst { it.routeIndex > nearest.first }
             .takeIf { it >= 0 } ?: route.steps.lastIndex
-        val index = max(previousStepIndex.coerceIn(0, route.steps.lastIndex), nextIndex)
+        val departureIndex = route.steps.indexOfFirst { it.maneuverType == "depart" }
+        val isAtRouteStart = nearest.first == 0 &&
+            distanceMeters(position, route.coordinates.first()) <= 50.0
+        val candidateIndex = if (isAtRouteStart && departureIndex >= 0) departureIndex else nextIndex
+        val index = max(previousStepIndex.coerceIn(0, route.steps.lastIndex), candidateIndex)
         val step = route.steps[index]
         val distance = distanceMeters(position, step.coordinate).coerceAtLeast(0.0)
+        val instruction = if (step.maneuverType == "arrive" && distance > 45.0) {
+            "Продолжайте движение к пункту назначения"
+        } else step.instruction
         val remainingDistance = distance + route.steps.drop(index).sumOf { it.distanceMeters }
         val remainingDuration = if (route.distanceMeters > 0.0) {
             route.durationSeconds * (remainingDistance / route.distanceMeters).coerceIn(0.0, 1.0)
         } else route.durationSeconds
         return NavigationGuidanceSnapshot(
             stepIndex = index,
-            instruction = step.instruction,
+            instruction = instruction,
             distanceToManeuverMeters = distance,
             remainingDistanceMeters = remainingDistance.coerceAtMost(route.distanceMeters),
             remainingDurationSeconds = remainingDuration,
