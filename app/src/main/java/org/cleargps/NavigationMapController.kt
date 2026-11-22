@@ -382,26 +382,6 @@ internal class NavigationMapController {
                     )
                 }
 
-                // Only actual OSM names/brands receive labels, and only at close zoom.
-                style.addLayer(
-                    SymbolLayer(POI_NAME_LAYER_ID, POI_SOURCE)
-                        .apply { setMinZoom(POI_LABEL_MIN_ZOOM) }
-                        .withProperties(
-                            PropertyFactory.textField(Expression.get(POI_NAME_PROPERTY)),
-                            PropertyFactory.textSize(11f),
-                            PropertyFactory.textColor("#F4F7FB"),
-                            PropertyFactory.textHaloColor("#101720"),
-                            PropertyFactory.textHaloWidth(1.25f),
-                            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
-                            PropertyFactory.textAnchor("top"),
-                            PropertyFactory.textMaxWidth(12f),
-                            PropertyFactory.textAllowOverlap(false),
-                            PropertyFactory.textIgnorePlacement(false),
-                            PropertyFactory.textPitchAlignment("viewport"),
-                            PropertyFactory.textRotationAlignment("viewport")
-                        )
-                )
-
                 accuracySource = newAccuracySource
                 dotSource = newDotSource
                 bearingSource = newBearingSource
@@ -1239,8 +1219,7 @@ internal class NavigationMapController {
         const val POI_CATEGORY_PROPERTY = "poi_category"
         const val POI_ADDRESS_PROPERTY = "poi_address"
         val POI_LAYER_IDS = (
-            NavigationPoiCategory.values().flatMap { listOf(poiLayerId(it), nativePoiLayerId(it)) } +
-                POI_NAME_LAYER_ID
+            NavigationPoiCategory.values().flatMap { listOf(poiLayerId(it), nativePoiLayerId(it)) }
             ).toTypedArray()
 
         fun poiLayerId(category: NavigationPoiCategory) = "cleargps-poi-${category.name.lowercase()}"
@@ -1292,7 +1271,7 @@ internal class NavigationMapController {
             NavigationPoiCategory.RED_LIGHT_CAMERA -> "#2563EB"
             NavigationPoiCategory.TRAFFIC_CAMERA -> "#2563EB"
         }
-        const val POI_ICON_SIZE = 0.60f
+        const val POI_ICON_SIZE = 0.42f
         const val NATIVE_POI_MIN_ZOOM = 14f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
