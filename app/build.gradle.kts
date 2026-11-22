@@ -48,10 +48,27 @@ android {
 
     kotlinOptions { jvmTarget = "17" }
 
+    // CI supplies one persistent keystore through GitHub Actions secrets.
+    // Local builds keep using Android's normal per-user debug keystore.
+    val stableDebugKeystorePath = System.getenv("CLEARGPS_DEBUG_KEYSTORE_PATH")
+    signingConfigs {
+        if (!stableDebugKeystorePath.isNullOrBlank()) {
+            create("stableDebug") {
+                storeFile = file(stableDebugKeystorePath)
+                storePassword = System.getenv("CLEARGPS_DEBUG_STORE_PASSWORD")
+                keyAlias = System.getenv("CLEARGPS_DEBUG_KEY_ALIAS")
+                keyPassword = System.getenv("CLEARGPS_DEBUG_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            if (!stableDebugKeystorePath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("stableDebug")
+            }
         }
         release {
             isMinifyEnabled = false
