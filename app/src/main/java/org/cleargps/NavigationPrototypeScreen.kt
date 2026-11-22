@@ -188,7 +188,11 @@ internal fun NavigationPrototypeScreen(
             LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT,
             LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON,
             LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY,
-            LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS
+            LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS,
+            LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_LAT,
+            LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_LON,
+            LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_ACCURACY,
+            LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_ELAPSED_NANOS
         )
     }
     DisposableEffect(positionPreferences) {
@@ -222,11 +226,13 @@ internal fun NavigationPrototypeScreen(
         controller.setOnMapTapListener { point ->
             selectedPoi = null
             selectedMapPoint = point
+            controller.updateSelectedMapPoint(point)
             showMapPointSheet = true
         }
         controller.setOnPoiTapListener { poi ->
             selectedPoi = poi
             selectedMapPoint = poi.coordinate
+            controller.updateSelectedMapPoint(poi.coordinate)
             showMapPointSheet = true
         }
         onDispose {
@@ -2009,11 +2015,18 @@ private fun NavigationStatusStrip(
                 ))
             } else {
                 val source = position.source.uppercase()
-                if (source.contains("UNVERIFIED")) {
+                if (source == "NETWORK_UNVERIFIED") {
+                    add(NavigationStatusNotice("position-unverified", "Сеть Android · примерное место", NavigationStatusNotice.Kind.WARNING, 75, 0L))
+                } else if (source.contains("UNVERIFIED")) {
                     add(NavigationStatusNotice("position-unverified", "GPS не проверен", NavigationStatusNotice.Kind.WARNING, 75, 0L))
                 }
                 if (position.accuracyMeters != null && position.accuracyMeters > 50.0) {
-                    add(NavigationStatusNotice("position-accuracy", "Слабая точность ±${position.accuracyMeters.toInt()} м", NavigationStatusNotice.Kind.WARNING, 65, 0L))
+                    val accuracyLabel = if (position.accuracyMeters >= 1_000.0) {
+                        "±%.1f км".format(java.util.Locale.US, position.accuracyMeters / 1_000.0)
+                    } else {
+                        "±${position.accuracyMeters.toInt()} м"
+                    }
+                    add(NavigationStatusNotice("position-accuracy", "Точность $accuracyLabel", NavigationStatusNotice.Kind.WARNING, 65, 0L))
                 }
                 if (source.contains("RADIO") || source == "BEACONDB") {
                     add(NavigationStatusNotice("radio-position", "Радиопозиция", NavigationStatusNotice.Kind.LOCATION, 45, 0L))
