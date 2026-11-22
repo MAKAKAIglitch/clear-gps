@@ -555,7 +555,7 @@ internal fun NavigationPrototypeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text("МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
+                            Text(if (isNavigating) "ВЕДЕНИЕ ПО МАРШРУТУ" else "МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
                             Text("Моя геопозиция  →  " + (routeDestinationName ?: selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
                             Text(if (navigationPosition != null) "От текущей позиции ClearGPS" else "Ожидаю геопозицию ClearGPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                         }
@@ -899,7 +899,7 @@ internal fun NavigationPrototypeScreen(
                     color = colors.onSurfaceVariant
                 )
             }
-            if (routeDestination != null) {
+            if (routeDestination != null && !isNavigating) {
                 val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                 val chosenRoute = calculatedRoutes.getOrNull(selectedRouteIndex)
                 Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = bottomInset + 10.dp).shadow(10.dp, RoundedCornerShape(26.dp)), shape = RoundedCornerShape(26.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.99f), tonalElevation = 5.dp) {
@@ -930,13 +930,87 @@ internal fun NavigationPrototypeScreen(
                                     }
                                 }
                             }
-                            Button(onClick = { routeOptionsExpanded = false; Toast.makeText(context, "Маршрут выбран. Ведение по маршруту ещё не подключено.", Toast.LENGTH_LONG).show() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Navigation, contentDescription = null); Spacer(Modifier.size(8.dp)); Text("Поехали") }
+                            Button(onClick = {
+                                activeRoute = chosenRoute
+                                isNavigating = true
+                                guidance = null
+                                lastAnnouncedStepIndex = -1
+                                offRouteFixCount = 0
+                                lastRerouteAtMs = 0L
+                                routeOptionsExpanded = false
+                                controller.updateRoutes(listOf(chosenRoute))
+                                navigationPosition?.coordinate?.let { controller.followNavigationPosition(it, navigationPosition?.bearingDegrees) }
+                            }, modifier = Modifier.fillMaxWidth()) {
+                                Icon(Icons.Outlined.Navigation, contentDescription = null)
+                                Spacer(Modifier.size(8.dp))
+                                Text("Поехали")
+                            }
                         } else Text("Ожидаю расчёт маршрута…", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
 
         }
+            if (routeDestination != null && isNavigating) {
+                val progress = guidance
+                val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                Surface(
+                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .padding(horizontal = 12.dp).padding(bottom = bottomInset + 10.dp)
+                        .shadow(10.dp, RoundedCornerShape(24.dp)),
+                    shape = RoundedCornerShape(24.dp),
+                    color = colors.surfaceContainerHigh.copy(alpha = 0.99f),
+                    tonalElevation = 5.dp
+                ) {
+                    Column(
+                        Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Navigation, contentDescription = null, tint = colors.primary, modifier = Modifier.size(32.dp))
+                            Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(progress?.instruction ?: "Ведение по маршруту", style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+                                Text(
+                                    progress?.let { "Через ${formatRouteDistance(it.distanceToManeuverMeters)} · осталось ${formatRouteDistance(it.remainingDistanceMeters)}" } ?: "Ожидаю позицию ClearGPS",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = {
+                                if (speechReady) speechEngine?.speak(
+                                    progress?.instruction ?: "Продолжайте движение",
+                                    TextToSpeech.QUEUE_FLUSH, null, "cleargps-repeat"
+                                )
+                            }) { Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку") }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column {
+                                Text("ОСТАЛОСЬ", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                Text(progress?.let { formatRouteDuration(it.remainingDurationSeconds) } ?: "—", style = MaterialTheme.typography.titleMedium)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("ПРИБЫТИЕ", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                                Text(progress?.let {
+                                    java.time.LocalTime.now().plusSeconds(it.remainingDurationSeconds.toLong().coerceAtLeast(0L))
+                                        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                                } ?: "—", style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                isNavigating = false
+                                activeRoute = null
+                                guidance = null
+                                lastAnnouncedStepIndex = -1
+                                offRouteFixCount = 0
+                                controller.updateRoutes(calculatedRoutes)
+                                controller.centerOnCurrentPosition()
+                            }) { Text("Завершить маршрут") }
+                        }
+                    }
+                }
+            }
+
         BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
                 showRouteOptions -> showRouteOptions = false
