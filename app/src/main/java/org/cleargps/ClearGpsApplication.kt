@@ -42,6 +42,7 @@ class ClearGpsApplication : Application() {
         getSharedPreferences(ClearGpsPreferences.PREFS, MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(openStreetMapConsentListener)
         OpenStreetMapCellSiteWorkScheduler.sync(this)
+        OverpassRoadRegionQueue.schedule(this)
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
