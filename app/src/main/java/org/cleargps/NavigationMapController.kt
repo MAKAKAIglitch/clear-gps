@@ -100,7 +100,7 @@ internal class NavigationMapController {
             mapTapListener?.let(mapObject::removeOnMapClickListener)
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
-                val poiFeature = mapObject.queryRenderedFeatures(screenPoint, *POI_LAYER_IDS).firstOrNull()
+                val poiFeature = mapObject.queryRenderedFeatures(screenPoint, POI_LAYER_IDS).firstOrNull()
                 val properties = poiFeature?.properties()
                 val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
                 val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
