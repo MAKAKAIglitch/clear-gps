@@ -17,6 +17,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
@@ -162,7 +163,7 @@ internal class NavigationMapController {
             mapObject.addOnCameraIdleListener(idleListener)
 
             mapObject.setStyle(
-                Style.Builder().fromUri(if (initialDarkMode) DARK_STYLE_URI else LIGHT_STYLE_URI)
+                Style.Builder().fromUri(DARK_STYLE_URI)
             ) { style ->
                 if (attachedMapView !== mapView || map !== mapObject) return@setStyle
 
@@ -180,6 +181,22 @@ internal class NavigationMapController {
                 style.addSource(newSelectedPointSource)
                 style.addSource(newRouteSource)
                 style.addSource(newPoiSource)
+
+                // 3D building footprints from OpenFreeMap's OpenMapTiles vector source.
+                val buildings3d = FillExtrusionLayer("cleargps-buildings-3d", "openmaptiles")
+                    .withProperties(
+                        PropertyFactory.fillExtrusionColor("#26364A"),
+                        PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
+                        PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
+                        PropertyFactory.fillExtrusionOpacity(0.88f)
+                    )
+                buildings3d.setMinZoom(14f)
+                if (style.getLayer("building") != null) {
+                    style.addLayerAbove(buildings3d, "building")
+                } else {
+                    style.addLayer(buildings3d)
+                }
+
                 NavigationPoiCategory.values().forEach { category ->
                     style.addLayer(
                         CircleLayer(poiLayerId(category), POI_SOURCE)
@@ -198,7 +215,7 @@ internal class NavigationMapController {
                         LineLayer(routeLayerId(index), ROUTE_SOURCE)
                             .withFilter(Expression.eq(Expression.get(ROUTE_INDEX_PROPERTY), Expression.literal(index)))
                             .withProperties(
-                                PropertyFactory.lineColor(if (index == 0) "#1677FF" else "#8995A5"),
+                                PropertyFactory.lineColor(if (index == 0) "#35A9FF" else "#69788B"),
                                 PropertyFactory.lineWidth(if (index == 0) 6f else 4f),
                                 PropertyFactory.lineOpacity(if (index == 0) 0.96f else 0.78f),
                                 PropertyFactory.lineCap("round"),
@@ -497,7 +514,7 @@ internal class NavigationMapController {
             .target(LatLng(point.latitude, point.longitude))
             .zoom(zoom.coerceIn(MIN_ZOOM, MAX_ZOOM))
             .bearing(0.0)
-            .tilt(0.0)
+            .tilt(52.0)
             .build()
         val update = CameraUpdateFactory.newCameraPosition(camera)
         if (animated) {
@@ -522,7 +539,7 @@ internal class NavigationMapController {
             .target(LatLng(point.latitude, point.longitude))
             .zoom(maxOf(currentZoom(), 16.5).coerceAtMost(MAX_ZOOM))
             .bearing(bearing)
-            .tilt(45.0)
+            .tilt(55.0)
             .build()
         mapObject.easeCamera(
             CameraUpdateFactory.newCameraPosition(camera),
