@@ -12,7 +12,8 @@ android {
         applicationId = "org.cleargps.nav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
+        // GitHub Actions run numbers keep sideloaded APK updates monotonic.
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 5).coerceAtLeast(5)
         versionName = "0.4.0"
     }
 
