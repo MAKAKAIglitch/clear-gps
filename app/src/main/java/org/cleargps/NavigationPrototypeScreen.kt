@@ -181,6 +181,17 @@ internal fun NavigationPrototypeScreen(
     var pendingPositionMode by remember { mutableStateOf<NavigationPositionMode?>(null) }
     var pendingCenterAfterPermission by remember { mutableStateOf(false) }
 
+    // The red map-point marker belongs to the point sheet only. Clear it whenever
+    // the sheet closes, regardless of whether it was dismissed, backed out, or
+    // closed after starting route preview.
+    LaunchedEffect(showMapPointSheet) {
+        if (!showMapPointSheet) {
+            selectedMapPoint = null
+            selectedPoi = null
+            controller.updateSelectedMapPoint(null)
+        }
+    }
+
     val watchedPositionKeys = remember {
         setOf(
             ClearGpsPreferences.KEY_POSITION_MODE,

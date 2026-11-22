@@ -269,50 +269,19 @@ internal class NavigationMapController {
                 )
 
                 style.addImage(BEARING_IMAGE, createBearingBitmap())
-                // Small heading cue is only used while browsing the map.
                 style.addLayer(
-                    SymbolLayer(BEARING_LAYER, BEARING_SOURCE)
-                        .withFilter(
-                            Expression.eq(
-                                Expression.get(NAVIGATION_MODE_PROPERTY),
-                                Expression.literal(false)
-                            )
-                        )
-                        .withProperties(
-                            PropertyFactory.iconImage(BEARING_IMAGE),
-                            PropertyFactory.iconAnchor("center"),
-                            PropertyFactory.iconSize(BEARING_ICON_SIZE),
-                            PropertyFactory.iconRotate(Expression.get(BEARING_PROPERTY)),
-                            PropertyFactory.iconOffset(arrayOf(0f, 0f)),
-                            PropertyFactory.iconRotationAlignment("map"),
-                            PropertyFactory.iconPitchAlignment("viewport"),
-                            PropertyFactory.iconAllowOverlap(true),
-                            PropertyFactory.iconIgnorePlacement(true)
-                        )
-                )
-
-                // During turn-by-turn guidance, render a larger faceted arrow directly on
-                // the map plane. The map camera and arrow share the fused course, so the
-                // marker points forward while naturally foreshortening in the 3D view.
-                style.addLayer(
-                    SymbolLayer(NAVIGATION_ARROW_LAYER, BEARING_SOURCE)
-                        .withFilter(
-                            Expression.eq(
-                                Expression.get(NAVIGATION_MODE_PROPERTY),
-                                Expression.literal(true)
-                            )
-                        )
-                        .withProperties(
-                            PropertyFactory.iconImage(BEARING_IMAGE),
-                            PropertyFactory.iconAnchor("center"),
-                            PropertyFactory.iconSize(NAVIGATION_ARROW_ICON_SIZE),
-                            PropertyFactory.iconRotate(Expression.get(BEARING_PROPERTY)),
-                            PropertyFactory.iconOffset(arrayOf(0f, 0f)),
-                            PropertyFactory.iconRotationAlignment("map"),
-                            PropertyFactory.iconPitchAlignment("map"),
-                            PropertyFactory.iconAllowOverlap(true),
-                            PropertyFactory.iconIgnorePlacement(true)
-                        )
+                    SymbolLayer(BEARING_LAYER, BEARING_SOURCE).withProperties(
+                        PropertyFactory.iconImage(BEARING_IMAGE),
+                        PropertyFactory.iconAnchor("center"),
+                        PropertyFactory.iconSize(BEARING_ICON_SIZE),
+                        PropertyFactory.iconRotate(Expression.get(BEARING_PROPERTY)),
+                        PropertyFactory.iconOffset(arrayOf(0f, 0f)),
+                        PropertyFactory.iconRotationAlignment("map"),
+                        // Keep the beveled arrow standing toward the viewer while its heading follows the map.
+                        PropertyFactory.iconPitchAlignment("viewport"),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true)
+                    )
                 )
 
                 style.addLayer(
@@ -689,9 +658,8 @@ internal class NavigationMapController {
             bearingSource?.setGeoJson(emptyFeatureCollection())
         } else {
             val properties = JsonObject().apply {
-                // Artwork points north; rotate it to the fused course/heading.
+                // The navigation arrow artwork points north; rotate it to the fused course/heading.
                 addProperty(BEARING_PROPERTY, (bearing + 360.0) % 360.0)
-                addProperty(NAVIGATION_MODE_PROPERTY, isNavigationCameraMode)
             }
             val feature = Feature.fromGeometry(
                 Point.fromLngLat(point.longitude, point.latitude),
@@ -852,7 +820,6 @@ internal class NavigationMapController {
         const val DOT_SHADOW_LAYER = "cleargps-navigation-dot-shadow"
         const val DOT_LAYER = "cleargps-navigation-dot"
         const val BEARING_LAYER = "cleargps-navigation-bearing-indicator"
-        const val NAVIGATION_ARROW_LAYER = "cleargps-navigation-3d-arrow"
         const val DESTINATION_LAYER = "cleargps-navigation-destination-marker"
         const val SELECTED_POINT_LAYER = "cleargps-navigation-selected-point-marker"
         fun routeLayerId(index: Int) = "cleargps-navigation-route-$index"
@@ -875,9 +842,8 @@ internal class NavigationMapController {
         }
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
-        const val NAVIGATION_MODE_PROPERTY = "navigation_mode"
         const val BEARING_ICON_SIZE = 0.25f
-        const val NAVIGATION_ARROW_ICON_SIZE = 0.72f
+        const val NAVIGATION_ARROW_ICON_SIZE = 0.9f
         const val BEARING_ICON_OFFSET = -25.5f
 
         const val DEFAULT_LATITUDE = 60.1699
