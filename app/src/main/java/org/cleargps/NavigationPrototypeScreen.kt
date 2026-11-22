@@ -215,9 +215,13 @@ internal fun NavigationPrototypeScreen(
     DisposableEffect(context) {
         val engine = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                val language = speechEngine?.setLanguage(Locale("ru", "RU"))
-                speechReady = language != TextToSpeech.LANG_MISSING_DATA &&
-                    language != TextToSpeech.LANG_NOT_SUPPORTED
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    val activeEngine = speechEngine
+                    if (activeEngine != null) {
+                        val language = activeEngine.setLanguage(Locale("ru", "RU"))
+                        speechReady = language >= TextToSpeech.LANG_AVAILABLE
+                    }
+                }
             }
         }
         speechEngine = engine
@@ -255,7 +259,7 @@ internal fun NavigationPrototypeScreen(
                 "cleargps-maneuver-${progress.stepIndex}"
             )
         }
-        val accuracy = navigationPosition?.accuracyMeters?.coerceIn(0.0, 80.0) ?: 0.0
+        val accuracy = navigationPosition?.accuracyMeters?.coerceIn(0.0, 300.0) ?: 0.0
         val offRouteLimit = maxOf(45.0, accuracy * 1.5)
         if (progress.offRouteDistanceMeters > offRouteLimit) offRouteFixCount += 1
         else offRouteFixCount = 0
