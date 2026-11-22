@@ -1,0 +1,12 @@
+[package]
+name = "clear-offline-routing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "clear_offline_routing"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+jni = "=0.21.1"
