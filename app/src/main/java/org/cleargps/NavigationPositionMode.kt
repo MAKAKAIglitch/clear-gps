@@ -103,7 +103,7 @@ internal fun readNavigationPosition(
                 val coordinate = NavigationCoordinate(latitude, longitude)
                 if (coordinate.isValid()) {
                     val accuracy = prefs.all[LocationMonitorService.KEY_ACCURACY]?.toString()?.toDoubleOrNull()
-                        ?.takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+                        ?.takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
                     val bearing = if (NavigationPositionPolicy.canProvideHeading(source)) {
                         prefs.all[LocationMonitorService.KEY_BEARING]?.toString()?.toDoubleOrNull()
                             ?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
@@ -129,29 +129,56 @@ internal fun readNavigationPosition(
             val coordinate = NavigationCoordinate(latitude, longitude)
             if (coordinate.isValid()) {
                 val accuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, -1f)
-                    .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
+                    .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
                 return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null)
             }
         }
     }
 
-    // If no trusted fix exists yet, still place the device on the map using Android's
-    // latest valid physical GPS callback. This is display-only and explicitly unverified.
+    // Prefer a fresh raw GPS fix for display, even before ClearGPS has accepted it.
+    // It remains explicitly unverified and is never used as trusted navigation output.
     val observedElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, 0L)
     val observedAgeNanos = nowNanos - observedElapsedNanos
-    if (observedElapsedNanos <= 0L || observedAgeNanos < 0L) return null
-    val observedLatitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, null)?.toDoubleOrNull() ?: return null
-    val observedLongitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, null)?.toDoubleOrNull() ?: return null
-    val observedCoordinate = NavigationCoordinate(observedLatitude, observedLongitude)
-    if (!observedCoordinate.isValid()) return null
+    val observedLatitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, null)?.toDoubleOrNull()
+    val observedLongitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, null)?.toDoubleOrNull()
+    val observedCoordinate = if (observedLatitude != null && observedLongitude != null) {
+        NavigationCoordinate(observedLatitude, observedLongitude).takeIf { it.isValid() }
+    } else null
     val observedAccuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, -1f)
-        .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-    val observedSource = if (observedAgeNanos <= LAST_OBSERVED_GPS_MAX_AGE_NANOS) "GPS_UNVERIFIED" else "GPS_UNVERIFIED_STALE"
-    return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, observedSource, null)
+        .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
+    if (observedCoordinate != null && observedElapsedNanos > 0L &&
+        observedAgeNanos in 0L..LAST_OBSERVED_GPS_MAX_AGE_NANOS) {
+        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED", null)
+    }
+
+    // Android's network provider can give a coarse but useful map location while GPS is
+    // still WAITING. Display it with its real (possibly very large) accuracy and a warning.
+    // It is map-only: never accepted as a GPS fix or published as mock output.
+    if (mode == NavigationPositionMode.AUTO) {
+        val networkElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_ELAPSED_NANOS, 0L)
+        val networkAgeNanos = nowNanos - networkElapsedNanos
+        val networkLatitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_LAT, null)?.toDoubleOrNull()
+        val networkLongitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_LON, null)?.toDoubleOrNull()
+        val networkCoordinate = if (networkLatitude != null && networkLongitude != null) {
+            NavigationCoordinate(networkLatitude, networkLongitude).takeIf { it.isValid() }
+        } else null
+        val networkAccuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_ACCURACY, -1f)
+            .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
+        if (networkCoordinate != null && networkElapsedNanos > 0L &&
+            networkAgeNanos in 0L..LAST_OBSERVED_NETWORK_MAX_AGE_NANOS) {
+            return NavigationPositionSnapshot(networkCoordinate, networkAccuracy, "NETWORK_UNVERIFIED", null)
+        }
+    }
+
+    // Retain the last physical GPS coordinate as a stale map hint when no fresher fix exists.
+    if (observedCoordinate != null && observedElapsedNanos > 0L && observedAgeNanos >= 0L) {
+        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED_STALE", null)
+    }
 }
 
 private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
 private const val LAST_OBSERVED_GPS_MAX_AGE_NANOS = 120_000_000_000L
+private const val LAST_OBSERVED_NETWORK_MAX_AGE_NANOS = 600_000_000_000L
 
 /**
  * Mirrors ClearGpsApp.applyPositionMode(): update the one shared mode, then ask the
