@@ -98,44 +98,28 @@ internal class NavigationPoiRepository {
             );
             out center tags;
         """.trimIndent()
-        val body = FormBody.Builder().add("data", query).build()
-        val request = Request.Builder()
-            .url(OVERPASS_URL)
-            .header("User-Agent", "ClearGPS-Android/0.4 (OpenStreetMap POI map)")
-            .post(body)
-            .build()
-        val call = client.newCall(request)
-        activeCall = call
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (!call.isCanceled() && lastRequestKey == key) lastRequestKey = null
-            }
+        enqueueAtEndpoint(key, query, 0, callback)
+    }
 
+    private fun enqueueAtEndpoint(key: String, query: String, endpointIndex: Int, callback: (List<NavigationPoi>) -> Unit) {
+        if (lastRequestKey != key) return
+        if (endpointIndex >= OVERPASS_ENDPOINTS.size) { lastRequestKey = null; mainHandler.post { callback(emptyList()) }; return }
+        val body = FormBody.Builder().add("data", query).build()
+        val request = Request.Builder().url(OVERPASS_ENDPOINTS[endpointIndex]).header("User-Agent", "ClearGPS-Android/0.4 (OpenStreetMap POI map)").post(body).build()
+        val call = client.newCall(request); activeCall = call
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { if (!call.isCanceled() && lastRequestKey == key) enqueueAtEndpoint(key, query, endpointIndex + 1, callback) }
             override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    if (!it.isSuccessful) {
-                        if (lastRequestKey == key) lastRequestKey = null
-                        return
-                    }
-                    val parsed = try {
-                        parse(it.body?.string().orEmpty())
-                    } catch (_: Exception) {
-                        if (lastRequestKey == key) lastRequestKey = null
-                        emptyList()
-                    }
-                    if (lastRequestKey == key) lastRequestKey = null
-                    synchronized(cache) {
-                        cache[key] = Cached(System.currentTimeMillis(), parsed)
-                        while (cache.size > MAX_CACHE_ENTRIES) {
-                            cache.remove(cache.keys.first())
-                        }
-                    }
+                val parsed = response.use { if (!it.isSuccessful) null else runCatching { parse(it.body?.string().orEmpty()) }.getOrNull() }
+                if (lastRequestKey != key) return
+                if (parsed == null) enqueueAtEndpoint(key, query, endpointIndex + 1, callback) else {
+                    lastRequestKey = null
+                    synchronized(cache) { cache[key] = Cached(System.currentTimeMillis(), parsed); while (cache.size > MAX_CACHE_ENTRIES) cache.remove(cache.keys.first()) }
                     mainHandler.post { callback(parsed) }
                 }
             }
         })
     }
-
     fun cancel() {
         activeCall?.cancel()
         activeCall = null
@@ -174,7 +158,11 @@ internal class NavigationPoiRepository {
     }
 
     private companion object {
-        const val OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+        val OVERPASS_ENDPOINTS = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter"
+        )
         const val CACHE_TTL_MS = 5 * 60 * 1000L
         const val MAX_CACHE_ENTRIES = 24
     }
