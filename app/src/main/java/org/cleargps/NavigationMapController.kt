@@ -571,7 +571,7 @@ internal class NavigationMapController {
             }
             .toList()
         poiSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
-        val nativeVisibility = if (pois.isEmpty()) "visible" else "none"
+        val nativeVisibility = if (pois.none { !it.category.isCamera }) "visible" else "none"
         NavigationPoiCategory.values().forEach { category ->
             map?.style?.getLayer(nativePoiLayerId(category))?.setProperties(
                 PropertyFactory.visibility(nativeVisibility)
