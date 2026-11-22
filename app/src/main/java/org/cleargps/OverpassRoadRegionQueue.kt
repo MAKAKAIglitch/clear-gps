@@ -91,6 +91,19 @@ internal object OverpassRoadRegionQueue {
     internal fun markCurrent(context: Context, id: Long, name: String) {
         prefs(context).edit().putLong("current_id", id).putString("current_name", name).apply()
     }
+
+    fun deleteRegion(context: Context, id: Long) {
+        file(context, id).delete()
+        val p = prefs(context)
+        val edit = p.edit()
+            .putString("ids", (ids(context) - id).sorted().joinToString(","))
+            .remove("name_$id")
+            .remove("updated_$id")
+        if (currentId(context) == id) {
+            edit.remove("current_id").remove("current_name")
+        }
+        edit.apply()
+    }
 }
 
 internal class OverpassRoadRefreshWorker(c: Context, p: WorkerParameters) : Worker(c, p) {
