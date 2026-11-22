@@ -792,6 +792,8 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
+
+            }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -809,11 +811,6 @@ private fun NavigationPrototypeScreen(
                     color = colors.onSurfaceVariant
                 )
             }
-        }
-
-
-            }
-
             if (routeDestination != null) {
                 val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                 val chosenRoute = calculatedRoutes.getOrNull(selectedRouteIndex)
@@ -850,6 +847,8 @@ private fun NavigationPrototypeScreen(
                     }
                 }
             }
+
+        }
         BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
                 showRouteOptions -> showRouteOptions = false
