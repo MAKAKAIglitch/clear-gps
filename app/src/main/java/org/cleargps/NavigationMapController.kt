@@ -332,6 +332,9 @@ internal class NavigationMapController {
                     hasCenteredOnFirstPosition = initialFix != null
                     cameraInitialized = true
                 }
+                // Routes may arrive before the map style is ready. Re-fit after the
+                // initial camera has been installed and the view has completed layout.
+                scheduleRouteFit()
                 schedulePoiRefresh()
             }
         }
@@ -480,7 +483,16 @@ internal class NavigationMapController {
     fun updateRoutes(items: List<NavigationRouteAlternative>) {
         routes = items.take(3)
         renderRoutes()
-        if (!isNavigationCameraMode) fitRouteInView(routes.firstOrNull())
+        if (!isNavigationCameraMode) scheduleRouteFit()
+    }
+
+    private fun scheduleRouteFit() {
+        val mapView = attachedMapView ?: return
+        mapView.post {
+            if (!isNavigationCameraMode && styleReady) {
+                fitRouteInView(routes.firstOrNull())
+            }
+        }
     }
 
     /**
