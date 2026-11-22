@@ -145,24 +145,30 @@ internal class NavigationMapController {
                     return@OnMapClickListener true
                 }
                 val properties = poiFeature?.properties()
-                val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
-                val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
+                val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
                 val geometry = poiFeature?.geometry() as? Point
+                val category = categoryName
+                    ?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
+                    ?: properties?.let(::categoryFromVectorTile)
                 if (properties != null && category != null && geometry != null) {
                     val label = properties.get(POI_NAME_PROPERTY)
                         ?.takeIf { !it.isJsonNull }
                         ?.asString
                         ?.takeIf { it.isNotBlank() }
+                        ?: properties.get("name:en")?.takeIf { !it.isJsonNull }?.asString
+                        ?: properties.get("name_en")?.takeIf { !it.isJsonNull }?.asString
                     val address = properties.get(POI_ADDRESS_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
+                    val id = properties.get(POI_ID_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
+                        ?: "tile:${category.name}:${geometry.longitude()}:${geometry.latitude()}"
                     onPoiTap?.invoke(
                         NavigationPoi(
-                            properties.get(POI_ID_PROPERTY).asString,
-                            label ?: category.title,
+                            id,
+                            label?.takeIf { it.isNotBlank() } ?: category.title,
                             category,
                             geometry.latitude(),
                             geometry.longitude(),
                             address,
-                            label
+                            label?.takeIf { it.isNotBlank() }
                         )
                     )
                 } else {
@@ -334,8 +340,28 @@ internal class NavigationMapController {
                                 PropertyFactory.iconAnchor("center"),
                                 PropertyFactory.iconPitchAlignment("viewport"),
                                 PropertyFactory.iconRotationAlignment("viewport"),
-                                // POIs are deliberately allowed to overlap: dense city blocks
-                                // must still show their category markers instead of hiding them.
+                                PropertyFactory.iconAllowOverlap(true),
+                                PropertyFactory.iconIgnorePlacement(true)
+                            )
+                    )
+                }
+
+                // OpenFreeMap dark includes the OpenMapTiles vector source but does not
+                // render its POI source-layer. Use it as a fallback while Overpass is empty.
+                NavigationPoiCategory.values().forEach { category ->
+                    style.addLayer(
+                        SymbolLayer(nativePoiLayerId(category), "openmaptiles")
+                            .apply {
+                                setSourceLayer("poi")
+                                setMinZoom(NATIVE_POI_MIN_ZOOM)
+                            }
+                            .withFilter(nativePoiFilter(category))
+                            .withProperties(
+                                PropertyFactory.iconImage(poiImageId(category)),
+                                PropertyFactory.iconSize(POI_ICON_SIZE),
+                                PropertyFactory.iconAnchor("center"),
+                                PropertyFactory.iconPitchAlignment("viewport"),
+                                PropertyFactory.iconRotationAlignment("viewport"),
                                 PropertyFactory.iconAllowOverlap(true),
                                 PropertyFactory.iconIgnorePlacement(true)
                             )
@@ -498,6 +524,24 @@ internal class NavigationMapController {
         poiHandler.postDelayed(task, POI_REFRESH_DEBOUNCE_MS)
     }
 
+    private fun categoryFromVectorTile(properties: JsonObject): NavigationPoiCategory? {
+        val featureClass = properties.get("class")?.takeIf { !it.isJsonNull }?.asString ?: return null
+        val subclass = properties.get("subclass")?.takeIf { !it.isJsonNull }?.asString
+        return when {
+            featureClass == "fuel" -> NavigationPoiCategory.FUEL
+            featureClass == "charging_station" -> NavigationPoiCategory.ELECTRIC
+            featureClass == "pharmacy" || subclass == "chemist" -> NavigationPoiCategory.PHARMACY
+            featureClass == "grocery" || subclass in setOf("supermarket", "convenience", "greengrocer", "deli") ->
+                NavigationPoiCategory.GROCERY
+            featureClass in setOf("restaurant", "cafe", "fast_food", "bar", "ice_cream") ->
+                NavigationPoiCategory.FOOD
+            featureClass == "parking" -> NavigationPoiCategory.PARKING
+            featureClass == "atm" -> NavigationPoiCategory.ATM
+            featureClass == "shop" -> NavigationPoiCategory.SHOP
+            else -> null
+        }
+    }
+
     private fun renderPois() {
         if (!styleReady) return
         val features = pois.asSequence()
@@ -513,6 +557,12 @@ internal class NavigationMapController {
             }
             .toList()
         poiSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
+        val nativeVisibility = if (pois.isEmpty()) "visible" else "none"
+        NavigationPoiCategory.values().forEach { category ->
+            map?.style?.getLayer(nativePoiLayerId(category))?.setProperties(
+                PropertyFactory.visibility(nativeVisibility)
+            )
+        }
         map?.triggerRepaint()
     }
 
@@ -1147,9 +1197,40 @@ internal class NavigationMapController {
         const val POI_NAME_PROPERTY = "poi_name"
         const val POI_CATEGORY_PROPERTY = "poi_category"
         const val POI_ADDRESS_PROPERTY = "poi_address"
-        val POI_LAYER_IDS = (NavigationPoiCategory.values().map { poiLayerId(it) } + POI_NAME_LAYER_ID).toTypedArray()
+        val POI_LAYER_IDS = (
+            NavigationPoiCategory.values().flatMap { listOf(poiLayerId(it), nativePoiLayerId(it)) } +
+                POI_NAME_LAYER_ID
+            ).toTypedArray()
 
         fun poiLayerId(category: NavigationPoiCategory) = "cleargps-poi-${category.name.lowercase()}"
+        fun nativePoiLayerId(category: NavigationPoiCategory) = "cleargps-poi-native-${category.name.lowercase()}"
+
+        fun nativePoiFilter(category: NavigationPoiCategory): Expression {
+            fun classIs(value: String) = Expression.eq(Expression.get("class"), Expression.literal(value))
+            fun subclassIs(value: String) = Expression.eq(Expression.get("subclass"), Expression.literal(value))
+            val grocerySubclasses = arrayOf(
+                subclassIs("supermarket"), subclassIs("convenience"),
+                subclassIs("greengrocer"), subclassIs("deli")
+            )
+            return when (category) {
+                NavigationPoiCategory.FUEL -> classIs("fuel")
+                NavigationPoiCategory.ELECTRIC -> classIs("charging_station")
+                NavigationPoiCategory.PHARMACY -> Expression.any(arrayOf(classIs("pharmacy"), subclassIs("chemist")))
+                NavigationPoiCategory.GROCERY -> Expression.any(arrayOf(
+                    classIs("grocery"), *grocerySubclasses
+                ))
+                NavigationPoiCategory.SHOP -> Expression.all(arrayOf(
+                    classIs("shop"),
+                    Expression.not(Expression.any(arrayOf(*grocerySubclasses, subclassIs("chemist"))))
+                ))
+                NavigationPoiCategory.FOOD -> Expression.any(arrayOf(
+                    classIs("restaurant"), classIs("cafe"), classIs("fast_food"),
+                    classIs("bar"), classIs("ice_cream")
+                ))
+                NavigationPoiCategory.PARKING -> classIs("parking")
+                NavigationPoiCategory.ATM -> classIs("atm")
+            }
+        }
         fun poiImageId(category: NavigationPoiCategory) = "cleargps-poi-icon-${category.name.lowercase()}"
         fun poiColor(category: NavigationPoiCategory) = when (category) {
             NavigationPoiCategory.FUEL -> "#F59E0B"
@@ -1162,6 +1243,7 @@ internal class NavigationMapController {
             NavigationPoiCategory.ATM -> "#06B6D4"
         }
         const val POI_ICON_SIZE = 0.44f
+        const val NATIVE_POI_MIN_ZOOM = 14f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
         const val BEARING_ICON_SIZE = 0.25f
