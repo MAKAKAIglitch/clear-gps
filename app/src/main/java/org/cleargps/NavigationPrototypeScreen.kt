@@ -67,6 +67,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,6 +80,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.maps.MapView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -131,6 +135,11 @@ internal fun NavigationPrototypeScreen(
     }
     var navigationPosition by remember {
         mutableStateOf(readNavigationPosition(positionPreferences))
+    }
+    LaunchedEffect(navigationPosition?.coordinate) {
+        navigationPosition?.coordinate?.let { coordinate ->
+            OverpassRoadRegionQueue.enqueueCurrent(context, coordinate.latitude, coordinate.longitude)
+        }
     }
     var centerOnNextPosition by remember { mutableStateOf(false) }
     var selectedMapPoint by remember { mutableStateOf<NavigationCoordinate?>(null) }
@@ -1350,6 +1359,11 @@ private fun NavigationSettingsScreen(
     onOpenLocationSettings: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    var showRegionDownloads by remember { mutableStateOf(false) }
+    if (showRegionDownloads) {
+        OverpassRegionDownloadsScreen(onBack = { showRegionDownloads = false })
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -1432,6 +1446,13 @@ private fun NavigationSettingsScreen(
                     subtitle = "OpenFreeMap · картографические данные OpenStreetMap",
                     icon = Icons.Outlined.Map
                 )
+                NavigationSettingsDivider()
+                NavigationSettingsItem(
+                    title = "Загрузка карт",
+                    subtitle = "Дорожные данные регионов для офлайн-навигации",
+                    icon = Icons.Outlined.Map,
+                    onClick = { showRegionDownloads = true }
+                )
             }
 
             NavigationSettingsGroup("НАВИГАЦИЯ") {
@@ -1458,6 +1479,115 @@ private fun NavigationSettingsScreen(
         }
     }
 }
+
+
+@Composable
+private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<OverpassRegionChoice>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var revision by remember { mutableStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            revision++
+            delay(2_000L)
+        }
+    }
+    val prefs = OverpassRoadRegionQueue.prefs(context)
+    val currentId = remember(revision) { OverpassRoadRegionQueue.currentId(context) }
+    val downloaded = remember(revision) { OverpassRoadRegionQueue.ids(context).sorted() }
+    val currentName = remember(revision) { prefs.getString("current_name", null) }
+
+    Column(modifier = Modifier.fillMaxSize().background(colors.background)) {
+        Surface(modifier = Modifier.fillMaxWidth(), color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, contentDescription = "Назад") }
+                Text("Загрузка карт", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                "Текущий регион обязателен: Clear Maps определяет его по геопозиции и ставит загрузку в очередь. Его данные обновляются ежедневно; остальные сохранённые регионы — раз в 7 дней.",
+                style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+            )
+            Surface(shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+                Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Текущий регион", style = MaterialTheme.typography.titleSmall)
+                    Text(currentName ?: "Ожидание определения по геопозиции", style = MaterialTheme.typography.bodyMedium)
+                    if (currentId > 0) Text(
+                        if (OverpassRoadRegionQueue.file(context, currentId).isFile) "Дорожные данные сохранены" else "Загрузка ожидает в очереди",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                    )
+                }
+            }
+            Text("Добавить регион", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("Название области или региона") },
+                placeholder = { Text("Например, Саратовская область") }, singleLine = true
+            )
+            Button(
+                onClick = {
+                    scope.launch {
+                        searching = true
+                        message = null
+                        try {
+                            results = withContext(Dispatchers.IO) { OverpassRegionSearch.search(query) }
+                            if (results.isEmpty()) message = "Регионы не найдены. Попробуй другое написание."
+                        } catch (error: Exception) {
+                            message = error.message ?: "Не удалось выполнить поиск Overpass"
+                        } finally { searching = false }
+                    }
+                },
+                enabled = query.trim().length >= 2 && !searching,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (searching) "Ищу регионы…" else "Найти регион") }
+            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.error) }
+            results.forEach { region ->
+                Surface(shape = RoundedCornerShape(14.dp), color = colors.surfaceContainerHigh) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(region.name, style = MaterialTheme.typography.titleSmall)
+                            Text("Административный регион · OpenStreetMap", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                        TextButton(onClick = {
+                            OverpassRoadRegionQueue.enqueueRegion(context, region.relationId, region.name)
+                            message = "Регион «${region.name}» добавлен в очередь загрузки."
+                        }) { Text("Скачать") }
+                    }
+                }
+            }
+            if (downloaded.isNotEmpty()) {
+                Text("Сохранённые регионы", style = MaterialTheme.typography.titleMedium)
+                downloaded.forEach { id ->
+                    val stamp = OverpassRoadRegionQueue.updated(context, id)
+                    val date = if (stamp > 0) java.text.SimpleDateFormat("dd.MM.yyyy", java.util.Locale.getDefault()).format(java.util.Date(stamp)) else "ещё не обновлялся"
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(OverpassRoadRegionQueue.name(context, id), style = MaterialTheme.typography.bodyMedium)
+                            Text("Обновлено: $date", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        }
+                        if (id == currentId) Text("Текущий", style = MaterialTheme.typography.labelSmall, color = colors.primary)
+                    }
+                }
+            }
+            Text(
+                "Сейчас сохраняется сжатый исходный ответ Overpass. Компактный граф Rust и офлайн-построение маршрутов подключаются следующим этапом.",
+                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+            )
+        }
+    }
+}
+
 
 @Composable
 private fun NavigationSettingsGroup(
