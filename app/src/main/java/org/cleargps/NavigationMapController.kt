@@ -102,7 +102,7 @@ internal class NavigationMapController {
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
                 val hitBox = RectF(screenPoint.x - POI_HIT_RADIUS_PX, screenPoint.y - POI_HIT_RADIUS_PX, screenPoint.x + POI_HIT_RADIUS_PX, screenPoint.y + POI_HIT_RADIUS_PX)
-                val poiFeature = mapObject.queryRenderedFeatures(hitBox, POI_LAYER_IDS).firstOrNull()
+                val poiFeature = mapObject.queryRenderedFeatures(hitBox, *POI_LAYER_IDS).firstOrNull()
                 val properties = poiFeature?.properties()
                 val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
                 val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
