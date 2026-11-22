@@ -761,12 +761,12 @@ internal fun NavigationPrototypeScreen(
                             horizontalArrangement = Arrangement.spacedBy(13.dp)
                         ) {
                             Box(
-                                modifier = Modifier.size(64.dp),
+                                modifier = Modifier.size(44.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Surface(
                                     modifier = Modifier
-                                        .size(62.dp)
+                                        .size(42.dp)
                                         .graphicsLayer {
                                             scaleX = 0.92f + arrowScale * 0.12f
                                             scaleY = 0.92f + arrowScale * 0.12f
@@ -777,7 +777,7 @@ internal fun NavigationPrototypeScreen(
                                 ) {}
                                 Surface(
                                     modifier = Modifier
-                                        .size(54.dp)
+                                        .size(36.dp)
                                         .graphicsLayer {
                                             scaleX = arrowScale
                                             scaleY = arrowScale
@@ -808,20 +808,6 @@ internal fun NavigationPrototypeScreen(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 AnimatedContent(
-                                    targetState = maneuver?.let { "ЧЕРЕЗ ${formatRouteDistance(it.distanceToManeuverMeters)}" } ?: "ОЖИДАНИЕ ПОЗИЦИИ",
-                                    transitionSpec = {
-                                        (fadeIn(tween(180)) + slideInVertically { it / 2 }) togetherWith
-                                            (fadeOut(tween(120)) + slideOutVertically { -it / 3 })
-                                    },
-                                    label = "maneuver-distance"
-                                ) { distanceLabel ->
-                                    Text(
-                                        distanceLabel,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = colors.onPrimaryContainer
-                                    )
-                                }
-                                AnimatedContent(
                                     targetState = instruction,
                                     transitionSpec = {
                                         (fadeIn(tween(220)) + slideInVertically { it / 3 }) togetherWith
@@ -836,13 +822,6 @@ internal fun NavigationPrototypeScreen(
                                         maxLines = 2
                                     )
                                 }
-                                Text(
-                                    maneuver?.let { "Далее по маршруту · осталось ${formatRouteDistance(it.remainingDistanceMeters)}" }
-                                        ?: "Получаем данные навигации",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = colors.onPrimaryContainer.copy(alpha = 0.72f),
-                                    maxLines = 1
-                                )
                             }
                         }
                         Box(
