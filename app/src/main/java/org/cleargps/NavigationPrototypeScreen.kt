@@ -238,7 +238,7 @@ internal fun NavigationPrototypeScreen(
         controller.updatePosition(navigationPosition)
     }
 
-    LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination) {
+    LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination, speechReady) {
         if (!isNavigating) return@LaunchedEffect
         val position = navigationPosition?.coordinate ?: return@LaunchedEffect
         val route = activeRoute ?: return@LaunchedEffect
