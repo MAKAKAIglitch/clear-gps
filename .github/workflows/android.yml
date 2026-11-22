@@ -95,7 +95,7 @@ jobs:
       - name: Test Rust offline routing core
         run: |
           rustup toolchain install stable --profile minimal
-          cargo +stable test --manifest-path rust/offline-routing/Cargo.toml --locked
+          cargo +stable test --manifest-path rust/offline-routing/Cargo.toml
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
         run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
       - name: Preserve Linux unit test reports
