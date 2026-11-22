@@ -1325,7 +1325,7 @@ internal fun NavigationPrototypeScreen(
                         placeholder = { Text("Адрес или название места") }
                     )
                     Text(
-                        "Поиск адресов и построение маршрутов подключим следующим этапом.",
+                        "Поиск по адресу пока не подключён. Выберите точку на карте, чтобы построить маршрут.",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
@@ -1437,13 +1437,13 @@ private fun NavigationSettingsScreen(
             NavigationSettingsGroup("НАВИГАЦИЯ") {
                 NavigationSettingsItem(
                     title = "Поиск и маршруты",
-                    subtitle = "Интерфейс поиска есть; построение маршрутов ещё не подключено",
+                    subtitle = "Маршрут по точке на карте, до трёх вариантов и пошаговое ведение",
                     icon = Icons.Outlined.Navigation
                 )
                 NavigationSettingsDivider()
                 NavigationSettingsItem(
                     title = "Голосовые подсказки",
-                    subtitle = "Станут доступны после подключения движка маршрутизации",
+                    subtitle = "Русские голосовые подсказки, расстояние до манёвра и перерасчёт маршрута",
                     icon = Icons.Outlined.VolumeUp
                 )
             }
