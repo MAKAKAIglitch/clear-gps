@@ -32,7 +32,7 @@ internal object NavigationGuidanceEngine {
             .takeIf { it >= 0 } ?: route.steps.lastIndex
         val departureIndex = route.steps.indexOfFirst { it.maneuverType == "depart" }
         val isAtRouteStart = nearest.first == 0 &&
-            distanceMeters(position, route.coordinates.first()) <= 50.0
+            distanceMeters(position, route.coordinates.first()) <= 25.0
         val candidateIndex = if (isAtRouteStart && departureIndex >= 0) departureIndex else nextIndex
         val index = max(previousStepIndex.coerceIn(0, route.steps.lastIndex), candidateIndex)
         val step = route.steps[index]
