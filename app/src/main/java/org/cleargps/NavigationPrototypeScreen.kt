@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -118,6 +119,9 @@ private fun NavigationPrototypeScreen(
         mutableStateOf(readNavigationPosition(positionPreferences))
     }
     var centerOnNextPosition by remember { mutableStateOf(false) }
+    var selectedMapPoint by remember { mutableStateOf<NavigationCoordinate?>(null) }
+    var routeDestination by remember { mutableStateOf<NavigationCoordinate?>(null) }
+    var showMapPointSheet by rememberSaveable { mutableStateOf(false) }
     var showLocationModePicker by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var showSearch by rememberSaveable { mutableStateOf(false) }
@@ -169,8 +173,19 @@ private fun NavigationPrototypeScreen(
         }
     }
 
+    DisposableEffect(controller) {
+        controller.setOnMapTapListener { point ->
+            selectedMapPoint = point
+            showMapPointSheet = true
+        }
+        onDispose { controller.setOnMapTapListener(null) }
+    }
+
     LaunchedEffect(navigationPosition) {
         controller.updatePosition(navigationPosition)
+    }
+    LaunchedEffect(routeDestination) {
+        controller.updateDestination(routeDestination)
     }
     LaunchedEffect(navigationPosition, centerOnNextPosition) {
         if (centerOnNextPosition && navigationPosition != null) {
@@ -511,12 +526,14 @@ private fun NavigationPrototypeScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Text(
-                                "Маршрут не выбран",
+                                if (routeDestination == null) "Маршрут не выбран" else "Пункт назначения выбран",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = colors.onSurface
                             )
                             Text(
-                                "Найдите место, чтобы начать поездку",
+                                routeDestination?.let { point ->
+                                    "Цель: ${String.format(java.util.Locale.US, "%.5f, %.5f", point.latitude, point.longitude)} · маршрут ещё не рассчитан"
+                                } ?: "Нажмите на карту, чтобы выбрать точку назначения",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant
                             )
@@ -683,12 +700,61 @@ private fun NavigationPrototypeScreen(
             }
         }
 
-        BackHandler(enabled = showSettings || showLocationModePicker) {
-            if (showSettings) {
-                showSettings = false
-                selectedNavigationTab = "Карта"
-            } else {
-                showLocationModePicker = false
+        BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet) {
+            when {
+                showMapPointSheet -> showMapPointSheet = false
+                showSettings -> {
+                    showSettings = false
+                    selectedNavigationTab = "Карта"
+                }
+                else -> showLocationModePicker = false
+            }
+        }
+
+        val selectedPointForSheet = selectedMapPoint
+        if (showMapPointSheet && selectedPointForSheet != null) {
+            ModalBottomSheet(
+                onDismissRequest = { showMapPointSheet = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = colors.surfaceContainerHigh
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .padding(bottom = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Text("Точка на карте", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "${String.format(java.util.Locale.US, "%.6f", selectedPointForSheet.latitude)}, " +
+                            String.format(java.util.Locale.US, "%.6f", selectedPointForSheet.longitude),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.onSurface
+                    )
+                    Text(
+                        "Выбрана точка, по которой вы нажали на карте.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = {
+                            routeDestination = selectedPointForSheet
+                            showMapPointSheet = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Navigation, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Маршрут сюда")
+                    }
+                    TextButton(
+                        onClick = { showMapPointSheet = false },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Закрыть")
+                    }
+                }
             }
         }
 
