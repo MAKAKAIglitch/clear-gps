@@ -15,10 +15,12 @@ import android.net.NetworkCapabilities
 import android.net.Network
 import android.net.ConnectivityManager
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.RepeatMode
@@ -1691,7 +1693,17 @@ internal fun NavigationPrototypeScreen(
             )
         }
 
-        if (showSearch) {
+        AnimatedVisibility(
+            visible = showSearch,
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 360),
+                initialOffsetY = { fullHeight -> fullHeight }
+            ) + fadeIn(animationSpec = tween(durationMillis = 220)),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = 280),
+                targetOffsetY = { fullHeight -> fullHeight }
+            ) + fadeOut(animationSpec = tween(durationMillis = 180))
+        ) {
             NavigationSearchScreen(
                 query = destinationQuery,
                 onQueryChange = { query -> destinationQuery = query.take(160) },
