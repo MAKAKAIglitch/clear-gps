@@ -132,7 +132,7 @@ class NetworkGateTest {
 
     @Test
     fun roadDownloadsAllowOnlyTheConfiguredOverpassFallbackHosts() {
-        val query = "[out:json][timeout:180];relation(123)->.r;map_to_area .r->.region;way(area.region)[\\"highway\\"];out geom;"
+        val query = """[out:json][timeout:180];relation(123)->.r;map_to_area .r->.region;way(area.region)["highway"];out geom;"""
         listOf("overpass-api.de", "overpass.kumi.systems", "overpass.private.coffee").forEach { host ->
             assertEquals(host, NetworkGate.validateRequest(overpassUrl(query, host), "GET", NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true).host)
         }
