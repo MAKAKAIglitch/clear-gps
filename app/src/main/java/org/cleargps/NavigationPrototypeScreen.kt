@@ -973,7 +973,6 @@ internal fun NavigationPrototypeScreen(
                 }
             }
 
-        }
             if (routeDestination != null && isNavigating) {
                 val progress = guidance
                 val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -1034,6 +1033,8 @@ internal fun NavigationPrototypeScreen(
                     }
                 }
             }
+
+        }
 
         BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
