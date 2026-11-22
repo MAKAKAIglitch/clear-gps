@@ -246,6 +246,11 @@ internal fun NavigationPrototypeScreen(
             controller.updateSelectedMapPoint(point)
             showMapPointSheet = true
         }
+        controller.setOnRouteTapListener { index ->
+            if (!isNavigating && index in calculatedRoutes.indices) {
+                selectedRouteIndex = index
+            }
+        }
         controller.setOnLocationTapListener { showLocationDetails = true }
         controller.setOnPoiTapListener { poi ->
             selectedPoi = poi
@@ -255,6 +260,7 @@ internal fun NavigationPrototypeScreen(
         }
         onDispose {
             controller.setOnMapTapListener(null)
+            controller.setOnRouteTapListener(null)
             controller.setOnLocationTapListener(null)
             controller.setOnPoiTapListener(null)
         }
@@ -399,6 +405,9 @@ internal fun NavigationPrototypeScreen(
         controller.updateDestination(routeDestination)
     }
     LaunchedEffect(isNavigating, activeRoute) { controller.setNavigationActive(isNavigating, activeRoute) }
+    LaunchedEffect(calculatedRoutes, selectedRouteIndex) {
+        controller.updateRoutes(calculatedRoutes, selectedRouteIndex)
+    }
 
     LaunchedEffect(routeDestination, if (isNavigating) null else navigationPosition?.coordinate) {
         if (isNavigating) return@LaunchedEffect
@@ -1030,9 +1039,9 @@ internal fun NavigationPrototypeScreen(
                             if (routeOptionsExpanded) calculatedRoutes.forEachIndexed { index, route ->
                                 val selected = index == selectedRouteIndex
                                 val isFastest = route.durationSeconds == calculatedRoutes.minOf { it.durationSeconds }
-                                Surface(Modifier.fillMaxWidth().clickable { selectedRouteIndex = index; controller.updateRoutes(listOf(route) + calculatedRoutes.filterIndexed { i, _ -> i != index }) }, shape = RoundedCornerShape(16.dp), color = if (selected) colors.secondaryContainer else colors.surfaceContainer) {
+                                Surface(Modifier.fillMaxWidth().clickable { selectedRouteIndex = index }, shape = RoundedCornerShape(16.dp), color = if (selected) colors.secondaryContainer else colors.surfaceContainer) {
                                     Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        RadioButton(selected = selected, onClick = { selectedRouteIndex = index; controller.updateRoutes(listOf(route) + calculatedRoutes.filterIndexed { i, _ -> i != index }) })
+                                        RadioButton(selected = selected, onClick = { selectedRouteIndex = index })
                                         Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                             Text(if (isFastest) "Самый быстрый" else "Вариант ${index + 1}", style = MaterialTheme.typography.titleSmall, color = if (selected) colors.onSecondaryContainer else colors.onSurface)
                                             Text("${formatRouteDuration(route.durationSeconds)}  ·  ${formatRouteDistance(route.distanceMeters)}", style = MaterialTheme.typography.bodySmall, color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant)

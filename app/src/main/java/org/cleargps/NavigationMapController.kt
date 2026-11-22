@@ -66,6 +66,7 @@ internal class NavigationMapController {
     private var cameraMoveStartedListener: MapLibreMap.OnCameraMoveStartedListener? = null
     private var mapTapListener: MapLibreMap.OnMapClickListener? = null
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
+    private var onRouteTap: ((Int) -> Unit)? = null
     private var onLocationTap: (() -> Unit)? = null
     private var routeHeadingDegrees: Double? = null
     private var activeNavigationRoute: NavigationRouteAlternative? = null
@@ -74,6 +75,7 @@ internal class NavigationMapController {
     private var selectedMapPoint: NavigationCoordinate? = null
     private var routeSource: GeoJsonSource? = null
     private var routes: List<NavigationRouteAlternative> = emptyList()
+    private var selectedRouteIndex = 0
     private var destination: NavigationCoordinate? = null
     private var poiSource: GeoJsonSource? = null
     private val poiRepository = NavigationPoiRepository()
@@ -126,6 +128,20 @@ internal class NavigationMapController {
                 val poiFeature = mapObject.queryRenderedFeatures(hitBox, *POI_LAYER_IDS).firstOrNull()
                 if (locationHit) {
                     onLocationTap?.invoke()
+                    return@OnMapClickListener true
+                }
+                val routeHitRadiusPx = ROUTE_HIT_RADIUS_DP * mapView.context.resources.displayMetrics.density
+                val routeHitBox = RectF(
+                    screenPoint.x - routeHitRadiusPx,
+                    screenPoint.y - routeHitRadiusPx,
+                    screenPoint.x + routeHitRadiusPx,
+                    screenPoint.y + routeHitRadiusPx
+                )
+                val routeFeature = mapObject.queryRenderedFeatures(routeHitBox, *ROUTE_LAYER_IDS).firstOrNull()
+                val tappedRouteIndex = routeFeature?.getProperty(ROUTE_INDEX_PROPERTY)
+                    ?.let { runCatching { it.asInt }.getOrNull() }
+                if (tappedRouteIndex != null && tappedRouteIndex in routes.indices) {
+                    onRouteTap?.invoke(tappedRouteIndex)
                     return@OnMapClickListener true
                 }
                 val properties = poiFeature?.properties()
@@ -222,9 +238,9 @@ internal class NavigationMapController {
                         LineLayer(routeLayerId(index), ROUTE_SOURCE)
                             .withFilter(Expression.eq(Expression.get(ROUTE_INDEX_PROPERTY), Expression.literal(index)))
                             .withProperties(
-                                PropertyFactory.lineColor(if (index == 0) "#35A9FF" else "#69788B"),
-                                PropertyFactory.lineWidth(if (index == 0) 6f else 4f),
-                                PropertyFactory.lineOpacity(if (index == 0) 0.96f else 0.78f),
+                                PropertyFactory.lineColor(if (index == selectedRouteIndex) "#35A9FF" else "#69788B"),
+                                PropertyFactory.lineWidth(if (index == selectedRouteIndex) 7f else 4f),
+                                PropertyFactory.lineOpacity(if (index == selectedRouteIndex) 1f else 0.78f),
                                 PropertyFactory.lineCap("round"),
                                 PropertyFactory.lineJoin("round")
                             )
@@ -402,6 +418,10 @@ internal class NavigationMapController {
         onMapTap = listener
     }
 
+    fun setOnRouteTapListener(listener: ((Int) -> Unit)?) {
+        onRouteTap = listener
+    }
+
     fun setOnLocationTapListener(listener: (() -> Unit)?) { onLocationTap = listener }
 
     fun setOnPoiTapListener(listener: ((NavigationPoi) -> Unit)?) {
@@ -488,8 +508,9 @@ internal class NavigationMapController {
         destination = coordinate?.takeIf { it.isValid() }
         renderDestination()
     }
-    fun updateRoutes(items: List<NavigationRouteAlternative>) {
+    fun updateRoutes(items: List<NavigationRouteAlternative>, selectedIndex: Int = selectedRouteIndex) {
         routes = items.take(3)
+        selectedRouteIndex = selectedIndex.coerceIn(0, (routes.size - 1).coerceAtLeast(0))
         renderRoutes()
         if (!isNavigationCameraMode) scheduleRouteFit()
     }
@@ -498,7 +519,7 @@ internal class NavigationMapController {
         val mapView = attachedMapView ?: return
         mapView.post {
             if (!isNavigationCameraMode && styleReady) {
-                fitRouteInView(routes.firstOrNull())
+                fitRouteInView(routes.getOrNull(selectedRouteIndex))
             }
         }
     }
@@ -878,6 +899,7 @@ internal class NavigationMapController {
         const val SELECTED_POINT_SOURCE = "cleargps-navigation-selected-point"
         const val ROUTE_SOURCE = "cleargps-navigation-routes"
         const val ROUTE_INDEX_PROPERTY = "route_index"
+        val ROUTE_LAYER_IDS = (0..2).map { routeLayerId(it) }.toTypedArray()
         const val POI_SOURCE = "cleargps-navigation-pois"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
@@ -921,6 +943,7 @@ internal class NavigationMapController {
         const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
         const val POI_HIT_RADIUS_PX = 24f
+        const val ROUTE_HIT_RADIUS_DP = 18f
         const val LOCATION_HIT_RADIUS_DP = 36f
         const val POI_REFRESH_DEBOUNCE_MS = 850L
         const val EARTH_RADIUS_METERS = 6_371_000.0
