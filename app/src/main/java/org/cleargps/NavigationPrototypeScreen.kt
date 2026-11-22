@@ -1085,9 +1085,10 @@ internal fun NavigationPrototypeScreen(
 
         }
 
-        BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
+        BackHandler(enabled = showSettings || showLocationDetails || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
                 showRouteOptions -> showRouteOptions = false
+                showLocationDetails -> showLocationDetails = false
                 routeOptionsExpanded -> routeOptionsExpanded = false
                 showMapPointSheet -> showMapPointSheet = false
                 routeDestination != null -> {
@@ -1108,6 +1109,37 @@ internal fun NavigationPrototypeScreen(
             }
         }
 
+
+        if (showLocationDetails) {
+            val fix = navigationPosition
+            val monitoring = positionPreferences.getBoolean(LocationMonitorService.KEY_MONITORING, false)
+            val outputActive = positionPreferences.getBoolean(LocationMonitorService.KEY_MOCK_OUTPUT_ACTIVE, false)
+            val hasOutput = positionPreferences.getBoolean(LocationMonitorService.KEY_HAS_OUTPUT, false)
+            val source = fix?.source ?: positionPreferences.getString(LocationMonitorService.KEY_SOURCE, "NONE").orEmpty()
+            val observedElapsed = when {
+                source.contains("NETWORK") -> positionPreferences.getLong(LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_ELAPSED_NANOS, 0L)
+                source.contains("GPS") || source == "LAST_TRUSTED" -> positionPreferences.getLong(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, 0L)
+                else -> 0L
+            }
+            val ageSeconds = if (observedElapsed > 0L) ((android.os.SystemClock.elapsedRealtimeNanos() - observedElapsed).coerceAtLeast(0L) / 1_000_000_000L) else null
+            ModalBottomSheet(onDismissRequest = { showLocationDetails = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = colors.surfaceContainerHigh) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Text("Моё местоположение", style = MaterialTheme.typography.headlineSmall)
+                    Text(fix?.let { when (it.source.uppercase()) { "GPS" -> "Физический GPS · прошло фильтр ClearGPS"; "GPS_UNVERIFIED" -> "GPS · не прошло проверку фильтра"; "GPS_UNVERIFIED_STALE" -> "Старая GPS-позиция · не проверена"; "NETWORK", "NETWORK_UNVERIFIED" -> "Сеть Android · приблизительная оценка"; "LOCAL_RADIO", "LOCAL_RADIO_STALE" -> "Радиопозиция ClearGPS"; "BEACONDB" -> "Оценка BeaconDB"; "OBD2_DEAD_RECKONING" -> "Прогноз GPS + OBD-II"; else -> it.source } } ?: "Позиция ClearGPS отсутствует", style = MaterialTheme.typography.titleMedium)
+                    Text("Режим: ${selectedPositionMode.title}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Источник: $source", style = MaterialTheme.typography.bodyMedium)
+                    Text("Точность: ${fix?.accuracyMeters?.let { if (it >= 1000.0) "±%.2f км".format(Locale.getDefault(), it / 1000.0) else "±${it.toInt()} м" } ?: "неизвестна"}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Курс движения: ${fix?.bearingDegrees?.let { "%.0f°".format(Locale.getDefault(), it) } ?: "нет данных"}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Последняя фиксация источника: ${ageSeconds?.let { if (it < 60) "$it сек. назад" else "${it / 60} мин. назад" } ?: "время недоступно для этого источника"}", style = MaterialTheme.typography.bodyMedium)
+                    fix?.coordinate?.let { Text("Координаты: %.6f, %.6f".format(Locale.US, it.latitude, it.longitude), style = MaterialTheme.typography.bodySmall) }
+                    Text("Мониторинг: ${if (monitoring) "включён" else "выключен"}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Позиция опубликована для Android: ${if (hasOutput) "да" else "нет"}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Mock-провайдеры ClearGPS: ${if (outputActive) "активны" else "не активны"}", style = MaterialTheme.typography.bodyMedium)
+                    Text("Это фактическое состояние, сохранённое ClearGPS. Другие приложения могут выбирать другой Android-провайдер или игнорировать mock-координаты.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    TextButton(onClick = { showLocationDetails = false }, modifier = Modifier.align(Alignment.End)) { Text("Закрыть") }
+                }
+            }
+        }
 
         val selectedPointForSheet = selectedMapPoint
         if (showMapPointSheet && selectedPointForSheet != null) {
