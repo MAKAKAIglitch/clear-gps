@@ -78,6 +78,29 @@ jobs:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018'
           accept-android-sdk-licenses: true
       - uses: gradle/actions/setup-gradle@v4
+      - name: Configure persistent debug APK signing
+        shell: bash
+        env:
+          CLEARGPS_DEBUG_KEYSTORE_BASE64: ${{ secrets.CLEARGPS_DEBUG_KEYSTORE_BASE64 }}
+          CLEARGPS_DEBUG_STORE_PASSWORD: ${{ secrets.CLEARGPS_DEBUG_STORE_PASSWORD }}
+          CLEARGPS_DEBUG_KEY_PASSWORD: ${{ secrets.CLEARGPS_DEBUG_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in CLEARGPS_DEBUG_KEYSTORE_BASE64 CLEARGPS_DEBUG_STORE_PASSWORD CLEARGPS_DEBUG_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub Actions secret: $name"
+              exit 1
+            fi
+          done
+          keystore="$RUNNER_TEMP/cleargps-debug-signing.jks"
+          printf '%s' "$CLEARGPS_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$CLEARGPS_DEBUG_STORE_PASSWORD" -alias cleargps-debug >/dev/null
+          {
+            echo "CLEARGPS_DEBUG_KEYSTORE_PATH=$keystore"
+            echo "CLEARGPS_DEBUG_KEY_ALIAS=cleargps-debug"
+            echo "CLEARGPS_DEBUG_STORE_PASSWORD=$CLEARGPS_DEBUG_STORE_PASSWORD"
+            echo "CLEARGPS_DEBUG_KEY_PASSWORD=$CLEARGPS_DEBUG_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: Verify official Gradle Wrapper JAR SHA-256
         shell: bash
         run: |
