@@ -12,6 +12,7 @@ import com.google.gson.JsonObject
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -479,6 +480,43 @@ internal class NavigationMapController {
     fun updateRoutes(items: List<NavigationRouteAlternative>) {
         routes = items.take(3)
         renderRoutes()
+        if (!isNavigationCameraMode) fitRouteInView(routes.firstOrNull())
+    }
+
+    /**
+     * Frame the complete preview route before guidance starts. Keep the camera
+     * north-up and flat here so the route endpoints remain visible together.
+     */
+    private fun fitRouteInView(route: NavigationRouteAlternative?) {
+        val mapObject = map ?: return
+        val mapView = attachedMapView ?: return
+        if (!styleReady || route == null || route.coordinates.size < 2 ||
+            mapView.width <= 0 || mapView.height <= 0
+        ) return
+
+        val boundsBuilder = LatLngBounds.Builder()
+        route.coordinates.forEach { coordinate ->
+            if (coordinate.isValid()) {
+                boundsBuilder.include(LatLng(coordinate.latitude, coordinate.longitude))
+            }
+        }
+        val bounds = try {
+            boundsBuilder.build()
+        } catch (_: IllegalStateException) {
+            return
+        }
+        val density = mapView.resources.displayMetrics.density
+        val sidePadding = (32f * density).toInt()
+        val topPadding = (112f * density).toInt()
+        val bottomPadding = (250f * density).toInt()
+        val cameraUpdate = CameraUpdateFactory.newLatLngBounds(
+            bounds,
+            sidePadding,
+            topPadding,
+            sidePadding,
+            bottomPadding
+        )
+        mapObject.easeCamera(cameraUpdate, ROUTE_FIT_ANIMATION_MS)
     }
 
     private fun renderRoutes() {
@@ -735,6 +773,7 @@ internal class NavigationMapController {
         const val MAX_ZOOM = 20.0
         const val CAMERA_ANIMATION_MS = 680
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
+        const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
         const val POI_HIT_RADIUS_PX = 24f
         const val LOCATION_HIT_RADIUS_DP = 36f
