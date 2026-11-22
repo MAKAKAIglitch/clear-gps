@@ -334,8 +334,10 @@ internal class NavigationMapController {
                                 PropertyFactory.iconAnchor("center"),
                                 PropertyFactory.iconPitchAlignment("viewport"),
                                 PropertyFactory.iconRotationAlignment("viewport"),
-                                PropertyFactory.iconAllowOverlap(false),
-                                PropertyFactory.iconIgnorePlacement(false)
+                                // POIs are deliberately allowed to overlap: dense city blocks
+                                // must still show their category markers instead of hiding them.
+                                PropertyFactory.iconAllowOverlap(true),
+                                PropertyFactory.iconIgnorePlacement(true)
                             )
                     )
                 }

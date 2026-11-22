@@ -127,9 +127,12 @@ internal class NavigationPoiRepository {
         lastRequestKey = null
     }
 
-    private fun parse(json: String): List<NavigationPoi> {
-        val elements = JsonParser.parseString(json).asJsonObject
-            .getAsJsonArray("elements") ?: return emptyList()
+    private fun parse(json: String): List<NavigationPoi>? {
+        // Overpass may answer HTTP 200 with a JSON "remark" instead of data
+        // (for example, a timeout). Treat that as a failed endpoint so the
+        // repository tries the next mirror rather than caching a false empty map.
+        val root = JsonParser.parseString(json).asJsonObject
+        val elements = root.getAsJsonArray("elements") ?: return null
         val result = LinkedHashMap<String, NavigationPoi>()
         elements.forEach { element ->
             val obj = element.asJsonObject
