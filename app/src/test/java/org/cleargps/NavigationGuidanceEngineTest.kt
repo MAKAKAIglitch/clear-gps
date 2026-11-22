@@ -54,6 +54,17 @@ class NavigationGuidanceEngineTest {
     }
 
     @Test
+    fun progressNeverShowsStartMovingWhenOnlyDepartureStepExists() {
+        val departureOnlyRoute = route.copy(steps = listOf(route.steps.first()))
+        val progress = NavigationGuidanceEngine.snapshot(
+            NavigationCoordinate(60.0, 24.0),
+            departureOnlyRoute
+        )
+        assertTrue(progress != null)
+        assertEquals("Следуйте по маршруту", progress!!.instruction)
+    }
+
+    @Test
     fun progressSelectsUpcomingManeuverAndEstimatesDistance() {
         val progress = NavigationGuidanceEngine.snapshot(
             NavigationCoordinate(60.0, 24.0005),

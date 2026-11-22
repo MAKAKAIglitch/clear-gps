@@ -39,9 +39,12 @@ internal object NavigationGuidanceEngine {
         val index = max(previousStepIndex.coerceIn(firstActionableIndex, route.steps.lastIndex), candidateIndex)
         val step = route.steps[index]
         val distance = distanceMeters(position, step.coordinate).coerceAtLeast(0.0)
-        val instruction = if (step.maneuverType == "arrive" && distance > 45.0) {
-            "Продолжайте движение к пункту назначения"
-        } else step.instruction
+        val instruction = when {
+            step.maneuverType == "depart" -> "Следуйте по маршруту"
+            step.maneuverType == "arrive" && distance > 45.0 -> "Продолжайте движение к пункту назначения"
+            step.instruction.contains("Начните движение", ignoreCase = true) -> "Следуйте по маршруту"
+            else -> step.instruction
+        }
         val remainingDistance = distance + route.steps.drop(index).sumOf { it.distanceMeters }
         val remainingDuration = if (route.distanceMeters > 0.0) {
             route.durationSeconds * (remainingDistance / route.distanceMeters).coerceIn(0.0, 1.0)
