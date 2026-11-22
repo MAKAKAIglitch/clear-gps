@@ -118,7 +118,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(4, TimeUnit.MINUTES)
         .callTimeout(5, TimeUnit.MINUTES)
-        .addInterceptor { chain ->
+        .addNetworkInterceptor { chain ->
             NetworkGate.validateRequest(chain.request().url.toString(), chain.request().method,
                 NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
             chain.proceed(chain.request())
