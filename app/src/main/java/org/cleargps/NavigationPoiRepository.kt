@@ -1,6 +1,7 @@
 package org.cleargps
 
 import android.os.Handler
+import android.util.Log
 import android.os.Looper
 import com.google.gson.JsonParser
 import okhttp3.Call
@@ -42,13 +43,18 @@ internal enum class NavigationPoiCategory(val title: String) {
             tags["highway"] == "speed_camera" -> SPEED_CAMERA
             tags["enforcement"]?.let(::fromEnforcement) != null ->
                 fromEnforcement(tags["enforcement"])
+            tags["man_made"] == "surveillance" &&
+                tags["surveillance"] in setOf("traffic", "ALPR", "ANPR") -> TRAFFIC_CAMERA
+            tags["camera:type"] in setOf("speed", "traffic") ->
+                if (tags["camera:type"] == "speed") SPEED_CAMERA else TRAFFIC_CAMERA
             else -> null
         }
 
         fun fromEnforcement(value: String?): NavigationPoiCategory? = when (value?.trim()?.lowercase()) {
             "maxspeed", "average_speed" -> SPEED_CAMERA
             "traffic_signals" -> RED_LIGHT_CAMERA
-            "access", "check", "mobile_phone", "seatbelt" -> TRAFFIC_CAMERA
+            "access", "check", "mobile_phone", "seatbelt", "bus_lane",
+            "motor_vehicle", "weight", "height", "dimension", "hazmat", "toll" -> TRAFFIC_CAMERA
             else -> null
         }
     }
@@ -120,16 +126,21 @@ internal class NavigationPoiRepository {
             (
               nwr["amenity"~"^(fuel|charging_station|pharmacy|restaurant|cafe|fast_food|bar|parking|atm)$"]($bbox);
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
-              node["highway"="speed_camera"]($bbox);
-              node["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
             )->.pois;
-            rel["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox)->.enforcementRelations;
+            (
+              nwr["highway"="speed_camera"]($bbox);
+              nwr["enforcement"]($bbox);
+              nwr["man_made"="surveillance"]["surveillance"~"^(traffic|ALPR|ANPR)$"]($bbox);
+              nwr["camera:type"~"^(speed|traffic)$"]($bbox);
+            )->.cameraTagged;
+            rel["type"="enforcement"]($bbox)->.enforcementRelations;
             (
               node(r.enforcementRelations:"device");
               way(r.enforcementRelations:"device");
             )->.cameraDevices;
             (
               .pois;
+              .cameraTagged;
               .cameraDevices;
             );
             out center tags;
@@ -140,18 +151,42 @@ internal class NavigationPoiRepository {
 
     private fun enqueueAtEndpoint(key: String, query: String, endpointIndex: Int, callback: (List<NavigationPoi>) -> Unit) {
         if (lastRequestKey != key) return
-        if (endpointIndex >= OVERPASS_ENDPOINTS.size) { lastRequestKey = null; mainHandler.post { callback(emptyList()) }; return }
+        if (endpointIndex >= OVERPASS_ENDPOINTS.size) {
+            Log.e(TAG, "Все Overpass-серверы недоступны или вернули ошибку; bboxKey=$key")
+            lastRequestKey = null
+            mainHandler.post { callback(emptyList()) }
+            return
+        }
         val body = FormBody.Builder().add("data", query).build()
         val request = Request.Builder().url(OVERPASS_ENDPOINTS[endpointIndex]).header("User-Agent", "ClearGPS-Android/0.4 (OpenStreetMap POI map)").post(body).build()
         val call = client.newCall(request); activeCall = call
         call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { if (!call.isCanceled() && lastRequestKey == key) enqueueAtEndpoint(key, query, endpointIndex + 1, callback) }
+            override fun onFailure(call: Call, e: IOException) {
+                if (!call.isCanceled() && lastRequestKey == key) {
+                    Log.w(TAG, "Overpass ${endpointIndex + 1}/${OVERPASS_ENDPOINTS.size} network failure: ${e.javaClass.simpleName}: ${e.message}")
+                    enqueueAtEndpoint(key, query, endpointIndex + 1, callback)
+                }
+            }
             override fun onResponse(call: Call, response: Response) {
-                val parsed = response.use { if (!it.isSuccessful) null else runCatching { parse(it.body?.string().orEmpty()) }.getOrNull() }
+                val status = response.code
+                val parsed = response.use {
+                    if (!it.isSuccessful) null
+                    else runCatching { parse(it.body?.string().orEmpty()) }.getOrNull()
+                }
                 if (lastRequestKey != key) return
-                if (parsed == null) enqueueAtEndpoint(key, query, endpointIndex + 1, callback) else {
+                if (parsed == null) {
+                    Log.w(TAG, "Overpass ${endpointIndex + 1}/${OVERPASS_ENDPOINTS.size} HTTP $status: invalid response/timeout; trying next mirror")
+                    enqueueAtEndpoint(key, query, endpointIndex + 1, callback)
+                } else {
                     lastRequestKey = null
-                    synchronized(cache) { cache[key] = Cached(System.currentTimeMillis(), parsed); while (cache.size > MAX_CACHE_ENTRIES) cache.remove(cache.keys.first()) }
+                    val cameraCount = parsed.count { it.category.isCamera }
+                    val byCategory = parsed.filter { it.category.isCamera }
+                        .groupingBy { it.category.name }.eachCount()
+                    Log.i(TAG, "Overpass OK: endpoint=${endpointIndex + 1}, HTTP=$status, total=${parsed.size}, cameras=$cameraCount, cameraCategories=$byCategory")
+                    synchronized(cache) {
+                        cache[key] = Cached(System.currentTimeMillis(), parsed)
+                        while (cache.size > MAX_CACHE_ENTRIES) cache.remove(cache.keys.first())
+                    }
                     mainHandler.post { callback(parsed) }
                 }
             }
@@ -258,6 +293,7 @@ internal class NavigationPoiRepository {
     }
 
     private companion object {
+        const val TAG = "ClearGPS_POI"
         val OVERPASS_ENDPOINTS = listOf(
             "https://overpass-api.de/api/interpreter",
             "https://overpass.kumi.systems/api/interpreter",
