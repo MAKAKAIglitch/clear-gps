@@ -692,7 +692,6 @@ internal fun NavigationPrototypeScreen(
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             Text(if (isNavigating) "ВЕДЕНИЕ ПО МАРШРУТУ" else "МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
                             Text("Моя геопозиция  →  " + (routeDestinationName ?: selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
-                            Text(if (navigationPosition != null) "От текущей позиции ClearGPS" else "Ожидаю геопозицию ClearGPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                         }
                         if (onClosePreview != null) {
                             IconButton(onClick = onClosePreview) {
@@ -744,6 +743,9 @@ internal fun NavigationPrototypeScreen(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clickable(enabled = maneuver != null) {
+                            maneuver?.maneuverCoordinate?.let(controller::focusOnManeuver)
+                        }
                         .padding(horizontal = 14.dp)
                         .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 91.dp)
                         .shadow(12.dp, RoundedCornerShape(24.dp)),
@@ -844,19 +846,6 @@ internal fun NavigationPrototypeScreen(
                                     color = colors.onPrimaryContainer.copy(alpha = 0.72f),
                                     maxLines = 1
                                 )
-                            }
-                            IconButton(
-                                enabled = speechEnabled && speechReady,
-                                onClick = {
-                                    speechEngine?.speak(
-                                        instruction,
-                                        TextToSpeech.QUEUE_FLUSH,
-                                        null,
-                                        "cleargps-repeat-top"
-                                    )
-                                }
-                            ) {
-                                Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку", tint = colors.onPrimaryContainer)
                             }
                         }
                         Box(

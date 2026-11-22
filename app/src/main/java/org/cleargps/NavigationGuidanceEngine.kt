@@ -14,6 +14,7 @@ internal data class NavigationManeuverStep(
 internal data class NavigationGuidanceSnapshot(
     val stepIndex: Int,
     val instruction: String,
+    val maneuverCoordinate: NavigationCoordinate,
     val distanceToManeuverMeters: Double,
     val remainingDistanceMeters: Double,
     val remainingDurationSeconds: Double,
@@ -30,11 +31,12 @@ internal object NavigationGuidanceEngine {
         val nearest = nearestRouteSegment(position, route.coordinates)
         val nextIndex = route.steps.indexOfFirst { it.routeIndex > nearest.first }
             .takeIf { it >= 0 } ?: route.steps.lastIndex
-        val departureIndex = route.steps.indexOfFirst { it.maneuverType == "depart" }
-        val isAtRouteStart = nearest.first == 0 &&
-            distanceMeters(position, route.coordinates.first()) <= 25.0
-        val candidateIndex = if (isAtRouteStart && departureIndex >= 0) departureIndex else nextIndex
-        val index = max(previousStepIndex.coerceIn(0, route.steps.lastIndex), candidateIndex)
+        // Departure is not a useful turn instruction. Start with the first
+        // actual upcoming maneuver so guidance never displays "Начните движение".
+        val firstActionableIndex = route.steps.indexOfFirst { it.maneuverType != "depart" }
+            .takeIf { it >= 0 } ?: route.steps.lastIndex
+        val candidateIndex = max(nextIndex, firstActionableIndex)
+        val index = max(previousStepIndex.coerceIn(firstActionableIndex, route.steps.lastIndex), candidateIndex)
         val step = route.steps[index]
         val distance = distanceMeters(position, step.coordinate).coerceAtLeast(0.0)
         val instruction = if (step.maneuverType == "arrive" && distance > 45.0) {
@@ -47,6 +49,7 @@ internal object NavigationGuidanceEngine {
         return NavigationGuidanceSnapshot(
             stepIndex = index,
             instruction = instruction,
+            maneuverCoordinate = step.coordinate,
             distanceToManeuverMeters = distance,
             remainingDistanceMeters = remainingDistance.coerceAtMost(route.distanceMeters),
             remainingDurationSeconds = remainingDuration,

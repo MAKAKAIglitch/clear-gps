@@ -614,6 +614,23 @@ internal class NavigationMapController {
         renderCurrentPosition()
     }
 
+    /** Move the map camera to the next turn while keeping navigation follow mode active. */
+    fun focusOnManeuver(point: NavigationCoordinate) {
+        val mapObject = map ?: return
+        if (!styleReady || !point.isValid()) return
+        val current = mapObject.cameraPosition
+        val camera = CameraPosition.Builder()
+            .target(LatLng(point.latitude, point.longitude))
+            .zoom(maxOf(current.zoom, 16.5).coerceAtMost(MAX_ZOOM))
+            .bearing(current.bearing)
+            .tilt(if (isNavigationCameraMode) maxOf(current.tilt, 45.0) else current.tilt)
+            .build()
+        mapObject.easeCamera(
+            CameraUpdateFactory.newCameraPosition(camera),
+            CAMERA_ANIMATION_MS
+        )
+    }
+
     fun updateDestination(coordinate: NavigationCoordinate?) {
         destination = coordinate?.takeIf { it.isValid() }
         renderDestination()
