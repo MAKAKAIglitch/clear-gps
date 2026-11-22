@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -55,6 +57,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -251,6 +255,13 @@ internal fun NavigationPrototypeScreen(
 
     LaunchedEffect(navigationPosition) {
         controller.updatePosition(navigationPosition)
+        val fix = navigationPosition
+        DiagnosticLogStore.log(
+            context,
+            "NAV_POSITION",
+            if (fix == null) "Позиция ClearGPS отсутствует"
+            else "Позиция обновлена: accuracy_m=${fix.accuracyMeters}, bearing_deg=${fix.bearingDegrees}; координаты скрыты"
+        )
     }
 
     LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination, speechReady) {
@@ -281,6 +292,11 @@ internal fun NavigationPrototypeScreen(
                 else -> progress.instruction
             }
             lastAnnouncedStage = announcementStage
+            DiagnosticLogStore.log(
+                context,
+                "NAV_VOICE",
+                "Озвучивание манёвра: step=${progress.stepIndex}, stage=$announcementStage, distance_m=${progress.distanceToManeuverMeters.toInt()}, instruction=${progress.instruction}"
+            )
             speechEngine?.speak(
                 spokenInstruction,
                 TextToSpeech.QUEUE_FLUSH,
@@ -298,6 +314,11 @@ internal fun NavigationPrototypeScreen(
         if (offRouteFixCount >= 3 && destination != null && now - lastRerouteAtMs >= 15_000L) {
             lastRerouteAtMs = now
             offRouteFixCount = 0
+            DiagnosticLogStore.log(
+                context,
+                "NAV_REROUTE",
+                "Запрошено перестроение: отклонение_m=${progress.offRouteDistanceMeters.toInt()}, порог_m=${offRouteLimit.toInt()}"
+            )
             routingRepository.findRoutes(position, destination) { result ->
                 result.onSuccess { alternatives ->
                     val fastest = alternatives.minByOrNull { it.durationSeconds } ?: return@onSuccess
@@ -308,8 +329,10 @@ internal fun NavigationPrototypeScreen(
                     lastAnnouncedStepIndex = -1
                     lastAnnouncedStage = -1
                     controller.updateRoutes(listOf(fastest))
+                    DiagnosticLogStore.log(context, "NAV_REROUTE", "Перестроение успешно: вариантов=${alternatives.size}, дистанция_m=${fastest.distanceMeters.toInt()}, время_s=${fastest.durationSeconds.toInt()}")
                     Toast.makeText(context, "Маршрут обновлён после отклонения", Toast.LENGTH_SHORT).show()
                 }.onFailure { error ->
+                    DiagnosticLogStore.log(context, "NAV_REROUTE", "Ошибка перестроения: ${error.javaClass.simpleName}: ${error.message ?: "без описания"}", "ERROR")
                     Toast.makeText(context, "Не удалось перестроить маршрут: ${error.message ?: "ошибка сети"}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -332,14 +355,17 @@ internal fun NavigationPrototypeScreen(
                 routeError = "Нет текущих координат. Сначала получите местоположение ClearGPS."
             } else {
                 routeLoading = true
+                DiagnosticLogStore.log(context, "NAV_ROUTE", "Запрошен расчёт маршрута; координаты начала и назначения скрыты")
                 routingRepository.findRoutes(origin, destination) { result ->
                     routeLoading = false
                     result.onSuccess { alternatives ->
                         calculatedRoutes = alternatives.take(3)
                         selectedRouteIndex = 0
                         controller.updateRoutes(calculatedRoutes)
+                        DiagnosticLogStore.log(context, "NAV_ROUTE", "Маршрут рассчитан: получено вариантов=${alternatives.size}, отображается=${calculatedRoutes.size}, дистанция_m=${calculatedRoutes.firstOrNull()?.distanceMeters?.toInt()}, время_s=${calculatedRoutes.firstOrNull()?.durationSeconds?.toInt()}")
                     }.onFailure { error ->
                         routeError = error.message ?: "Не удалось построить маршрут"
+                        DiagnosticLogStore.log(context, "NAV_ROUTE", "Ошибка расчёта: ${error.javaClass.simpleName}: ${error.message ?: "без описания"}", "ERROR")
                     }
                 }
             }
@@ -958,6 +984,7 @@ internal fun NavigationPrototypeScreen(
                                 }
                             }
                             Button(onClick = {
+                                DiagnosticLogStore.log(context, "NAV_SESSION", "Начато ведение: дистанция_m=${chosenRoute.distanceMeters.toInt()}, время_s=${chosenRoute.durationSeconds.toInt()}")
                                 activeRoute = chosenRoute
                                 isNavigating = true
                                 guidance = null
@@ -1025,6 +1052,7 @@ internal fun NavigationPrototypeScreen(
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                             TextButton(onClick = {
+                                DiagnosticLogStore.log(context, "NAV_SESSION", "Ведение по маршруту завершено пользователем")
                                 isNavigating = false
                                 activeRoute = null
                                 guidance = null
@@ -1357,8 +1385,13 @@ private fun NavigationSettingsScreen(
 ) {
     val colors = MaterialTheme.colorScheme
     var showRegionDownloads by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
     if (showRegionDownloads) {
         OverpassRegionDownloadsScreen(onBack = { showRegionDownloads = false })
+        return
+    }
+    if (showDiagnostics) {
+        NavigationDiagnosticsScreen(onBack = { showDiagnostics = false })
         return
     }
 
@@ -1469,10 +1502,151 @@ private fun NavigationSettingsScreen(
             NavigationSettingsGroup("О ПРИЛОЖЕНИИ") {
                 NavigationSettingsItem(
                     title = "ClearGPS Navigation",
-                    subtitle = "Версия 0.4.0 · Навигационный интерфейс",
-                    icon = Icons.Outlined.Info
+                    subtitle = "Версия 0.4.0 · Подробные журналы и диагностика",
+                    icon = Icons.Outlined.Info,
+                    onClick = { showDiagnostics = true }
                 )
             }
+        }
+    }
+}
+
+
+@Composable
+private fun NavigationDiagnosticsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val colors = MaterialTheme.colorScheme
+    var enabled by remember { mutableStateOf(DiagnosticLogStore.isEnabled(context)) }
+    var maxKb by remember { mutableStateOf(DiagnosticLogStore.maxKb(context)) }
+    var logText by remember { mutableStateOf(DiagnosticLogStore.read(context)) }
+    var logSize by remember { mutableStateOf(DiagnosticLogStore.sizeBytes(context)) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            enabled = DiagnosticLogStore.isEnabled(context)
+            maxKb = DiagnosticLogStore.maxKb(context)
+            logText = DiagnosticLogStore.read(context)
+            logSize = DiagnosticLogStore.sizeBytes(context)
+            delay(1_500L)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(colors.background)) {
+        Surface(modifier = Modifier.fillMaxWidth(), color = colors.surfaceContainerHigh, tonalElevation = 2.dp) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, contentDescription = "Назад") }
+                Column(modifier = Modifier.padding(start = 8.dp)) {
+                    Text("Диагностика навигатора", style = MaterialTheme.typography.titleLarge)
+                    Text("ClearGPS Navigation · подробный журнал", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                }
+            }
+        }
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+                Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Подробное логирование", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (enabled) "Запись событий навигации включена" else "Запись выключена",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = {
+                            DiagnosticLogStore.setEnabled(context, it)
+                            enabled = it
+                            logText = DiagnosticLogStore.read(context)
+                            logSize = DiagnosticLogStore.sizeBytes(context)
+                        })
+                    }
+                    Text(
+                        "Записываются обновления позиции (без точных координат), точность, запросы и результаты маршрутов, ошибки, перестроения и голосовые манёвры. Журнал хранится в приватной папке приложения.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+
+            Surface(shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+                Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Размер журнала", style = MaterialTheme.typography.titleSmall)
+                    Text("$maxKb КБ · занято ${logSize / 1024} КБ", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Slider(
+                        value = maxKb.toFloat(),
+                        onValueChange = { value ->
+                            maxKb = ((value / 64f).toInt() * 64).coerceIn(
+                                DiagnosticLogStore.MIN_MAX_KB,
+                                DiagnosticLogStore.MAX_MAX_KB
+                            )
+                        },
+                        onValueChangeFinished = {
+                            DiagnosticLogStore.setMaxKb(context, maxKb)
+                            logText = DiagnosticLogStore.read(context)
+                            logSize = DiagnosticLogStore.sizeBytes(context)
+                        },
+                        valueRange = DiagnosticLogStore.MIN_MAX_KB.toFloat()..DiagnosticLogStore.MAX_MAX_KB.toFloat(),
+                        steps = 6
+                    )
+                    Text(
+                        "Лимит: от ${DiagnosticLogStore.MIN_MAX_KB} до ${DiagnosticLogStore.MAX_MAX_KB} КБ. Старые записи удаляются при переполнении.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        clipboard.setPrimaryClip(
+                            android.content.ClipData.newPlainText(
+                                "ClearGPS Navigation diagnostics",
+                                DiagnosticLogStore.read(context)
+                            )
+                        )
+                        Toast.makeText(context, "Журнал скопирован", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Копировать логи") }
+                TextButton(
+                    onClick = {
+                        DiagnosticLogStore.clear(context)
+                        logText = DiagnosticLogStore.read(context)
+                        logSize = DiagnosticLogStore.sizeBytes(context)
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Очистить") }
+            }
+
+            Text("Журнал событий", style = MaterialTheme.typography.titleMedium)
+            Surface(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 520.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = colors.surfaceContainer
+            ) {
+                SelectionContainer {
+                    Text(
+                        logText,
+                        modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurface
+                    )
+                }
+            }
+            Text(
+                "Чтобы собрать отчёт: включи запись, повтори проблему и нажми «Копировать логи». Затем пришли скопированный текст сюда.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant
+            )
         }
     }
 }
