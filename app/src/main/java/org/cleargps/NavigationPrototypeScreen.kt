@@ -1218,11 +1218,29 @@ internal fun NavigationPrototypeScreen(
                     )
                     Button(
                         onClick = {
-                            val intent = android.content.Intent(context, NavigationRoutePreviewActivity::class.java)
-                                .putExtra(NavigationRoutePreviewActivity.EXTRA_LATITUDE, selectedPointForSheet.latitude)
-                                .putExtra(NavigationRoutePreviewActivity.EXTRA_LONGITUDE, selectedPointForSheet.longitude)
-                                .putExtra(NavigationRoutePreviewActivity.EXTRA_DESTINATION_NAME, poiForSheet?.name ?: "Точка на карте")
-                            context.startActivity(intent)
+                            val destinationName = poiForSheet?.name ?: "Точка на карте"
+                            if (onClosePreview != null) {
+                                // We are already inside the route-preview activity. Update this
+                                // screen's destination instead of stacking another preview activity.
+                                routeDestination = selectedPointForSheet
+                                routeDestinationName = destinationName
+                                selectedPoi = poiForSheet
+                                calculatedRoutes = emptyList()
+                                selectedRouteIndex = 0
+                                activeRoute = null
+                                isNavigating = false
+                                guidance = null
+                                offRouteFixCount = 0
+                                lastRerouteAtMs = 0
+                                routeOptionsExpanded = false
+                                controller.updateRoutes(emptyList())
+                            } else {
+                                val intent = android.content.Intent(context, NavigationRoutePreviewActivity::class.java)
+                                    .putExtra(NavigationRoutePreviewActivity.EXTRA_LATITUDE, selectedPointForSheet.latitude)
+                                    .putExtra(NavigationRoutePreviewActivity.EXTRA_LONGITUDE, selectedPointForSheet.longitude)
+                                    .putExtra(NavigationRoutePreviewActivity.EXTRA_DESTINATION_NAME, destinationName)
+                                context.startActivity(intent)
+                            }
                             showMapPointSheet = false
                         },
                         modifier = Modifier.fillMaxWidth()
