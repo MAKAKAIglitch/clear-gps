@@ -269,7 +269,7 @@ internal class NavigationMapController {
                         PropertyFactory.fillExtrusionOpacity(0.88f)
                     )
                 medicalBuildings.setMinZoom(14f)
-                style.addLayer(medicalBuildings)
+                style.addLayerAbove(medicalBuildings, "cleargps-buildings-3d")
 
                 // Thematic land areas: hospital grounds, sandy beaches and forest cover.
                 val hospitalGrounds = FillLayer("cleargps-hospital-grounds", "openmaptiles")
