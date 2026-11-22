@@ -7,8 +7,8 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class NetworkGateTest {
-    private fun overpassUrl(query: String): String =
-        "https://overpass-api.de/api/interpreter?data=" +
+    private fun overpassUrl(query: String, host: String = "overpass-api.de"): String =
+        "https://$host/api/interpreter?data=" +
             URLEncoder.encode(query, StandardCharsets.UTF_8.name())
 
     private val validOverpassQuery =
@@ -128,6 +128,17 @@ class NetworkGateTest {
             overpassUrl(regions), "GET",
             NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
         ).path)
+    }
+
+    @Test
+    fun roadDownloadsAllowOnlyTheConfiguredOverpassFallbackHosts() {
+        val query = "[out:json][timeout:180];relation(123)->.r;map_to_area .r->.region;way(area.region)[\\"highway\\"];out geom;"
+        listOf("overpass-api.de", "overpass.kumi.systems", "overpass.private.coffee").forEach { host ->
+            assertEquals(host, NetworkGate.validateRequest(overpassUrl(query, host), "GET", NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true).host)
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(overpassUrl(query, "attacker.overpass-api.de"), "GET", NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
+        }
     }
 
     @Test

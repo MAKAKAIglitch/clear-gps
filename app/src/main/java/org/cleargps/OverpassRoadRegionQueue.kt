@@ -143,6 +143,8 @@ internal class OverpassRoadRefreshWorker(c: Context, p: WorkerParameters) : Work
     }
 }
 
+private val OVERPASS_ROAD_MIRRORS = listOf("overpass-api.de", "overpass.kumi.systems", "overpass.private.coffee")
+
 internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worker(c, p) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(4, TimeUnit.MINUTES)
@@ -171,19 +173,30 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
           catch (_: Exception) { Result.retry() }
     }
 
-    private fun request(query: String): Request {
-        val url = HttpUrl.Builder().scheme("https").host("overpass-api.de")
+    private fun request(query: String, host: String): Request {
+        val url = HttpUrl.Builder().scheme("https").host(host)
             .addPathSegments("api/interpreter").addQueryParameter("data", query).build()
         return Request.Builder().url(url)
             .header("User-Agent", "ClearMaps-Android/0.5 (read-only OpenStreetMap regional road data)")
             .header("Accept", "application/json").get().build()
     }
 
+    private fun <T> withOverpassFallback(query: String, block: (okhttp3.Response) -> T): T {
+        var lastFailure: IOException? = null
+        for (host in OVERPASS_ROAD_MIRRORS) {
+            try {
+                http.newCall(request(query, host)).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("Overpass HTTP ${response.code}")
+                    return block(response)
+                }
+            } catch (failure: IOException) { lastFailure = failure }
+        }
+        throw lastFailure ?: IOException("All Overpass servers are unavailable")
+    }
+
     private fun findRegion(lat: Double, lon: Double): Pair<Long, String>? {
         val query = "[out:json][timeout:35];is_in($lat,$lon)->.a;relation(pivot.a)[\"boundary\"=\"administrative\"][\"admin_level\"=\"4\"];out tags;"
-        http.newCall(request(query)).execute().use { response ->
-            if (response.code == 429 || response.code >= 500) throw IOException("Overpass temporary failure")
-            if (!response.isSuccessful) throw IOException("Overpass HTTP ${response.code}")
+        withOverpassFallback(query) { response ->
             val body = response.body ?: throw IOException("Empty Overpass response")
             JsonReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
                 reader.beginObject()
@@ -234,9 +247,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
         val raw = File(dir, "$id.download.tmp")
         val staged = File(dir, "$id.overpass.json.gz.tmp")
         val query = "[out:json][timeout:180];relation($id)->.r;map_to_area .r->.region;way(area.region)[\"highway\"];out geom;"
-        http.newCall(request(query)).execute().use { response ->
-            if (response.code == 429 || response.code >= 500) throw IOException("Overpass temporary failure")
-            if (!response.isSuccessful) throw IOException("Overpass HTTP ${response.code}")
+        withOverpassFallback(query) { response ->
             val body = response.body ?: throw IOException("Empty Overpass response")
             if (body.contentLength() > MAX_BYTES) throw IOException("Region exceeds download limit")
             setProgressAsync(Data.Builder().putInt("progress", 12).putString("phase", "Загружаем дорожные данные").putString("region_name", name).build())
@@ -359,58 +370,50 @@ internal object OverpassRegionSearch {
         .replace(Regex("[^\\p{L}\\p{N} .'-]"), "").trim()
 
     private fun execute(query: String, limit: Int): List<OverpassRegionChoice> {
-        val url = HttpUrl.Builder().scheme("https").host("overpass-api.de")
-            .addPathSegments("api/interpreter").addQueryParameter("data", query).build()
-        val request = Request.Builder().url(url)
-            .header("User-Agent", "ClearMaps-Android/0.5 (read-only OSM country and regional catalog)")
-            .header("Accept", "application/json").get().build()
-        NetworkGate.validateRequest(url.toString(), "GET",
-            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
-        client.newCall(request).execute().use { response ->
-            if (response.code == 429 || response.code >= 500) throw IOException("Overpass временно недоступен")
-            if (!response.isSuccessful) throw IOException("Overpass HTTP " + response.code)
-            val body = response.body ?: throw IOException("Пустой ответ Overpass")
-            val found = ArrayList<OverpassRegionChoice>()
-            JsonReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
-                reader.beginObject()
-                while (reader.hasNext()) {
-                    if (reader.nextName() != "elements") { reader.skipValue(); continue }
-                    reader.beginArray()
-                    while (reader.hasNext()) {
-                        var id = -1L
-                        var name = ""
-                        var russianName = ""
-                        var englishName = ""
-                        var level = ""
+        var lastFailure: IOException? = null
+        for (host in OVERPASS_ROAD_MIRRORS) {
+            try {
+                val url = HttpUrl.Builder().scheme("https").host(host).addPathSegments("api/interpreter").addQueryParameter("data", query).build()
+                val request = Request.Builder().url(url).header("User-Agent", "ClearMaps-Android/0.5 (read-only OSM country and regional catalog)").header("Accept", "application/json").get().build()
+                NetworkGate.validateRequest(url.toString(), "GET", NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("Overpass HTTP " + response.code)
+                    val body = response.body ?: throw IOException("Пустой ответ Overpass")
+                    val found = ArrayList<OverpassRegionChoice>()
+                    JsonReader(InputStreamReader(body.byteStream(), Charsets.UTF_8)).use { reader ->
                         reader.beginObject()
                         while (reader.hasNext()) {
-                            when (reader.nextName()) {
-                                "id" -> id = reader.nextLong()
-                                "tags" -> {
-                                    reader.beginObject()
-                                    while (reader.hasNext()) when (reader.nextName()) {
-                                        "name:ru" -> russianName = reader.nextString()
-                                        "name:en" -> englishName = reader.nextString()
-                                        "name" -> name = reader.nextString()
-                                        "admin_level" -> level = reader.nextString()
-                                        else -> reader.skipValue()
+                            if (reader.nextName() != "elements") { reader.skipValue(); continue }
+                            reader.beginArray()
+                            while (reader.hasNext()) {
+                                var id = -1L; var name = ""; var russianName = ""; var englishName = ""; var level = ""
+                                reader.beginObject()
+                                while (reader.hasNext()) when (reader.nextName()) {
+                                    "id" -> id = reader.nextLong()
+                                    "tags" -> {
+                                        reader.beginObject()
+                                        while (reader.hasNext()) when (reader.nextName()) {
+                                            "name:ru" -> russianName = reader.nextString()
+                                            "name:en" -> englishName = reader.nextString()
+                                            "name" -> name = reader.nextString()
+                                            "admin_level" -> level = reader.nextString()
+                                            else -> reader.skipValue()
+                                        }
+                                        reader.endObject()
                                     }
-                                    reader.endObject()
+                                    else -> reader.skipValue()
                                 }
-                                else -> reader.skipValue()
+                                reader.endObject()
+                                val label = russianName.ifBlank { englishName.ifBlank { name } }
+                                if (id > 0L && level.isNotBlank() && label.isNotBlank()) found.add(OverpassRegionChoice(id, label))
                             }
+                            reader.endArray()
                         }
                         reader.endObject()
-                        val label = russianName.ifBlank { englishName.ifBlank { name } }
-                        if (id > 0L && level.isNotBlank() && label.isNotBlank()) {
-                            found.add(OverpassRegionChoice(id, label))
-                        }
                     }
-                    reader.endArray()
+                    return found.distinctBy { it.relationId }.take(limit)
                 }
-                reader.endObject()
-            }
-            return found.distinctBy { it.relationId }.take(limit)
+            } catch (failure: IOException) { lastFailure = failure }
         }
-    }
-}
+        throw lastFailure ?: IOException("Все серверы Overpass временно недоступны")
+    }}

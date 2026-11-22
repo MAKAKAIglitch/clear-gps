@@ -42,6 +42,7 @@ internal object NetworkGate {
     private const val AIRPORT_CATALOG_HOST = "davidmegginson.github.io"
     private const val AIRPORT_CATALOG_PATH = "/ourairports-data/airports.csv"
     private const val OPENSTREETMAP_HOST = "overpass-api.de"
+    private val OVERPASS_ROAD_HOSTS = setOf(OPENSTREETMAP_HOST, "overpass.kumi.systems", "overpass.private.coffee")
     private const val OPENSTREETMAP_PATH = "/api/interpreter"
     private const val ROUTING_HOST = "router.project-osrm.org"
     private const val MAX_OPENSTREETMAP_QUERY_LENGTH = 16_384
@@ -124,7 +125,7 @@ internal object NetworkGate {
             }
             Operation.OVERPASS_ROAD_DOWNLOAD -> {
                 if (!consentGranted || normalizedMethod != "GET" ||
-                    host != OPENSTREETMAP_HOST || uri.rawPath != OPENSTREETMAP_PATH
+                    host !in OVERPASS_ROAD_HOSTS || uri.rawPath != OPENSTREETMAP_PATH
                 ) reject()
                 validateOpenStreetMapRoadQuery(uri.rawQuery)
             }
