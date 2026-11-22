@@ -3,9 +3,11 @@ package org.cleargps
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
 import com.google.gson.JsonObject
@@ -45,7 +47,7 @@ internal data class NavigationCoordinate(
  *
  * ClearGPS remains the sole source of coordinates. This controller only renders the
  * already-filtered/fused position; it does not request Android GPS or calculate fixes.
- * The large Ferrostar navigation arrow is intentionally reserved for a future active-route mode.
+ * Active guidance switches to a larger, beveled direction arrow inspired by CoMaps' 3D position marker.
  */
 internal class NavigationMapController {
     private var attachedMapView: MapView? = null
@@ -273,9 +275,10 @@ internal class NavigationMapController {
                         PropertyFactory.iconAnchor("center"),
                         PropertyFactory.iconSize(BEARING_ICON_SIZE),
                         PropertyFactory.iconRotate(Expression.get(BEARING_PROPERTY)),
-                        PropertyFactory.iconOffset(arrayOf(BEARING_ICON_OFFSET, BEARING_ICON_OFFSET)),
+                        PropertyFactory.iconOffset(arrayOf(0f, 0f)),
                         PropertyFactory.iconRotationAlignment("map"),
-                        PropertyFactory.iconPitchAlignment("map"),
+                        // Keep the beveled arrow standing toward the viewer while its heading follows the map.
+                        PropertyFactory.iconPitchAlignment("viewport"),
                         PropertyFactory.iconAllowOverlap(true),
                         PropertyFactory.iconIgnorePlacement(true)
                     )
@@ -470,8 +473,8 @@ internal class NavigationMapController {
             ((Math.toDegrees(kotlin.math.atan2(kotlin.math.sin(dLon) * kotlin.math.cos(lat2), kotlin.math.cos(lat1) * kotlin.math.sin(lat2) - kotlin.math.sin(lat1) * kotlin.math.cos(lat2) * kotlin.math.cos(dLon))) + 360.0) % 360.0)
         } else null
         map?.style?.getLayer(BEARING_LAYER)?.setProperties(
-            PropertyFactory.iconSize(if (active) 0.9f else BEARING_ICON_SIZE),
-            PropertyFactory.iconOffset(if (active) arrayOf(0f, -18f) else arrayOf(BEARING_ICON_OFFSET, BEARING_ICON_OFFSET))
+            PropertyFactory.iconSize(if (active) NAVIGATION_ARROW_ICON_SIZE else BEARING_ICON_SIZE),
+            PropertyFactory.iconOffset(arrayOf(0f, 0f))
         )
         renderCurrentPosition()
     }
@@ -633,8 +636,13 @@ internal class NavigationMapController {
             return
         }
 
-        val dotFeature = Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude))
-        dotSource?.setGeoJson(FeatureCollection.fromFeatures(arrayOf(dotFeature)))
+        if (isNavigationCameraMode) {
+            // The large directional arrow replaces the browsing-mode blue dot.
+            dotSource?.setGeoJson(emptyFeatureCollection())
+        } else {
+            val dotFeature = Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude))
+            dotSource?.setGeoJson(FeatureCollection.fromFeatures(arrayOf(dotFeature)))
+        }
 
         val accuracy = currentAccuracyMeters
         accuracySource?.setGeoJson(
@@ -650,8 +658,8 @@ internal class NavigationMapController {
             bearingSource?.setGeoJson(emptyFeatureCollection())
         } else {
             val properties = JsonObject().apply {
-                // The small triangle artwork points north-east by default, matching Ferrostar.
-                addProperty(BEARING_PROPERTY, (bearing + 45.0) % 360.0)
+                // The navigation arrow artwork points north; rotate it to the fused course/heading.
+                addProperty(BEARING_PROPERTY, (bearing + 360.0) % 360.0)
             }
             val feature = Feature.fromGeometry(
                 Point.fromLngLat(point.longitude, point.latitude),
@@ -709,21 +717,81 @@ internal class NavigationMapController {
         )
     }
 
+    /**
+     * A compact, beveled 3D-style navigation pointer based on the faceted arrow
+     * geometry used by CoMaps. It is drawn locally so the marker works offline.
+     */
     private fun createBearingBitmap(): Bitmap {
-        val size = 24
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(64, 80, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val path = Path().apply {
-            moveTo(0f, 0f)
-            lineTo(0f, size.toFloat())
-            lineTo(size.toFloat(), 0f)
+        val outline = Path().apply {
+            moveTo(32f, 4f)
+            lineTo(4f, 65f)
+            lineTo(32f, 54f)
+            lineTo(60f, 65f)
             close()
         }
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = android.graphics.Color.rgb(15, 95, 184)
+
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(105, 0, 0, 0)
             style = Paint.Style.FILL
         }
-        canvas.drawPath(path, paint)
+        canvas.save()
+        canvas.translate(0f, 3f)
+        canvas.drawPath(outline, shadowPaint)
+        canvas.restore()
+
+        val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.rgb(8, 43, 83)
+            style = Paint.Style.FILL
+        }
+        canvas.drawPath(outline, edgePaint)
+
+        val leftFace = Path().apply {
+            moveTo(32f, 7f)
+            lineTo(8f, 62f)
+            lineTo(32f, 52f)
+            close()
+        }
+        val rightFace = Path().apply {
+            moveTo(32f, 7f)
+            lineTo(32f, 52f)
+            lineTo(56f, 62f)
+            close()
+        }
+        val leftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                8f, 10f, 32f, 62f,
+                android.graphics.Color.rgb(16, 91, 174),
+                android.graphics.Color.rgb(5, 54, 116),
+                Shader.TileMode.CLAMP
+            )
+        }
+        val rightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                32f, 8f, 56f, 62f,
+                android.graphics.Color.rgb(91, 190, 255),
+                android.graphics.Color.rgb(24, 119, 210),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawPath(leftFace, leftPaint)
+        canvas.drawPath(rightFace, rightPaint)
+
+        val ridgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(170, 224, 244, 255)
+            strokeWidth = 1.3f
+            style = Paint.Style.STROKE
+        }
+        canvas.drawLine(32f, 10f, 32f, 51f, ridgePaint)
+
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.rgb(226, 244, 255)
+            strokeWidth = 1.8f
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+        }
+        canvas.drawPath(outline, borderPaint)
         return bitmap
     }
 
@@ -775,6 +843,7 @@ internal class NavigationMapController {
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
         const val BEARING_ICON_SIZE = 0.25f
+        const val NAVIGATION_ARROW_ICON_SIZE = 0.9f
         const val BEARING_ICON_OFFSET = -25.5f
 
         const val DEFAULT_LATITUDE = 60.1699
