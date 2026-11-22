@@ -55,6 +55,20 @@ internal object OverpassRoadRegionQueue {
             .putString("name", name.take(120)).putBoolean("force", force).build())
     }
 
+    fun enqueueRegionCatalog(context: Context, countryRelationId: Long) {
+        if (countryRelationId <= 0L) return
+        val request = OneTimeWorkRequest.Builder(OverpassRegionCatalogWorker::class.java)
+            .setInputData(Data.Builder().putLong("country_id", countryRelationId).build())
+            .setConstraints(constraints())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            "clear_maps_region_catalog_$countryRelationId",
+            ExistingWorkPolicy.KEEP,
+            request
+        )
+    }
+
     private fun enqueue(context: Context, data: Data) {
         val work = OneTimeWorkRequest.Builder(OverpassRoadRegionWorker::class.java)
             .setInputData(data).setConstraints(constraints())
@@ -159,6 +173,12 @@ internal class OverpassRegionCatalogWorker(c: Context, p: WorkerParameters) : Wo
     override fun doWork(): Result {
         if (!validatedInternet(applicationContext)) return Result.retry()
         return try {
+            val requestedCountryId = inputData.getLong("country_id", -1L)
+            if (requestedCountryId > 0L) {
+                setProgressAsync(Data.Builder().putString("phase", "Загружаем список регионов").putInt("progress", 25).build())
+                OverpassRegionSearch.refreshRegions(applicationContext, requestedCountryId)
+                return Result.success()
+            }
             setProgressAsync(Data.Builder().putString("phase", "Обновляем каталог стран").putInt("progress", 5).build())
             OverpassRegionSearch.refreshCountries(applicationContext)
             val prefs = applicationContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
@@ -395,6 +415,11 @@ internal object OverpassRegionSearch {
 
     fun cachedRegions(context: Context, countryRelationId: Long): List<OverpassRegionChoice> =
         if (countryRelationId > 0L) readCache(context, "regions_$countryRelationId") else emptyList()
+
+    fun hasCachedRegions(context: Context, countryRelationId: Long): Boolean =
+        countryRelationId > 0L && context.applicationContext
+            .getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+            .contains("regions_${countryRelationId}_updated")
 
     fun countries(context: Context): List<OverpassRegionChoice> =
         cachedCountries(context).ifEmpty { refreshCountries(context) }

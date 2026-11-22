@@ -2105,13 +2105,30 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
         regionQuery = ""
         results = emptyList()
         message = null
-        try {
-            results = withContext(Dispatchers.IO) { OverpassRegionSearch.regions(context, country.relationId) }
-            if (results.isEmpty()) message = "Для этой страны не найдены административные регионы в OpenStreetMap."
-        } catch (error: Exception) {
-            message = error.message ?: "Не удалось загрузить регионы страны"
-        } finally {
+        results = withContext(Dispatchers.IO) {
+            OverpassRegionSearch.cachedRegions(context, country.relationId)
+        }
+        if (results.isNotEmpty() || withContext(Dispatchers.IO) {
+                OverpassRegionSearch.hasCachedRegions(context, country.relationId)
+            }) {
             searching = false
+            if (results.isEmpty()) message = "Для этой страны не найдены административные регионы в OpenStreetMap."
+        } else {
+            OverpassRoadRegionQueue.enqueueRegionCatalog(context, country.relationId)
+            while (searching) {
+                delay(1_500L)
+                val cached = withContext(Dispatchers.IO) {
+                    OverpassRegionSearch.cachedRegions(context, country.relationId)
+                }
+                val complete = withContext(Dispatchers.IO) {
+                    OverpassRegionSearch.hasCachedRegions(context, country.relationId)
+                }
+                if (complete) {
+                    results = cached
+                    searching = false
+                    if (cached.isEmpty()) message = "Для этой страны не найдены административные регионы в OpenStreetMap."
+                }
+            }
         }
     }
 
