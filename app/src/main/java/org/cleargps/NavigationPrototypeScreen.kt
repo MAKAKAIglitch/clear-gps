@@ -14,6 +14,18 @@ import androidx.compose.material.icons.outlined.WifiOff
 import android.net.NetworkCapabilities
 import android.net.Network
 import android.net.ConnectivityManager
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -80,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -695,67 +708,183 @@ internal fun NavigationPrototypeScreen(
                 val maneuverGlyph = when {
                     instruction.contains("налево", ignoreCase = true) -> "↰"
                     instruction.contains("направо", ignoreCase = true) -> "↱"
-                    instruction.contains("развернитесь", ignoreCase = true) -> "⤴"
+                    instruction.contains("разворот", ignoreCase = true) -> "⤴"
                     instruction.contains("кругов", ignoreCase = true) -> "⟳"
-                    instruction.contains("съезд", ignoreCase = true) || instruction.contains("съезжайте", ignoreCase = true) -> "↗"
+                    instruction.contains("съезд", ignoreCase = true) -> "↗"
                     else -> "↑"
                 }
+                val motion = rememberInfiniteTransition(label = "maneuver-motion")
+                val arrowScale by motion.animateFloat(
+                    initialValue = 0.92f,
+                    targetValue = 1.08f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 850),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "arrow-pulse"
+                )
+                val haloAlpha by motion.animateFloat(
+                    initialValue = 0.18f,
+                    targetValue = 0.52f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 850),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "arrow-halo"
+                )
+                val travelPhase by motion.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 1700),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "route-flow"
+                )
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp)
                         .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 91.dp)
-                        .shadow(9.dp, RoundedCornerShape(22.dp)),
-                    shape = RoundedCornerShape(22.dp),
-                    color = colors.primaryContainer.copy(alpha = 0.98f),
-                    tonalElevation = 5.dp
+                        .shadow(12.dp, RoundedCornerShape(24.dp)),
+                    shape = RoundedCornerShape(24.dp),
+                    color = colors.primaryContainer.copy(alpha = 0.99f),
+                    tonalElevation = 7.dp
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(animationSpec = tween(280))
                     ) {
-                        Surface(
-                            modifier = Modifier.size(58.dp),
-                            shape = RoundedCornerShape(17.dp),
-                            color = colors.primary
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(13.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
+                            Box(
+                                modifier = Modifier.size(64.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Surface(
+                                    modifier = Modifier
+                                        .size(62.dp)
+                                        .graphicsLayer {
+                                            scaleX = 0.92f + arrowScale * 0.12f
+                                            scaleY = 0.92f + arrowScale * 0.12f
+                                            alpha = haloAlpha
+                                        },
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = colors.primary.copy(alpha = 0.35f)
+                                ) {}
+                                Surface(
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .graphicsLayer {
+                                            scaleX = arrowScale
+                                            scaleY = arrowScale
+                                        },
+                                    shape = RoundedCornerShape(17.dp),
+                                    color = colors.primary
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        AnimatedContent(
+                                            targetState = maneuverGlyph,
+                                            transitionSpec = {
+                                                (fadeIn(tween(180)) + slideInVertically { it / 2 }) togetherWith
+                                                    (fadeOut(tween(120)) + slideOutVertically { -it / 3 })
+                                            },
+                                            label = "maneuver-arrow"
+                                        ) { glyph ->
+                                            Text(
+                                                glyph,
+                                                style = MaterialTheme.typography.headlineLarge,
+                                                color = colors.onPrimary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                AnimatedContent(
+                                    targetState = maneuver?.let { "ЧЕРЕЗ ${formatRouteDistance(it.distanceToManeuverMeters)}" } ?: "ОЖИДАНИЕ ПОЗИЦИИ",
+                                    transitionSpec = {
+                                        (fadeIn(tween(180)) + slideInVertically { it / 2 }) togetherWith
+                                            (fadeOut(tween(120)) + slideOutVertically { -it / 3 })
+                                    },
+                                    label = "maneuver-distance"
+                                ) { distanceLabel ->
+                                    Text(
+                                        distanceLabel,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colors.onPrimaryContainer
+                                    )
+                                }
+                                AnimatedContent(
+                                    targetState = instruction,
+                                    transitionSpec = {
+                                        (fadeIn(tween(220)) + slideInVertically { it / 3 }) togetherWith
+                                            (fadeOut(tween(140)) + slideOutVertically { -it / 4 })
+                                    },
+                                    label = "maneuver-instruction"
+                                ) { currentInstruction ->
+                                    Text(
+                                        currentInstruction,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = colors.onPrimaryContainer,
+                                        maxLines = 2
+                                    )
+                                }
                                 Text(
-                                    maneuverGlyph,
-                                    style = MaterialTheme.typography.headlineLarge,
-                                    color = colors.onPrimary
+                                    maneuver?.let { "Далее по маршруту · осталось ${formatRouteDistance(it.remainingDistanceMeters)}" }
+                                        ?: "Получаем данные навигации",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onPrimaryContainer.copy(alpha = 0.72f),
+                                    maxLines = 1
                                 )
                             }
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Text(
-                                maneuver?.let { "ЧЕРЕЗ ${formatRouteDistance(it.distanceToManeuverMeters)}" } ?: "ОЖИДАНИЕ ПОЗИЦИИ",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = colors.onPrimaryContainer
-                            )
-                            Text(
-                                instruction,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = colors.onPrimaryContainer,
-                                maxLines = 2
-                            )
-                        }
-                        IconButton(
-                            enabled = speechEnabled && speechReady,
-                            onClick = {
-                                speechEngine?.speak(
-                                    instruction,
-                                    TextToSpeech.QUEUE_FLUSH,
-                                    null,
-                                    "cleargps-repeat-top"
-                                )
+                            IconButton(
+                                enabled = speechEnabled && speechReady,
+                                onClick = {
+                                    speechEngine?.speak(
+                                        instruction,
+                                        TextToSpeech.QUEUE_FLUSH,
+                                        null,
+                                        "cleargps-repeat-top"
+                                    )
+                                }
+                            ) {
+                                Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку", tint = colors.onPrimaryContainer)
                             }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 5.dp)
+                                .padding(horizontal = 15.dp)
+                                .padding(bottom = 10.dp)
+                                .background(colors.onPrimaryContainer.copy(alpha = 0.12f), CircleShape)
                         ) {
-                            Icon(Icons.Outlined.VolumeUp, contentDescription = "Повторить подсказку", tint = colors.onPrimaryContainer)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.22f)
+                                    .heightIn(min = 5.dp)
+                                    .graphicsLayer {
+                                        translationX = size.width * travelPhase * 3.5f
+                                    }
+                                    .background(
+                                        Brush.horizontalGradient(
+                                            listOf(
+                                                colors.primary.copy(alpha = 0.18f),
+                                                colors.primary,
+                                                colors.primary.copy(alpha = 0.18f)
+                                            )
+                                        ),
+                                        CircleShape
+                                    )
+                            )
                         }
                     }
                 }
