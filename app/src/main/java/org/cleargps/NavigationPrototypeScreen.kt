@@ -1692,48 +1692,20 @@ internal fun NavigationPrototypeScreen(
         }
 
         if (showSearch) {
-            ModalBottomSheet(
-                onDismissRequest = {
+            NavigationSearchScreen(
+                query = destinationQuery,
+                onQueryChange = { query -> destinationQuery = query.take(160) },
+                onBack = {
                     showSearch = false
                     selectedNavigationTab = "Карта"
                 },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = colors.surfaceContainerHigh
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp)
-                        .padding(bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text("Куда едем?", style = MaterialTheme.typography.headlineSmall)
-                    OutlinedTextField(
-                        value = destinationQuery,
-                        onValueChange = { query -> destinationQuery = query.take(160) },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        leadingIcon = {
-                            Icon(Icons.Outlined.Search, contentDescription = null)
-                        },
-                        placeholder = { Text("Адрес или название места") }
-                    )
-                    Text(
-                        "Поиск по адресу пока не подключён. Выберите точку на карте, чтобы построить маршрут.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = colors.onSurfaceVariant
-                    )
-                    TextButton(
-                        onClick = {
-                            showSearch = false
-                            selectedNavigationTab = "Карта"
-                        },
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Готово")
-                    }
+                onSelectCategory = { category ->
+                    destinationQuery = category
+                    showSearch = false
+                    selectedNavigationTab = "Карта"
+                    Toast.makeText(context, "Категория: $category", Toast.LENGTH_SHORT).show()
                 }
-            }
+            )
         }
     }
 }
