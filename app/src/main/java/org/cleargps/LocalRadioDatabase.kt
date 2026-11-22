@@ -806,15 +806,18 @@ internal fun lookupRadioFingerprintPosition(
         it.weight * radioDistanceMeters(center.first, center.second, it.latitude, it.longitude).pow(2.0)
     } / totalWeight
     val fixErrorSquared = weightedLocations.sumOf { it.weight * it.accuracyMeters.pow(2.0) } / totalWeight
-    val sparsePenalty = max(0, 3 - best.matchedSignals.size) * 180.0
-    val matchPenalty = (1.0 - best.score).coerceIn(0.0, 1.0) * 650.0
-    // An equally plausible match far away must be reflected in the uncertainty radius.
+    // Sparse/less similar fingerprints should widen uncertainty proportionally to the
+    // measured cluster error. Fixed metre penalties made even a tight, repeatable match
+    // report several hundred metres despite its samples agreeing within a few metres.
+    val sparseFactor = 1.0 + max(0, 3 - best.matchedSignals.size) * 0.25
+    val matchFactor = 1.0 + (1.0 - best.score).coerceIn(0.0, 1.0) * 0.5
+    // An equally plausible match far away must still be reflected in the uncertainty radius.
     // Keep the best candidate as the point estimate, but make the ambiguity visible on the map.
     val ambiguityPenalty = ambiguousCandidates.maxOfOrNull { candidate ->
         radioDistanceMeters(best.latitude, best.longitude, candidate.latitude, candidate.longitude) * 0.5
     } ?: 0.0
     val accuracy = (
-        sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + matchPenalty + ambiguityPenalty
+        sqrt(spreadSquared + fixErrorSquared) * sparseFactor * matchFactor + ambiguityPenalty
     ).coerceIn(30.0, 50_000.0)
 
     return RadioFingerprintLookup(
@@ -943,11 +946,15 @@ internal fun estimateRadioAnchorPosition(
     } / totalWeight
     val fixErrorSquared = weightedLocations.sumOf { it.weight * it.accuracyMeters.pow(2.0) } / totalWeight
     val averageRssi = inliers.map { it.signal.rssi.toDouble() }.average()
-    val sparsePenalty = max(0, 3 - inliers.size) * 180.0
-    val weakPenalty = ((-75.0 - averageRssi).coerceAtLeast(0.0) * 7.0)
-    val discardedPenalty = (normalized.size - inliers.size) * 100.0
-    val accuracy = (sqrt(spreadSquared + fixErrorSquared) + sparsePenalty + weakPenalty + discardedPenalty)
-        .coerceIn(80.0, 50_000.0)
+    // Keep the measured anchor error and spatial spread as the base uncertainty.
+    // Evidence quality scales that error instead of adding arbitrary hundreds of metres,
+    // which overwhelmed otherwise tightly clustered Wi-Fi/BLE observations.
+    val sparseFactor = 1.0 + max(0, 3 - inliers.size) * 0.25
+    val weakFactor = 1.0 + ((-75.0 - averageRssi).coerceAtLeast(0.0) * 0.01)
+    val discardedRatio = (normalized.size - inliers.size).toDouble() / inliers.size.coerceAtLeast(1)
+    val outlierFactor = 1.0 + discardedRatio.coerceAtMost(3.0) * 0.10
+    val accuracy = (sqrt(spreadSquared + fixErrorSquared) * sparseFactor * weakFactor * outlierFactor)
+        .coerceIn(30.0, 50_000.0)
 
     return RadioEstimate(
         latitude = center.first,
