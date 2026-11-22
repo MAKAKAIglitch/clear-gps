@@ -614,10 +614,11 @@ internal class NavigationMapController {
         renderCurrentPosition()
     }
 
-    /** Move the map camera to the next turn while keeping navigation follow mode active. */
+    /** Focus the next turn and pause automatic recentering until the user recenters manually. */
     fun focusOnManeuver(point: NavigationCoordinate) {
         val mapObject = map ?: return
         if (!styleReady || !point.isValid()) return
+        isFollowingUser = false
         val current = mapObject.cameraPosition
         val camera = CameraPosition.Builder()
             .target(LatLng(point.latitude, point.longitude))
