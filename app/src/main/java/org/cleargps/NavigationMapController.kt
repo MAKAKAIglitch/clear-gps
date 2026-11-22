@@ -108,10 +108,18 @@ internal class NavigationMapController {
             mapTapListener?.let(mapObject::removeOnMapClickListener)
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
+                val locationHit = currentPosition?.takeIf { it.isValid() }?.let { position ->
+                    val locationScreenPoint = mapObject.projection.toScreenLocation(
+                        LatLng(position.latitude, position.longitude)
+                    )
+                    val dx = screenPoint.x - locationScreenPoint.x
+                    val dy = screenPoint.y - locationScreenPoint.y
+                    val hitRadiusPx = LOCATION_HIT_RADIUS_DP * mapView.context.resources.displayMetrics.density
+                    dx * dx + dy * dy <= hitRadiusPx * hitRadiusPx
+                } == true
                 val hitBox = RectF(screenPoint.x - POI_HIT_RADIUS_PX, screenPoint.y - POI_HIT_RADIUS_PX, screenPoint.x + POI_HIT_RADIUS_PX, screenPoint.y + POI_HIT_RADIUS_PX)
-                val locationFeature = mapObject.queryRenderedFeatures(hitBox, DOT_LAYER, BEARING_LAYER).firstOrNull()
                 val poiFeature = mapObject.queryRenderedFeatures(hitBox, *POI_LAYER_IDS).firstOrNull()
-                if (locationFeature != null) {
+                if (locationHit) {
                     onLocationTap?.invoke()
                     return@OnMapClickListener true
                 }
@@ -697,6 +705,7 @@ internal class NavigationMapController {
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val MIN_POI_ZOOM = 12.0
         const val POI_HIT_RADIUS_PX = 24f
+        const val LOCATION_HIT_RADIUS_DP = 36f
         const val POI_REFRESH_DEBOUNCE_MS = 850L
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
