@@ -122,9 +122,16 @@ internal class NavigationPoiRepository {
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
               node["highway"="speed_camera"]($bbox);
               node["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
-            );
+            )->.pois;
             rel["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox)->.enforcementRelations;
-            node(r.enforcementRelations:"device");
+            (
+              node(r.enforcementRelations:"device");
+              way(r.enforcementRelations:"device");
+            )->.cameraDevices;
+            (
+              .pois;
+              .cameraDevices;
+            );
             out center tags;
             .enforcementRelations out body;
         """.trimIndent()
@@ -163,7 +170,7 @@ internal class NavigationPoiRepository {
         val root = JsonParser.parseString(json).asJsonObject
         val elements = root.getAsJsonArray("elements") ?: return null
         val result = LinkedHashMap<String, NavigationPoi>()
-        val nodeCoordinates = HashMap<String, Pair<Double, Double>>()
+        val deviceCoordinates = HashMap<String, Pair<Double, Double>>()
         val relationDevices = ArrayList<Triple<String, NavigationPoiCategory, Map<String, String>>>()
         elements.forEach { element ->
             val obj = element.asJsonObject
@@ -172,9 +179,9 @@ internal class NavigationPoiRepository {
             val coordinateObject = if (obj.has("lat") && obj.has("lon")) obj else obj.getAsJsonObject("center")
             val lat = coordinateObject?.get("lat")?.asDouble
             val lon = coordinateObject?.get("lon")?.asDouble
-            if (type == "node" && lat != null && lon != null &&
+            if (type in setOf("node", "way") && lat != null && lon != null &&
                 lat.isFinite() && lat in -90.0..90.0 && lon.isFinite() && lon in -180.0..180.0
-            ) nodeCoordinates[id] = lat to lon
+            ) deviceCoordinates["$type/$id"] = lat to lon
 
             val tagsObject = obj.getAsJsonObject("tags")
             val tags = tagsObject?.entrySet()?.associate { it.key to it.value.asString }.orEmpty()
@@ -183,10 +190,11 @@ internal class NavigationPoiRepository {
                 if (category != null) {
                     obj.getAsJsonArray("members")?.forEach { memberElement ->
                         val member = memberElement.asJsonObject
-                        if (member.get("type")?.asString == "node" &&
+                        val memberType = member.get("type")?.asString
+                        if (memberType in setOf("node", "way") &&
                             member.get("role")?.asString == "device"
                         ) {
-                            relationDevices += Triple(member.get("ref").asString, category, tags)
+                            relationDevices += Triple("${memberType}/${member.get("ref").asString}", category, tags)
                         }
                     }
                 }
@@ -226,9 +234,9 @@ internal class NavigationPoiRepository {
                 tags = tags
             )
         }
-        relationDevices.forEach { (nodeId, category, relationTags) ->
-            val coordinate = nodeCoordinates[nodeId] ?: return@forEach
-            val id = "node/$nodeId"
+        relationDevices.forEach { (deviceId, category, relationTags) ->
+            val coordinate = deviceCoordinates[deviceId] ?: return@forEach
+            val id = deviceId
             if (id in result) return@forEach
             val cameraTags = relationTags + ("camera_source" to "OSM enforcement relation")
             result[id] = NavigationPoi(
