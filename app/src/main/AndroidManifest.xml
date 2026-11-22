@@ -33,6 +33,10 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
+        <activity
+            android:name=".NavigationRoutePreviewActivity"
+            android:exported="false"
+            android:launchMode="standard" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
