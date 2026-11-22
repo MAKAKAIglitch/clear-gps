@@ -2261,6 +2261,7 @@ class LocationMonitorService : Service(), LocationListener {
                 .putString(KEY_LAST_OBSERVED_GPS_LAT, location.latitude.toString())
                 .putString(KEY_LAST_OBSERVED_GPS_LON, location.longitude.toString())
                 .putFloat(KEY_LAST_OBSERVED_GPS_ACCURACY, location.accuracy)
+                .putInt(KEY_LAST_OBSERVED_GPS_SPEED_KMH, if (location.hasSpeed() && location.speed.isFinite() && location.speed >= 0f) (location.speed * 3.6f).toInt().coerceIn(0, 350) else -1)
                 .putLong(KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, location.elapsedRealtimeNanos)
                 .apply()
         } else if (location.provider.equals(LocationManager.NETWORK_PROVIDER, true)) {
@@ -2916,6 +2917,7 @@ class LocationMonitorService : Service(), LocationListener {
         const val KEY_LAST_OBSERVED_GPS_LAT = "last_observed_physical_gps_lat"
         const val KEY_LAST_OBSERVED_GPS_LON = "last_observed_physical_gps_lon"
         const val KEY_LAST_OBSERVED_GPS_ACCURACY = "last_observed_physical_gps_accuracy"
+        const val KEY_LAST_OBSERVED_GPS_SPEED_KMH = "last_observed_physical_gps_speed_kmh"
         const val KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS = "last_observed_physical_gps_elapsed_nanos"
         const val KEY_LAST_OBSERVED_NETWORK_LAT = "last_observed_network_lat"
         const val KEY_LAST_OBSERVED_NETWORK_LON = "last_observed_network_lon"

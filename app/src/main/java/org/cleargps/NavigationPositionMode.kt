@@ -44,7 +44,8 @@ internal data class NavigationPositionSnapshot(
     val coordinate: NavigationCoordinate,
     val accuracyMeters: Double?,
     val source: String,
-    val bearingDegrees: Double?
+    val bearingDegrees: Double?,
+    val speedKmh: Int? = null
 )
 
 internal object NavigationPositionPolicy {
@@ -110,7 +111,10 @@ internal fun readNavigationPosition(
                     } else {
                         null
                     }
-                    return NavigationPositionSnapshot(coordinate, accuracy, source, bearing)
+                    val speed = if (source == "GPS" || source == "OBD2_DEAD_RECKONING") {
+                        prefs.getInt(LocationMonitorService.KEY_LAST_OBSERVED_GPS_SPEED_KMH, -1).takeIf { it in 0..350 }
+                    } else null
+                    return NavigationPositionSnapshot(coordinate, accuracy, source, bearing, speed)
                 }
             }
         }
@@ -130,7 +134,7 @@ internal fun readNavigationPosition(
             if (coordinate.isValid()) {
                 val accuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_TRUSTED_GPS_ACCURACY, -1f)
                     .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
-                return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null)
+                return NavigationPositionSnapshot(coordinate, accuracy, "LAST_TRUSTED", null, null)
             }
         }
     }
@@ -148,7 +152,8 @@ internal fun readNavigationPosition(
         .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
     if (observedCoordinate != null && observedElapsedNanos > 0L &&
         observedAgeNanos in 0L..LAST_OBSERVED_GPS_MAX_AGE_NANOS) {
-        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED", null)
+        val observedSpeed = prefs.getInt(LocationMonitorService.KEY_LAST_OBSERVED_GPS_SPEED_KMH, -1).takeIf { it in 0..350 }
+        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED", null, observedSpeed)
     }
 
     // Android's network provider can give a coarse but useful map location while GPS is
@@ -166,13 +171,13 @@ internal fun readNavigationPosition(
             .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 1_000_000_000.0 }
         if (networkCoordinate != null && networkElapsedNanos > 0L &&
             networkAgeNanos in 0L..LAST_OBSERVED_NETWORK_MAX_AGE_NANOS) {
-            return NavigationPositionSnapshot(networkCoordinate, networkAccuracy, "NETWORK_UNVERIFIED", null)
+            return NavigationPositionSnapshot(networkCoordinate, networkAccuracy, "NETWORK_UNVERIFIED", null, null)
         }
     }
 
     // Retain the last physical GPS coordinate as a stale map hint when no fresher fix exists.
     if (observedCoordinate != null && observedElapsedNanos > 0L && observedAgeNanos >= 0L) {
-        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED_STALE", null)
+        return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED_STALE", null, null)
     }
     return null
 }

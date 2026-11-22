@@ -27,6 +27,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
@@ -159,6 +160,7 @@ internal fun NavigationPrototypeScreen(
     var navigationPosition by remember {
         mutableStateOf(readNavigationPosition(positionPreferences))
     }
+    var currentSpeedKmh by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(navigationPosition?.coordinate) {
         navigationPosition?.coordinate?.let { coordinate ->
             OverpassRoadRegionQueue.enqueueCurrent(context, coordinate.latitude, coordinate.longitude)
@@ -250,6 +252,7 @@ internal fun NavigationPrototypeScreen(
             val latestPosition = readNavigationPosition(positionPreferences)
             if (latestMode != selectedPositionMode) selectedPositionMode = latestMode
             if (latestPosition != navigationPosition) navigationPosition = latestPosition
+            currentSpeedKmh = Obd2SharedState.freshSpeedKmh(positionPreferences) ?: latestPosition?.speedKmh
             delay(500L)
         }
     }
@@ -701,6 +704,17 @@ internal fun NavigationPrototypeScreen(
                     }
                 }
             }
+            if (routeDestination != null && isNavigating) {
+                NavigationSpeedBadges(
+                    currentSpeedKmh = currentSpeedKmh,
+                    speedLimitKmh = null,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 14.dp)
+                        .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 285.dp)
+                )
+            }
+
             if (routeDestination != null && isNavigating) {
                 val maneuver = guidance
                 val instruction = maneuver?.instruction ?: "Определяем следующий манёвр"
@@ -2698,3 +2712,35 @@ private fun formatRouteDuration(seconds: Double): String {
 private fun formatRouteDistance(meters: Double): String =
     if (meters >= 1000.0) String.format(java.util.Locale.getDefault(), "%.1f км", meters / 1000.0)
     else "${meters.toInt()} м"
+
+
+@Composable
+private fun NavigationSpeedBadges(
+    currentSpeedKmh: Int?,
+    speedLimitKmh: Int?,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        SpeedBadge(value = currentSpeedKmh?.toString() ?: "—", caption = "СКОРОСТЬ", isLimit = false)
+        SpeedBadge(value = speedLimitKmh?.toString() ?: "—", caption = "ОГРАНИЧЕНИЕ", isLimit = true)
+    }
+}
+
+@Composable
+private fun SpeedBadge(value: String, caption: String, isLimit: Boolean) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Surface(
+            modifier = Modifier
+                .size(if (isLimit) 68.dp else 64.dp)
+                .then(if (isLimit) Modifier.border(4.dp, Color(0xFFD32F2F), CircleShape) else Modifier),
+            shape = CircleShape,
+            color = Color.White,
+            shadowElevation = 7.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(value, style = MaterialTheme.typography.headlineSmall, color = Color(0xFF171717), maxLines = 1)
+            }
+        }
+        Text(caption, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+    }
+}
