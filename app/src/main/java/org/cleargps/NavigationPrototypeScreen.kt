@@ -1623,7 +1623,7 @@ private fun NavigationStatusStrip(
                     add(NavigationStatusNotice("position-unverified", "GPS не проверен", NavigationStatusNotice.Kind.WARNING, 75, 0L))
                 }
                 if (position.accuracyMeters != null && position.accuracyMeters > 50.0) {
-                    add(NavigationStatusNotice("position-accuracy", "Слабая точность ±\${position.accuracyMeters.toInt()} м", NavigationStatusNotice.Kind.WARNING, 65, 0L))
+                    add(NavigationStatusNotice("position-accuracy", "Слабая точность ±${position.accuracyMeters.toInt()} м", NavigationStatusNotice.Kind.WARNING, 65, 0L))
                 }
                 if (source.contains("RADIO") || source == "BEACONDB") {
                     add(NavigationStatusNotice("radio-position", "Радиопозиция", NavigationStatusNotice.Kind.LOCATION, 45, 0L))
@@ -1709,7 +1709,7 @@ private fun NavigationStatusStrip(
                     color = colors.surfaceVariant
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text("+\${older.size - 3}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                        Text("+${older.size - 3}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                     }
                 }
             }
