@@ -137,6 +137,7 @@ internal fun NavigationPrototypeScreen(
     var activeRoute by remember { mutableStateOf<NavigationRouteAlternative?>(null) }
     var guidance by remember { mutableStateOf<NavigationGuidanceSnapshot?>(null) }
     var lastAnnouncedStepIndex by remember { mutableStateOf(-1) }
+    var lastAnnouncedStage by remember { mutableStateOf(-1) }
     var offRouteFixCount by remember { mutableStateOf(0) }
     var lastRerouteAtMs by remember { mutableStateOf(0L) }
     var speechEngine by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -248,15 +249,28 @@ internal fun NavigationPrototypeScreen(
         ) ?: return@LaunchedEffect
         guidance = progress
         controller.followNavigationPosition(position, navigationPosition?.bearingDegrees)
-        if (progress.stepIndex != lastAnnouncedStepIndex) {
+        val stepChanged = progress.stepIndex != lastAnnouncedStepIndex
+        val announcementStage = when {
+            progress.distanceToManeuverMeters > 150.0 -> 2
+            progress.distanceToManeuverMeters > 40.0 -> 1
+            else -> 0
+        }
+        if (stepChanged) {
             lastAnnouncedStepIndex = progress.stepIndex
-            if (speechReady) speechEngine?.speak(
-                if (progress.distanceToManeuverMeters > 45.0) {
-                    "Через ${formatRouteDistance(progress.distanceToManeuverMeters)}. ${progress.instruction}"
-                } else progress.instruction,
+            lastAnnouncedStage = 3
+        }
+        if (speechReady && (stepChanged || announcementStage < lastAnnouncedStage)) {
+            val spokenInstruction = when (announcementStage) {
+                2 -> "Через ${formatRouteDistance(progress.distanceToManeuverMeters)}. ${progress.instruction}"
+                1 -> "Скоро. ${progress.instruction}"
+                else -> progress.instruction
+            }
+            lastAnnouncedStage = announcementStage
+            speechEngine?.speak(
+                spokenInstruction,
                 TextToSpeech.QUEUE_FLUSH,
                 null,
-                "cleargps-maneuver-${progress.stepIndex}"
+                "cleargps-maneuver-${progress.stepIndex}-${announcementStage}"
             )
         }
         val accuracy = navigationPosition?.accuracyMeters?.coerceIn(0.0, 300.0) ?: 0.0
@@ -277,6 +291,7 @@ internal fun NavigationPrototypeScreen(
                     activeRoute = fastest
                     guidance = null
                     lastAnnouncedStepIndex = -1
+                                    lastAnnouncedStage = -1
                     controller.updateRoutes(listOf(fastest))
                     Toast.makeText(context, "Маршрут обновлён после отклонения", Toast.LENGTH_SHORT).show()
                 }.onFailure { error ->
