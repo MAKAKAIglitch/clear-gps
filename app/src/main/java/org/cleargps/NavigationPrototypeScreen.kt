@@ -247,7 +247,9 @@ internal fun NavigationPrototypeScreen(
         if (progress.stepIndex != lastAnnouncedStepIndex) {
             lastAnnouncedStepIndex = progress.stepIndex
             if (speechReady) speechEngine?.speak(
-                progress.instruction,
+                if (progress.distanceToManeuverMeters > 45.0) {
+                    "Через ${formatRouteDistance(progress.distanceToManeuverMeters)}. ${progress.instruction}"
+                } else progress.instruction,
                 TextToSpeech.QUEUE_FLUSH,
                 null,
                 "cleargps-maneuver-${progress.stepIndex}"
@@ -284,6 +286,7 @@ internal fun NavigationPrototypeScreen(
     }
 
     LaunchedEffect(routeDestination, if (isNavigating) null else navigationPosition?.coordinate) {
+        if (isNavigating) return@LaunchedEffect
         calculatedRoutes = emptyList()
         selectedRouteIndex = 0
         routeError = null
