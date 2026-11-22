@@ -568,6 +568,13 @@ internal class NavigationMapController {
             })).apply { addNumberProperty(ROUTE_INDEX_PROPERTY, index) }
         }
         routeSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
+        (0..2).forEach { index ->
+            map?.style?.getLayer(routeLayerId(index))?.setProperties(
+                PropertyFactory.lineColor(if (index == selectedRouteIndex) "#35A9FF" else "#69788B"),
+                PropertyFactory.lineWidth(if (index == selectedRouteIndex) 7f else 4f),
+                PropertyFactory.lineOpacity(if (index == selectedRouteIndex) 1f else 0.78f)
+            )
+        }
         map?.triggerRepaint()
     }
 
