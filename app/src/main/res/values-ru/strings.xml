@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Clear GPS</string>
+    <string name="app_name">Claire Maps</string>
     <string name="subtitle">Фильтр аномалий GNSS · экспериментальный</string>
     <string name="draw_zone">Рисовать зону</string>
     <string name="finish_zone">Сохранить зону</string>
