@@ -63,6 +63,8 @@ internal class NavigationMapController {
     private var mapTapListener: MapLibreMap.OnMapClickListener? = null
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
     private var destinationSource: GeoJsonSource? = null
+    private var selectedPointSource: GeoJsonSource? = null
+    private var selectedMapPoint: NavigationCoordinate? = null
     private var routeSource: GeoJsonSource? = null
     private var routes: List<NavigationRouteAlternative> = emptyList()
     private var destination: NavigationCoordinate? = null
@@ -153,12 +155,14 @@ internal class NavigationMapController {
                 val newDotSource = GeoJsonSource(DOT_SOURCE, emptyFeatureCollection())
                 val newBearingSource = GeoJsonSource(BEARING_SOURCE, emptyFeatureCollection())
                 val newDestinationSource = GeoJsonSource(DESTINATION_SOURCE, emptyFeatureCollection())
+                val newSelectedPointSource = GeoJsonSource(SELECTED_POINT_SOURCE, emptyFeatureCollection())
                 val newRouteSource = GeoJsonSource(ROUTE_SOURCE, emptyFeatureCollection())
                 val newPoiSource = GeoJsonSource(POI_SOURCE, emptyFeatureCollection())
                 style.addSource(newAccuracySource)
                 style.addSource(newDotSource)
                 style.addSource(newBearingSource)
                 style.addSource(newDestinationSource)
+                style.addSource(newSelectedPointSource)
                 style.addSource(newRouteSource)
                 style.addSource(newPoiSource)
                 NavigationPoiCategory.values().forEach { category ->
@@ -246,15 +250,27 @@ internal class NavigationMapController {
                     )
                 )
 
+                // A persistent pin marks the exact coordinate selected by a map tap.
+                style.addLayer(
+                    CircleLayer(SELECTED_POINT_LAYER, SELECTED_POINT_SOURCE).withProperties(
+                        PropertyFactory.circleRadius(9f),
+                        PropertyFactory.circleColor("#E34D59"),
+                        PropertyFactory.circleStrokeColor("#FFFFFF"),
+                        PropertyFactory.circleStrokeWidth(3f)
+                    )
+                )
+
                 accuracySource = newAccuracySource
                 dotSource = newDotSource
                 bearingSource = newBearingSource
                 destinationSource = newDestinationSource
+                selectedPointSource = newSelectedPointSource
                 routeSource = newRouteSource
                 poiSource = newPoiSource
                 styleReady = true
                 renderCurrentPosition()
                 renderDestination()
+                renderSelectedMapPoint()
                 renderRoutes()
                 renderPois()
 
@@ -284,6 +300,7 @@ internal class NavigationMapController {
         dotSource = null
         bearingSource = null
         destinationSource = null
+        selectedPointSource = null
         routeSource = null
         poiSource = null
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
@@ -373,6 +390,24 @@ internal class NavigationMapController {
             }
             .toList()
         poiSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
+        map?.triggerRepaint()
+    }
+
+    fun updateSelectedMapPoint(coordinate: NavigationCoordinate?) {
+        selectedMapPoint = coordinate?.takeIf { it.isValid() }
+        renderSelectedMapPoint()
+    }
+
+    private fun renderSelectedMapPoint() {
+        if (!styleReady) return
+        val point = selectedMapPoint
+        selectedPointSource?.setGeoJson(
+            point?.let {
+                FeatureCollection.fromFeatures(
+                    arrayOf(Feature.fromGeometry(Point.fromLngLat(it.longitude, it.latitude)))
+                )
+            } ?: emptyFeatureCollection()
+        )
         map?.triggerRepaint()
     }
 
@@ -593,6 +628,7 @@ internal class NavigationMapController {
         const val DOT_SOURCE = "cleargps-navigation-dot"
         const val BEARING_SOURCE = "cleargps-navigation-bearing"
         const val DESTINATION_SOURCE = "cleargps-navigation-destination"
+        const val SELECTED_POINT_SOURCE = "cleargps-navigation-selected-point"
         const val ROUTE_SOURCE = "cleargps-navigation-routes"
         const val ROUTE_INDEX_PROPERTY = "route_index"
         const val POI_SOURCE = "cleargps-navigation-pois"
@@ -602,6 +638,7 @@ internal class NavigationMapController {
         const val DOT_LAYER = "cleargps-navigation-dot"
         const val BEARING_LAYER = "cleargps-navigation-bearing-indicator"
         const val DESTINATION_LAYER = "cleargps-navigation-destination-marker"
+        const val SELECTED_POINT_LAYER = "cleargps-navigation-selected-point-marker"
         fun routeLayerId(index: Int) = "cleargps-navigation-route-$index"
         const val POI_ID_PROPERTY = "poi_id"
         const val POI_NAME_PROPERTY = "poi_name"
