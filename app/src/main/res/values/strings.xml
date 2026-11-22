@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Claire Maps</string>
+    <string name="app_name">Clear Maps</string>
     <string name="subtitle">GNSS anomaly filter · experimental</string>
     <string name="draw_zone">Draw risk zone</string>
     <string name="finish_zone">Save zone</string>
