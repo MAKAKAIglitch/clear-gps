@@ -1925,17 +1925,27 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
     var searching by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var revision by remember { mutableStateOf(0) }
+    var workInfos by remember { mutableStateOf<List<androidx.work.WorkInfo>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         while (true) {
             revision++
-            delay(2_000L)
+            workInfos = withContext(Dispatchers.IO) { OverpassRoadRegionQueue.workInfos(context) }
+            delay(1_000L)
         }
     }
     val prefs = OverpassRoadRegionQueue.prefs(context)
     val currentId = remember(revision) { OverpassRoadRegionQueue.currentId(context) }
     val downloaded = remember(revision) { OverpassRoadRegionQueue.ids(context).sorted() }
     val currentName = remember(revision) { prefs.getString("current_name", null) }
+    val activeWork = workInfos.firstOrNull {
+        it.state == androidx.work.WorkInfo.State.RUNNING || it.state == androidx.work.WorkInfo.State.ENQUEUED
+    }
+    val activeProgress = activeWork?.progress?.getInt("progress", 0) ?: 0
+    val activeName = activeWork?.progress?.getString("region_name")
+        ?: activeWork?.inputData?.getString("name") ?: "Определение текущего региона"
+    val activePhase = activeWork?.progress?.getString("phase")
+        ?: if (activeWork?.state == androidx.work.WorkInfo.State.ENQUEUED) "В очереди" else "Подготовка загрузки"
 
     Column(modifier = Modifier.fillMaxSize().background(colors.background)) {
         Surface(modifier = Modifier.fillMaxWidth(), color = colors.surface, tonalElevation = 1.dp) {
@@ -1963,6 +1973,26 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                         style = MaterialTheme.typography.labelMedium, color = colors.onPrimaryContainer)
                 }
             }
+            if (activeWork != null) {
+                Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.5.dp)
+                            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text(activeName, style = MaterialTheme.typography.titleSmall)
+                                Text(activePhase, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                            }
+                            if (activeProgress > 0) Text("$activeProgress%", style = MaterialTheme.typography.labelLarge, color = colors.primary)
+                        }
+                        if (activeProgress > 0) {
+                            androidx.compose.material3.LinearProgressIndicator(progress = { activeProgress.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
+                        } else {
+                            androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Сохранённые регионы", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))

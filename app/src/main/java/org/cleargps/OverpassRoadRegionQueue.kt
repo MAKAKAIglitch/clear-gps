@@ -71,6 +71,12 @@ internal object OverpassRoadRegionQueue {
         wm.enqueueUniquePeriodicWork(OTHERS_WEEKLY, ExistingPeriodicWorkPolicy.KEEP, weekly)
     }
 
+    internal fun workInfos(context: Context): List<WorkInfo> =
+        runCatching {
+            WorkManager.getInstance(context.applicationContext)
+                .getWorkInfosForUniqueWork(QUEUE).get()
+        }.getOrDefault(emptyList())
+
     internal fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     internal fun file(context: Context, id: Long) =
@@ -216,6 +222,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
 
     private fun download(id: Long, name: String, force: Boolean, isCurrent: Boolean): Result {
         if (id <= 0) return Result.failure()
+        setProgressAsync(Data.Builder().putInt("progress", 3).putString("phase", "Подготовка загрузки").putString("region_name", name).build())
         val target = OverpassRoadRegionQueue.file(applicationContext, id)
         val ageLimit = if (isCurrent || OverpassRoadRegionQueue.currentId(applicationContext) == id) 24L * 60 * 60 * 1000 else 7L * 24 * 60 * 60 * 1000
         if (!force && target.isFile && System.currentTimeMillis() - OverpassRoadRegionQueue.updated(applicationContext, id) < ageLimit) {
@@ -232,19 +239,32 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
             if (!response.isSuccessful) throw IOException("Overpass HTTP ${response.code}")
             val body = response.body ?: throw IOException("Empty Overpass response")
             if (body.contentLength() > MAX_BYTES) throw IOException("Region exceeds download limit")
+            setProgressAsync(Data.Builder().putInt("progress", 12).putString("phase", "Загружаем дорожные данные").putString("region_name", name).build())
             body.byteStream().use { input ->
                 FileOutputStream(raw).use { output ->
-                    val buffer = ByteArray(64 * 1024); var total = 0L
+                    val buffer = ByteArray(64 * 1024)
+                    var total = 0L
+                    var lastReported = 0L
+                    val expected = body.contentLength()
                     while (true) {
                         val n = input.read(buffer); if (n < 0) break
                         total += n; if (total > MAX_BYTES) throw IOException("Region exceeds download limit")
                         output.write(buffer, 0, n)
+                        if (total - lastReported >= 1024L * 1024L) {
+                            lastReported = total
+                            val progress = if (expected > 0L) (12 + (total * 70L / expected).toInt()).coerceIn(12, 82) else 35
+                            setProgressAsync(Data.Builder().putInt("progress", progress)
+                                .putString("phase", "Загружаем дорожные данные")
+                                .putString("region_name", name).build())
+                        }
                     }
                 }
             }
+            setProgressAsync(Data.Builder().putInt("progress", 84).putString("phase", "Проверяем данные OpenStreetMap").putString("region_name", name).build())
         }
         val wayCount = validateJsonAndCountWays(raw)
         if (wayCount <= 0) { raw.delete(); throw IOException("No highway ways in region response") }
+        setProgressAsync(Data.Builder().putInt("progress", 90).putString("phase", "Сжимаем и сохраняем регион").putString("region_name", name).build())
         FileInputStream(raw).use { input ->
             FileOutputStream(staged).use { output ->
                 GZIPOutputStream(BufferedOutputStream(output)).use { gzip -> input.copyTo(gzip, 64 * 1024) }
@@ -258,6 +278,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
         }
         raw.delete()
         OverpassRoadRegionQueue.saved(applicationContext, id, name, isCurrent)
+        setProgressAsync(Data.Builder().putInt("progress", 100).putString("phase", "Готово").putString("region_name", name).build())
         return Result.success()
     }
 
