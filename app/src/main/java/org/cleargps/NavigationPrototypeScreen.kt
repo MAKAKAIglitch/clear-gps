@@ -128,6 +128,7 @@ private fun NavigationPrototypeScreen(
     var routeLoading by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
     var showRouteOptions by rememberSaveable { mutableStateOf(false) }
+    var routeOptionsExpanded by rememberSaveable { mutableStateOf(false) }
     var showMapPointSheet by rememberSaveable { mutableStateOf(false) }
     var showLocationModePicker by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -408,6 +409,7 @@ private fun NavigationPrototypeScreen(
                 }
             )
 
+            if (routeDestination == null) {
             // Top search island.
             Surface(
                 modifier = Modifier
@@ -465,6 +467,18 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
+
+            }
+
+            if (routeDestination != null) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp).shadow(7.dp, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.98f), tonalElevation = 4.dp) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
+                        Text("Моя геопозиция  →  " + (selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
+                        Text(if (navigationPosition != null) "От текущей позиции ClearGPS" else "Ожидаю геопозицию ClearGPS", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                }
+            }
             // Smooth zoom controls; no slider.
             Column(
                 modifier = Modifier
@@ -558,6 +572,7 @@ private fun NavigationPrototypeScreen(
                 }
             }
 
+            if (routeDestination == null) {
             // Route summary and compact floating navigation island.
             Column(
                 modifier = Modifier
@@ -796,10 +811,51 @@ private fun NavigationPrototypeScreen(
             }
         }
 
-        BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions) {
+
+            }
+
+            if (routeDestination != null) {
+                val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                val chosenRoute = calculatedRoutes.getOrNull(selectedRouteIndex)
+                Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = bottomInset + 10.dp).shadow(10.dp, RoundedCornerShape(26.dp)), shape = RoundedCornerShape(26.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.99f), tonalElevation = 5.dp) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(Modifier.align(Alignment.CenterHorizontally).size(width = 38.dp, height = 4.dp).background(colors.outlineVariant, CircleShape))
+                        if (routeLoading) Text("Рассчитываю маршруты…", style = MaterialTheme.typography.titleMedium)
+                        else if (routeError != null) Text(routeError!!, style = MaterialTheme.typography.bodyMedium, color = colors.error)
+                        else if (chosenRoute != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text("Лучший маршрут", style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                                    Text("${formatRouteDuration(chosenRoute.durationSeconds)}  ·  ${formatRouteDistance(chosenRoute.distanceMeters)}", style = MaterialTheme.typography.titleLarge, color = colors.onSurface)
+                                    Text("Прибытие около ${java.time.LocalTime.now().plusSeconds(chosenRoute.durationSeconds.toLong().coerceAtLeast(0L)).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))}", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                }
+                                TextButton(onClick = { routeOptionsExpanded = !routeOptionsExpanded }) { Text(if (routeOptionsExpanded) "Свернуть" else "Все ${calculatedRoutes.size} маршрута") }
+                            }
+                            if (routeOptionsExpanded) calculatedRoutes.forEachIndexed { index, route ->
+                                val selected = index == selectedRouteIndex
+                                val isFastest = route.durationSeconds == calculatedRoutes.minOf { it.durationSeconds }
+                                Surface(Modifier.fillMaxWidth().clickable { selectedRouteIndex = index; controller.updateRoutes(listOf(route) + calculatedRoutes.filterIndexed { i, _ -> i != index }) }, shape = RoundedCornerShape(16.dp), color = if (selected) colors.secondaryContainer else colors.surfaceContainer) {
+                                    Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        RadioButton(selected = selected, onClick = { selectedRouteIndex = index; controller.updateRoutes(listOf(route) + calculatedRoutes.filterIndexed { i, _ -> i != index }) })
+                                        Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(if (isFastest) "Самый быстрый" else "Вариант ${index + 1}", style = MaterialTheme.typography.titleSmall, color = if (selected) colors.onSecondaryContainer else colors.onSurface)
+                                            Text("${formatRouteDuration(route.durationSeconds)}  ·  ${formatRouteDistance(route.distanceMeters)}", style = MaterialTheme.typography.bodySmall, color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant)
+                                        }
+                                        if (selected) Text("Выбран", style = MaterialTheme.typography.labelSmall, color = colors.primary)
+                                    }
+                                }
+                            }
+                            Button(onClick = { routeOptionsExpanded = false; Toast.makeText(context, "Маршрут выбран. Ведение по маршруту ещё не подключено.", Toast.LENGTH_LONG).show() }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Navigation, contentDescription = null); Spacer(Modifier.size(8.dp)); Text("Поехали") }
+                        } else Text("Ожидаю расчёт маршрута…", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        BackHandler(enabled = showSettings || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
                 showRouteOptions -> showRouteOptions = false
+                routeOptionsExpanded -> routeOptionsExpanded = false
                 showMapPointSheet -> showMapPointSheet = false
+                routeDestination != null -> { routeDestination = null; calculatedRoutes = emptyList(); controller.updateDestination(null); controller.updateRoutes(emptyList()) }
                 showSettings -> {
                     showSettings = false
                     selectedNavigationTab = "Карта"
@@ -809,114 +865,6 @@ private fun NavigationPrototypeScreen(
         }
 
 
-        if (showRouteOptions && calculatedRoutes.isNotEmpty()) {
-            ModalBottomSheet(
-                onDismissRequest = { showRouteOptions = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = colors.surfaceContainerHigh
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("Маршруты", style = MaterialTheme.typography.headlineSmall)
-                            Text(
-                                "Выберите подходящий вариант",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant
-                            )
-                        }
-                        IconButton(onClick = { showRouteOptions = false }) {
-                            Icon(Icons.Outlined.Close, contentDescription = "Закрыть маршруты")
-                        }
-                    }
-
-                    calculatedRoutes.forEachIndexed { index, route ->
-                        val selected = index == selectedRouteIndex
-                        val arrivalTime = java.time.LocalTime.now()
-                            .plusSeconds(route.durationSeconds.toLong().coerceAtLeast(0L))
-                            .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedRouteIndex = index
-                                    val ordered = listOf(route) +
-                                        calculatedRoutes.filterIndexed { otherIndex, _ -> otherIndex != index }
-                                    controller.updateRoutes(ordered)
-                                },
-                            shape = RoundedCornerShape(20.dp),
-                            color = if (selected) colors.secondaryContainer else colors.surfaceContainer
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 15.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                RadioButton(
-                                    selected = selected,
-                                    onClick = {
-                                        selectedRouteIndex = index
-                                        val ordered = listOf(route) +
-                                            calculatedRoutes.filterIndexed { otherIndex, _ -> otherIndex != index }
-                                        controller.updateRoutes(ordered)
-                                    }
-                                )
-                                Column(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(start = 9.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            if (index == 0) "Самый быстрый" else "Маршрут ${index + 1}",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = if (selected) colors.onSecondaryContainer else colors.onSurface
-                                        )
-                                        if (selected) {
-                                            Text(
-                                                "  ·  Выбран",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = colors.primary
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        "${formatRouteDuration(route.durationSeconds)}  ·  ${formatRouteDistance(route.distanceMeters)}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
-                                    )
-                                    Text(
-                                        "Прибытие около $arrivalTime",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Button(
-                        onClick = { showRouteOptions = false },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Готово")
-                    }
-                }
-            }
-        }
-
-        val selectedPointForSheet = selectedMapPoint
         if (showMapPointSheet && selectedPointForSheet != null) {
             val poiForSheet = selectedPoi
             ModalBottomSheet(
