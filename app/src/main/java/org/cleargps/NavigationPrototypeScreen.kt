@@ -687,24 +687,6 @@ internal fun NavigationPrototypeScreen(
 
             }
 
-            if (routeDestination != null) {
-                Surface(Modifier.fillMaxWidth().padding(horizontal = 14.dp).padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 8.dp).shadow(7.dp, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp), color = colors.surfaceContainerHigh.copy(alpha = 0.98f), tonalElevation = 4.dp) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                            Text(if (isNavigating) "ВЕДЕНИЕ ПО МАРШРУТУ" else "МАРШРУТ", style = MaterialTheme.typography.labelSmall, color = colors.primary)
-                            Text("Моя геопозиция  →  " + (routeDestinationName ?: selectedPoi?.name ?: "Точка на карте"), style = MaterialTheme.typography.titleMedium, color = colors.onSurface, maxLines = 1)
-                        }
-                        if (onClosePreview != null) {
-                            IconButton(onClick = onClosePreview) {
-                                Icon(Icons.Outlined.Close, contentDescription = "Закрыть маршрут")
-                            }
-                        }
-                    }
-                }
-            }
             if (routeDestination != null && isNavigating) {
                 NavigationSpeedBadges(
                     currentSpeedKmh = currentSpeedKmh,
@@ -2703,27 +2685,24 @@ private fun NavigationSpeedBadges(
     speedLimitKmh: Int?,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        SpeedBadge(value = currentSpeedKmh?.toString() ?: "—", caption = "СКОРОСТЬ", isLimit = false)
-        SpeedBadge(value = speedLimitKmh?.toString() ?: "—", caption = "ОГРАНИЧЕНИЕ", isLimit = true)
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SpeedBadge(value = currentSpeedKmh?.toString() ?: "—", isLimit = false)
+        SpeedBadge(value = speedLimitKmh?.toString() ?: "—", isLimit = true)
     }
 }
 
 @Composable
-private fun SpeedBadge(value: String, caption: String, isLimit: Boolean) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Surface(
-            modifier = Modifier
-                .size(if (isLimit) 68.dp else 64.dp)
-                .then(if (isLimit) Modifier.border(4.dp, Color(0xFFD32F2F), CircleShape) else Modifier),
-            shape = CircleShape,
-            color = Color.White,
-            shadowElevation = 7.dp
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(value, style = MaterialTheme.typography.headlineSmall, color = Color(0xFF171717), maxLines = 1)
-            }
+private fun SpeedBadge(value: String, isLimit: Boolean) {
+    Surface(
+        modifier = Modifier
+            .size(if (isLimit) 52.dp else 48.dp)
+            .then(if (isLimit) Modifier.border(3.dp, Color(0xFFD32F2F), CircleShape) else Modifier),
+        shape = CircleShape,
+        color = Color.White,
+        shadowElevation = 5.dp
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(value, style = MaterialTheme.typography.titleMedium, color = Color(0xFF171717), maxLines = 1)
         }
-        Text(caption, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
     }
 }
