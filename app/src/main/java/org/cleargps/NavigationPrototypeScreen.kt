@@ -1943,7 +1943,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
     }
     val activeProgress = activeWork?.progress?.getInt("progress", 0) ?: 0
     val activeName = activeWork?.progress?.getString("region_name")
-        ?: activeWork?.inputData?.getString("name") ?: "Определение текущего региона"
+        ?: "Загрузка региона"
     val activePhase = activeWork?.progress?.getString("phase")
         ?: if (activeWork?.state == androidx.work.WorkInfo.State.ENQUEUED) "В очереди" else "Подготовка загрузки"
 
