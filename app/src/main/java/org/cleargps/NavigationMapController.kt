@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.os.Handler
+import android.os.Looper
 import com.google.gson.JsonObject
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -59,6 +61,14 @@ internal class NavigationMapController {
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
     private var destinationSource: GeoJsonSource? = null
     private var destination: NavigationCoordinate? = null
+    private var poiSource: GeoJsonSource? = null
+    private val poiRepository = NavigationPoiRepository()
+    private val poiHandler = Handler(Looper.getMainLooper())
+    private var poiRefreshRunnable: Runnable? = null
+    private var pois: List<NavigationPoi> = emptyList()
+    private var enabledPoiCategories: Set<NavigationPoiCategory> = NavigationPoiCategory.values().toSet()
+    private var onPoiTap: ((NavigationPoi) -> Unit)? = null
+    private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
 
     fun attach(
         mapView: MapView,
@@ -89,7 +99,27 @@ internal class NavigationMapController {
 
             mapTapListener?.let(mapObject::removeOnMapClickListener)
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
-                onMapTap?.invoke(NavigationCoordinate(coordinate.latitude, coordinate.longitude))
+                val screenPoint = mapObject.projection.toScreenLocation(coordinate)
+                val poiFeature = mapObject.queryRenderedFeatures(screenPoint, *POI_LAYER_IDS).firstOrNull()
+                val properties = poiFeature?.properties()
+                val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
+                val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
+                val geometry = poiFeature?.geometry() as? Point
+                if (properties != null && category != null && geometry != null) {
+                    val address = properties.get(POI_ADDRESS_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
+                    onPoiTap?.invoke(
+                        NavigationPoi(
+                            properties.get(POI_ID_PROPERTY).asString,
+                            properties.get(POI_NAME_PROPERTY).asString,
+                            category,
+                            geometry.latitude(),
+                            geometry.longitude(),
+                            address
+                        )
+                    )
+                } else {
+                    onMapTap?.invoke(NavigationCoordinate(coordinate.latitude, coordinate.longitude))
+                }
                 true
             }
             mapTapListener = tapListener
@@ -104,6 +134,10 @@ internal class NavigationMapController {
             }
             cameraMoveStartedListener = moveStartedListener
             mapObject.addOnCameraMoveStartedListener(moveStartedListener)
+            cameraIdleListener?.let(mapObject::removeOnCameraIdleListener)
+            val idleListener = MapLibreMap.OnCameraIdleListener { schedulePoiRefresh() }
+            cameraIdleListener = idleListener
+            mapObject.addOnCameraIdleListener(idleListener)
 
             mapObject.setStyle(
                 Style.Builder().fromUri(if (initialDarkMode) DARK_STYLE_URI else LIGHT_STYLE_URI)
@@ -114,10 +148,25 @@ internal class NavigationMapController {
                 val newDotSource = GeoJsonSource(DOT_SOURCE, emptyFeatureCollection())
                 val newBearingSource = GeoJsonSource(BEARING_SOURCE, emptyFeatureCollection())
                 val newDestinationSource = GeoJsonSource(DESTINATION_SOURCE, emptyFeatureCollection())
+                val newPoiSource = GeoJsonSource(POI_SOURCE, emptyFeatureCollection())
                 style.addSource(newAccuracySource)
                 style.addSource(newDotSource)
                 style.addSource(newBearingSource)
                 style.addSource(newDestinationSource)
+                style.addSource(newPoiSource)
+                NavigationPoiCategory.values().forEach { category ->
+                    style.addLayer(
+                        CircleLayer(poiLayerId(category), POI_SOURCE)
+                            .withFilter(Expression.eq(Expression.get(POI_CATEGORY_PROPERTY), Expression.literal(category.name)))
+                            .withProperties(
+                                PropertyFactory.circleRadius(7f),
+                                PropertyFactory.circleColor(poiColor(category)),
+                                PropertyFactory.circleStrokeColor("#FFFFFF"),
+                                PropertyFactory.circleStrokeWidth(2f),
+                                PropertyFactory.circleOpacity(0.96f)
+                            )
+                    )
+                }
 
                 // Ferrostar's browsing puck shows its true horizontal uncertainty in metres.
                 style.addLayer(
@@ -181,9 +230,11 @@ internal class NavigationMapController {
                 dotSource = newDotSource
                 bearingSource = newBearingSource
                 destinationSource = newDestinationSource
+                poiSource = newPoiSource
                 styleReady = true
                 renderCurrentPosition()
                 renderDestination()
+                renderPois()
 
                 if (!cameraInitialized) {
                     val initialFix = currentPosition?.takeIf { it.isValid() }
@@ -199,6 +250,7 @@ internal class NavigationMapController {
                     hasCenteredOnFirstPosition = initialFix != null
                     cameraInitialized = true
                 }
+                schedulePoiRefresh()
             }
         }
     }
@@ -210,11 +262,18 @@ internal class NavigationMapController {
         dotSource = null
         bearingSource = null
         destinationSource = null
+        poiSource = null
+        poiRefreshRunnable?.let(poiHandler::removeCallbacks)
+        poiRefreshRunnable = null
+        poiRepository.cancel()
+        pois = emptyList()
         val oldMap = map
         mapTapListener?.let { listener -> oldMap?.removeOnMapClickListener(listener) }
         mapTapListener = null
         cameraMoveStartedListener?.let { listener -> oldMap?.removeOnCameraMoveStartedListener(listener) }
         cameraMoveStartedListener = null
+        cameraIdleListener?.let { listener -> oldMap?.removeOnCameraIdleListener(listener) }
+        cameraIdleListener = null
         map = null
         attachedMapView = null
         contextPreferences(mapView).edit()
@@ -247,6 +306,58 @@ internal class NavigationMapController {
 
     fun setOnMapTapListener(listener: ((NavigationCoordinate) -> Unit)?) {
         onMapTap = listener
+    }
+
+    fun setOnPoiTapListener(listener: ((NavigationPoi) -> Unit)?) {
+        onPoiTap = listener
+    }
+
+    fun updatePoiCategories(categories: Set<NavigationPoiCategory>) {
+        enabledPoiCategories = categories
+        renderPois()
+    }
+
+    private fun schedulePoiRefresh() {
+        poiRefreshRunnable?.let(poiHandler::removeCallbacks)
+        val task = Runnable {
+            val mapObject = map ?: return@Runnable
+            if (!styleReady || mapObject.cameraPosition.zoom < MIN_POI_ZOOM) {
+                pois = emptyList()
+                renderPois()
+                return@Runnable
+            }
+            val bounds = mapObject.projection.visibleRegion.latLngBounds
+            poiRepository.load(
+                bounds.latitudeSouth,
+                bounds.longitudeWest,
+                bounds.latitudeNorth,
+                bounds.longitudeEast
+            ) { loaded ->
+                if (map === mapObject && styleReady) {
+                    pois = loaded
+                    renderPois()
+                }
+            }
+        }
+        poiRefreshRunnable = task
+        poiHandler.postDelayed(task, POI_REFRESH_DEBOUNCE_MS)
+    }
+
+    private fun renderPois() {
+        if (!styleReady) return
+        val features = pois.asSequence()
+            .filter { it.category in enabledPoiCategories }
+            .map { poi ->
+                Feature.fromGeometry(Point.fromLngLat(poi.longitude, poi.latitude)).apply {
+                    addStringProperty(POI_ID_PROPERTY, poi.id)
+                    addStringProperty(POI_NAME_PROPERTY, poi.name)
+                    addStringProperty(POI_CATEGORY_PROPERTY, poi.category.name)
+                    poi.address?.let { addStringProperty(POI_ADDRESS_PROPERTY, it) }
+                }
+            }
+            .toList()
+        poiSource?.setGeoJson(FeatureCollection.fromFeatures(features))
+        map?.triggerRepaint()
     }
 
     fun updateDestination(coordinate: NavigationCoordinate?) {
@@ -427,12 +538,30 @@ internal class NavigationMapController {
         const val DOT_SOURCE = "cleargps-navigation-dot"
         const val BEARING_SOURCE = "cleargps-navigation-bearing"
         const val DESTINATION_SOURCE = "cleargps-navigation-destination"
+        const val POI_SOURCE = "cleargps-navigation-pois"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
         const val DOT_SHADOW_LAYER = "cleargps-navigation-dot-shadow"
         const val DOT_LAYER = "cleargps-navigation-dot"
         const val BEARING_LAYER = "cleargps-navigation-bearing-indicator"
         const val DESTINATION_LAYER = "cleargps-navigation-destination-marker"
+        const val POI_ID_PROPERTY = "poi_id"
+        const val POI_NAME_PROPERTY = "poi_name"
+        const val POI_CATEGORY_PROPERTY = "poi_category"
+        const val POI_ADDRESS_PROPERTY = "poi_address"
+        val POI_LAYER_IDS = NavigationPoiCategory.values().map { poiLayerId(it) }.toTypedArray()
+
+        fun poiLayerId(category: NavigationPoiCategory) = "cleargps-poi-${category.name.lowercase()}"
+        fun poiColor(category: NavigationPoiCategory) = when (category) {
+            NavigationPoiCategory.FUEL -> "#E58A24"
+            NavigationPoiCategory.ELECTRIC -> "#21A56B"
+            NavigationPoiCategory.PHARMACY -> "#D84B58"
+            NavigationPoiCategory.GROCERY -> "#4C8FD8"
+            NavigationPoiCategory.SHOP -> "#8B68C9"
+            NavigationPoiCategory.FOOD -> "#D77B42"
+            NavigationPoiCategory.PARKING -> "#657B91"
+            NavigationPoiCategory.ATM -> "#329A9A"
+        }
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
         const val BEARING_ICON_SIZE = 0.25f
@@ -446,6 +575,8 @@ internal class NavigationMapController {
         const val MAX_ZOOM = 20.0
         const val CAMERA_ANIMATION_MS = 680
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
+        const val MIN_POI_ZOOM = 12.0
+        const val POI_REFRESH_DEBOUNCE_MS = 850L
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
         const val ACCURACY_RING_SEGMENTS = 64
