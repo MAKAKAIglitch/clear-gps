@@ -94,6 +94,58 @@ class NetworkGateTest {
     }
 
     @Test
+    fun overpassRoadQueueAllowsOnlyRegionSearchAndRoadExtractQueries() {
+        val regionSearch = "[out:json][timeout:25];relation[\"boundary\"=\"administrative\"][\"admin_level\"=\"4\"][\"name\"~\"Саратовская область\",i];out tags 30;"
+        val searchUri = NetworkGate.validateRequest(
+            overpassUrl(regionSearch), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+        )
+        assertEquals("overpass-api.de", searchUri.host)
+
+        val currentRegion = "[out:json][timeout:35];is_in(51.5,46.0)->.a;relation(pivot.a)[\"boundary\"=\"administrative\"][\"admin_level\"=\"4\"];out tags;"
+        assertEquals("overpass-api.de", NetworkGate.validateRequest(
+            overpassUrl(currentRegion), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+        ).host)
+
+        val roads = "[out:json][timeout:180];relation(123)->.r;map_to_area .r->.region;way(area.region)[\"highway\"];out geom;"
+        assertEquals("/api/interpreter", NetworkGate.validateRequest(
+            overpassUrl(roads), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+        ).path)
+    }
+
+    @Test
+    fun overpassRoadQueueRejectsWritesUnboundedQueriesAndMissingConsent() {
+        val invalid = listOf(
+            "[out:json];node(1);out;",
+            "[out:json];relation(123);delete;",
+            "[out:json];way(area.region);out geom;"
+        )
+        invalid.forEach { query ->
+            assertThrows(SecurityException::class.java) {
+                NetworkGate.validateRequest(
+                    overpassUrl(query), "GET",
+                    NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+                )
+            }
+        }
+        val valid = "[out:json][timeout:180];relation(123)->.r;map_to_area .r->.region;way(area.region)[\"highway\"];out geom;"
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                overpassUrl(valid), "GET",
+                NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = false
+            )
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                overpassUrl(valid), "POST",
+                NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+            )
+        }
+    }
+
+    @Test
     fun airportCatalogueIsReadOnlyAndRequiresItsOwnConsent() {
         assertThrows(SecurityException::class.java) {
             NetworkGate.validateRequest(
