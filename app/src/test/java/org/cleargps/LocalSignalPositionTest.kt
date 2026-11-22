@@ -85,6 +85,9 @@ class LocalSignalPositionTest {
         assertTrue(abs(estimate.longitude - 40.0) < 0.002)
         assertEquals(3, estimate.matchedCount)
         assertFalse(estimate.fallbackUsed)
+        // Three matching signals with near-identical, high-quality samples should not
+        // inherit a several-hundred-metre penalty from fixed sparse/match constants.
+        assertTrue(estimate.accuracyMeters < 100.0)
     }
 
     @Test fun fingerprintSearchMatchesMacKeysFromLegacySeparatorFormats() {
@@ -188,6 +191,45 @@ class LocalSignalPositionTest {
         assertTrue(abs(old.latitude - fresh.latitude) < 0.002)
         assertTrue(abs(old.longitude - fresh.longitude) < 0.002)
         assertTrue(old.accuracyMeters > fresh.accuracyMeters)
+    }
+
+    @Test fun tightRadioAnchorClusterGetsCalibratedUncertaintyAndWeakEvidenceWidensIt() {
+        val now = 1_000_000L
+        fun point(id: Long, identifier: String, accuracy: Double, rssi: Int) =
+            RadioPointRecord(
+                id = id, type = "wifi", identifier = identifier, label = "", ssid = "", notes = "",
+                latitude = 55.0 + id * 0.00001, longitude = 40.0 + id * 0.00001,
+                accuracyMeters = accuracy, rssi = rssi, peakRssi = rssi, frequency = 2412,
+                firstSeen = now - 5_000, lastSeen = now - 1_000, sightings = 4,
+                positionSource = "wigle-import"
+            )
+
+        val singleStrong = requireNotNull(
+            estimateRadioAnchorPosition(
+                listOf(RadioSignal("wifi", "single", -60) to point(1, "single", 100.0, -60)),
+                now
+            )
+        )
+        val denseStrong = requireNotNull(
+            estimateRadioAnchorPosition(
+                (1L..4L).map { id ->
+                    RadioSignal("wifi", "ap-$id", -60) to point(id, "ap-$id", 100.0, -60)
+                },
+                now
+            )
+        )
+        val singleWeak = requireNotNull(
+            estimateRadioAnchorPosition(
+                listOf(RadioSignal("wifi", "weak", -95) to point(1, "weak", 100.0, -95)),
+                now
+            )
+        )
+
+        assertTrue(denseStrong.accuracyMeters < singleStrong.accuracyMeters)
+        assertTrue(singleStrong.accuracyMeters < 250.0)
+        assertTrue(singleWeak.accuracyMeters > singleStrong.accuracyMeters)
+        // Reported anchor error remains a floor: calibration cannot claim sub-metre accuracy.
+        assertTrue(denseStrong.accuracyMeters >= 100.0)
     }
 
     @Test fun bleAnchorsExpireEarlierThanWifiAnchors() {
