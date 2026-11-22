@@ -9,6 +9,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.shadows.ShadowSystemClock
+import java.util.concurrent.TimeUnit
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -167,6 +169,7 @@ class NavigationPositionModeTest {
             .commit()
         assertEquals(null, readNavigationPosition(prefs))
 
+        ShadowSystemClock.advanceBy(121_000L, TimeUnit.MILLISECONDS)
         prefs.edit()
             .putString(ClearGpsPreferences.KEY_POSITION_MODE, "auto")
             .putLong(
