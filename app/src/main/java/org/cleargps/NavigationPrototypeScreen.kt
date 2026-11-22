@@ -35,6 +35,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -178,6 +179,7 @@ internal fun NavigationPrototypeScreen(
     var routeLoading by remember { mutableStateOf(false) }
     var routeError by remember { mutableStateOf<String?>(null) }
     var isNavigating by rememberSaveable { mutableStateOf(false) }
+    var tripPanelExpanded by rememberSaveable { mutableStateOf(false) }
     var activeRoute by remember { mutableStateOf<NavigationRouteAlternative?>(null) }
     var guidance by remember { mutableStateOf<NavigationGuidanceSnapshot?>(null) }
     var lastAnnouncedStepIndex by remember { mutableStateOf(-1) }
@@ -1155,6 +1157,7 @@ internal fun NavigationPrototypeScreen(
                                 DiagnosticLogStore.log(context, "NAV_SESSION", "Начато ведение: дистанция_m=${chosenRoute.distanceMeters.toInt()}, время_s=${chosenRoute.durationSeconds.toInt()}")
                                 activeRoute = chosenRoute
                                 isNavigating = true
+                                tripPanelExpanded = false
                                 guidance = null
                                 lastAnnouncedStepIndex = -1
                                 lastAnnouncedStage = -1
@@ -1174,48 +1177,24 @@ internal fun NavigationPrototypeScreen(
             }
 
             if (routeDestination != null && isNavigating) {
-                val progress = guidance
-                val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-                Surface(
-                    Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .padding(horizontal = 12.dp).padding(bottom = bottomInset + 10.dp)
-                        .shadow(10.dp, RoundedCornerShape(24.dp)),
-                    shape = RoundedCornerShape(24.dp),
-                    color = colors.surfaceContainerHigh.copy(alpha = 0.99f),
-                    tonalElevation = 5.dp
-                ) {
-                    Column(
-                        Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column {
-                                Text("ОСТАЛОСЬ", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                                Text(progress?.let { formatRouteDuration(it.remainingDurationSeconds) } ?: "—", style = MaterialTheme.typography.titleMedium)
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("ПРИБЫТИЕ", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                                Text(progress?.let {
-                                    java.time.LocalTime.now().plusSeconds(it.remainingDurationSeconds.toLong().coerceAtLeast(0L))
-                                        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
-                                } ?: "—", style = MaterialTheme.typography.titleMedium)
-                            }
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            TextButton(onClick = {
-                                DiagnosticLogStore.log(context, "NAV_SESSION", "Ведение по маршруту завершено пользователем")
-                                isNavigating = false
-                                activeRoute = null
-                                guidance = null
-                                lastAnnouncedStepIndex = -1
-                                lastAnnouncedStage = -1
-                                offRouteFixCount = 0
-                                controller.updateRoutes(calculatedRoutes)
-                                controller.centerOnCurrentPosition()
-                            }) { Text("Завершить маршрут") }
-                        }
+                NavigationTripPanel(
+                    route = activeRoute,
+                    progress = guidance,
+                    expanded = tripPanelExpanded,
+                    onExpandedChange = { tripPanelExpanded = it },
+                    onFinish = {
+                        DiagnosticLogStore.log(context, "NAV_SESSION", "Ведение по маршруту завершено пользователем")
+                        isNavigating = false
+                        tripPanelExpanded = false
+                        activeRoute = null
+                        guidance = null
+                        lastAnnouncedStepIndex = -1
+                        lastAnnouncedStage = -1
+                        offRouteFixCount = 0
+                        controller.updateRoutes(calculatedRoutes)
+                        controller.centerOnCurrentPosition()
                     }
-                }
+                )
             }
 
         }
@@ -1399,6 +1378,7 @@ internal fun NavigationPrototypeScreen(
                                 selectedRouteIndex = 0
                                 activeRoute = null
                                 isNavigating = false
+                                tripPanelExpanded = false
                                 guidance = null
                                 offRouteFixCount = 0
                                 lastRerouteAtMs = 0
@@ -2615,6 +2595,159 @@ private fun NavigationStatusStrip(
         if (expanded && older.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 older.forEach { NoticePill(it, compact = false) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.NavigationTripPanel(
+    route: NavigationRouteAlternative?,
+    progress: NavigationGuidanceSnapshot?,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onFinish: () -> Unit
+) {
+    val remainingMeters = progress?.remainingDistanceMeters
+        ?: route?.distanceMeters
+        ?: 0.0
+    val totalMeters = route?.distanceMeters?.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+    val traveledMeters = (totalMeters - remainingMeters).coerceIn(0.0, totalMeters)
+    val progressFraction = if (totalMeters > 0.0) {
+        (traveledMeters / totalMeters).toFloat().coerceIn(0f, 1f)
+    } else 0f
+    val remainingSeconds = progress?.remainingDurationSeconds
+        ?: route?.durationSeconds
+        ?: 0.0
+    val arrivalTime = java.time.LocalTime.now()
+        .plusSeconds(remainingSeconds.toLong().coerceAtLeast(0L))
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+    val panelColor = Color(0xFF152232)
+    val primaryText = Color(0xFFF4F8FC)
+    val secondaryText = Color(0xFFB8C9D8)
+    val trackColor = Color(0xFF526779)
+    val progressColor = Color(0xFF55B6FF)
+    val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    Surface(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .padding(bottom = bottomInset + 10.dp)
+            .shadow(12.dp, RoundedCornerShape(24.dp))
+            .clickable { onExpandedChange(!expanded) },
+        shape = RoundedCornerShape(24.dp),
+        color = panelColor,
+        tonalElevation = 5.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .animateContentSize(animationSpec = tween(260))
+                .padding(horizontal = 16.dp, vertical = if (expanded) 15.dp else 11.dp),
+            verticalArrangement = Arrangement.spacedBy(if (expanded) 13.dp else 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (expanded) {
+                        Text("ПОЕЗДКА", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                    }
+                    Text(
+                        "$arrivalTime · прибытие",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = primaryText
+                    )
+                    if (!expanded) {
+                        Text(
+                            "${formatRouteDuration(remainingSeconds)} · ${formatRouteDistance(remainingMeters)} осталось",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = secondaryText
+                        )
+                    }
+                }
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = if (expanded) "Свернуть панель поездки" else "Развернуть панель поездки",
+                    tint = primaryText,
+                    modifier = Modifier
+                        .size(25.dp)
+                        .graphicsLayer { rotationZ = if (expanded) -90f else 90f }
+                )
+            }
+
+            if (expanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(arrivalTime, style = MaterialTheme.typography.headlineSmall, color = primaryText)
+                        Text("Прибытие", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(formatRouteDuration(remainingSeconds), style = MaterialTheme.typography.titleLarge, color = primaryText)
+                        Text("Осталось", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                    }
+                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(formatRouteDistance(remainingMeters), style = MaterialTheme.typography.titleLarge, color = primaryText)
+                        Text("До цели", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Проехано ${formatRouteDistance(traveledMeters)}", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                        Text("Осталось ${formatRouteDistance(remainingMeters)}", style = MaterialTheme.typography.labelSmall, color = secondaryText)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 7.dp)
+                            .background(trackColor, CircleShape)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(progressFraction)
+                                .heightIn(min = 7.dp)
+                                .background(progressColor, CircleShape)
+                        )
+                    }
+                    Text(
+                        "${(progressFraction * 100).toInt()}% маршрута пройдено",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = secondaryText
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onFinish) {
+                        Text("Завершить маршрут", color = Color(0xFFFFB4AB))
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 4.dp)
+                        .background(trackColor, CircleShape)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(progressFraction)
+                            .heightIn(min = 4.dp)
+                            .background(progressColor, CircleShape)
+                    )
+                }
             }
         }
     }
