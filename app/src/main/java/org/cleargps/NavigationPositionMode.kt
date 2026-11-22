@@ -139,14 +139,15 @@ internal fun readNavigationPosition(
     // latest valid physical GPS callback. This is display-only and explicitly unverified.
     val observedElapsedNanos = prefs.getLong(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ELAPSED_NANOS, 0L)
     val observedAgeNanos = nowNanos - observedElapsedNanos
-    if (observedElapsedNanos <= 0L || observedAgeNanos !in 0L..LAST_OBSERVED_GPS_MAX_AGE_NANOS) return null
+    if (observedElapsedNanos <= 0L || observedAgeNanos < 0L) return null
     val observedLatitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT, null)?.toDoubleOrNull() ?: return null
     val observedLongitude = prefs.getString(LocationMonitorService.KEY_LAST_OBSERVED_GPS_LON, null)?.toDoubleOrNull() ?: return null
     val observedCoordinate = NavigationCoordinate(observedLatitude, observedLongitude)
     if (!observedCoordinate.isValid()) return null
     val observedAccuracy = prefs.getFloat(LocationMonitorService.KEY_LAST_OBSERVED_GPS_ACCURACY, -1f)
         .toDouble().takeIf { it.isFinite() && it > 0.0 && it <= 100_000.0 }
-    return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED", null)
+    val observedSource = if (observedAgeNanos <= LAST_OBSERVED_GPS_MAX_AGE_NANOS) "GPS_UNVERIFIED" else "GPS_UNVERIFIED_STALE"
+    return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, observedSource, null)
 }
 
 private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
