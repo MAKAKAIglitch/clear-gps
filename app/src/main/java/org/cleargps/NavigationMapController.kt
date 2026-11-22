@@ -58,6 +58,7 @@ internal class NavigationMapController {
     private var cameraInitialized = false
     private var hasCenteredOnFirstPosition = false
     private var isFollowingUser = true
+    private var isNavigationCameraMode = false
     private var cameraMoveStartedListener: MapLibreMap.OnCameraMoveStartedListener? = null
     private var mapTapListener: MapLibreMap.OnMapClickListener? = null
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
@@ -319,9 +320,8 @@ internal class NavigationMapController {
             hasCenteredOnFirstPosition = true
             isFollowingUser = true
             moveCameraToUser(point, FOLLOW_ZOOM, animated = true)
-        } else if (isFollowingUser && point != previousPosition) {
-            // Keep the map centered only while follow mode is active. Manual pan/zoom gestures
-            // release the camera, and the user can re-enable following with the location action.
+        } else if (isFollowingUser && point != previousPosition && !isNavigationCameraMode) {
+            // Browsing mode remains north-up; active guidance owns the camera heading.
             moveCameraToUser(point, currentZoom(), animated = true)
         }
     }
@@ -442,6 +442,7 @@ internal class NavigationMapController {
     fun followNavigationPosition(point: NavigationCoordinate, bearingDegrees: Double?) {
         val mapObject = map ?: return
         if (!styleReady || !point.isValid() || !isFollowingUser) return
+        isNavigationCameraMode = true
         val previousTarget = mapObject.cameraPosition.target
         if (previousTarget != null) {
             val previous = NavigationCoordinate(previousTarget.latitude, previousTarget.longitude)
@@ -465,6 +466,7 @@ internal class NavigationMapController {
         val point = currentPosition?.takeIf { it.isValid() } ?: return false
         if (map == null || !styleReady) return false
         isFollowingUser = true
+        isNavigationCameraMode = false
         hasCenteredOnFirstPosition = true
         moveCameraToUser(point, FOLLOW_ZOOM, animated = true)
         return true
