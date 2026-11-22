@@ -146,7 +146,7 @@ class NavigationPositionModeTest {
     }
 
     @Test
-    fun doesNotUseUnverifiedGpsInRadioOnlyModeOrAfterExpiry() {
+    fun doesNotUseUnverifiedGpsInRadioOnlyModeButKeepsItVisibleAfterTwoMinutes() {
         val context = RuntimeEnvironment.getApplication()
         val prefs = context.getSharedPreferences("navigation_position_unverified_gps_expired", Context.MODE_PRIVATE)
         prefs.edit().clear()
@@ -167,7 +167,10 @@ class NavigationPositionModeTest {
                 SystemClock.elapsedRealtimeNanos() - 121_000_000_000L
             )
             .commit()
-        assertEquals(null, readNavigationPosition(prefs))
+        val staleSnapshot = requireNotNull(readNavigationPosition(prefs))
+        assertEquals(55.7558, staleSnapshot.coordinate.latitude, 0.000001)
+        assertEquals(37.6173, staleSnapshot.coordinate.longitude, 0.000001)
+        assertEquals("GPS_UNVERIFIED_STALE", staleSnapshot.source)
         prefs.edit().clear().commit()
     }
 
