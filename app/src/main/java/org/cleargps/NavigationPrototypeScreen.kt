@@ -9,7 +9,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -45,7 +43,6 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
@@ -123,7 +120,6 @@ private fun NavigationPrototypeScreen(
     var centerOnNextPosition by remember { mutableStateOf(false) }
     var selectedMapPoint by remember { mutableStateOf<NavigationCoordinate?>(null) }
     var selectedPoi by remember { mutableStateOf<NavigationPoi?>(null) }
-    var enabledPoiCategories by remember { mutableStateOf(NavigationPoiCategory.values().toSet()) }
     var routeDestination by remember { mutableStateOf<NavigationCoordinate?>(null) }
     val routingRepository = remember { NavigationRoutingRepository() }
     var calculatedRoutes by remember { mutableStateOf<List<NavigationRouteAlternative>>(emptyList()) }
@@ -202,9 +198,6 @@ private fun NavigationPrototypeScreen(
 
     LaunchedEffect(navigationPosition) {
         controller.updatePosition(navigationPosition)
-    }
-    LaunchedEffect(enabledPoiCategories) {
-        controller.updatePoiCategories(enabledPoiCategories)
     }
     LaunchedEffect(routeDestination) {
         controller.updateDestination(routeDestination)
@@ -467,39 +460,6 @@ private fun NavigationPrototypeScreen(
                             Icons.Outlined.Settings,
                             contentDescription = "Настройки навигации",
                             tint = colors.onSurface
-                        )
-                    }
-                }
-            }
-
-            // OSM point-of-interest filters.
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp)
-                    .padding(top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 82.dp),
-                shape = RoundedCornerShape(20.dp),
-                color = colors.surfaceContainerHigh.copy(alpha = 0.96f),
-                tonalElevation = 2.dp
-            ) {
-                Row(
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    NavigationPoiCategory.values().forEach { category ->
-                        FilterChip(
-                            selected = category in enabledPoiCategories,
-                            onClick = {
-                                enabledPoiCategories = if (category in enabledPoiCategories) {
-                                    enabledPoiCategories - category
-                                } else {
-                                    enabledPoiCategories + category
-                                }
-                            },
-                            label = { Text(category.title, style = MaterialTheme.typography.labelMedium) }
                         )
                     }
                 }
