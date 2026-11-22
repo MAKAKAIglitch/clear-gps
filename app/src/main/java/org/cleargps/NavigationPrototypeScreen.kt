@@ -92,6 +92,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
+private const val KEY_NAV_VOICE_ENABLED = "navigation_voice_enabled"
+
 @Composable
 internal fun ClearGpsNavigationShell(
     onMapViewCreated: (MapView) -> Unit,
@@ -164,6 +166,8 @@ internal fun NavigationPrototypeScreen(
     var lastRerouteAtMs by remember { mutableStateOf(0L) }
     var speechEngine by remember { mutableStateOf<TextToSpeech?>(null) }
     var speechReady by remember { mutableStateOf(false) }
+    var speechEnabled by remember { mutableStateOf(positionPreferences.getBoolean(KEY_NAV_VOICE_ENABLED, true)) }
+    var showLocationDetails by rememberSaveable { mutableStateOf(false) }
     var showRouteOptions by rememberSaveable { mutableStateOf(false) }
     var routeOptionsExpanded by rememberSaveable { mutableStateOf(false) }
     var showMapPointSheet by rememberSaveable { mutableStateOf(false) }
@@ -229,6 +233,7 @@ internal fun NavigationPrototypeScreen(
             controller.updateSelectedMapPoint(point)
             showMapPointSheet = true
         }
+        controller.setOnLocationTapListener { showLocationDetails = true }
         controller.setOnPoiTapListener { poi ->
             selectedPoi = poi
             selectedMapPoint = poi.coordinate
@@ -237,6 +242,7 @@ internal fun NavigationPrototypeScreen(
         }
         onDispose {
             controller.setOnMapTapListener(null)
+            controller.setOnLocationTapListener(null)
             controller.setOnPoiTapListener(null)
         }
     }
@@ -273,7 +279,7 @@ internal fun NavigationPrototypeScreen(
         )
     }
 
-    LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination, speechReady) {
+    LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination, speechReady, speechEnabled) {
         if (!isNavigating) return@LaunchedEffect
         val position = navigationPosition?.coordinate ?: return@LaunchedEffect
         val route = activeRoute ?: return@LaunchedEffect
@@ -294,7 +300,7 @@ internal fun NavigationPrototypeScreen(
             lastAnnouncedStepIndex = progress.stepIndex
             lastAnnouncedStage = 3
         }
-        if (speechReady && (stepChanged || announcementStage < lastAnnouncedStage)) {
+        if (speechEnabled && speechReady && (stepChanged || announcementStage < lastAnnouncedStage)) {
             val spokenInstruction = when (announcementStage) {
                 2 -> "Через ${formatRouteDistance(progress.distanceToManeuverMeters)}. ${progress.instruction}"
                 1 -> "Скоро. ${progress.instruction}"
@@ -350,6 +356,7 @@ internal fun NavigationPrototypeScreen(
     LaunchedEffect(routeDestination) {
         controller.updateDestination(routeDestination)
     }
+    LaunchedEffect(isNavigating, activeRoute) { controller.setNavigationActive(isNavigating, activeRoute) }
 
     LaunchedEffect(routeDestination, if (isNavigating) null else navigationPosition?.coordinate) {
         if (isNavigating) return@LaunchedEffect
@@ -1040,7 +1047,7 @@ internal fun NavigationPrototypeScreen(
                                 )
                             }
                             IconButton(onClick = {
-                                if (speechReady) speechEngine?.speak(
+                                if (speechEnabled && speechReady) speechEngine?.speak(
                                     progress?.instruction ?: "Продолжайте движение",
                                     TextToSpeech.QUEUE_FLUSH, null, "cleargps-repeat"
                                 )
@@ -1332,6 +1339,12 @@ internal fun NavigationPrototypeScreen(
                     showSettings = false
                     selectedNavigationTab = "Карта"
                 },
+                speechEnabled = speechEnabled,
+                onSpeechEnabledChange = { enabled ->
+                    speechEnabled = enabled
+                    positionPreferences.edit().putBoolean(KEY_NAV_VOICE_ENABLED, enabled).apply()
+                    if (!enabled) speechEngine?.stop()
+                },
                 onOpenLocationSettings = {
                     showSettings = false
                     selectedNavigationTab = "Карта"
@@ -1389,6 +1402,8 @@ internal fun NavigationPrototypeScreen(
 
 @Composable
 private fun NavigationSettingsScreen(
+    speechEnabled: Boolean,
+    onSpeechEnabledChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     onOpenLocationSettings: () -> Unit
 ) {
@@ -1501,11 +1516,14 @@ private fun NavigationSettingsScreen(
                     icon = Icons.Outlined.Navigation
                 )
                 NavigationSettingsDivider()
-                NavigationSettingsItem(
-                    title = "Голосовые подсказки",
-                    subtitle = "Русские голосовые подсказки, расстояние до манёвра и перерасчёт маршрута",
-                    icon = Icons.Outlined.VolumeUp
-                )
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.VolumeUp, contentDescription = null, tint = colors.primary, modifier = Modifier.size(28.dp))
+                    Column(Modifier.weight(1f).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Голосовые подсказки", style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
+                        Text(if (speechEnabled) "Озвучивание манёвров включено" else "Только визуальные подсказки", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    }
+                    Switch(checked = speechEnabled, onCheckedChange = onSpeechEnabledChange)
+                }
             }
 
             NavigationSettingsGroup("О ПРИЛОЖЕНИИ") {
