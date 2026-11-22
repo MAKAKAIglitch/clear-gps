@@ -8,6 +8,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import android.speech.tts.TextToSpeech
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.WifiOff
+import android.net.NetworkCapabilities
+import android.net.Network
+import android.net.ConnectivityManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -521,49 +526,39 @@ internal fun NavigationPrototypeScreen(
                 color = colors.surfaceContainerHigh.copy(alpha = 0.97f),
                 tonalElevation = 3.dp
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable {
                             selectedNavigationTab = "Поиск"
                             showSearch = true
-                        }
-                        .padding(start = 15.dp, end = 7.dp, top = 7.dp, bottom = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.Search,
-                        contentDescription = "Поиск места",
-                        tint = colors.primary
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 12.dp, top = 3.dp, bottom = 3.dp),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                        }.padding(start = 15.dp, end = 7.dp, top = 7.dp, bottom = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (destinationQuery.isBlank()) "Куда едем?" else destinationQuery,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = colors.onSurface
-                        )
-                        Text(
-                            text = "Адрес или название места",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onSurfaceVariant
-                        )
+                        Icon(Icons.Outlined.Search, contentDescription = "Поиск места", tint = colors.primary)
+                        Column(
+                            modifier = Modifier.weight(1f).padding(start = 12.dp, top = 3.dp, bottom = 3.dp),
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            Text(if (destinationQuery.isBlank()) "Куда едем?" else destinationQuery,
+                                style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+                            Text("Адрес или название места", style = MaterialTheme.typography.labelSmall,
+                                color = colors.onSurfaceVariant)
+                        }
+                        IconButton(onClick = {
+                            selectedNavigationTab = "Настройки"
+                            showSearch = false
+                            showSettings = true
+                        }) {
+                            Icon(Icons.Outlined.Settings, contentDescription = "Настройки навигации", tint = colors.onSurface)
+                        }
                     }
-                    IconButton(onClick = {
-                        selectedNavigationTab = "Настройки"
-                        showSearch = false
-                        showSettings = true
-                    }) {
-                        Icon(
-                            Icons.Outlined.Settings,
-                            contentDescription = "Настройки навигации",
-                            tint = colors.onSurface
-                        )
-                    }
+                    NavigationStatusStrip(
+                        hasInternet = rememberValidatedInternet(context),
+                        position = navigationPosition,
+                        positionMode = selectedPositionMode,
+                        routeLoading = routeLoading,
+                        routeError = routeError
+                    )
                 }
             }
 
@@ -1546,6 +1541,185 @@ private fun NavigationSettingsDivider() {
     )
 }
 
+
+private data class NavigationStatusNotice(
+    val key: String,
+    val title: String,
+    val kind: Kind,
+    val priority: Int,
+    val updatedAt: Long
+) {
+    enum class Kind { NO_INTERNET, LOCATION, WARNING, ROUTE }
+}
+
+@Composable
+private fun rememberValidatedInternet(context: android.content.Context): Boolean {
+    var connected by remember {
+        mutableStateOf(validatedInternetAvailable(
+            context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        ))
+    }
+    DisposableEffect(context) {
+        val manager = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                connected = validatedInternetAvailable(manager)
+            }
+            override fun onLost(network: Network) {
+                connected = validatedInternetAvailable(manager)
+            }
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                connected = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            }
+        }
+        var registered = false
+        try {
+            manager.registerDefaultNetworkCallback(callback)
+            registered = true
+        } catch (_: RuntimeException) { }
+        onDispose {
+            if (registered) {
+                try { manager.unregisterNetworkCallback(callback) } catch (_: RuntimeException) { }
+            }
+        }
+    }
+    return connected
+}
+
+private fun validatedInternetAvailable(manager: ConnectivityManager): Boolean {
+    val network = manager.activeNetwork ?: return false
+    val capabilities = manager.getNetworkCapabilities(network) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+}
+
+@Composable
+private fun NavigationStatusStrip(
+    hasInternet: Boolean,
+    position: NavigationPositionSnapshot?,
+    positionMode: NavigationPositionMode,
+    routeLoading: Boolean,
+    routeError: String?
+) {
+    var notices by remember { mutableStateOf(emptyList<NavigationStatusNotice>()) }
+    var expanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hasInternet, position, positionMode, routeLoading, routeError) {
+        val desired = buildList {
+            if (!hasInternet) add(NavigationStatusNotice("internet", "Нет интернета", NavigationStatusNotice.Kind.NO_INTERNET, 100, 0L))
+            if (!routeError.isNullOrBlank()) add(NavigationStatusNotice("route-error", "Ошибка маршрута", NavigationStatusNotice.Kind.ROUTE, 95, 0L))
+            if (routeLoading) add(NavigationStatusNotice("route-loading", "Перестраиваю маршрут", NavigationStatusNotice.Kind.ROUTE, 85, 0L))
+            if (position == null) {
+                add(NavigationStatusNotice(
+                    "position-missing",
+                    if (positionMode == NavigationPositionMode.RADIO_ONLY) "Нет радиопозиции" else "Нет геопозиции",
+                    NavigationStatusNotice.Kind.WARNING, 80, 0L
+                ))
+            } else {
+                val source = position.source.uppercase()
+                if (source.contains("UNVERIFIED")) {
+                    add(NavigationStatusNotice("position-unverified", "GPS не проверен", NavigationStatusNotice.Kind.WARNING, 75, 0L))
+                }
+                if (position.accuracyMeters != null && position.accuracyMeters > 50.0) {
+                    add(NavigationStatusNotice("position-accuracy", "Слабая точность ±\${position.accuracyMeters.toInt()} м", NavigationStatusNotice.Kind.WARNING, 65, 0L))
+                }
+                if (source.contains("RADIO") || source == "BEACONDB") {
+                    add(NavigationStatusNotice("radio-position", "Радиопозиция", NavigationStatusNotice.Kind.LOCATION, 45, 0L))
+                }
+            }
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val previous = notices.associateBy { it.key }
+        notices = desired.map { item ->
+            val old = previous[item.key]
+            item.copy(updatedAt = if (old == null || old.title != item.title) now else old.updatedAt)
+        }.sortedWith(compareByDescending<NavigationStatusNotice> { it.updatedAt }.thenByDescending { it.priority })
+        if (notices.isEmpty()) expanded = false
+    }
+
+    if (notices.isEmpty()) return
+    val newest = notices.first()
+    val older = notices.drop(1)
+    val colors = MaterialTheme.colorScheme
+
+    @Composable
+    fun NoticeIcon(notice: NavigationStatusNotice, compact: Boolean) {
+        val icon = when (notice.kind) {
+            NavigationStatusNotice.Kind.NO_INTERNET -> Icons.Outlined.WifiOff
+            NavigationStatusNotice.Kind.LOCATION -> Icons.Outlined.MyLocation
+            NavigationStatusNotice.Kind.WARNING -> Icons.Outlined.WarningAmber
+            NavigationStatusNotice.Kind.ROUTE -> Icons.Outlined.Sync
+        }
+        val tint = when (notice.kind) {
+            NavigationStatusNotice.Kind.NO_INTERNET, NavigationStatusNotice.Kind.ROUTE -> Color(0xFF8C1D18)
+            NavigationStatusNotice.Kind.WARNING -> Color(0xFF765000)
+            NavigationStatusNotice.Kind.LOCATION -> colors.onSecondaryContainer
+        }
+        Icon(icon, contentDescription = notice.title, modifier = Modifier.size(if (compact) 15.dp else 16.dp), tint = tint)
+    }
+
+    @Composable
+    fun NoticePill(notice: NavigationStatusNotice, compact: Boolean) {
+        val background = when (notice.kind) {
+            NavigationStatusNotice.Kind.NO_INTERNET, NavigationStatusNotice.Kind.ROUTE -> Color(0xFFFFE7E5)
+            NavigationStatusNotice.Kind.WARNING -> Color(0xFFFFF1CC)
+            NavigationStatusNotice.Kind.LOCATION -> colors.secondaryContainer
+        }
+        val foreground = when (notice.kind) {
+            NavigationStatusNotice.Kind.NO_INTERNET, NavigationStatusNotice.Kind.ROUTE -> Color(0xFF8C1D18)
+            NavigationStatusNotice.Kind.WARNING -> Color(0xFF765000)
+            NavigationStatusNotice.Kind.LOCATION -> colors.onSecondaryContainer
+        }
+        Surface(
+            modifier = Modifier.then(if (compact) Modifier.size(30.dp) else Modifier).clickable { expanded = !expanded },
+            shape = CircleShape,
+            color = background
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = if (compact) 0.dp else 11.dp, vertical = if (compact) 0.dp else 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                NoticeIcon(notice, compact)
+                if (!compact) {
+                    Text(notice.title, modifier = Modifier.padding(start = 6.dp),
+                        style = MaterialTheme.typography.labelMedium, color = foreground, maxLines = 1)
+                }
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 9.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            NoticePill(newest, compact = false)
+            older.take(3).forEach { NoticePill(it, compact = true) }
+            if (older.size > 3) {
+                Surface(
+                    modifier = Modifier.size(30.dp).clickable { expanded = !expanded },
+                    shape = CircleShape,
+                    color = colors.surfaceVariant
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("+\${older.size - 3}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        if (expanded && older.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                older.forEach { NoticePill(it, compact = false) }
+            }
+        }
+    }
+}
 
 private fun formatRouteDuration(seconds: Double): String {
     val minutes = (seconds / 60.0).toInt().coerceAtLeast(1)
