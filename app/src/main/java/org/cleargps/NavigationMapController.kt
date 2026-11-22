@@ -327,6 +327,15 @@ internal class NavigationMapController {
                     }
                 }
 
+                // Keep water above land-cover overlays, with river/canal strokes above water polygons.
+                if (style.getLayer("building") != null) {
+                    style.addLayerBelow(waterBodies, "building")
+                    style.addLayerBelow(waterways, "building")
+                } else {
+                    style.addLayer(waterBodies)
+                    style.addLayer(waterways)
+                }
+
                 for (index in 0..2) {
                     style.addLayer(
                         LineLayer(routeLayerId(index), ROUTE_SOURCE)
