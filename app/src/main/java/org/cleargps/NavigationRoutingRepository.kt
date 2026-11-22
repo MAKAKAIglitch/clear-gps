@@ -128,7 +128,7 @@ internal class NavigationRoutingRepository {
                     modifier = modifier
                 )
             } ?: emptyList()
-            if (coordinates.size < 2 || !distance.isFinite() || !duration.isFinite()) null
+            if (coordinates.size < 2 || steps.isEmpty() || !distance.isFinite() || !duration.isFinite()) null
             else NavigationRouteAlternative(coordinates, distance, duration, steps)
         }.sortedBy { it.durationSeconds }.take(3)
         if (routes.isEmpty()) throw IOException("Сервис не вернул альтернативные маршруты")
