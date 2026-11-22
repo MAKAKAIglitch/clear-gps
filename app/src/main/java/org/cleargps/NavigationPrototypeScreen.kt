@@ -1673,7 +1673,7 @@ private fun NavigationStatusStrip(
             NavigationStatusNotice.Kind.LOCATION -> colors.onSecondaryContainer
         }
         Surface(
-            modifier = Modifier.then(if (compact) Modifier.size(30.dp) else Modifier).clickable { expanded = !expanded },
+            modifier = Modifier.then(if (compact) Modifier.size(30.dp) else Modifier.widthIn(max = 190.dp)).clickable { expanded = !expanded },
             shape = CircleShape,
             color = background
         ) {
@@ -1701,15 +1701,15 @@ private fun NavigationStatusStrip(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             NoticePill(newest, compact = false)
-            older.take(3).forEach { NoticePill(it, compact = true) }
-            if (older.size > 3) {
+            older.take(2).forEach { NoticePill(it, compact = true) }
+            if (older.size > 2) {
                 Surface(
                     modifier = Modifier.size(30.dp).clickable { expanded = !expanded },
                     shape = CircleShape,
                     color = colors.surfaceVariant
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text("+${older.size - 3}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                        Text("+${older.size - 2}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                     }
                 }
             }
