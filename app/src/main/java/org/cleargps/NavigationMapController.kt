@@ -1271,7 +1271,7 @@ internal class NavigationMapController {
             NavigationPoiCategory.RED_LIGHT_CAMERA -> "#2563EB"
             NavigationPoiCategory.TRAFFIC_CAMERA -> "#2563EB"
         }
-        const val POI_ICON_SIZE = 0.42f
+        const val POI_ICON_SIZE = 0.30f
         const val NATIVE_POI_MIN_ZOOM = 14f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
