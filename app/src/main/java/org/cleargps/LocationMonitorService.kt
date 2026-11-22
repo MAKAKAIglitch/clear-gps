@@ -364,7 +364,7 @@ class LocationMonitorService : Service(), LocationListener {
         imuMotionReader = AndroidImuMotionReader(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(NotificationChannel(CHANNEL, "Clear GPS monitoring", NotificationManager.IMPORTANCE_LOW))
+                .createNotificationChannel(NotificationChannel(CHANNEL, "Claire Maps monitoring", NotificationManager.IMPORTANCE_LOW))
         }
         startServiceHeartbeatLoop()
     }
@@ -2860,7 +2860,7 @@ class LocationMonitorService : Service(), LocationListener {
     private fun notification(text: String): Notification {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL)
             else Notification.Builder(this)
-        return builder.setContentTitle("Clear GPS").setContentText(text)
+        return builder.setContentTitle("Claire Maps").setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation).setOngoing(true).build()
     }
 
