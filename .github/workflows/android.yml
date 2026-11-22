@@ -148,7 +148,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
       - name: Upload Linux debug APK
-        if: success() && env.CLEARGPS_DEBUG_SIGNING_CONFIGURED == 'true'
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ClearGPS-debug-linux
