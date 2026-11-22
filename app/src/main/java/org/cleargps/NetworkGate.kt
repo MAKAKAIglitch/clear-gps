@@ -303,9 +303,22 @@ internal object NetworkGate {
         val safeRegionLookup = query.contains("is_in(") &&
             query.contains("relation(pivot.") &&
             query.endsWith("out tags;")
+        // Country catalogue: list only administrative level 2 relations with names.
+        val safeCountryCatalog = query.contains(
+            """relation["boundary"="administrative"]["admin_level"="2"]["name"];"""
+        ) && query.endsWith("out tags;")
+        // Country drill-down: only named administrative child relations inside one country area.
+        val safeSubregionCatalog = Regex(
+            """relation\(\d+\)->\.country;map_to_area \.country->\.countryArea;"""
+        ).containsMatchIn(query) &&
+            query.contains("""relation(area.countryArea)["boundary"="administrative"]""") &&
+            query.contains("""["admin_level"~"^(3|4|5)$"]["name"];""") &&
+            query.endsWith("out tags 500;")
         val safeRegionSearch = query.contains("""relation["boundary"="administrative"]""") &&
-            query.contains("""["admin_level"="4"]""") &&
-            query.contains("""["name"~""") && query.endsWith("out tags 30;")
+            (query.contains("""["admin_level"="4"]""") ||
+                query.contains("""["admin_level"~"^(3|4|5)$"]""")) &&
+            query.contains("""["name"~""") &&
+            (query.endsWith("out tags 30;") || query.endsWith("out tags 100;"))
         val safeRoadExtract = query.contains("map_to_area") &&
             query.contains("way(area.region)") &&
             query.contains("[\"highway\"]") &&
@@ -313,7 +326,7 @@ internal object NetworkGate {
         val forbidden = Regex("""(?i)\b(make|delete|foreach|retro|complete|convert|augmented\s+diff|diff)\b""")
         if (query.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
             !query.startsWith("[out:json]") ||
-            !(safeRegionLookup || safeRegionSearch || safeRoadExtract) ||
+            !(safeRegionLookup || safeCountryCatalog || safeSubregionCatalog || safeRegionSearch || safeRoadExtract) ||
             forbidden.containsMatchIn(query)
         ) reject()
     }

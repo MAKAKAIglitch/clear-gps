@@ -116,6 +116,38 @@ class NetworkGateTest {
     }
 
     @Test
+    fun overpassRoadQueueAllowsCountryAndCountryRegionCatalogQueries() {
+        val countries = "[out:json][timeout:45];relation[\"boundary\"=\"administrative\"][\"admin_level\"=\"2\"][\"name\"];out tags;"
+        assertEquals("overpass-api.de", NetworkGate.validateRequest(
+            overpassUrl(countries), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+        ).host)
+
+        val regions = "[out:json][timeout:55];relation(123456)->.country;map_to_area .country->.countryArea;relation(area.countryArea)[\"boundary\"=\"administrative\"][\"admin_level\"~\"^(3|4|5)$\"][\"name\"];out tags 500;"
+        assertEquals("/api/interpreter", NetworkGate.validateRequest(
+            overpassUrl(regions), "GET",
+            NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+        ).path)
+    }
+
+    @Test
+    fun overpassRoadQueueStillRejectsUnapprovedCatalogQueries() {
+        val invalid = listOf(
+            "[out:json];relation[\"boundary\"=\"administrative\"][\"admin_level\"=\"2\"];out tags;",
+            "[out:json];relation(123)->.country;map_to_area .country->.countryArea;relation(area.countryArea);out tags 500;",
+            "[out:json];relation(123)->.country;map_to_area .country->.countryArea;relation(area.countryArea)[\"boundary\"=\"administrative\"][\"admin_level\"~\"^(3|4|5)$\"][\"name\"];out geom;"
+        )
+        invalid.forEach { query ->
+            assertThrows(SecurityException::class.java) {
+                NetworkGate.validateRequest(
+                    overpassUrl(query), "GET",
+                    NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true
+                )
+            }
+        }
+    }
+
+    @Test
     fun overpassRoadQueueRejectsWritesUnboundedQueriesAndMissingConsent() {
         val invalid = listOf(
             "[out:json];node(1);out;",
