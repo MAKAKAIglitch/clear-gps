@@ -20,6 +20,7 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.BackgroundLayer
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
@@ -257,6 +258,11 @@ internal class NavigationMapController {
                 Style.Builder().fromUri(DARK_STYLE_URI)
             ) { style ->
                 if (attachedMapView !== mapView || map !== mapObject) return@setStyle
+
+                // Keep the map's unstyled/background areas in the requested deep blue-grey.
+                style.layers.filterIsInstance<BackgroundLayer>().forEach { layer ->
+                    layer.setProperties(PropertyFactory.backgroundColor("#152232"))
+                }
 
                 val newAccuracySource = GeoJsonSource(ACCURACY_SOURCE, emptyFeatureCollection())
                 val newDotSource = GeoJsonSource(DOT_SOURCE, emptyFeatureCollection())
@@ -723,7 +729,7 @@ internal class NavigationMapController {
             }
             // Search around the point the user is looking at, not the GPS fix or the
             // entire visible viewport. A one-kilometre radius keeps Overpass queries bounded.
-            val target = mapObject.cameraPosition.target
+            val target = mapObject.cameraPosition.target ?: return@Runnable
             val latitudeDelta = POI_SEARCH_RADIUS_METERS / 111_000.0
             val longitudeDelta = POI_SEARCH_RADIUS_METERS /
                 (111_000.0 * kotlin.math.cos(Math.toRadians(target.latitude)).coerceAtLeast(0.01))
