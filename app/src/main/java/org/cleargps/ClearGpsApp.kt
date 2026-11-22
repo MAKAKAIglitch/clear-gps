@@ -8579,7 +8579,7 @@ private fun HeaderCard(
                 }
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Claire Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("Clear Maps", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(when (tab) {
                         AppTab.HOME -> "Мониторинг и диагностика GNSS"
                         AppTab.MAP -> "Карта · слои и точки"
