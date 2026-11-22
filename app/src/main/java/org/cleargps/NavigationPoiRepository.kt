@@ -97,6 +97,8 @@ internal class NavigationPoiRepository {
     private val cache = LinkedHashMap<String, Cached>()
     @Volatile private var activeCall: Call? = null
     @Volatile private var lastRequestKey: String? = null
+    @Volatile private var addressCall: Call? = null
+    @Volatile private var addressRequestId: Long = 0L
 
     fun load(
         south: Double,
@@ -121,14 +123,9 @@ internal class NavigationPoiRepository {
         lastRequestKey = key
 
         val bbox = "$south,$west,$north,$east"
-        // Address records are dense: request them only for close-up viewports.
-        val addressQuery = if ((north - south) * (east - west) <= 0.0025) {
-            """nwr["addr:housenumber"]($bbox);"""
-        } else ""
         val query = """
             [out:json][timeout:18];
             (
-              $addressQuery
               nwr["amenity"~"^(fuel|charging_station|pharmacy|restaurant|cafe|fast_food|bar|parking|atm)$"]($bbox);
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
             )->.pois;
@@ -197,10 +194,93 @@ internal class NavigationPoiRepository {
             }
         })
     }
+    /** Fetch full address tags for one selected house instead of loading every address in the viewport. */
+    fun loadAddressDetails(
+        latitude: Double,
+        longitude: Double,
+        houseNumber: String,
+        callback: (NavigationPoi?) -> Unit
+    ) {
+        if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+            !longitude.isFinite() || longitude !in -180.0..180.0 || houseNumber.isBlank()
+        ) {
+            mainHandler.post { callback(null) }
+            return
+        }
+        val requestId = synchronized(this) {
+            addressRequestId += 1L
+            addressCall?.cancel()
+            addressRequestId
+        }
+        val escapedNumber = houseNumber.replace("\\", "\\\\").replace("\"", "\\\"")
+        val query = """
+            [out:json][timeout:8];
+            (
+              nwr["addr:housenumber"="$escapedNumber"](around:85,$latitude,$longitude);
+            );
+            out center tags;
+        """.trimIndent()
+        enqueueAddressAtEndpoint(latitude, longitude, houseNumber, query, 0, requestId, callback)
+    }
+
+    private fun enqueueAddressAtEndpoint(
+        latitude: Double,
+        longitude: Double,
+        houseNumber: String,
+        query: String,
+        endpointIndex: Int,
+        requestId: Long,
+        callback: (NavigationPoi?) -> Unit
+    ) {
+        if (requestId != addressRequestId) return
+        if (endpointIndex >= OVERPASS_ENDPOINTS.size) {
+            mainHandler.post { if (requestId == addressRequestId) callback(null) }
+            return
+        }
+        val request = Request.Builder()
+            .url(OVERPASS_ENDPOINTS[endpointIndex])
+            .header("User-Agent", "ClearGPS-Android/0.4 (OpenStreetMap address lookup)")
+            .post(FormBody.Builder().add("data", query).build())
+            .build()
+        val call = client.newCall(request)
+        addressCall = call
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!call.isCanceled() && requestId == addressRequestId) {
+                    Log.w(TAG, "Address lookup endpoint " + (endpointIndex + 1) + " failed: " + e.javaClass.simpleName)
+                    enqueueAddressAtEndpoint(latitude, longitude, houseNumber, query, endpointIndex + 1, requestId, callback)
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val parsed = response.use {
+                    if (!it.isSuccessful) null else runCatching { parse(it.body?.string().orEmpty()) }.getOrNull()
+                }
+                if (requestId != addressRequestId) return
+                if (parsed == null) {
+                    enqueueAddressAtEndpoint(latitude, longitude, houseNumber, query, endpointIndex + 1, requestId, callback)
+                    return
+                }
+                val origin = NavigationCoordinate(latitude, longitude)
+                val result = parsed.asSequence()
+                    .filter { it.tags["addr:housenumber"] == houseNumber }
+                    .filter { it.tags["cleargps:address_only"] == "yes" || it.tags.containsKey("addr:street") }
+                    .minByOrNull { NavigationGuidanceEngine.distanceMeters(origin, it.coordinate) }
+                    ?.takeIf { NavigationGuidanceEngine.distanceMeters(origin, it.coordinate) <= 85.0 }
+                mainHandler.post { if (requestId == addressRequestId) callback(result) }
+            }
+        })
+    }
+
     fun cancel() {
         activeCall?.cancel()
         activeCall = null
         lastRequestKey = null
+        synchronized(this) {
+            addressRequestId += 1L
+            addressCall?.cancel()
+            addressCall = null
+        }
     }
 
     private fun parse(json: String): List<NavigationPoi>? {

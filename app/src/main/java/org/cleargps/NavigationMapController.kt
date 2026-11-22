@@ -164,7 +164,16 @@ internal class NavigationMapController {
                         address = houseNumber,
                         tags = mapOf("addr:housenumber" to houseNumber, "cleargps:address_only" to "yes")
                     )
-                    onPoiTap?.invoke(addressPoi)
+                    if (matchingAddress != null) {
+                        onPoiTap?.invoke(addressPoi)
+                    } else {
+                        // Keep the main POI request lightweight; fetch full address tags only on demand.
+                        poiRepository.loadAddressDetails(latitude, longitude, houseNumber) { details ->
+                            if (map === mapObject && attachedMapView === mapView) {
+                                onPoiTap?.invoke(details ?: addressPoi)
+                            }
+                        }
+                    }
                     return@OnMapClickListener true
                 }
                 val routeHitRadiusPx = ROUTE_HIT_RADIUS_DP * mapView.context.resources.displayMetrics.density
@@ -272,13 +281,21 @@ internal class NavigationMapController {
                 val buildings3d = FillExtrusionLayer("cleargps-buildings-3d", "openmaptiles")
                     .apply { setSourceLayer("building") }
                     .withProperties(
-                        PropertyFactory.fillExtrusionColor("#14263D"),
+                        PropertyFactory.fillExtrusionColor("#0B1724"),
                         PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
                         PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
-                        PropertyFactory.fillExtrusionOpacity(0.70f)
+                        PropertyFactory.fillExtrusionOpacity(0.94f)
                     )
                 buildings3d.setMinZoom(14f)
-                if (style.getLayer("building") != null) {
+                // OpenFreeMap draws transport lines after its flat building footprints.
+                // Put extrusions above the final road-geometry layer so roads cannot show
+                // through building footprints, while keeping road/place labels above them.
+                val lastRoadGeometryLayer = style.getLayer("railway_dashline")
+                    ?: style.getLayer("highway_motorway_inner")
+                    ?: style.getLayer("highway_minor")
+                if (lastRoadGeometryLayer != null) {
+                    style.addLayerAbove(buildings3d, lastRoadGeometryLayer.id)
+                } else if (style.getLayer("building") != null) {
                     style.addLayerAbove(buildings3d, "building")
                 } else {
                     style.addLayer(buildings3d)
@@ -303,10 +320,10 @@ internal class NavigationMapController {
                         )
                     )
                     .withProperties(
-                        PropertyFactory.fillExtrusionColor("#651F32"),
+                        PropertyFactory.fillExtrusionColor("#35101C"),
                         PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
                         PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
-                        PropertyFactory.fillExtrusionOpacity(0.88f)
+                        PropertyFactory.fillExtrusionOpacity(0.95f)
                     )
                 medicalBuildings.setMinZoom(14f)
                 style.addLayerAbove(medicalBuildings, "cleargps-buildings-3d")
@@ -431,10 +448,10 @@ internal class NavigationMapController {
                         }
                         .withProperties(
                             PropertyFactory.textField(Expression.get("housenumber")),
-                            PropertyFactory.textSize(11f),
-                            PropertyFactory.textColor("#DCE5EF"),
-                            PropertyFactory.textHaloColor("#172333"),
-                            PropertyFactory.textHaloWidth(1.35f),
+                            PropertyFactory.textSize(10.5f),
+                            PropertyFactory.textColor("#9AA8B8"),
+                            PropertyFactory.textHaloColor("#0B121B"),
+                            PropertyFactory.textHaloWidth(1.0f),
                             PropertyFactory.textAllowOverlap(false),
                             PropertyFactory.textIgnorePlacement(false),
                             PropertyFactory.textAnchor("center")
@@ -704,19 +721,26 @@ internal class NavigationMapController {
                 renderPois()
                 return@Runnable
             }
-            val bounds = mapObject.projection.visibleRegion.latLngBounds
+            // Search around the point the user is looking at, not the GPS fix or the
+            // entire visible viewport. A one-kilometre radius keeps Overpass queries bounded.
+            val target = mapObject.cameraPosition.target
+            val latitudeDelta = POI_SEARCH_RADIUS_METERS / 111_000.0
+            val longitudeDelta = POI_SEARCH_RADIUS_METERS /
+                (111_000.0 * kotlin.math.cos(Math.toRadians(target.latitude)).coerceAtLeast(0.01))
             poiRepository.load(
-                bounds.latitudeSouth,
-                bounds.longitudeWest,
-                bounds.latitudeNorth,
-                bounds.longitudeEast
+                (target.latitude - latitudeDelta).coerceAtLeast(-90.0),
+                (target.longitude - longitudeDelta).coerceAtLeast(-180.0),
+                (target.latitude + latitudeDelta).coerceAtMost(90.0),
+                (target.longitude + longitudeDelta).coerceAtMost(180.0)
             ) { loaded ->
                 if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= CAMERA_MIN_ZOOM) {
-                    val currentBounds = mapObject.projection.visibleRegion.latLngBounds
-                    // A slow Overpass response must not repaint markers from an old viewport.
+                    val currentTarget = mapObject.cameraPosition.target
+                    // A slow Overpass response must not repaint markers from an old camera target.
                     pois = loaded.filter { poi ->
-                        poi.latitude in currentBounds.latitudeSouth..currentBounds.latitudeNorth &&
-                            poi.longitude in currentBounds.longitudeWest..currentBounds.longitudeEast
+                        NavigationGuidanceEngine.distanceMeters(
+                            NavigationCoordinate(currentTarget.latitude, currentTarget.longitude),
+                            poi.coordinate
+                        ) <= POI_SEARCH_RADIUS_METERS
                     }
                     Log.i(POI_LOG_TAG, "POI viewport result: received=${loaded.size}, visible=${pois.size}, camerasReceived=${loaded.count { it.category.isCamera }}, camerasVisible=${pois.count { it.category.isCamera }}, zoom=${mapObject.cameraPosition.zoom}")
                     renderPois()
@@ -1548,11 +1572,12 @@ internal class NavigationMapController {
         const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
         const val CAMERA_MIN_ZOOM = 9.5
+        const val POI_SEARCH_RADIUS_METERS = 1_000.0
         const val POI_LABEL_MIN_ZOOM = 15.0f
         const val POI_HIT_RADIUS_PX = 30f
         const val ROUTE_HIT_RADIUS_DP = 18f
         const val LOCATION_HIT_RADIUS_DP = 36f
-        const val POI_REFRESH_DEBOUNCE_MS = 850L
+        const val POI_REFRESH_DEBOUNCE_MS = 350L
         const val LANE_MIN_ZOOM = 15.2f
         const val LANE_ARROW_MIN_ZOOM = 16.0f
         const val LANE_REFRESH_DEBOUNCE_MS = 1100L
