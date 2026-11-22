@@ -23,6 +23,17 @@ internal object OverpassRoadRegionQueue {
 
     fun enqueueCurrent(context: Context, lat: Double, lon: Double, force: Boolean = false) {
         if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return
+        val p = prefs(context)
+        val now = System.currentTimeMillis()
+        val oldLat = p.getString("last_queue_lat", null)?.toDoubleOrNull()
+        val oldLon = p.getString("last_queue_lon", null)?.toDoubleOrNull()
+        val oldAt = p.getLong("last_queue_at", 0L)
+        if (!force && oldLat != null && oldLon != null && now - oldAt < 6L * 60 * 60 * 1000) {
+            val moved = haversineMeters(oldLat, oldLon, lat, lon)
+            if (moved < 2_000.0) return
+        }
+        p.edit().putString("last_queue_lat", lat.toString()).putString("last_queue_lon", lon.toString())
+            .putLong("last_queue_at", now).apply()
         enqueue(context, Data.Builder().putString("mode", "current").putDouble("lat", lat)
             .putDouble("lon", lon).putBoolean("force", force).build())
     }
@@ -63,11 +74,15 @@ internal object OverpassRoadRegionQueue {
     internal fun name(context: Context, id: Long) = prefs(context).getString("name_$id", "Регион $id") ?: "Регион $id"
     internal fun currentId(context: Context) = prefs(context).getLong("current_id", -1L)
 
-    internal fun saved(context: Context, id: Long, name: String) {
+    internal fun saved(context: Context, id: Long, name: String, isCurrent: Boolean) {
         val p = prefs(context)
-        p.edit().putString("ids", (ids(context) + id).sorted().joinToString(","))
+        val edit = p.edit().putString("ids", (ids(context) + id).sorted().joinToString(","))
             .putString("name_$id", name).putLong("updated_$id", System.currentTimeMillis())
-            .putLong("current_id", id).putString("current_name", name).apply()
+        if (isCurrent) edit.putLong("current_id", id).putString("current_name", name)
+        edit.apply()
+    }
+    internal fun markCurrent(context: Context, id: Long, name: String) {
+        prefs(context).edit().putLong("current_id", id).putString("current_name", name).apply()
     }
 }
 
@@ -114,10 +129,10 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
                 val lon = inputData.getDouble("lon", Double.NaN)
                 if (!lat.isFinite() || !lon.isFinite()) return Result.failure()
                 val region = findRegion(lat, lon) ?: return Result.retry()
-                download(region.first, region.second, inputData.getBoolean("force", false))
+                download(region.first, region.second, inputData.getBoolean("force", false), true)
             } else {
                 download(inputData.getLong("id", -1), inputData.getString("name") ?: "Регион",
-                    inputData.getBoolean("force", false))
+                    inputData.getBoolean("force", false), false)
             }
         } catch (_: IOException) { Result.retry() }
           catch (_: SecurityException) { Result.failure() }
@@ -173,12 +188,12 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
         return null
     }
 
-    private fun download(id: Long, name: String, force: Boolean): Result {
+    private fun download(id: Long, name: String, force: Boolean, isCurrent: Boolean): Result {
         if (id <= 0) return Result.failure()
         val target = OverpassRoadRegionQueue.file(applicationContext, id)
-        val current = OverpassRoadRegionQueue.currentId(applicationContext) == id
-        val ageLimit = if (current) 24L * 60 * 60 * 1000 else 7L * 24 * 60 * 60 * 1000
+        val ageLimit = if (isCurrent || OverpassRoadRegionQueue.currentId(applicationContext) == id) 24L * 60 * 60 * 1000 else 7L * 24 * 60 * 60 * 1000
         if (!force && target.isFile && System.currentTimeMillis() - OverpassRoadRegionQueue.updated(applicationContext, id) < ageLimit) {
+            if (isCurrent) OverpassRoadRegionQueue.markCurrent(applicationContext, id, name)
             return Result.success()
         }
         val dir = target.parentFile ?: return Result.failure()
@@ -214,7 +229,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
             if (!staged.renameTo(target)) throw IOException("Cannot activate region cache")
         }
         raw.delete()
-        OverpassRoadRegionQueue.saved(applicationContext, id, name)
+        OverpassRoadRegionQueue.saved(applicationContext, id, name, isCurrent)
         return Result.success()
     }
 
@@ -244,7 +259,7 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
     companion object { private const val MAX_BYTES = 256L * 1024 * 1024 }
 }
 
-private fun validatedInternet(context: Context): Boolean {
+private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {\n    val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)\n    val dp = Math.toRadians(lat2 - lat1); val dl = Math.toRadians(lon2 - lon1)\n    val a = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2)\n    return 6_371_000.0 * 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a))\n}\n\nprivate fun validatedInternet(context: Context): Boolean {
     val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val network = manager.activeNetwork ?: return false
     val caps = manager.getNetworkCapabilities(network) ?: return false
