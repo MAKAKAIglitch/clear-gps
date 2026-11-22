@@ -24,6 +24,7 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import org.maplibre.geojson.Polygon
 
@@ -61,6 +62,8 @@ internal class NavigationMapController {
     private var mapTapListener: MapLibreMap.OnMapClickListener? = null
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
     private var destinationSource: GeoJsonSource? = null
+    private var routeSource: GeoJsonSource? = null
+    private var routes: List<NavigationRouteAlternative> = emptyList()
     private var destination: NavigationCoordinate? = null
     private var poiSource: GeoJsonSource? = null
     private val poiRepository = NavigationPoiRepository()
@@ -150,11 +153,13 @@ internal class NavigationMapController {
                 val newDotSource = GeoJsonSource(DOT_SOURCE, emptyFeatureCollection())
                 val newBearingSource = GeoJsonSource(BEARING_SOURCE, emptyFeatureCollection())
                 val newDestinationSource = GeoJsonSource(DESTINATION_SOURCE, emptyFeatureCollection())
+                val newRouteSource = GeoJsonSource(ROUTE_SOURCE, emptyFeatureCollection())
                 val newPoiSource = GeoJsonSource(POI_SOURCE, emptyFeatureCollection())
                 style.addSource(newAccuracySource)
                 style.addSource(newDotSource)
                 style.addSource(newBearingSource)
                 style.addSource(newDestinationSource)
+                style.addSource(newRouteSource)
                 style.addSource(newPoiSource)
                 NavigationPoiCategory.values().forEach { category ->
                     style.addLayer(
@@ -166,6 +171,19 @@ internal class NavigationMapController {
                                 PropertyFactory.circleStrokeColor("#FFFFFF"),
                                 PropertyFactory.circleStrokeWidth(2f),
                                 PropertyFactory.circleOpacity(0.96f)
+                            )
+                    )
+                }
+                for (index in 0..2) {
+                    style.addLayer(
+                        LineLayer(routeLayerId(index), ROUTE_SOURCE)
+                            .withFilter(Expression.eq(Expression.get(ROUTE_INDEX_PROPERTY), Expression.literal(index)))
+                            .withProperties(
+                                PropertyFactory.lineColor(if (index == 0) "#1677FF" else "#8995A5"),
+                                PropertyFactory.lineWidth(if (index == 0) 6f else 4f),
+                                PropertyFactory.lineOpacity(if (index == 0) 0.96f else 0.78f),
+                                PropertyFactory.lineCap("round"),
+                                PropertyFactory.lineJoin("round")
                             )
                     )
                 }
@@ -232,10 +250,12 @@ internal class NavigationMapController {
                 dotSource = newDotSource
                 bearingSource = newBearingSource
                 destinationSource = newDestinationSource
+                routeSource = newRouteSource
                 poiSource = newPoiSource
                 styleReady = true
                 renderCurrentPosition()
                 renderDestination()
+                renderRoutes()
                 renderPois()
 
                 if (!cameraInitialized) {
@@ -264,6 +284,7 @@ internal class NavigationMapController {
         dotSource = null
         bearingSource = null
         destinationSource = null
+        routeSource = null
         poiSource = null
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
         poiRefreshRunnable = null
@@ -365,6 +386,21 @@ internal class NavigationMapController {
     fun updateDestination(coordinate: NavigationCoordinate?) {
         destination = coordinate?.takeIf { it.isValid() }
         renderDestination()
+    }
+    fun updateRoutes(items: List<NavigationRouteAlternative>) {
+        routes = items.take(3)
+        renderRoutes()
+    }
+
+    private fun renderRoutes() {
+        if (!styleReady) return
+        val features = routes.mapIndexed { index, route ->
+            Feature.fromGeometry(LineString.fromLngLats(route.coordinates.map {
+                Point.fromLngLat(it.longitude, it.latitude)
+            })).apply { addNumberProperty(ROUTE_INDEX_PROPERTY, index) }
+        }
+        routeSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
+        map?.triggerRepaint()
     }
 
     fun zoomBy(delta: Double) {
@@ -540,6 +576,8 @@ internal class NavigationMapController {
         const val DOT_SOURCE = "cleargps-navigation-dot"
         const val BEARING_SOURCE = "cleargps-navigation-bearing"
         const val DESTINATION_SOURCE = "cleargps-navigation-destination"
+        const val ROUTE_SOURCE = "cleargps-navigation-routes"
+        const val ROUTE_INDEX_PROPERTY = "route_index"
         const val POI_SOURCE = "cleargps-navigation-pois"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
@@ -547,6 +585,7 @@ internal class NavigationMapController {
         const val DOT_LAYER = "cleargps-navigation-dot"
         const val BEARING_LAYER = "cleargps-navigation-bearing-indicator"
         const val DESTINATION_LAYER = "cleargps-navigation-destination-marker"
+        fun routeLayerId(index: Int) = "cleargps-navigation-route-$index"
         const val POI_ID_PROPERTY = "poi_id"
         const val POI_NAME_PROPERTY = "poi_name"
         const val POI_CATEGORY_PROPERTY = "poi_category"
