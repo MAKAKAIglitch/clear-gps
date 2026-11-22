@@ -70,7 +70,6 @@ internal class NavigationMapController {
     private val poiHandler = Handler(Looper.getMainLooper())
     private var poiRefreshRunnable: Runnable? = null
     private var pois: List<NavigationPoi> = emptyList()
-    private var enabledPoiCategories: Set<NavigationPoiCategory> = NavigationPoiCategory.values().toSet()
     private var onPoiTap: ((NavigationPoi) -> Unit)? = null
     private var cameraIdleListener: MapLibreMap.OnCameraIdleListener? = null
 
@@ -335,11 +334,6 @@ internal class NavigationMapController {
         onPoiTap = listener
     }
 
-    fun updatePoiCategories(categories: Set<NavigationPoiCategory>) {
-        enabledPoiCategories = categories
-        renderPois()
-    }
-
     private fun schedulePoiRefresh() {
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
         val task = Runnable {
@@ -369,7 +363,6 @@ internal class NavigationMapController {
     private fun renderPois() {
         if (!styleReady) return
         val features = pois.asSequence()
-            .filter { it.category in enabledPoiCategories }
             .map { poi ->
                 Feature.fromGeometry(Point.fromLngLat(poi.longitude, poi.latitude)).apply {
                     addStringProperty(POI_ID_PROPERTY, poi.id)
