@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Handler
+import android.util.Log
 import android.os.Looper
 import com.google.gson.JsonObject
 import org.maplibre.android.camera.CameraPosition
@@ -491,6 +492,7 @@ internal class NavigationMapController {
         val task = Runnable {
             val mapObject = map ?: return@Runnable
             if (!styleReady || mapObject.cameraPosition.zoom < CAMERA_MIN_ZOOM) {
+                Log.d(POI_LOG_TAG, "POI refresh skipped: styleReady=$styleReady, zoom=${mapObject.cameraPosition.zoom}, cameraMinZoom=$CAMERA_MIN_ZOOM")
                 poiRepository.cancel()
                 pois = emptyList()
                 renderPois()
@@ -510,6 +512,7 @@ internal class NavigationMapController {
                         poi.latitude in currentBounds.latitudeSouth..currentBounds.latitudeNorth &&
                             poi.longitude in currentBounds.longitudeWest..currentBounds.longitudeEast
                     }
+                    Log.i(POI_LOG_TAG, "POI viewport result: received=${loaded.size}, visible=${pois.size}, camerasReceived=${loaded.count { it.category.isCamera }}, camerasVisible=${pois.count { it.category.isCamera }}, zoom=${mapObject.cameraPosition.zoom}")
                     renderPois()
                 }
             }
@@ -557,6 +560,7 @@ internal class NavigationMapController {
                 PropertyFactory.visibility(nativeVisibility)
             )
         }
+        Log.d(POI_LOG_TAG, "POI render: features=${features.size}, cameras=${pois.count { it.category.isCamera }}, sourceReady=${poiSource != null}")
         map?.triggerRepaint()
     }
 
@@ -1205,6 +1209,7 @@ internal class NavigationMapController {
         const val ROUTE_INDEX_PROPERTY = "route_index"
         val ROUTE_LAYER_IDS = (0..2).map { routeLayerId(it) }.toTypedArray()
         const val POI_SOURCE = "cleargps-navigation-pois"
+        const val POI_LOG_TAG = "ClearGPS_POI_MAP"
         const val POI_NAME_LAYER_ID = "cleargps-poi-names"
         const val ACCURACY_LAYER = "cleargps-navigation-accuracy-fill"
         const val ACCURACY_OUTLINE_LAYER = "cleargps-navigation-accuracy-outline"
