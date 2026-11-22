@@ -1225,6 +1225,16 @@ internal fun NavigationPrototypeScreen(
                         poiForSheet.address?.let { address ->
                             Text(address, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
                         }
+                        val knownTagKeys = setOf(
+                            "name", "brand", "opening_hours", "phone", "contact:phone",
+                            "website", "contact:website", "url", "email", "contact:email",
+                            "cuisine", "operator", "wheelchair", "addr:street",
+                            "addr:housenumber", "addr:city"
+                        )
+                        val extraTagRows = poiForSheet.tags
+                            .filter { (key, value) -> key !in knownTagKeys && value.isNotBlank() }
+                            .toSortedMap()
+                            .map { (key, value) -> "OSM · $key" to value }
                         val detailRows = listOfNotNull(
                             poiForSheet.openingHours?.let { "Часы работы" to it },
                             poiForSheet.phone?.let { "Телефон" to it },
@@ -1240,7 +1250,7 @@ internal fun NavigationPrototypeScreen(
                                     else -> it
                                 }
                             }
-                        )
+                        ) + extraTagRows
                         if (detailRows.isNotEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 detailRows.forEach { (label, value) ->

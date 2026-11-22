@@ -52,7 +52,8 @@ internal data class NavigationPoi(
     val email: String? = null,
     val cuisine: String? = null,
     val operator: String? = null,
-    val wheelchair: String? = null
+    val wheelchair: String? = null,
+    val tags: Map<String, String> = emptyMap()
 ) {
     val coordinate: NavigationCoordinate
         get() = NavigationCoordinate(latitude, longitude)
@@ -177,7 +178,8 @@ internal class NavigationPoiRepository {
                 email = (tags["email"] ?: tags["contact:email"])?.takeIf { it.isNotBlank() },
                 cuisine = tags["cuisine"]?.takeIf { it.isNotBlank() },
                 operator = tags["operator"]?.takeIf { it.isNotBlank() },
-                wheelchair = tags["wheelchair"]?.takeIf { it.isNotBlank() }
+                wheelchair = tags["wheelchair"]?.takeIf { it.isNotBlank() },
+                tags = tags
             )
         }
         return result.values.toList()

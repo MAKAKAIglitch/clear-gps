@@ -160,8 +160,22 @@ internal class NavigationMapController {
                     val address = properties.get(POI_ADDRESS_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
                     val id = properties.get(POI_ID_PROPERTY)?.takeIf { !it.isJsonNull }?.asString
                         ?: "tile:${category.name}:${geometry.longitude()}:${geometry.latitude()}"
+                    // Prefer the full Overpass record for our own POI markers. For
+                    // vector-tile hits, match a nearby OSM record when one was loaded.
+                    val loadedPoi = pois.firstOrNull { it.id == id }
+                        ?: pois.minByOrNull { poi ->
+                            val latMeters = (poi.latitude - geometry.latitude()) * 111_000.0
+                            val lonMeters = (poi.longitude - geometry.longitude()) *
+                                111_000.0 * kotlin.math.cos(Math.toRadians(geometry.latitude()))
+                            kotlin.math.hypot(latMeters, lonMeters)
+                        }?.takeIf { poi ->
+                            val latMeters = (poi.latitude - geometry.latitude()) * 111_000.0
+                            val lonMeters = (poi.longitude - geometry.longitude()) *
+                                111_000.0 * kotlin.math.cos(Math.toRadians(geometry.latitude()))
+                            kotlin.math.hypot(latMeters, lonMeters) <= 80.0
+                        }
                     onPoiTap?.invoke(
-                        NavigationPoi(
+                        loadedPoi ?: NavigationPoi(
                             id,
                             label?.takeIf { it.isNotBlank() } ?: category.title,
                             category,
