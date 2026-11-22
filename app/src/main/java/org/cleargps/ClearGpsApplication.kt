@@ -19,6 +19,20 @@ class ClearGpsApplication : Application(), Configuration.Provider {
             }
         }
 
+    private val regionPositionListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+            if (key == LocationMonitorService.KEY_HAS_OUTPUT ||
+                key == LocationMonitorService.KEY_LAT ||
+                key == LocationMonitorService.KEY_LAST_TRUSTED_GPS_LAT ||
+                key == LocationMonitorService.KEY_LAST_OBSERVED_GPS_LAT ||
+                key == LocationMonitorService.KEY_LAST_OBSERVED_NETWORK_LAT
+            ) {
+                readNavigationPosition(prefs)?.coordinate?.let { coordinate ->
+                    OverpassRoadRegionQueue.enqueueCurrent(this, coordinate.latitude, coordinate.longitude)
+                }
+            }
+        }
+
     /**
      * StrictMode is deliberately log-only and enabled only for debuggable installs.
      * It helps find main-thread I/O and VM/resource mistakes without turning diagnostics
@@ -43,10 +57,14 @@ class ClearGpsApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         configureDebugDiagnostics()
-        getSharedPreferences(ClearGpsPreferences.PREFS, MODE_PRIVATE)
-            .registerOnSharedPreferenceChangeListener(openStreetMapConsentListener)
+        val preferences = getSharedPreferences(ClearGpsPreferences.PREFS, MODE_PRIVATE)
+        preferences.registerOnSharedPreferenceChangeListener(openStreetMapConsentListener)
+        preferences.registerOnSharedPreferenceChangeListener(regionPositionListener)
         OpenStreetMapCellSiteWorkScheduler.sync(this)
         OverpassRoadRegionQueue.schedule(this)
+        readNavigationPosition(preferences)?.coordinate?.let { coordinate ->
+            OverpassRoadRegionQueue.enqueueCurrent(this, coordinate.latitude, coordinate.longitude)
+        }
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {

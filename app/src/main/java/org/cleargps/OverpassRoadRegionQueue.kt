@@ -13,6 +13,8 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.AtomicMoveNotSupportedException
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.zip.GZIPOutputStream
 
 /** Serialized Overpass downloads. The cached JSON is source data, not yet a routable graph. */
@@ -21,6 +23,8 @@ internal object OverpassRoadRegionQueue {
     private const val PREFS = "clear_maps_regions"
     private const val CURRENT_DAILY = "clear_maps_current_region_daily"
     private const val OTHERS_WEEKLY = "clear_maps_other_regions_weekly"
+    private const val CATALOG_STARTUP = "clear_maps_region_catalog_startup"
+    private const val CATALOG_WEEKLY = "clear_maps_region_catalog_weekly"
 
     private fun constraints() = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
@@ -61,14 +65,22 @@ internal object OverpassRoadRegionQueue {
 
     fun schedule(context: Context) {
         val wm = WorkManager.getInstance(context.applicationContext)
+        val startupCatalog = OneTimeWorkRequest.Builder(OverpassRegionCatalogWorker::class.java)
+            .setConstraints(constraints())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        wm.enqueueUniqueWork(CATALOG_STARTUP, ExistingWorkPolicy.KEEP, startupCatalog)
         val daily = PeriodicWorkRequest.Builder(OverpassRoadRefreshWorker::class.java, 24, TimeUnit.HOURS)
             .setInputData(Data.Builder().putString("mode", "current").build())
             .setConstraints(constraints()).build()
         val weekly = PeriodicWorkRequest.Builder(OverpassRoadRefreshWorker::class.java, 7, TimeUnit.DAYS)
             .setInputData(Data.Builder().putString("mode", "others").build())
             .setConstraints(constraints()).build()
+        val catalogWeekly = PeriodicWorkRequest.Builder(OverpassRegionCatalogWorker::class.java, 7, TimeUnit.DAYS)
+            .setConstraints(constraints()).build()
         wm.enqueueUniquePeriodicWork(CURRENT_DAILY, ExistingPeriodicWorkPolicy.KEEP, daily)
         wm.enqueueUniquePeriodicWork(OTHERS_WEEKLY, ExistingPeriodicWorkPolicy.KEEP, weekly)
+        wm.enqueueUniquePeriodicWork(CATALOG_WEEKLY, ExistingPeriodicWorkPolicy.KEEP, catalogWeekly)
     }
 
     internal fun workInfos(context: Context): List<WorkInfo> =
@@ -140,6 +152,34 @@ internal class OverpassRoadRefreshWorker(c: Context, p: WorkerParameters) : Work
             }
         }
         return Result.success()
+    }
+}
+
+internal class OverpassRegionCatalogWorker(c: Context, p: WorkerParameters) : Worker(c, p) {
+    override fun doWork(): Result {
+        if (!validatedInternet(applicationContext)) return Result.retry()
+        return try {
+            setProgressAsync(Data.Builder().putString("phase", "Обновляем каталог стран").putInt("progress", 5).build())
+            OverpassRegionSearch.refreshCountries(applicationContext)
+            val prefs = applicationContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
+            val position = readNavigationPosition(prefs)
+            if (position != null) {
+                setProgressAsync(Data.Builder().putString("phase", "Загружаем список регионов вашей страны").putInt("progress", 35).build())
+                val country = OverpassRegionSearch.countryAt(position.coordinate.latitude, position.coordinate.longitude)
+                if (country != null) {
+                    OverpassRegionSearch.refreshRegions(applicationContext, country.relationId)
+                }
+                setProgressAsync(Data.Builder().putString("phase", "Ставим дорожные данные текущего региона в очередь").putInt("progress", 75).build())
+                OverpassRoadRegionQueue.enqueueCurrent(applicationContext, position.coordinate.latitude, position.coordinate.longitude)
+            }
+            Result.success()
+        } catch (_: IOException) {
+            Result.retry()
+        } catch (_: SecurityException) {
+            Result.failure()
+        } catch (_: Exception) {
+            Result.retry()
+        }
     }
 }
 
@@ -340,23 +380,72 @@ internal data class OverpassRegionChoice(val relationId: Long, val name: String)
 
 internal object OverpassRegionSearch {
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(75, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(40, TimeUnit.SECONDS)
         .addNetworkInterceptor { chain ->
             NetworkGate.validateRequest(chain.request().url.toString(), chain.request().method,
                 NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
             chain.proceed(chain.request())
         }.build()
 
-    fun countries(): List<OverpassRegionChoice> {
+    private const val CACHE_PREFS = "clear_maps_region_catalog_cache"
+    private const val COUNTRIES_KEY = "countries_json"
+
+    fun cachedCountries(context: Context): List<OverpassRegionChoice> = readCache(context, COUNTRIES_KEY)
+
+    fun cachedRegions(context: Context, countryRelationId: Long): List<OverpassRegionChoice> =
+        if (countryRelationId > 0L) readCache(context, "regions_$countryRelationId") else emptyList()
+
+    fun countries(context: Context): List<OverpassRegionChoice> =
+        cachedCountries(context).ifEmpty { refreshCountries(context) }
+
+    fun regions(context: Context, countryRelationId: Long): List<OverpassRegionChoice> =
+        cachedRegions(context, countryRelationId).ifEmpty { refreshRegions(context, countryRelationId) }
+
+    fun refreshCountries(context: Context): List<OverpassRegionChoice> {
         val query = "[out:json][timeout:45];relation[\"boundary\"=\"administrative\"][\"admin_level\"=\"2\"][\"name\"];out tags;"
-        return execute(query, 500).sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
+        val found = execute(query, 500).sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
+        if (found.isEmpty()) throw IOException("Overpass вернул пустой каталог стран")
+        writeCache(context, COUNTRIES_KEY, found)
+        return found
     }
 
-    fun regions(countryRelationId: Long): List<OverpassRegionChoice> {
+    fun refreshRegions(context: Context, countryRelationId: Long): List<OverpassRegionChoice> {
         if (countryRelationId <= 0L) return emptyList()
         val query = "[out:json][timeout:55];relation(" + countryRelationId + ")->.country;map_to_area .country->.countryArea;relation(area.countryArea)[\"boundary\"=\"administrative\"][\"admin_level\"~\"^(3|4|5)$\"][\"name\"];out tags 500;"
-        return execute(query, 500).sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
+        val found = execute(query, 500).sortedBy { it.name.lowercase(java.util.Locale.ROOT) }
+        writeCache(context, "regions_$countryRelationId", found)
+        return found
+    }
+
+    fun countryAt(latitude: Double, longitude: Double): OverpassRegionChoice? {
+        if (!latitude.isFinite() || latitude !in -90.0..90.0 ||
+            !longitude.isFinite() || longitude !in -180.0..180.0) return null
+        val query = "[out:json][timeout:25];is_in($latitude,$longitude)->.a;relation(pivot.a)[\"boundary\"=\"administrative\"][\"admin_level\"=\"2\"][\"name\"];out tags;"
+        return execute(query, 5).firstOrNull()
+    }
+
+    private fun readCache(context: Context, key: String): List<OverpassRegionChoice> {
+        val raw = context.applicationContext.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+            .getString(key, null) ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index)
+                    val id = item.optLong("id", -1L)
+                    val name = item.optString("name").trim()
+                    if (id > 0L && name.isNotBlank()) add(OverpassRegionChoice(id, name))
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun writeCache(context: Context, key: String, items: List<OverpassRegionChoice>) {
+        val array = JSONArray()
+        items.forEach { item -> array.put(JSONObject().put("id", item.relationId).put("name", item.name)) }
+        context.applicationContext.getSharedPreferences(CACHE_PREFS, Context.MODE_PRIVATE)
+            .edit().putString(key, array.toString()).putLong("${key}_updated", System.currentTimeMillis()).apply()
     }
 
     fun search(rawName: String): List<OverpassRegionChoice> {

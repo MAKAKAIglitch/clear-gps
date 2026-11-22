@@ -2087,14 +2087,16 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
         }
     }
     LaunchedEffect(Unit) {
-        countriesLoading = true
-        try {
-            countries = withContext(Dispatchers.IO) { OverpassRegionSearch.countries() }
-            if (countries.isEmpty()) message = "Список стран пуст. Попробуй обновить экран позже."
-        } catch (error: Exception) {
-            message = error.message ?: "Не удалось загрузить список стран OpenStreetMap"
-        } finally {
-            countriesLoading = false
+        countries = withContext(Dispatchers.IO) { OverpassRegionSearch.cachedCountries(context) }
+        countriesLoading = countries.isEmpty()
+        while (countriesLoading) {
+            delay(1_500L)
+            val cached = withContext(Dispatchers.IO) { OverpassRegionSearch.cachedCountries(context) }
+            if (cached.isNotEmpty()) {
+                countries = cached
+                countriesLoading = false
+                message = null
+            }
         }
     }
     LaunchedEffect(selectedCountry?.relationId) {
@@ -2104,7 +2106,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
         results = emptyList()
         message = null
         try {
-            results = withContext(Dispatchers.IO) { OverpassRegionSearch.regions(country.relationId) }
+            results = withContext(Dispatchers.IO) { OverpassRegionSearch.regions(context, country.relationId) }
             if (results.isEmpty()) message = "Для этой страны не найдены административные регионы в OpenStreetMap."
         } catch (error: Exception) {
             message = error.message ?: "Не удалось загрузить регионы страны"
