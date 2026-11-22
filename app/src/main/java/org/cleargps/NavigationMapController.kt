@@ -1244,7 +1244,7 @@ internal class NavigationMapController {
             NavigationPoiCategory.PARKING -> "#64748B"
             NavigationPoiCategory.ATM -> "#06B6D4"
         }
-        const val POI_ICON_SIZE = 0.44f
+        const val POI_ICON_SIZE = 0.60f
         const val NATIVE_POI_MIN_ZOOM = 14f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
@@ -1263,7 +1263,7 @@ internal class NavigationMapController {
         const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
         const val POI_LABEL_MIN_ZOOM = 15.0f
-        const val POI_HIT_RADIUS_PX = 24f
+        const val POI_HIT_RADIUS_PX = 30f
         const val ROUTE_HIT_RADIUS_DP = 18f
         const val LOCATION_HIT_RADIUS_DP = 36f
         const val POI_REFRESH_DEBOUNCE_MS = 850L

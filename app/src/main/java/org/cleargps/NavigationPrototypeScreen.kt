@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.maps.MapView
@@ -129,6 +130,7 @@ internal fun NavigationPrototypeScreen(
     onClosePreview: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val controller = remember { NavigationMapController() }
     val positionPreferences = remember {
@@ -1222,6 +1224,44 @@ internal fun NavigationPrototypeScreen(
                         )
                         poiForSheet.address?.let { address ->
                             Text(address, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                        }
+                        val detailRows = listOfNotNull(
+                            poiForSheet.openingHours?.let { "Часы работы" to it },
+                            poiForSheet.phone?.let { "Телефон" to it },
+                            poiForSheet.website?.let { "Сайт" to it },
+                            poiForSheet.email?.let { "Эл. почта" to it },
+                            poiForSheet.cuisine?.let { "Кухня" to it },
+                            poiForSheet.operator?.let { "Оператор" to it },
+                            poiForSheet.wheelchair?.let {
+                                "Доступность" to when (it) {
+                                    "yes" -> "Доступно для инвалидных колясок"
+                                    "no" -> "Нет доступа для инвалидных колясок"
+                                    "limited" -> "Ограниченная доступность"
+                                    else -> it
+                                }
+                            }
+                        )
+                        if (detailRows.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                detailRows.forEach { (label, value) ->
+                                    val isWebsite = label == "Сайт"
+                                    Text(
+                                        "$label: $value",
+                                        modifier = if (isWebsite) Modifier.clickable {
+                                            val url = if (value.startsWith("http://") || value.startsWith("https://")) value else "https://$value"
+                                            runCatching { uriHandler.openUri(url) }
+                                        } else Modifier,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (isWebsite) colors.primary else colors.onSurface
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                "Дополнительные сведения не указаны в OpenStreetMap.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant
+                            )
                         }
                     } else {
                         Text(

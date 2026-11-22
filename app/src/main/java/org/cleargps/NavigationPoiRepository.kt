@@ -45,7 +45,14 @@ internal data class NavigationPoi(
     val latitude: Double,
     val longitude: Double,
     val address: String?,
-    val label: String? = null
+    val label: String? = null,
+    val openingHours: String? = null,
+    val phone: String? = null,
+    val website: String? = null,
+    val email: String? = null,
+    val cuisine: String? = null,
+    val operator: String? = null,
+    val wheelchair: String? = null
 ) {
     val coordinate: NavigationCoordinate
         get() = NavigationCoordinate(latitude, longitude)
@@ -156,7 +163,22 @@ internal class NavigationPoiRepository {
                 listOfNotNull(street, house).joinToString(" ").takeIf { it.isNotBlank() },
                 city?.takeIf { it.isNotBlank() }
             ).joinToString(", ").takeIf { it.isNotBlank() }
-            result["$type/$id"] = NavigationPoi("$type/$id", name, category, lat, lon, address, label)
+            result["$type/$id"] = NavigationPoi(
+                id = "$type/$id",
+                name = name,
+                category = category,
+                latitude = lat,
+                longitude = lon,
+                address = address,
+                label = label,
+                openingHours = tags["opening_hours"]?.takeIf { it.isNotBlank() },
+                phone = (tags["phone"] ?: tags["contact:phone"])?.takeIf { it.isNotBlank() },
+                website = (tags["website"] ?: tags["contact:website"] ?: tags["url"])?.takeIf { it.isNotBlank() },
+                email = (tags["email"] ?: tags["contact:email"])?.takeIf { it.isNotBlank() },
+                cuisine = tags["cuisine"]?.takeIf { it.isNotBlank() },
+                operator = tags["operator"]?.takeIf { it.isNotBlank() },
+                wheelchair = tags["wheelchair"]?.takeIf { it.isNotBlank() }
+            )
         }
         return result.values.toList()
     }
