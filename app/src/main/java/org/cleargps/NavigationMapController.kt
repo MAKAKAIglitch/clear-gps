@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import com.google.gson.JsonObject
@@ -100,7 +101,8 @@ internal class NavigationMapController {
             mapTapListener?.let(mapObject::removeOnMapClickListener)
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
-                val poiFeature = mapObject.queryRenderedFeatures(screenPoint, POI_LAYER_IDS).firstOrNull()
+                val hitBox = RectF(screenPoint.x - POI_HIT_RADIUS_PX, screenPoint.y - POI_HIT_RADIUS_PX, screenPoint.x + POI_HIT_RADIUS_PX, screenPoint.y + POI_HIT_RADIUS_PX)
+                val poiFeature = mapObject.queryRenderedFeatures(hitBox, POI_LAYER_IDS).firstOrNull()
                 val properties = poiFeature?.properties()
                 val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
                 val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
@@ -576,6 +578,7 @@ internal class NavigationMapController {
         const val CAMERA_ANIMATION_MS = 680
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val MIN_POI_ZOOM = 12.0
+        const val POI_HIT_RADIUS_PX = 24f
         const val POI_REFRESH_DEBOUNCE_MS = 850L
         const val EARTH_RADIUS_METERS = 6_371_000.0
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
