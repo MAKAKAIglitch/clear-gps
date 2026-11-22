@@ -30,6 +30,7 @@ internal object NetworkGate {
         MAP_RESOURCE,
         AIRPORT_CATALOG_READ,
         OPENSTREETMAP_CELL_SITE_LOOKUP,
+        OVERPASS_ROAD_DOWNLOAD,
         ROUTE_LOOKUP
     }
 
@@ -120,6 +121,12 @@ internal object NetworkGate {
                     host != OPENSTREETMAP_HOST || uri.rawPath != OPENSTREETMAP_PATH
                 ) reject()
                 validateOpenStreetMapQuery(uri.rawQuery)
+            }
+            Operation.OVERPASS_ROAD_DOWNLOAD -> {
+                if (!consentGranted || normalizedMethod != "GET" ||
+                    host != OPENSTREETMAP_HOST || uri.rawPath != OPENSTREETMAP_PATH
+                ) reject()
+                validateOpenStreetMapRoadQuery(uri.rawQuery)
             }
             Operation.ROUTE_LOOKUP -> {
                 val path = uri.rawPath.orEmpty()
@@ -282,6 +289,29 @@ internal object NetworkGate {
             !normalized.contains("nwr(around:") ||
             !normalized.endsWith("out center tags;") ||
             forbidden.containsMatchIn(normalized)
+        ) reject()
+    }
+
+    private fun validateOpenStreetMapRoadQuery(rawQuery: String?) {
+        val parameter = rawQuery ?: reject()
+        if (parameter.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
+            !parameter.startsWith("data=") || parameter.contains('&')
+        ) reject()
+        val query = try {
+            URLDecoder.decode(parameter.removePrefix("data="), StandardCharsets.UTF_8.name()).trim()
+        } catch (_: Exception) { reject() }
+        val safeRegionLookup = query.contains("is_in(") &&
+            query.contains("relation(pivot.") &&
+            query.endsWith("out tags;")
+        val safeRoadExtract = query.contains("map_to_area") &&
+            query.contains("way(area.region)") &&
+            query.contains("[\"highway\"]") &&
+            query.endsWith("out geom;")
+        val forbidden = Regex("""(?i)\\b(make|delete|foreach|retro|complete|convert|augmented\\s+diff|diff)\\b""")
+        if (query.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
+            !query.startsWith("[out:json]") ||
+            !(safeRegionLookup || safeRoadExtract) ||
+            forbidden.containsMatchIn(query)
         ) reject()
     }
 
