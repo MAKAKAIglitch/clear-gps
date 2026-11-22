@@ -27,7 +27,7 @@ internal object NavigationGuidanceEngine {
         previousStepIndex: Int = 0
     ): NavigationGuidanceSnapshot? {
         if (!position.isValid() || route.coordinates.size < 2 || route.steps.isEmpty()) return null
-        val nearest = nearestRoutePoint(position, route.coordinates)
+        val nearest = nearestRouteSegment(position, route.coordinates)
         val nextIndex = route.steps.indexOfFirst { it.routeIndex > nearest.first }
             .takeIf { it >= 0 } ?: route.steps.lastIndex
         val index = max(previousStepIndex.coerceIn(0, route.steps.lastIndex), nextIndex)
@@ -47,14 +47,29 @@ internal object NavigationGuidanceEngine {
         )
     }
 
-    private fun nearestRoutePoint(
+    private fun nearestRouteSegment(
         point: NavigationCoordinate,
         coordinates: List<NavigationCoordinate>
     ): Pair<Int, Double> {
         var bestIndex = 0
         var bestDistance = Double.MAX_VALUE
-        coordinates.forEachIndexed { index, candidate ->
-            val distance = distanceMeters(point, candidate)
+        val latitudeScale = 111_320.0
+        val longitudeScale = latitudeScale * cos(Math.toRadians(point.latitude)).coerceAtLeast(0.01)
+        for (index in 0 until coordinates.lastIndex) {
+            val a = coordinates[index]
+            val b = coordinates[index + 1]
+            val ax = (a.longitude - point.longitude) * longitudeScale
+            val ay = (a.latitude - point.latitude) * latitudeScale
+            val bx = (b.longitude - point.longitude) * longitudeScale
+            val by = (b.latitude - point.latitude) * latitudeScale
+            val dx = bx - ax
+            val dy = by - ay
+            val lengthSquared = dx * dx + dy * dy
+            val fraction = if (lengthSquared <= 0.0001) 0.0
+                else (-(ax * dx + ay * dy) / lengthSquared).coerceIn(0.0, 1.0)
+            val projectedX = ax + fraction * dx
+            val projectedY = ay + fraction * dy
+            val distance = sqrt(projectedX * projectedX + projectedY * projectedY)
             if (distance < bestDistance) {
                 bestDistance = distance
                 bestIndex = index
