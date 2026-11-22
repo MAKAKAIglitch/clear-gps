@@ -341,7 +341,7 @@ internal class NavigationMapController {
                 NavigationPoiCategory.values().forEach { category ->
                     style.addLayer(
                         SymbolLayer(poiLayerId(category), POI_SOURCE)
-                            .apply { setMinZoom(MIN_POI_ZOOM.toFloat()) }
+                            .apply { setMinZoom(if (category.isCamera) CAMERA_MIN_ZOOM.toFloat() else MIN_POI_ZOOM.toFloat()) }
                             .withFilter(
                                 Expression.eq(
                                     Expression.get(POI_CATEGORY_PROPERTY),
@@ -510,7 +510,7 @@ internal class NavigationMapController {
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
         val task = Runnable {
             val mapObject = map ?: return@Runnable
-            if (!styleReady || mapObject.cameraPosition.zoom < MIN_POI_ZOOM) {
+            if (!styleReady || mapObject.cameraPosition.zoom < CAMERA_MIN_ZOOM) {
                 poiRepository.cancel()
                 pois = emptyList()
                 renderPois()
@@ -523,7 +523,7 @@ internal class NavigationMapController {
                 bounds.latitudeNorth,
                 bounds.longitudeEast
             ) { loaded ->
-                if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= MIN_POI_ZOOM) {
+                if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= CAMERA_MIN_ZOOM) {
                     val currentBounds = mapObject.projection.visibleRegion.latLngBounds
                     // A slow Overpass response must not repaint markers from an old viewport.
                     pois = loaded.filter { poi ->
@@ -1192,6 +1192,15 @@ internal class NavigationMapController {
                 canvas.drawCircle(57f, 57f, 2f, fill)
                 canvas.drawLine(40f, 63f, 56f, 63f, fineStroke)
             }
+            NavigationPoiCategory.SPEED_CAMERA,
+            NavigationPoiCategory.RED_LIGHT_CAMERA,
+            NavigationPoiCategory.TRAFFIC_CAMERA -> {
+                canvas.drawRoundRect(RectF(25f, 34f, 70f, 62f), 7f, 7f, stroke)
+                canvas.drawCircle(48f, 48f, 9f, fineStroke)
+                canvas.drawCircle(48f, 48f, 3f, fill)
+                canvas.drawRoundRect(RectF(34f, 27f, 46f, 35f), 2f, 2f, fill)
+                canvas.drawCircle(63f, 39f, 2.5f, fill)
+            }
         }
     }
 
@@ -1263,6 +1272,10 @@ internal class NavigationMapController {
                 )
                 NavigationPoiCategory.PARKING -> classIs("parking")
                 NavigationPoiCategory.ATM -> classIs("atm")
+            NavigationPoiCategory.SPEED_CAMERA,
+            NavigationPoiCategory.RED_LIGHT_CAMERA,
+            NavigationPoiCategory.TRAFFIC_CAMERA ->
+                Expression.eq(Expression.get("class"), Expression.literal("__cleargps_camera_not_in_vector_tiles__"))
             }
         }
         fun poiImageId(category: NavigationPoiCategory) = "cleargps-poi-icon-${category.name.lowercase()}"
@@ -1275,6 +1288,9 @@ internal class NavigationMapController {
             NavigationPoiCategory.FOOD -> "#F97316"
             NavigationPoiCategory.PARKING -> "#64748B"
             NavigationPoiCategory.ATM -> "#06B6D4"
+            NavigationPoiCategory.SPEED_CAMERA -> "#2563EB"
+            NavigationPoiCategory.RED_LIGHT_CAMERA -> "#DC2626"
+            NavigationPoiCategory.TRAFFIC_CAMERA -> "#1D4ED8"
         }
         const val POI_ICON_SIZE = 0.60f
         const val NATIVE_POI_MIN_ZOOM = 14f
@@ -1294,6 +1310,7 @@ internal class NavigationMapController {
         const val FOLLOW_CAMERA_ANIMATION_MS = 520
         const val ROUTE_FIT_ANIMATION_MS = 720
         const val MIN_POI_ZOOM = 12.0
+        const val CAMERA_MIN_ZOOM = 9.5
         const val POI_LABEL_MIN_ZOOM = 15.0f
         const val POI_HIT_RADIUS_PX = 30f
         const val ROUTE_HIT_RADIUS_DP = 18f

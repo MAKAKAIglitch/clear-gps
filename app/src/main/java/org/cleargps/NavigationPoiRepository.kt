@@ -21,7 +21,13 @@ internal enum class NavigationPoiCategory(val title: String) {
     SHOP("Магазины"),
     FOOD("Кафе и рестораны"),
     PARKING("Парковки"),
-    ATM("Банкоматы");
+    ATM("Банкоматы"),
+    SPEED_CAMERA("Камеры скорости"),
+    RED_LIGHT_CAMERA("Камеры перекрёстков"),
+    TRAFFIC_CAMERA("Автомобильные камеры");
+
+    val isCamera: Boolean
+        get() = this == SPEED_CAMERA || this == RED_LIGHT_CAMERA || this == TRAFFIC_CAMERA;
 
     companion object {
         fun fromTags(tags: Map<String, String>): NavigationPoiCategory? = when {
@@ -33,6 +39,16 @@ internal enum class NavigationPoiCategory(val title: String) {
             tags["amenity"] in setOf("restaurant", "cafe", "fast_food", "bar") -> FOOD
             tags["amenity"] == "parking" -> PARKING
             tags["amenity"] == "atm" -> ATM
+            tags["highway"] == "speed_camera" -> SPEED_CAMERA
+            tags["enforcement"]?.let(::fromEnforcement) != null ->
+                fromEnforcement(tags["enforcement"]!!) 
+            else -> null
+        }
+
+        fun fromEnforcement(value: String?): NavigationPoiCategory? = when (value?.trim()?.lowercase()) {
+            "maxspeed", "average_speed" -> SPEED_CAMERA
+            "traffic_signals" -> RED_LIGHT_CAMERA
+            "access", "check", "mobile_phone", "seatbelt" -> TRAFFIC_CAMERA
             else -> null
         }
     }
@@ -104,8 +120,13 @@ internal class NavigationPoiRepository {
             (
               nwr["amenity"~"^(fuel|charging_station|pharmacy|restaurant|cafe|fast_food|bar|parking|atm)$"]($bbox);
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
+              node["highway"="speed_camera"]($bbox);
+              node["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
+              rel["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
             );
-            out center tags;
+            out body center tags;
+            >;
+            out skel qt;
         """.trimIndent()
         enqueueAtEndpoint(key, query, 0, callback)
     }
@@ -142,18 +163,41 @@ internal class NavigationPoiRepository {
         val root = JsonParser.parseString(json).asJsonObject
         val elements = root.getAsJsonArray("elements") ?: return null
         val result = LinkedHashMap<String, NavigationPoi>()
+        val nodeCoordinates = HashMap<String, Pair<Double, Double>>()
+        val relationDevices = ArrayList<Triple<String, NavigationPoiCategory, Map<String, String>>>()
         elements.forEach { element ->
             val obj = element.asJsonObject
-            val tagsObject = obj.getAsJsonObject("tags") ?: return@forEach
-            val tags = tagsObject.entrySet().associate { it.key to it.value.asString }
-            val category = NavigationPoiCategory.fromTags(tags) ?: return@forEach
-            val coordinateObject = if (obj.has("lat") && obj.has("lon")) obj else obj.getAsJsonObject("center")
-                ?: return@forEach
-            val lat = coordinateObject.get("lat")?.asDouble ?: return@forEach
-            val lon = coordinateObject.get("lon")?.asDouble ?: return@forEach
-            if (!lat.isFinite() || lat !in -90.0..90.0 || !lon.isFinite() || lon !in -180.0..180.0) return@forEach
-            val type = obj.get("type")?.asString ?: "osm"
+            val type = obj.get("type")?.asString ?: return@forEach
             val id = obj.get("id")?.asString ?: return@forEach
+            val coordinateObject = if (obj.has("lat") && obj.has("lon")) obj else obj.getAsJsonObject("center")
+            val lat = coordinateObject?.get("lat")?.asDouble
+            val lon = coordinateObject?.get("lon")?.asDouble
+            if (type == "node" && lat != null && lon != null &&
+                lat.isFinite() && lat in -90.0..90.0 && lon.isFinite() && lon in -180.0..180.0
+            ) nodeCoordinates[id] = lat to lon
+
+            val tagsObject = obj.getAsJsonObject("tags")
+            val tags = tagsObject?.entrySet()?.associate { it.key to it.value.asString }.orEmpty()
+            if (type == "relation" && tags["type"] == "enforcement") {
+                val category = NavigationPoiCategory.fromEnforcement(tags["enforcement"])
+                if (category != null) {
+                    obj.getAsJsonArray("members")?.forEach { memberElement ->
+                        val member = memberElement.asJsonObject
+                        if (member.get("type")?.asString == "node" &&
+                            member.get("role")?.asString == "device"
+                        ) {
+                            relationDevices += Triple(member.get("ref").asString, category, tags)
+                        }
+                    }
+                }
+            }
+            if (tags.isEmpty()) return@forEach
+            val category = NavigationPoiCategory.fromTags(tags) ?: return@forEach
+            val point = if (lat != null && lon != null) lat to lon else return@forEach
+            val (pointLat, pointLon) = point
+            if (!pointLat.isFinite() || pointLat !in -90.0..90.0 ||
+                !pointLon.isFinite() || pointLon !in -180.0..180.0
+            ) return@forEach
             val label = tags["name"]?.takeIf { it.isNotBlank() }
                 ?: tags["brand"]?.takeIf { it.isNotBlank() }
             val name = label ?: category.title
@@ -168,8 +212,8 @@ internal class NavigationPoiRepository {
                 id = "$type/$id",
                 name = name,
                 category = category,
-                latitude = lat,
-                longitude = lon,
+                latitude = pointLat,
+                longitude = pointLon,
                 address = address,
                 label = label,
                 openingHours = tags["opening_hours"]?.takeIf { it.isNotBlank() },
@@ -180,6 +224,26 @@ internal class NavigationPoiRepository {
                 operator = tags["operator"]?.takeIf { it.isNotBlank() },
                 wheelchair = tags["wheelchair"]?.takeIf { it.isNotBlank() },
                 tags = tags
+            )
+        }
+        relationDevices.forEach { (nodeId, category, relationTags) ->
+            val coordinate = nodeCoordinates[nodeId] ?: return@forEach
+            val id = "node/$nodeId"
+            if (id in result) return@forEach
+            val cameraTags = relationTags + ("camera_source" to "OSM enforcement relation")
+            result[id] = NavigationPoi(
+                id = id,
+                name = when (category) {
+                    NavigationPoiCategory.SPEED_CAMERA -> "Камера скорости"
+                    NavigationPoiCategory.RED_LIGHT_CAMERA -> "Камера перекрёстка"
+                    else -> "Автомобильная камера контроля"
+                },
+                category = category,
+                latitude = coordinate.first,
+                longitude = coordinate.second,
+                address = null,
+                label = null,
+                tags = cameraTags
             )
         }
         return result.values.toList()
