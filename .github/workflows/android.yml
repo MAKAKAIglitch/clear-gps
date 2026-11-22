@@ -13,6 +13,7 @@ on:
       - 'gradle/**'
       - 'app/**'
       - 'core-*/**'
+      - 'rust/**'
       - 'windows-build/**'
       - 'tools/benchmarks/**'
       - '.github/workflows/**'
@@ -91,6 +92,10 @@ jobs:
       - name: Verify radio fingerprint query plans and benchmark both SQL stages
         shell: bash
         run: python3 tools/benchmarks/radio_fingerprint_sql.py --sizes 1000 10000 --repeats 3
+      - name: Test Rust offline routing core
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable test --manifest-path rust/offline-routing/Cargo.toml --locked
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
         run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
       - name: Preserve Linux unit test reports
