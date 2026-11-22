@@ -223,47 +223,6 @@ internal class NavigationMapController {
                     style.addLayer(buildings3d)
                 }
 
-                NavigationPoiCategory.values().forEach { category ->
-                    val poiLayer = CircleLayer(poiLayerId(category), POI_SOURCE)
-                        .apply { setMinZoom(MIN_POI_ZOOM.toFloat()) }
-                        .withFilter(
-                            Expression.eq(
-                                Expression.get(POI_CATEGORY_PROPERTY),
-                                Expression.literal(category.name)
-                            )
-                        )
-                        .withProperties(
-                            // Keep markers screen-sized and readable with the tilted 3D camera.
-                            PropertyFactory.circleRadius(8f),
-                            PropertyFactory.circleColor(poiColor(category)),
-                            PropertyFactory.circleStrokeColor("#FFFFFF"),
-                            PropertyFactory.circleStrokeWidth(2.5f),
-                            PropertyFactory.circleOpacity(1f),
-                            PropertyFactory.circlePitchAlignment("viewport"),
-                            PropertyFactory.circlePitchScale("viewport")
-                        )
-                    style.addLayer(poiLayer)
-                }
-
-                // Only named places receive labels; unnamed POIs remain clean category markers.
-                style.addLayer(
-                    SymbolLayer(POI_NAME_LAYER_ID, POI_SOURCE)
-                        .apply { setMinZoom(POI_LABEL_MIN_ZOOM) }
-                        .withProperties(
-                            PropertyFactory.textField(Expression.get(POI_NAME_PROPERTY)),
-                            PropertyFactory.textSize(11f),
-                            PropertyFactory.textColor("#F4F7FB"),
-                            PropertyFactory.textHaloColor("#101720"),
-                            PropertyFactory.textHaloWidth(1.25f),
-                            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
-                            PropertyFactory.textAnchor("top"),
-                            PropertyFactory.textMaxWidth(12f),
-                            PropertyFactory.textAllowOverlap(false),
-                            PropertyFactory.textIgnorePlacement(false),
-                            PropertyFactory.textPitchAlignment("viewport"),
-                            PropertyFactory.textRotationAlignment("viewport")
-                        )
-                )
                 for (index in 0..2) {
                     style.addLayer(
                         LineLayer(routeLayerId(index), ROUTE_SOURCE)
@@ -353,6 +312,52 @@ internal class NavigationMapController {
                         PropertyFactory.circlePitchAlignment("map"),
                         PropertyFactory.circlePitchScale("map")
                     )
+                )
+
+                // Category badges are drawn locally and stay readable over the tilted 3D basemap.
+                NavigationPoiCategory.values().forEach { category ->
+                    style.addImage(poiImageId(category), createPoiMarkerBitmap(category))
+                }
+                NavigationPoiCategory.values().forEach { category ->
+                    style.addLayer(
+                        SymbolLayer(poiLayerId(category), POI_SOURCE)
+                            .apply { setMinZoom(MIN_POI_ZOOM.toFloat()) }
+                            .withFilter(
+                                Expression.eq(
+                                    Expression.get(POI_CATEGORY_PROPERTY),
+                                    Expression.literal(category.name)
+                                )
+                            )
+                            .withProperties(
+                                PropertyFactory.iconImage(poiImageId(category)),
+                                PropertyFactory.iconSize(POI_ICON_SIZE),
+                                PropertyFactory.iconAnchor("center"),
+                                PropertyFactory.iconPitchAlignment("viewport"),
+                                PropertyFactory.iconRotationAlignment("viewport"),
+                                PropertyFactory.iconAllowOverlap(false),
+                                PropertyFactory.iconIgnorePlacement(false)
+                            )
+                    )
+                }
+
+                // Only actual OSM names/brands receive labels, and only at close zoom.
+                style.addLayer(
+                    SymbolLayer(POI_NAME_LAYER_ID, POI_SOURCE)
+                        .apply { setMinZoom(POI_LABEL_MIN_ZOOM) }
+                        .withProperties(
+                            PropertyFactory.textField(Expression.get(POI_NAME_PROPERTY)),
+                            PropertyFactory.textSize(11f),
+                            PropertyFactory.textColor("#F4F7FB"),
+                            PropertyFactory.textHaloColor("#101720"),
+                            PropertyFactory.textHaloWidth(1.25f),
+                            PropertyFactory.textOffset(arrayOf(0f, 0.9f)),
+                            PropertyFactory.textAnchor("top"),
+                            PropertyFactory.textMaxWidth(12f),
+                            PropertyFactory.textAllowOverlap(false),
+                            PropertyFactory.textIgnorePlacement(false),
+                            PropertyFactory.textPitchAlignment("viewport"),
+                            PropertyFactory.textRotationAlignment("viewport")
+                        )
                 )
 
                 accuracySource = newAccuracySource
@@ -926,6 +931,186 @@ internal class NavigationMapController {
         return bitmap
     }
 
+    /**
+     * Draw a premium round badge with a category-specific glyph.
+     * Generated locally so POI icons need neither network access nor extra runtime libraries.
+     */
+    private fun createPoiMarkerBitmap(category: NavigationPoiCategory): Bitmap {
+        val bitmap = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val color = android.graphics.Color.parseColor(poiColor(category))
+
+        val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = android.graphics.Color.BLACK
+            setShadowLayer(7f, 0f, 4f, android.graphics.Color.argb(115, 0, 0, 0))
+        }
+        canvas.drawCircle(48f, 46f, 36f, shadow)
+
+        val badge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                20f, 12f, 76f, 82f,
+                lightenPoiColor(color, 0.30f),
+                color,
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawCircle(48f, 45f, 35f, badge)
+
+        val outerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3.5f
+            this.color = android.graphics.Color.argb(245, 255, 255, 255)
+        }
+        canvas.drawCircle(48f, 45f, 33.1f, outerRing)
+
+        val innerRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1.1f
+            this.color = android.graphics.Color.argb(75, 255, 255, 255)
+        }
+        canvas.drawCircle(48f, 45f, 28.7f, innerRing)
+
+        drawPoiGlyph(canvas, category)
+        return bitmap
+    }
+
+    private fun lightenPoiColor(color: Int, amount: Float): Int {
+        fun channel(value: Int) = (value + (255 - value) * amount).toInt().coerceIn(0, 255)
+        return android.graphics.Color.argb(
+            android.graphics.Color.alpha(color),
+            channel(android.graphics.Color.red(color)),
+            channel(android.graphics.Color.green(color)),
+            channel(android.graphics.Color.blue(color))
+        )
+    }
+
+    private fun drawPoiGlyph(canvas: Canvas, category: NavigationPoiCategory) {
+        val white = android.graphics.Color.rgb(255, 255, 255)
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = white
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val fineStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = white
+            style = Paint.Style.STROKE
+            strokeWidth = 3.5f
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = white
+            style = Paint.Style.FILL
+        }
+
+        when (category) {
+            NavigationPoiCategory.FUEL -> {
+                canvas.drawRoundRect(RectF(32f, 27f, 55f, 68f), 4f, 4f, stroke)
+                canvas.drawRoundRect(RectF(37f, 33f, 50f, 44f), 2f, 2f, fineStroke)
+                canvas.drawLine(36f, 53f, 51f, 53f, fineStroke)
+                val hose = Path().apply {
+                    moveTo(55f, 34f)
+                    lineTo(62f, 39f)
+                    lineTo(62f, 54f)
+                    quadTo(62f, 60f, 57f, 60f)
+                    lineTo(54f, 60f)
+                }
+                canvas.drawPath(hose, fineStroke)
+                canvas.drawLine(31f, 69f, 57f, 69f, fineStroke)
+            }
+            NavigationPoiCategory.ELECTRIC -> {
+                val bolt = Path().apply {
+                    moveTo(52f, 23f)
+                    lineTo(35f, 49f)
+                    lineTo(46f, 49f)
+                    lineTo(42f, 69f)
+                    lineTo(62f, 41f)
+                    lineTo(50f, 41f)
+                    close()
+                }
+                canvas.drawPath(bolt, fill)
+            }
+            NavigationPoiCategory.PHARMACY -> {
+                val cross = Path().apply {
+                    moveTo(43f, 26f)
+                    lineTo(53f, 26f)
+                    lineTo(53f, 39f)
+                    lineTo(66f, 39f)
+                    lineTo(66f, 50f)
+                    lineTo(53f, 50f)
+                    lineTo(53f, 64f)
+                    lineTo(43f, 64f)
+                    lineTo(43f, 50f)
+                    lineTo(30f, 50f)
+                    lineTo(30f, 39f)
+                    lineTo(43f, 39f)
+                    close()
+                }
+                canvas.drawPath(cross, fill)
+            }
+            NavigationPoiCategory.GROCERY -> {
+                val basket = Path().apply {
+                    moveTo(31f, 38f)
+                    lineTo(65f, 38f)
+                    lineTo(60f, 63f)
+                    lineTo(37f, 63f)
+                    close()
+                }
+                canvas.drawPath(basket, stroke)
+                canvas.drawLine(36f, 45f, 62f, 45f, fineStroke)
+                canvas.drawLine(42f, 42f, 44f, 59f, fineStroke)
+                canvas.drawLine(54f, 42f, 52f, 59f, fineStroke)
+                canvas.drawLine(36f, 34f, 42f, 38f, fineStroke)
+                canvas.drawCircle(41f, 69f, 3f, fill)
+                canvas.drawCircle(57f, 69f, 3f, fill)
+            }
+            NavigationPoiCategory.SHOP -> {
+                canvas.drawRoundRect(RectF(31f, 37f, 65f, 68f), 4f, 4f, stroke)
+                val handle = Path().apply {
+                    moveTo(39f, 39f)
+                    lineTo(39f, 34f)
+                    quadTo(39f, 25f, 48f, 25f)
+                    quadTo(57f, 25f, 57f, 34f)
+                    lineTo(57f, 39f)
+                }
+                canvas.drawPath(handle, fineStroke)
+                canvas.drawLine(40f, 48f, 56f, 48f, fineStroke)
+            }
+            NavigationPoiCategory.FOOD -> {
+                canvas.drawLine(36f, 27f, 36f, 43f, fineStroke)
+                canvas.drawLine(30f, 27f, 30f, 38f, fineStroke)
+                canvas.drawLine(42f, 27f, 42f, 38f, fineStroke)
+                canvas.drawLine(30f, 38f, 42f, 38f, fineStroke)
+                canvas.drawLine(36f, 43f, 36f, 69f, stroke)
+                canvas.drawOval(RectF(51f, 26f, 66f, 47f), fineStroke)
+                canvas.drawLine(58.5f, 47f, 58.5f, 69f, stroke)
+            }
+            NavigationPoiCategory.PARKING -> {
+                val letter = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = white
+                    textAlign = Paint.Align.CENTER
+                    textSize = 52f
+                    typeface = android.graphics.Typeface.create(
+                        android.graphics.Typeface.DEFAULT,
+                        android.graphics.Typeface.BOLD
+                    )
+                }
+                canvas.drawText("P", 48f, 64f, letter)
+            }
+            NavigationPoiCategory.ATM -> {
+                canvas.drawRoundRect(RectF(30f, 25f, 66f, 68f), 5f, 5f, stroke)
+                canvas.drawRoundRect(RectF(37f, 32f, 59f, 48f), 2f, 2f, fineStroke)
+                canvas.drawLine(38f, 40f, 58f, 40f, fineStroke)
+                canvas.drawCircle(39f, 57f, 2f, fill)
+                canvas.drawCircle(48f, 57f, 2f, fill)
+                canvas.drawCircle(57f, 57f, 2f, fill)
+                canvas.drawLine(40f, 63f, 56f, 63f, fineStroke)
+            }
+        }
+    }
+
     private fun contextPreferences(mapView: MapView) =
         mapView.context.applicationContext.getSharedPreferences(
             ClearGpsPreferences.PREFS,
@@ -963,16 +1148,18 @@ internal class NavigationMapController {
         val POI_LAYER_IDS = (NavigationPoiCategory.values().map { poiLayerId(it) } + POI_NAME_LAYER_ID).toTypedArray()
 
         fun poiLayerId(category: NavigationPoiCategory) = "cleargps-poi-${category.name.lowercase()}"
+        fun poiImageId(category: NavigationPoiCategory) = "cleargps-poi-icon-${category.name.lowercase()}"
         fun poiColor(category: NavigationPoiCategory) = when (category) {
-            NavigationPoiCategory.FUEL -> "#E58A24"
-            NavigationPoiCategory.ELECTRIC -> "#21A56B"
-            NavigationPoiCategory.PHARMACY -> "#D84B58"
-            NavigationPoiCategory.GROCERY -> "#4C8FD8"
-            NavigationPoiCategory.SHOP -> "#8B68C9"
-            NavigationPoiCategory.FOOD -> "#D77B42"
-            NavigationPoiCategory.PARKING -> "#657B91"
-            NavigationPoiCategory.ATM -> "#329A9A"
+            NavigationPoiCategory.FUEL -> "#F59E0B"
+            NavigationPoiCategory.ELECTRIC -> "#10B981"
+            NavigationPoiCategory.PHARMACY -> "#EF476F"
+            NavigationPoiCategory.GROCERY -> "#3B82F6"
+            NavigationPoiCategory.SHOP -> "#8B5CF6"
+            NavigationPoiCategory.FOOD -> "#F97316"
+            NavigationPoiCategory.PARKING -> "#64748B"
+            NavigationPoiCategory.ATM -> "#06B6D4"
         }
+        const val POI_ICON_SIZE = 0.44f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
         const val BEARING_ICON_SIZE = 0.25f
