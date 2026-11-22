@@ -136,7 +136,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           cargo +stable test --manifest-path rust/offline-routing/Cargo.toml
       - name: Run tests and build debug APK with the checked-in Gradle Wrapper
-        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest
+        run: ./gradlew --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
       - name: Preserve Linux unit test reports
         if: failure()
         uses: actions/upload-artifact@v4
@@ -189,7 +189,7 @@ jobs:
           # Robolectric builds long sandbox paths from test class/method names.
           # Keep its temp root short to stay below the Windows MAX_PATH limit.
           $env:JAVA_TOOL_OPTIONS = "-Djava.io.tmpdir=$env:RUNNER_TEMP"
-          & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest assembleDebug
+          & .\gradlew.bat --no-daemon --stacktrace :core-detect:test :core-fusion:test :core-cell:test testDebugUnitTest
           if ($LASTEXITCODE -ne 0) { throw "Windows unit tests failed with exit code $LASTEXITCODE." }
           Remove-Item Env:JAVA_TOOL_OPTIONS -ErrorAction SilentlyContinue
       - name: Preserve Windows unit test reports
