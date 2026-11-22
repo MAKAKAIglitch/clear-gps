@@ -99,6 +99,11 @@ class NavigationRoutePreviewActivity : ComponentActivity() {
     override fun onDestroy() {
         mapView?.onDestroy()
         mapView = null
+        // The original map activity is still underneath this preview and remains active.
+        getSharedPreferences(ClearGpsPreferences.PREFS, MODE_PRIVATE)
+            .edit()
+            .putBoolean(ClearGpsPreferences.KEY_NAVIGATION_MAP_ACTIVE, true)
+            .apply()
         super.onDestroy()
     }
 
