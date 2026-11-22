@@ -134,7 +134,7 @@ pub fn find_route_bytes(data: &[u8], from_lat: f64, from_lon: f64, to_lat: f64, 
 mod tests {
     use super::*;
     fn fixture() -> Vec<u8> {
-        let nodes = [(55.0, 37.0), (55.0, 37.01), (55.01, 37.01), (55.01, 37.0)];
+        let nodes: [(f64, f64); 4] = [(55.0, 37.0), (55.0, 37.01), (55.01, 37.01), (55.01, 37.0)];
         let edges = [(1u32, 640.0f32, 20.0f32), (2, 1112.0, 20.0), (3, 640.0, 20.0), (0, 1112.0, 20.0)];
         let offsets = [0u32, 1, 2, 3, 4];
         let mut bytes = Vec::new();
