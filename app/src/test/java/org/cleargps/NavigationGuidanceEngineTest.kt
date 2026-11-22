@@ -42,6 +42,17 @@ class NavigationGuidanceEngineTest {
     )
 
     @Test
+    fun progressStartsWithDepartureInstructionNearRouteOrigin() {
+        val progress = NavigationGuidanceEngine.snapshot(
+            NavigationCoordinate(60.0, 24.0),
+            route
+        )
+        assertTrue(progress != null)
+        assertEquals(0, progress!!.stepIndex)
+        assertEquals("Начните движение", progress.instruction)
+    }
+
+    @Test
     fun progressSelectsUpcomingManeuverAndEstimatesDistance() {
         val progress = NavigationGuidanceEngine.snapshot(
             NavigationCoordinate(60.0, 24.0005),
