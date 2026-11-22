@@ -94,12 +94,20 @@ internal class OverpassRoadRefreshWorker(c: Context, p: WorkerParameters) : Work
         if (!validatedInternet(applicationContext)) return Result.retry()
         if (inputData.getString("mode") == "current") {
             val prefs = applicationContext.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
-            val position = readNavigationPosition(prefs) ?: return Result.retry()
-            OverpassRoadRegionQueue.enqueueCurrent(
-                applicationContext,
-                position.coordinate.latitude,
-                position.coordinate.longitude
-            )
+            val position = readNavigationPosition(prefs)
+            if (position != null) {
+                OverpassRoadRegionQueue.enqueueCurrent(
+                    applicationContext,
+                    position.coordinate.latitude,
+                    position.coordinate.longitude
+                )
+            } else {
+                val lastRegion = OverpassRoadRegionQueue.currentId(applicationContext)
+                if (lastRegion <= 0L) return Result.retry()
+                OverpassRoadRegionQueue.enqueueRegion(
+                    applicationContext, lastRegion, OverpassRoadRegionQueue.name(applicationContext, lastRegion)
+                )
+            }
         } else {
             val current = OverpassRoadRegionQueue.currentId(applicationContext)
             OverpassRoadRegionQueue.ids(applicationContext).filter { it != current }.forEach { id ->
