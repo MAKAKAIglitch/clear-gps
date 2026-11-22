@@ -85,7 +85,7 @@ internal class NavigationPoiRepository {
                 return
             }
         }
-        if (lastRequestKey == key && activeCall?.isExecuted == true && activeCall?.isCanceled == false) return
+        if (lastRequestKey == key) return
         activeCall?.cancel()
         lastRequestKey = key
 
@@ -108,21 +108,22 @@ internal class NavigationPoiRepository {
         activeCall = call
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                if (!call.isCanceled()) lastRequestKey = null
+                if (!call.isCanceled() && lastRequestKey == key) lastRequestKey = null
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        lastRequestKey = null
+                        if (lastRequestKey == key) lastRequestKey = null
                         return
                     }
                     val parsed = try {
                         parse(it.body?.string().orEmpty())
                     } catch (_: Exception) {
-                        lastRequestKey = null
+                        if (lastRequestKey == key) lastRequestKey = null
                         emptyList()
                     }
+                    if (lastRequestKey == key) lastRequestKey = null
                     synchronized(cache) {
                         cache[key] = Cached(System.currentTimeMillis(), parsed)
                         while (cache.size > MAX_CACHE_ENTRIES) {
