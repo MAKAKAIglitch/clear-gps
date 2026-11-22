@@ -439,6 +439,28 @@ internal class NavigationMapController {
         }
     }
 
+    fun followNavigationPosition(point: NavigationCoordinate, bearingDegrees: Double?) {
+        val mapObject = map ?: return
+        if (!styleReady || !point.isValid() || !isFollowingUser) return
+        val previousTarget = mapObject.cameraPosition.target
+        if (previousTarget != null) {
+            val previous = NavigationCoordinate(previousTarget.latitude, previousTarget.longitude)
+            if (NavigationGuidanceEngine.distanceMeters(previous, point) < 4.0) return
+        }
+        val bearing = bearingDegrees?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+            ?: mapObject.cameraPosition.bearing
+        val camera = CameraPosition.Builder()
+            .target(LatLng(point.latitude, point.longitude))
+            .zoom(maxOf(currentZoom(), 16.5).coerceAtMost(MAX_ZOOM))
+            .bearing(bearing)
+            .tilt(45.0)
+            .build()
+        mapObject.easeCamera(
+            CameraUpdateFactory.newCameraPosition(camera),
+            FOLLOW_CAMERA_ANIMATION_MS
+        )
+    }
+
     fun centerOnCurrentPosition(): Boolean {
         val point = currentPosition?.takeIf { it.isValid() } ?: return false
         if (map == null || !styleReady) return false
