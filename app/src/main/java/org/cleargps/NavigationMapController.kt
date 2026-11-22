@@ -184,6 +184,7 @@ internal class NavigationMapController {
 
                 // 3D building footprints from OpenFreeMap's OpenMapTiles vector source.
                 val buildings3d = FillExtrusionLayer("cleargps-buildings-3d", "openmaptiles")
+                    .apply { setSourceLayer("building") }
                     .withProperties(
                         PropertyFactory.fillExtrusionColor("#26364A"),
                         PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
