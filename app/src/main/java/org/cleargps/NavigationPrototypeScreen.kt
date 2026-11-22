@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
 import android.speech.tts.TextToSpeech
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.WifiOff
 import android.net.NetworkCapabilities
 import android.net.Network
