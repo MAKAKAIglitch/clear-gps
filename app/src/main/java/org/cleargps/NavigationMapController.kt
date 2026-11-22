@@ -235,7 +235,7 @@ internal class NavigationMapController {
                         PropertyFactory.fillExtrusionColor("#26364A"),
                         PropertyFactory.fillExtrusionHeight(Expression.get("render_height")),
                         PropertyFactory.fillExtrusionBase(Expression.get("render_min_height")),
-                        PropertyFactory.fillExtrusionOpacity(0.88f)
+                        PropertyFactory.fillExtrusionOpacity(0.70f)
                     )
                 buildings3d.setMinZoom(14f)
                 if (style.getLayer("building") != null) {
@@ -1276,7 +1276,7 @@ internal class NavigationMapController {
             NavigationPoiCategory.RED_LIGHT_CAMERA -> "#2563EB"
             NavigationPoiCategory.TRAFFIC_CAMERA -> "#2563EB"
         }
-        const val POI_ICON_SIZE = 0.30f
+        const val POI_ICON_SIZE = 0.60f
         const val NATIVE_POI_MIN_ZOOM = 14f
         const val BEARING_IMAGE = "cleargps-navigation-bearing-image"
         const val BEARING_PROPERTY = "bearing"
