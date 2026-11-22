@@ -54,7 +54,7 @@ internal enum class NavigationPoiCategory(val title: String) {
             "maxspeed", "average_speed" -> SPEED_CAMERA
             "traffic_signals" -> RED_LIGHT_CAMERA
             "access", "check", "mobile_phone", "seatbelt", "bus_lane",
-            "motor_vehicle", "weight", "height", "dimension", "hazmat", "toll" -> TRAFFIC_CAMERA
+            "motor_vehicle", "weight", "height", "dimension", "hazmat" -> TRAFFIC_CAMERA
             else -> null
         }
     }
