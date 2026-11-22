@@ -9,6 +9,9 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.*
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPOutputStream
 
@@ -224,9 +227,11 @@ internal class OverpassRoadRegionWorker(c: Context, p: WorkerParameters) : Worke
                 GZIPOutputStream(BufferedOutputStream(output)).use { gzip -> input.copyTo(gzip, 64 * 1024) }
             }
         }
-        if (!staged.renameTo(target)) {
-            target.delete()
-            if (!staged.renameTo(target)) throw IOException("Cannot activate region cache")
+        try {
+            Files.move(staged.toPath(), target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(staged.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
         raw.delete()
         OverpassRoadRegionQueue.saved(applicationContext, id, name, isCurrent)
@@ -273,7 +278,12 @@ internal data class OverpassRegionChoice(val relationId: Long, val name: String)
 internal object OverpassRegionSearch {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS).build()
+        .callTimeout(45, TimeUnit.SECONDS)
+        .addNetworkInterceptor { chain ->
+            NetworkGate.validateRequest(chain.request().url.toString(), chain.request().method,
+                NetworkGate.Operation.OVERPASS_ROAD_DOWNLOAD, consentGranted = true)
+            chain.proceed(chain.request())
+        }.build()
 
     fun search(rawName: String): List<OverpassRegionChoice> {
         val term = rawName.trim().take(48)
