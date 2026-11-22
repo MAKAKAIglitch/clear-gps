@@ -303,6 +303,9 @@ internal object NetworkGate {
         val safeRegionLookup = query.contains("is_in(") &&
             query.contains("relation(pivot.") &&
             query.endsWith("out tags;")
+        val safeRegionSearch = query.contains("""relation["boundary"="administrative"]""") &&
+            query.contains("""["admin_level"="4"]""") &&
+            query.contains("""["name"~""") && query.endsWith("out tags 30;")
         val safeRoadExtract = query.contains("map_to_area") &&
             query.contains("way(area.region)") &&
             query.contains("[\"highway\"]") &&
@@ -310,7 +313,7 @@ internal object NetworkGate {
         val forbidden = Regex("""(?i)\b(make|delete|foreach|retro|complete|convert|augmented\s+diff|diff)\b""")
         if (query.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
             !query.startsWith("[out:json]") ||
-            !(safeRegionLookup || safeRoadExtract) ||
+            !(safeRegionLookup || safeRegionSearch || safeRoadExtract) ||
             forbidden.containsMatchIn(query)
         ) reject()
     }
