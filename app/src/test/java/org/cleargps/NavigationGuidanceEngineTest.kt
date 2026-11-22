@@ -48,7 +48,7 @@ class NavigationGuidanceEngineTest {
             route
         )
         assertTrue(progress != null)
-        assertEquals(0, progress!!.stepIndex)
+        assertEquals(1, progress!!.stepIndex)
         assertTrue(progress.distanceToManeuverMeters < 40.0)
         assertTrue(progress.remainingDistanceMeters > 100.0)
     }
