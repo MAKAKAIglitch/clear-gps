@@ -15,6 +15,13 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class NavigationPositionModeTest {
     @Test
+    fun autoModeDescriptionExplainsLocalRadioCorrectionAlongsideTrustedGps() {
+        val description = NavigationPositionMode.AUTO.description
+        assertTrue(description.contains("локальной радиобазе"))
+        assertTrue(description.contains("корректирует GPS"))
+        assertTrue(description.contains("слияние измерений"))
+    }
+    @Test
     fun readsClearGpsCalculatedRadioPositionWhenMockGpsPublishingIsDisabled() {
         val context = RuntimeEnvironment.getApplication()
         val prefs = context.getSharedPreferences("navigation_position_test", Context.MODE_PRIVATE)
