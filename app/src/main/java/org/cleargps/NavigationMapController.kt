@@ -358,7 +358,7 @@ internal class NavigationMapController {
                 }
             }
             .toList()
-        poiSource?.setGeoJson(FeatureCollection.fromFeatures(features))
+        poiSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
         map?.triggerRepaint()
     }
 
