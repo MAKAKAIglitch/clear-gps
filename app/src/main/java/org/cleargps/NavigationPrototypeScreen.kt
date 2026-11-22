@@ -258,8 +258,9 @@ internal fun NavigationPrototypeScreen(
             speechReady = false
             onDispose { }
         } else {
-            lateinit var engine: TextToSpeech
+            var createdEngine: TextToSpeech? = null
             try {
+                lateinit var engine: TextToSpeech
                 engine = TextToSpeech(context, { status ->
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (speechEngine !== engine || !speechEnabled) return@post
@@ -276,6 +277,7 @@ internal fun NavigationPrototypeScreen(
                         }
                     }
                 }, GOOGLE_TTS_ENGINE_PACKAGE)
+                createdEngine = engine
                 speechEngine = engine
                 speechReady = false
             } catch (error: Exception) {
@@ -283,15 +285,16 @@ internal fun NavigationPrototypeScreen(
                 speechReady = false
                 DiagnosticLogStore.log(context, "NAV_VOICE", "Ошибка запуска Google Text-to-Speech: " + error.javaClass.simpleName + ": " + (error.message ?: "без описания"), "ERROR")
                 Toast.makeText(context, "Не удалось запустить Google Text-to-Speech", Toast.LENGTH_LONG).show()
-                onDispose { }
             }
             onDispose {
-                if (speechEngine === engine) {
-                    speechEngine = null
-                    speechReady = false
+                createdEngine?.let { engine ->
+                    if (speechEngine === engine) {
+                        speechEngine = null
+                        speechReady = false
+                    }
+                    engine.stop()
+                    engine.shutdown()
                 }
-                engine.stop()
-                engine.shutdown()
             }
         }
     }
