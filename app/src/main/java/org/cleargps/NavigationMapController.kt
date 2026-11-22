@@ -1215,18 +1215,20 @@ internal class NavigationMapController {
             return when (category) {
                 NavigationPoiCategory.FUEL -> classIs("fuel")
                 NavigationPoiCategory.ELECTRIC -> classIs("charging_station")
-                NavigationPoiCategory.PHARMACY -> Expression.any(arrayOf(classIs("pharmacy"), subclassIs("chemist")))
-                NavigationPoiCategory.GROCERY -> Expression.any(arrayOf(
+                NavigationPoiCategory.PHARMACY -> Expression.any(
+                    classIs("pharmacy"), subclassIs("chemist")
+                )
+                NavigationPoiCategory.GROCERY -> Expression.any(
                     classIs("grocery"), *grocerySubclasses
-                ))
-                NavigationPoiCategory.SHOP -> Expression.all(arrayOf(
+                )
+                NavigationPoiCategory.SHOP -> Expression.all(
                     classIs("shop"),
-                    Expression.not(Expression.any(arrayOf(*grocerySubclasses, subclassIs("chemist"))))
-                ))
-                NavigationPoiCategory.FOOD -> Expression.any(arrayOf(
+                    Expression.not(Expression.any(*(grocerySubclasses + subclassIs("chemist"))))
+                )
+                NavigationPoiCategory.FOOD -> Expression.any(
                     classIs("restaurant"), classIs("cafe"), classIs("fast_food"),
                     classIs("bar"), classIs("ice_cream")
-                ))
+                )
                 NavigationPoiCategory.PARKING -> classIs("parking")
                 NavigationPoiCategory.ATM -> classIs("atm")
             }
