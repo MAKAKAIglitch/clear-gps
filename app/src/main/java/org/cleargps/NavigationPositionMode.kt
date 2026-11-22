@@ -174,6 +174,7 @@ internal fun readNavigationPosition(
     if (observedCoordinate != null && observedElapsedNanos > 0L && observedAgeNanos >= 0L) {
         return NavigationPositionSnapshot(observedCoordinate, observedAccuracy, "GPS_UNVERIFIED_STALE", null)
     }
+    return null
 }
 
 private const val LAST_TRUSTED_GPS_MAX_AGE_NANOS = 120_000_000_000L
