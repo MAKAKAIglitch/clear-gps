@@ -212,14 +212,78 @@ internal fun NavigationPrototypeScreen(
         }
     }
 
+    DisposableEffect(context) {
+        val engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val language = speechEngine?.setLanguage(Locale("ru", "RU"))
+                speechReady = language != TextToSpeech.LANG_MISSING_DATA &&
+                    language != TextToSpeech.LANG_NOT_SUPPORTED
+            }
+        }
+        speechEngine = engine
+        onDispose {
+            engine.stop()
+            engine.shutdown()
+            speechEngine = null
+            speechReady = false
+        }
+    }
+
     LaunchedEffect(navigationPosition) {
         controller.updatePosition(navigationPosition)
+    }
+
+    LaunchedEffect(navigationPosition, isNavigating, activeRoute, routeDestination) {
+        if (!isNavigating) return@LaunchedEffect
+        val position = navigationPosition?.coordinate ?: return@LaunchedEffect
+        val route = activeRoute ?: return@LaunchedEffect
+        val progress = NavigationGuidanceEngine.snapshot(
+            position = position,
+            route = route,
+            previousStepIndex = guidance?.stepIndex ?: 0
+        ) ?: return@LaunchedEffect
+        guidance = progress
+        controller.followNavigationPosition(position, navigationPosition?.bearingDegrees)
+        if (progress.stepIndex != lastAnnouncedStepIndex) {
+            lastAnnouncedStepIndex = progress.stepIndex
+            if (speechReady) speechEngine?.speak(
+                progress.instruction,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "cleargps-maneuver-${progress.stepIndex}"
+            )
+        }
+        val accuracy = navigationPosition?.accuracyMeters?.coerceIn(0.0, 80.0) ?: 0.0
+        val offRouteLimit = maxOf(45.0, accuracy * 1.5)
+        if (progress.offRouteDistanceMeters > offRouteLimit) offRouteFixCount += 1
+        else offRouteFixCount = 0
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        val destination = routeDestination
+        if (offRouteFixCount >= 3 && destination != null && now - lastRerouteAtMs >= 15_000L) {
+            lastRerouteAtMs = now
+            offRouteFixCount = 0
+            routingRepository.findRoutes(position, destination) { result ->
+                result.onSuccess { alternatives ->
+                    val fastest = alternatives.minByOrNull { it.durationSeconds } ?: return@onSuccess
+                    calculatedRoutes = alternatives
+                    selectedRouteIndex = alternatives.indexOf(fastest).coerceAtLeast(0)
+                    activeRoute = fastest
+                    guidance = null
+                    lastAnnouncedStepIndex = -1
+                    controller.updateRoutes(listOf(fastest))
+                    Toast.makeText(context, "Маршрут обновлён после отклонения", Toast.LENGTH_SHORT).show()
+                }.onFailure { error ->
+                    Toast.makeText(context, "Не удалось перестроить маршрут: ${error.message ?: "ошибка сети"}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
     LaunchedEffect(routeDestination) {
         controller.updateDestination(routeDestination)
     }
 
-    LaunchedEffect(routeDestination, navigationPosition?.coordinate) {
+    LaunchedEffect(routeDestination, if (isNavigating) null else navigationPosition?.coordinate) {
         calculatedRoutes = emptyList()
         selectedRouteIndex = 0
         routeError = null
