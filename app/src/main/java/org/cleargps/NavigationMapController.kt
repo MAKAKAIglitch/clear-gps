@@ -68,6 +68,7 @@ internal class NavigationMapController {
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
     private var onLocationTap: (() -> Unit)? = null
     private var routeHeadingDegrees: Double? = null
+    private var activeNavigationRoute: NavigationRouteAlternative? = null
     private var destinationSource: GeoJsonSource? = null
     private var selectedPointSource: GeoJsonSource? = null
     private var selectedMapPoint: NavigationCoordinate? = null
@@ -379,6 +380,9 @@ internal class NavigationMapController {
             ?.takeIf { it.isFinite() && it > 0.0 }
         currentBearingDegrees = position?.bearingDegrees
             ?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+        routeHeadingDegrees = if (isNavigationCameraMode && currentPosition != null) {
+            currentPosition?.let(::nearestRouteBearing)
+        } else null
         renderCurrentPosition()
 
         val point = currentPosition ?: return
@@ -466,11 +470,12 @@ internal class NavigationMapController {
 
     fun setNavigationActive(active: Boolean, route: NavigationRouteAlternative?) {
         isNavigationCameraMode = active
-        routeHeadingDegrees = if (active) route?.coordinates?.takeIf { it.size >= 2 }?.let { points ->
-            val start = points[0]; val next = points[1]
-            val lat1 = Math.toRadians(start.latitude); val lat2 = Math.toRadians(next.latitude)
-            val dLon = Math.toRadians(next.longitude - start.longitude)
-            ((Math.toDegrees(kotlin.math.atan2(kotlin.math.sin(dLon) * kotlin.math.cos(lat2), kotlin.math.cos(lat1) * kotlin.math.sin(lat2) - kotlin.math.sin(lat1) * kotlin.math.cos(lat2) * kotlin.math.cos(dLon))) + 360.0) % 360.0)
+        activeNavigationRoute = if (active) route else null
+        routeHeadingDegrees = if (active) {
+            currentPosition?.let(::nearestRouteBearing)
+                ?: route?.coordinates?.takeIf { it.size >= 2 }?.let { points ->
+                    bearingBetween(points[0], points[1])
+                }
         } else null
         map?.style?.getLayer(BEARING_LAYER)?.setProperties(
             PropertyFactory.iconSize(if (active) NAVIGATION_ARROW_ICON_SIZE else BEARING_ICON_SIZE),
@@ -593,8 +598,12 @@ internal class NavigationMapController {
         if (!styleReady || !point.isValid() || !isFollowingUser) return
         isNavigationCameraMode = true
         val currentCamera = mapObject.cameraPosition
-        val bearing = bearingDegrees?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
-            ?: currentCamera.bearing
+        val movementBearing = bearingDegrees?.takeIf { it.isFinite() && it >= 0.0 && it < 360.0 }
+        val bearing = if (isNavigationCameraMode) {
+            routeHeadingDegrees ?: movementBearing ?: currentCamera.bearing
+        } else {
+            movementBearing ?: currentCamera.bearing
+        }
         val previousTarget = currentCamera.target
         if (previousTarget != null) {
             val previous = NavigationCoordinate(previousTarget.latitude, previousTarget.longitude)
@@ -625,6 +634,57 @@ internal class NavigationMapController {
         return true
     }
 
+    /**
+     * Snap the navigation arrow to the tangent of the nearest route segment.
+     * If the user is clearly off-route, use the live GPS course instead.
+     */
+    private fun nearestRouteBearing(position: NavigationCoordinate): Double? {
+        val points = activeNavigationRoute?.coordinates ?: return null
+        if (points.size < 2) return null
+
+        val latitudeScale = 111_320.0
+        val longitudeScale = latitudeScale * kotlin.math.cos(Math.toRadians(position.latitude))
+            .coerceAtLeast(0.01)
+        var nearestDistanceMeters = Double.POSITIVE_INFINITY
+        var nearestBearing: Double? = null
+
+        for (index in 0 until points.lastIndex) {
+            val start = points[index]
+            val end = points[index + 1]
+            if (!start.isValid() || !end.isValid()) continue
+
+            val ax = (start.longitude - position.longitude) * longitudeScale
+            val ay = (start.latitude - position.latitude) * latitudeScale
+            val bx = (end.longitude - position.longitude) * longitudeScale
+            val by = (end.latitude - position.latitude) * latitudeScale
+            val dx = bx - ax
+            val dy = by - ay
+            val lengthSquared = dx * dx + dy * dy
+            if (lengthSquared < 0.01) continue
+
+            val fraction = ((-(ax * dx + ay * dy)) / lengthSquared).coerceIn(0.0, 1.0)
+            val nearestX = ax + fraction * dx
+            val nearestY = ay + fraction * dy
+            val distance = kotlin.math.hypot(nearestX, nearestY)
+            if (distance < nearestDistanceMeters) {
+                nearestDistanceMeters = distance
+                nearestBearing = bearingBetween(start, end)
+            }
+        }
+
+        return nearestBearing?.takeIf { nearestDistanceMeters <= ROUTE_HEADING_SNAP_METERS }
+    }
+
+    private fun bearingBetween(start: NavigationCoordinate, end: NavigationCoordinate): Double {
+        val lat1 = Math.toRadians(start.latitude)
+        val lat2 = Math.toRadians(end.latitude)
+        val deltaLongitude = Math.toRadians(end.longitude - start.longitude)
+        val y = kotlin.math.sin(deltaLongitude) * kotlin.math.cos(lat2)
+        val x = kotlin.math.cos(lat1) * kotlin.math.sin(lat2) -
+            kotlin.math.sin(lat1) * kotlin.math.cos(lat2) * kotlin.math.cos(deltaLongitude)
+        return (Math.toDegrees(kotlin.math.atan2(y, x)) + 360.0) % 360.0
+    }
+
     private fun renderCurrentPosition() {
         if (!styleReady) return
         val point = currentPosition?.takeIf { it.isValid() }
@@ -653,7 +713,11 @@ internal class NavigationMapController {
             }
         )
 
-        val bearing = currentBearingDegrees ?: routeHeadingDegrees
+        val bearing = if (isNavigationCameraMode) {
+            routeHeadingDegrees ?: currentBearingDegrees
+        } else {
+            currentBearingDegrees
+        }
         if (bearing == null) {
             bearingSource?.setGeoJson(emptyFeatureCollection())
         } else {
@@ -863,5 +927,6 @@ internal class NavigationMapController {
         const val MAX_ACCURACY_RADIUS_METERS = 100_000.0
         const val ACCURACY_RING_SEGMENTS = 64
         const val ACCURACY_THRESHOLD_METERS = 50.0
+        const val ROUTE_HEADING_SNAP_METERS = 85.0
     }
 }
