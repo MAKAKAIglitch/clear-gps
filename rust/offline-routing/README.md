@@ -38,11 +38,20 @@ implementation uses a linear nearest-node scan; the production importer must add
 index before large regions are enabled. Region files should be memory-mapped or loaded per region,
 with a small adjacent-region window for cross-border routing.
 
-## Data acquisition
+## Data acquisition (current Android milestone)
 
-Use regional OSM PBF extracts for bulk region downloads. Overpass is reserved for small, bounded,
-cached queries and diagnostics; Overpass Turbo is a query interface, not a bulk country extract
-provider. Updates must be applied to a staging graph and atomically activated only after validation.
+The Android app now has a serialized, persistent Overpass API work queue:
+- The current administrative level-4 region is detected from the active device coordinates and queued automatically.
+- The current region is checked daily; other downloaded regions are checked every seven days.
+- A region can also be searched by name and added to the same serial queue.
+- The response is streamed to a staging file, JSON-validated, gzip-compressed and activated with an atomic file move.
+- The queue requires a validated network connection and retries transient failures with exponential backoff.
+
+The current cache is compressed raw Overpass JSON (road-regions/<relation-id>.overpass.json.gz). It is **not yet** the compact CLROUTE1 graph and cannot be used by the Rust router. The Rust OSM importer, graph generation, JNI bridge and offline routing integration remain separate milestones.
+
+Overpass public instances have shared capacity and usage limits. Large administrative regions can time out or exceed the response cap; serial execution and backoff reduce load but do not guarantee that every region will fit on a public instance. This implementation performs a full region re-fetch when its refresh interval expires; incremental deletion-safe updates are not implemented yet. Do not describe the raw cache as an offline navigation map.
+
+OSM attribution and ODbL compliance must be included in the app and in any redistributed derived database.
 
 ## Required next milestones
 
