@@ -307,7 +307,7 @@ internal object NetworkGate {
             query.contains("way(area.region)") &&
             query.contains("[\"highway\"]") &&
             query.endsWith("out geom;")
-        val forbidden = Regex("""(?i)\\b(make|delete|foreach|retro|complete|convert|augmented\\s+diff|diff)\\b""")
+        val forbidden = Regex("""(?i)\b(make|delete|foreach|retro|complete|convert|augmented\s+diff|diff)\b""")
         if (query.length > MAX_OPENSTREETMAP_QUERY_LENGTH ||
             !query.startsWith("[out:json]") ||
             !(safeRegionLookup || safeRoadExtract) ||
