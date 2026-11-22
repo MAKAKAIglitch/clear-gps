@@ -1948,10 +1948,13 @@ private fun NavigationDiagnosticsScreen(onBack: () -> Unit) {
 private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
+    var countryQuery by remember { mutableStateOf("") }
+    var regionQuery by remember { mutableStateOf("") }
+    var countries by remember { mutableStateOf<List<OverpassRegionChoice>>(emptyList()) }
+    var selectedCountry by remember { mutableStateOf<OverpassRegionChoice?>(null) }
     var results by remember { mutableStateOf<List<OverpassRegionChoice>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
+    var countriesLoading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf<String?>(null) }
     var revision by remember { mutableStateOf(0) }
     var workInfos by remember { mutableStateOf<List<androidx.work.WorkInfo>>(emptyList()) }
@@ -1963,6 +1966,33 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
             delay(1_000L)
         }
     }
+    LaunchedEffect(Unit) {
+        countriesLoading = true
+        try {
+            countries = withContext(Dispatchers.IO) { OverpassRegionSearch.countries() }
+            if (countries.isEmpty()) message = "Список стран пуст. Попробуй обновить экран позже."
+        } catch (error: Exception) {
+            message = error.message ?: "Не удалось загрузить список стран OpenStreetMap"
+        } finally {
+            countriesLoading = false
+        }
+    }
+    LaunchedEffect(selectedCountry?.relationId) {
+        val country = selectedCountry ?: return@LaunchedEffect
+        searching = true
+        regionQuery = ""
+        results = emptyList()
+        message = null
+        try {
+            results = withContext(Dispatchers.IO) { OverpassRegionSearch.regions(country.relationId) }
+            if (results.isEmpty()) message = "Для этой страны не найдены административные регионы в OpenStreetMap."
+        } catch (error: Exception) {
+            message = error.message ?: "Не удалось загрузить регионы страны"
+        } finally {
+            searching = false
+        }
+    }
+
     val prefs = OverpassRoadRegionQueue.prefs(context)
     val currentId = remember(revision) { OverpassRoadRegionQueue.currentId(context) }
     val downloaded = remember(revision) { OverpassRoadRegionQueue.ids(context).sorted() }
@@ -1971,19 +2001,27 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
         it.state == androidx.work.WorkInfo.State.RUNNING || it.state == androidx.work.WorkInfo.State.ENQUEUED
     }
     val activeProgress = activeWork?.progress?.getInt("progress", 0) ?: 0
-    val activeName = activeWork?.progress?.getString("region_name")
-        ?: "Загрузка региона"
+    val activeName = activeWork?.progress?.getString("region_name") ?: "Загрузка региона"
     val activePhase = activeWork?.progress?.getString("phase")
         ?: if (activeWork?.state == androidx.work.WorkInfo.State.ENQUEUED) "В очереди" else "Подготовка загрузки"
+    val visibleCountries = countries.filter { it.name.contains(countryQuery.trim(), ignoreCase = true) }
+    val visibleRegions = results.filter { it.name.contains(regionQuery.trim(), ignoreCase = true) }
 
     Column(modifier = Modifier.fillMaxSize().background(colors.background)) {
         Surface(modifier = Modifier.fillMaxWidth(), color = colors.surface, tonalElevation = 1.dp) {
             Row(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 20.dp, top = 10.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, contentDescription = "Назад") }
+                IconButton(onClick = {
+                    if (selectedCountry != null) {
+                        selectedCountry = null
+                        regionQuery = ""
+                        message = null
+                    } else onBack()
+                }) { Icon(Icons.Outlined.ArrowBack, contentDescription = if (selectedCountry != null) "К списку стран" else "Назад") }
                 Column(modifier = Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Офлайн-карты", style = MaterialTheme.typography.headlineSmall)
-                    Text("Регионы и дорожные данные", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    Text(selectedCountry?.name ?: "Выбор страны · весь мир",
+                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                 }
                 Surface(shape = CircleShape, color = colors.secondaryContainer) {
                     Text(downloaded.size.toString(), modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
@@ -1996,7 +2034,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
             Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.primaryContainer) {
                 Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Ваши карты", style = MaterialTheme.typography.titleLarge, color = colors.onPrimaryContainer)
-                    Text("Сохраняйте дорожные данные регионов, чтобы подготовить приложение к будущей офлайн-навигации.",
+                    Text("Выбери страну, затем нужную область или административный регион. Сохраняй дорожные данные для подготовки к будущей офлайн-навигации.",
                         style = MaterialTheme.typography.bodyMedium, color = colors.onPrimaryContainer)
                     Text("Сейчас загружаются дорожные данные OpenStreetMap, а не сами тайлы подложки.",
                         style = MaterialTheme.typography.labelMedium, color = colors.onPrimaryContainer)
@@ -2011,7 +2049,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                                 Text(activeName, style = MaterialTheme.typography.titleSmall)
                                 Text(activePhase, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                             }
-                            if (activeProgress > 0) Text("$activeProgress%", style = MaterialTheme.typography.labelLarge, color = colors.primary)
+                            if (activeProgress > 0) Text(activeProgress.toString() + "%", style = MaterialTheme.typography.labelLarge, color = colors.primary)
                         }
                         if (activeProgress > 0) {
                             androidx.compose.material3.LinearProgressIndicator(progress = { activeProgress.coerceIn(0, 100) / 100f }, modifier = Modifier.fillMaxWidth())
@@ -2033,7 +2071,7 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                             verticalArrangement = Arrangement.spacedBy(7.dp)) {
                             Icon(Icons.Outlined.Map, contentDescription = null, tint = colors.secondary, modifier = Modifier.size(34.dp))
                             Text("Пока ничего не скачано", style = MaterialTheme.typography.titleSmall)
-                            Text(currentName?.let { "Текущий регион: $it · ожидает загрузки" } ?: "Найдите регион ниже и добавьте его в список.",
+                            Text(currentName?.let { "Текущий регион: " + it + " · ожидает загрузки" } ?: "Выбери страну и регион ниже.",
                                 style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                         }
                     }
@@ -2053,22 +2091,22 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                                 }
                                 Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                     Text(regionName, style = MaterialTheme.typography.titleSmall)
-                                    Text(if (id == currentId) "Текущий регион · $date" else "Сохранено · $date",
+                                    Text(if (id == currentId) "Текущий регион · " + date else "Сохранено · " + date,
                                         style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                                 }
                                 Box {
-                                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "Действия для $regionName") }
+                                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "Действия для " + regionName) }
                                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                                         DropdownMenuItem(text = { Text("Обновить") }, onClick = {
                                             menuExpanded = false
                                             OverpassRoadRegionQueue.enqueueRegion(context, id, regionName, force = true)
-                                            message = "Обновление «$regionName» добавлено в очередь."
+                                            message = "Обновление «" + regionName + "» добавлено в очередь."
                                         }, leadingIcon = { Icon(Icons.Outlined.Sync, contentDescription = null) })
                                         DropdownMenuItem(text = { Text("Удалить") }, onClick = {
                                             menuExpanded = false
                                             OverpassRoadRegionQueue.deleteRegion(context, id)
                                             revision++
-                                            message = "«$regionName» удалена из сохранённых регионов."
+                                            message = "«" + regionName + "» удалена из сохранённых регионов."
                                         }, leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null) })
                                     }
                                 }
@@ -2077,46 +2115,61 @@ private fun OverpassRegionDownloadsScreen(onBack: () -> Unit) {
                     }
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Добавить регион", style = MaterialTheme.typography.titleMedium)
-                OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Название региона") }, placeholder = { Text("Например, Ленинградская область") },
-                    singleLine = true, shape = RoundedCornerShape(16.dp))
-                Button(onClick = {
-                    scope.launch {
-                        searching = true
-                        message = null
-                        try {
-                            results = withContext(Dispatchers.IO) { OverpassRegionSearch.search(query) }
-                            if (results.isEmpty()) message = "Регионы не найдены. Попробуй другое написание."
-                        } catch (error: Exception) {
-                            message = error.message ?: "Не удалось выполнить поиск Overpass"
-                        } finally { searching = false }
+
+            if (selectedCountry == null) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Страны", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                        Text(if (countriesLoading) "Загрузка…" else countries.size.toString(),
+                            style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                     }
-                }, enabled = query.trim().length >= 2 && !searching, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                    if (searching) {
-                        androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = colors.onPrimary)
-                        Text("  Ищем регионы…")
-                    } else Text("Найти регион")
-                }
-            }
-            if (results.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Результаты поиска", style = MaterialTheme.typography.titleMedium)
-                    results.forEach { region ->
-                        val isDownloaded = region.relationId in downloaded
-                        Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                    Text(region.name, style = MaterialTheme.typography.titleSmall)
-                                    Text(if (isDownloaded) "Уже в сохранённых" else "Дорожные данные · OpenStreetMap",
-                                        style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    OutlinedTextField(value = countryQuery, onValueChange = { countryQuery = it },
+                        modifier = Modifier.fillMaxWidth(), label = { Text("Поиск страны") },
+                        placeholder = { Text("Например, Финляндия") }, singleLine = true, shape = RoundedCornerShape(16.dp))
+                    if (countriesLoading) {
+                        androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    } else if (visibleCountries.isEmpty()) {
+                        Text("Страны не найдены.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    } else {
+                        visibleCountries.forEach { country ->
+                            Surface(modifier = Modifier.fillMaxWidth().clickable { selectedCountry = country },
+                                shape = RoundedCornerShape(16.dp), color = colors.surfaceContainerHigh) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(country.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                    Icon(Icons.Outlined.ChevronRight, contentDescription = "Выбрать " + country.name, tint = colors.onSurfaceVariant)
                                 }
-                                if (isDownloaded) Text("Скачано", style = MaterialTheme.typography.labelMedium, color = colors.primary)
-                                else Button(onClick = {
-                                    OverpassRoadRegionQueue.enqueueRegion(context, region.relationId, region.name)
-                                    message = "Регион «" + region.name + "» добавлен в очередь загрузки."
-                                }, shape = RoundedCornerShape(14.dp)) { Text("Скачать") }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Регионы · " + selectedCountry!!.name, style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(value = regionQuery, onValueChange = { regionQuery = it },
+                        modifier = Modifier.fillMaxWidth(), label = { Text("Поиск региона") },
+                        placeholder = { Text("Название области или региона") }, singleLine = true, shape = RoundedCornerShape(16.dp))
+                    if (searching) {
+                        androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("Загружаем регионы страны…", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    } else if (visibleRegions.isEmpty()) {
+                        Text("Регионы не найдены.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                    } else {
+                        visibleRegions.forEach { region ->
+                            val isDownloaded = region.relationId in downloaded
+                            Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text(region.name, style = MaterialTheme.typography.titleSmall)
+                                        Text(if (isDownloaded) "Уже в сохранённых" else "Дорожные данные · OpenStreetMap",
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                    }
+                                    if (isDownloaded) Text("Скачано", style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                                    else Button(onClick = {
+                                        OverpassRoadRegionQueue.enqueueRegion(context, region.relationId,
+                                            selectedCountry!!.name + " · " + region.name)
+                                        message = "Регион «" + region.name + "» добавлен в очередь загрузки."
+                                    }, shape = RoundedCornerShape(14.dp)) { Text("Скачать") }
+                                }
                             }
                         }
                     }
