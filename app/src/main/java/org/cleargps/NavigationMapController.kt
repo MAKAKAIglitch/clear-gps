@@ -62,6 +62,8 @@ internal class NavigationMapController {
     private var cameraMoveStartedListener: MapLibreMap.OnCameraMoveStartedListener? = null
     private var mapTapListener: MapLibreMap.OnMapClickListener? = null
     private var onMapTap: ((NavigationCoordinate) -> Unit)? = null
+    private var onLocationTap: (() -> Unit)? = null
+    private var routeHeadingDegrees: Double? = null
     private var destinationSource: GeoJsonSource? = null
     private var selectedPointSource: GeoJsonSource? = null
     private var selectedMapPoint: NavigationCoordinate? = null
@@ -107,7 +109,12 @@ internal class NavigationMapController {
             val tapListener = MapLibreMap.OnMapClickListener { coordinate ->
                 val screenPoint = mapObject.projection.toScreenLocation(coordinate)
                 val hitBox = RectF(screenPoint.x - POI_HIT_RADIUS_PX, screenPoint.y - POI_HIT_RADIUS_PX, screenPoint.x + POI_HIT_RADIUS_PX, screenPoint.y + POI_HIT_RADIUS_PX)
+                val locationFeature = mapObject.queryRenderedFeatures(hitBox, DOT_LAYER, BEARING_LAYER).firstOrNull()
                 val poiFeature = mapObject.queryRenderedFeatures(hitBox, *POI_LAYER_IDS).firstOrNull()
+                if (locationFeature != null) {
+                    onLocationTap?.invoke()
+                    return@OnMapClickListener true
+                }
                 val properties = poiFeature?.properties()
                 val categoryName = properties?.get(POI_CATEGORY_PROPERTY)?.asString
                 val category = categoryName?.let { runCatching { NavigationPoiCategory.valueOf(it) }.getOrNull() }
@@ -307,6 +314,7 @@ internal class NavigationMapController {
         poiRefreshRunnable = null
         poiRepository.cancel()
         pois = emptyList()
+        onLocationTap = null
         val oldMap = map
         mapTapListener?.let { listener -> oldMap?.removeOnMapClickListener(listener) }
         mapTapListener = null
@@ -346,6 +354,8 @@ internal class NavigationMapController {
     fun setOnMapTapListener(listener: ((NavigationCoordinate) -> Unit)?) {
         onMapTap = listener
     }
+
+    fun setOnLocationTapListener(listener: (() -> Unit)?) { onLocationTap = listener }
 
     fun setOnPoiTapListener(listener: ((NavigationPoi) -> Unit)?) {
         onPoiTap = listener
@@ -409,6 +419,21 @@ internal class NavigationMapController {
             } ?: emptyFeatureCollection()
         )
         map?.triggerRepaint()
+    }
+
+    fun setNavigationActive(active: Boolean, route: NavigationRouteAlternative?) {
+        isNavigationCameraMode = active
+        routeHeadingDegrees = if (active) route?.coordinates?.takeIf { it.size >= 2 }?.let { points ->
+            val start = points[0]; val next = points[1]
+            val lat1 = Math.toRadians(start.latitude); val lat2 = Math.toRadians(next.latitude)
+            val dLon = Math.toRadians(next.longitude - start.longitude)
+            ((Math.toDegrees(kotlin.math.atan2(kotlin.math.sin(dLon) * kotlin.math.cos(lat2), kotlin.math.cos(lat1) * kotlin.math.sin(lat2) - kotlin.math.sin(lat1) * kotlin.math.cos(lat2) * kotlin.math.cos(dLon))) + 360.0) % 360.0)
+        } else null
+        map?.style?.getLayer(BEARING_LAYER)?.setProperties(
+            PropertyFactory.iconSize(if (active) 0.9f else BEARING_ICON_SIZE),
+            PropertyFactory.iconOffset(if (active) arrayOf(0f, -18f) else arrayOf(BEARING_ICON_OFFSET, BEARING_ICON_OFFSET))
+        )
+        renderCurrentPosition()
     }
 
     fun updateDestination(coordinate: NavigationCoordinate?) {
@@ -530,7 +555,7 @@ internal class NavigationMapController {
             }
         )
 
-        val bearing = currentBearingDegrees
+        val bearing = currentBearingDegrees ?: routeHeadingDegrees
         if (bearing == null) {
             bearingSource?.setGeoJson(emptyFeatureCollection())
         } else {
