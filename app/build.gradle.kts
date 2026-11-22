@@ -23,6 +23,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
+            // Robolectric downloads Android framework jars at test runtime.
+            // Use Maven Central's canonical hostname instead of the legacy repo1 alias.
+            it.systemProperty("robolectric.dependency.repo.id", "mavenCentral")
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
             it.jvmArgs(
                 "--add-opens=java.base/java.lang=ALL-UNNAMED",
                 "--add-opens=java.base/java.util=ALL-UNNAMED",
