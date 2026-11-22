@@ -27,7 +27,7 @@ internal enum class NavigationPoiCategory(val title: String) {
     TRAFFIC_CAMERA("Автомобильные камеры");
 
     val isCamera: Boolean
-        get() = this == SPEED_CAMERA || this == RED_LIGHT_CAMERA || this == TRAFFIC_CAMERA;
+        get() = this == SPEED_CAMERA || this == RED_LIGHT_CAMERA || this == TRAFFIC_CAMERA
 
     companion object {
         fun fromTags(tags: Map<String, String>): NavigationPoiCategory? = when {
@@ -41,7 +41,7 @@ internal enum class NavigationPoiCategory(val title: String) {
             tags["amenity"] == "atm" -> ATM
             tags["highway"] == "speed_camera" -> SPEED_CAMERA
             tags["enforcement"]?.let(::fromEnforcement) != null ->
-                fromEnforcement(tags["enforcement"]!!) 
+                fromEnforcement(tags["enforcement"])
             else -> null
         }
 
@@ -122,11 +122,11 @@ internal class NavigationPoiRepository {
               nwr["shop"~"^(chemist|supermarket|convenience|greengrocer|deli|mall|department_store|clothes|shoes|hardware|electronics|books|bakery|butcher|beauty|mobile_phone)$"]($bbox);
               node["highway"="speed_camera"]($bbox);
               node["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
-              rel["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox);
             );
-            out body center tags;
-            >;
-            out skel qt;
+            rel["type"="enforcement"]["enforcement"~"^(maxspeed|average_speed|traffic_signals|access|check|mobile_phone|seatbelt)$"]($bbox)->.enforcementRelations;
+            node(r.enforcementRelations:"device");
+            out center tags;
+            .enforcementRelations out body;
         """.trimIndent()
         enqueueAtEndpoint(key, query, 0, callback)
     }

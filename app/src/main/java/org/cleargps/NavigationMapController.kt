@@ -1289,8 +1289,8 @@ internal class NavigationMapController {
             NavigationPoiCategory.PARKING -> "#64748B"
             NavigationPoiCategory.ATM -> "#06B6D4"
             NavigationPoiCategory.SPEED_CAMERA -> "#2563EB"
-            NavigationPoiCategory.RED_LIGHT_CAMERA -> "#DC2626"
-            NavigationPoiCategory.TRAFFIC_CAMERA -> "#1D4ED8"
+            NavigationPoiCategory.RED_LIGHT_CAMERA -> "#2563EB"
+            NavigationPoiCategory.TRAFFIC_CAMERA -> "#2563EB"
         }
         const val POI_ICON_SIZE = 0.60f
         const val NATIVE_POI_MIN_ZOOM = 14f
