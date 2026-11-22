@@ -291,7 +291,7 @@ internal fun NavigationPrototypeScreen(
                     activeRoute = fastest
                     guidance = null
                     lastAnnouncedStepIndex = -1
-                                    lastAnnouncedStage = -1
+                    lastAnnouncedStage = -1
                     controller.updateRoutes(listOf(fastest))
                     Toast.makeText(context, "Маршрут обновлён после отклонения", Toast.LENGTH_SHORT).show()
                 }.onFailure { error ->
@@ -957,6 +957,7 @@ internal fun NavigationPrototypeScreen(
                                 isNavigating = true
                                 guidance = null
                                 lastAnnouncedStepIndex = -1
+                                lastAnnouncedStage = -1
                                 offRouteFixCount = 0
                                 lastRerouteAtMs = 0L
                                 routeOptionsExpanded = false
@@ -1024,6 +1025,7 @@ internal fun NavigationPrototypeScreen(
                                 activeRoute = null
                                 guidance = null
                                 lastAnnouncedStepIndex = -1
+                                lastAnnouncedStage = -1
                                 offRouteFixCount = 0
                                 controller.updateRoutes(calculatedRoutes)
                                 controller.centerOnCurrentPosition()
