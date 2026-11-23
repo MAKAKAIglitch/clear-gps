@@ -261,7 +261,7 @@ internal fun NavigationSearchScreen(
                                     Modifier.fillMaxWidth().clickable { selectResult(place) }.padding(vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Outlined.Star, tint = colors.primary)
+                                    Icon(Icons.Outlined.Star, contentDescription = "Избранное", tint = colors.primary)
                                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                         Text(place.name, fontWeight = FontWeight.SemiBold)
                                         Text(place.subtitle, color = colors.onSurfaceVariant,
@@ -283,7 +283,7 @@ internal fun NavigationSearchScreen(
                                     Modifier.fillMaxWidth().clickable { selectResult(place) }.padding(vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Outlined.History, tint = colors.onSurfaceVariant)
+                                    Icon(Icons.Outlined.History, contentDescription = "История поиска", tint = colors.onSurfaceVariant)
                                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                         Text(place.name)
                                         Text(place.subtitle, style = MaterialTheme.typography.bodySmall,
