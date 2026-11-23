@@ -1191,8 +1191,19 @@ internal fun NavigationPrototypeScreen(
                         lastAnnouncedStepIndex = -1
                         lastAnnouncedStage = -1
                         offRouteFixCount = 0
-                        controller.updateRoutes(calculatedRoutes)
+                        lastRerouteAtMs = 0L
+                        routeDestination = null
+                        routeDestinationName = null
+                        calculatedRoutes = emptyList()
+                        selectedRouteIndex = 0
+                        routeOptionsExpanded = false
+                        controller.updateDestination(null)
+                        controller.updateRoutes(emptyList())
                         controller.centerOnCurrentPosition()
+                        // Route preview is a separate Activity above the main map. Close it
+                        // after clearing this session so the user lands on the main map, not
+                        // on the route-selection screen.
+                        onClosePreview?.invoke()
                     }
                 )
             }
@@ -2622,11 +2633,12 @@ private fun BoxScope.NavigationTripPanel(
     val arrivalTime = java.time.LocalTime.now()
         .plusSeconds(remainingSeconds.toLong().coerceAtLeast(0L))
         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
-    val panelColor = Color(0xFF152232)
-    val primaryText = Color(0xFFF4F8FC)
-    val secondaryText = Color(0xFFB8C9D8)
-    val trackColor = Color(0xFF526779)
-    val progressColor = Color(0xFF55B6FF)
+    val colors = MaterialTheme.colorScheme
+    val panelColor = colors.surfaceContainerHigh
+    val primaryText = colors.onSurface
+    val secondaryText = colors.onSurfaceVariant
+    val trackColor = colors.surfaceContainerHighest
+    val progressColor = colors.primary
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     Surface(
@@ -2730,8 +2742,13 @@ private fun BoxScope.NavigationTripPanel(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = onFinish) {
-                        Text("Завершить маршрут", color = Color(0xFFFFB4AB))
+                    TextButton(
+                        onClick = onFinish,
+                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                            contentColor = colors.primary
+                        )
+                    ) {
+                        Text("Завершить маршрут")
                     }
                 }
             } else {
