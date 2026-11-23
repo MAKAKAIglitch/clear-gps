@@ -250,7 +250,11 @@ internal class NavigationMapController {
             cameraMoveStartedListener = moveStartedListener
             mapObject.addOnCameraMoveStartedListener(moveStartedListener)
             cameraIdleListener?.let(mapObject::removeOnCameraIdleListener)
-            val idleListener = MapLibreMap.OnCameraIdleListener { schedulePoiRefresh(); scheduleLaneRefresh() }
+            val idleListener = MapLibreMap.OnCameraIdleListener {
+                updateZoomDependentTilt(mapObject)
+                schedulePoiRefresh()
+                scheduleLaneRefresh()
+            }
             cameraIdleListener = idleListener
             mapObject.addOnCameraIdleListener(idleListener)
 
@@ -637,6 +641,11 @@ internal class NavigationMapController {
                 // Routes may arrive before the map style is ready. Re-fit after the
                 // initial camera has been installed and the view has completed layout.
                 scheduleRouteFit()
+                mapView.post {
+                    if (attachedMapView === mapView && map === mapObject) {
+                        updateZoomDependentTilt(mapObject)
+                    }
+                }
                 schedulePoiRefresh()
                 scheduleLaneRefresh()
             }
@@ -716,12 +725,74 @@ internal class NavigationMapController {
         onPoiTap = listener
     }
 
+    /**
+     * Estimates the vertical ground span represented by the map viewport at the
+     * current zoom using Web-Mercator ground resolution at the camera latitude.
+     */
+    private fun visibleGroundSpanMeters(mapObject: MapLibreMap): Double {
+        val mapViewHeight = attachedMapView?.height?.takeIf { it > 0 } ?: return Double.POSITIVE_INFINITY
+        val camera = mapObject.cameraPosition
+        val latitude = camera.target?.latitude ?: return Double.POSITIVE_INFINITY
+        val metersPerPixel = 2.0 * Math.PI * EARTH_RADIUS_METERS *
+            kotlin.math.cos(Math.toRadians(latitude)).coerceAtLeast(0.01) /
+            (512.0 * Math.pow(2.0, camera.zoom))
+        return metersPerPixel * mapViewHeight
+    }
+
+    /**
+     * Keeps the close-up perspective, then smoothly flattens the map between
+     * 2 km and 3 km. At 3 km and farther, camera pitch is exactly zero.
+     */
+    private fun updateZoomDependentTilt(mapObject: MapLibreMap) {
+        if (!styleReady || map !== mapObject) return
+        val groundSpanMeters = visibleGroundSpanMeters(mapObject)
+        if (!groundSpanMeters.isFinite()) return
+
+        val targetTilt = when {
+            groundSpanMeters <= TILT_3D_MAX_GROUND_SPAN_METERS -> MAX_MAP_TILT_DEGREES
+            groundSpanMeters >= TILT_2D_GROUND_SPAN_METERS -> 0.0
+            else -> {
+                val progress = ((groundSpanMeters - TILT_3D_MAX_GROUND_SPAN_METERS) /
+                    (TILT_2D_GROUND_SPAN_METERS - TILT_3D_MAX_GROUND_SPAN_METERS)).coerceIn(0.0, 1.0)
+                val smoothProgress = progress * progress * (3.0 - 2.0 * progress)
+                MAX_MAP_TILT_DEGREES * (1.0 - smoothProgress)
+            }
+        }
+
+        val currentCamera = mapObject.cameraPosition
+        if (kotlin.math.abs(currentCamera.tilt - targetTilt) < TILT_UPDATE_EPSILON_DEGREES) return
+        val target = currentCamera.target ?: return
+        val adjustedCamera = CameraPosition.Builder()
+            .target(target)
+            .zoom(currentCamera.zoom)
+            .bearing(currentCamera.bearing)
+            .tilt(targetTilt)
+            .build()
+        mapObject.easeCamera(
+            CameraUpdateFactory.newCameraPosition(adjustedCamera),
+            CAMERA_TILT_ANIMATION_MS
+        )
+        Log.d(
+            CAMERA_LOG_TAG,
+            "Pitch adjusted: groundSpanMeters=$groundSpanMeters, from=${currentCamera.tilt}, to=$targetTilt"
+        )
+    }
+
+    private fun isPoiScaleVisible(mapObject: MapLibreMap): Boolean =
+        visibleGroundSpanMeters(mapObject) <= POI_MAX_VISIBLE_GROUND_SPAN_METERS
+
     private fun schedulePoiRefresh() {
         poiRefreshRunnable?.let(poiHandler::removeCallbacks)
         val task = Runnable {
             val mapObject = map ?: return@Runnable
-            if (!styleReady || mapObject.cameraPosition.zoom < CAMERA_MIN_ZOOM) {
-                Log.d(POI_LOG_TAG, "POI refresh skipped: styleReady=$styleReady, zoom=${mapObject.cameraPosition.zoom}, cameraMinZoom=$CAMERA_MIN_ZOOM")
+            if (!styleReady || mapObject.cameraPosition.zoom < CAMERA_MIN_ZOOM ||
+                !isPoiScaleVisible(mapObject)
+            ) {
+                Log.d(
+                    POI_LOG_TAG,
+                    "POI refresh skipped: styleReady=$styleReady, zoom=${mapObject.cameraPosition.zoom}, " +
+                        "visibleGroundSpanMeters=${visibleGroundSpanMeters(mapObject)}, poiMaxScaleMeters=$POI_MAX_VISIBLE_GROUND_SPAN_METERS"
+                )
                 poiRepository.cancel()
                 pois = emptyList()
                 renderPois()
@@ -739,7 +810,9 @@ internal class NavigationMapController {
                 (target.latitude + latitudeDelta).coerceAtMost(90.0),
                 (target.longitude + longitudeDelta).coerceAtMost(180.0)
             ) { loaded ->
-                if (map === mapObject && styleReady && mapObject.cameraPosition.zoom >= CAMERA_MIN_ZOOM) {
+                if (map === mapObject && styleReady &&
+                    mapObject.cameraPosition.zoom >= CAMERA_MIN_ZOOM && isPoiScaleVisible(mapObject)
+                ) {
                     val currentTarget = mapObject.cameraPosition.target ?: return@load
                     // A slow Overpass response must not repaint markers from an old camera target.
                     pois = loaded.filter { poi ->
@@ -817,7 +890,10 @@ internal class NavigationMapController {
 
     private fun renderPois() {
         if (!styleReady) return
-        val features = pois.asSequence()
+        val mapObject = map
+        val showPois = mapObject != null && isPoiScaleVisible(mapObject)
+        val visiblePois = if (showPois) pois else emptyList()
+        val features = visiblePois.asSequence()
             .filter { it.tags["cleargps:address_only"] != "yes" }
             .map { poi ->
                 Feature.fromGeometry(Point.fromLngLat(poi.longitude, poi.latitude)).apply {
@@ -831,13 +907,13 @@ internal class NavigationMapController {
             }
             .toList()
         poiSource?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
-        val nativeVisibility = if (pois.none { !it.category.isCamera }) "visible" else "none"
+        val nativeVisibility = if (showPois && pois.none { !it.category.isCamera }) "visible" else "none"
         NavigationPoiCategory.values().forEach { category ->
             map?.style?.getLayer(nativePoiLayerId(category))?.setProperties(
                 PropertyFactory.visibility(nativeVisibility)
             )
         }
-        Log.d(POI_LOG_TAG, "POI render: features=${features.size}, cameras=${pois.count { it.category.isCamera }}, sourceReady=${poiSource != null}")
+        Log.d(POI_LOG_TAG, "POI render: features=${features.size}, cameras=${visiblePois.count { it.category.isCamera }}, showPois=$showPois, sourceReady=${poiSource != null}")
         map?.triggerRepaint()
     }
 
@@ -1579,6 +1655,12 @@ internal class NavigationMapController {
         const val MIN_POI_ZOOM = 12.0
         const val CAMERA_MIN_ZOOM = 9.5
         const val POI_SEARCH_RADIUS_METERS = 1_000.0
+        const val POI_MAX_VISIBLE_GROUND_SPAN_METERS = 2_000.0
+        const val TILT_3D_MAX_GROUND_SPAN_METERS = 2_000.0
+        const val TILT_2D_GROUND_SPAN_METERS = 3_000.0
+        const val MAX_MAP_TILT_DEGREES = 55.0
+        const val TILT_UPDATE_EPSILON_DEGREES = 0.5
+        const val CAMERA_TILT_ANIMATION_MS = 320
         const val POI_LABEL_MIN_ZOOM = 15.0f
         const val POI_HIT_RADIUS_PX = 30f
         const val ROUTE_HIT_RADIUS_DP = 18f
@@ -1592,5 +1674,6 @@ internal class NavigationMapController {
         const val ACCURACY_RING_SEGMENTS = 64
         const val ACCURACY_THRESHOLD_METERS = 50.0
         const val ROUTE_HEADING_SNAP_METERS = 85.0
+        const val CAMERA_LOG_TAG = "ClearGpsCamera"
     }
 }
