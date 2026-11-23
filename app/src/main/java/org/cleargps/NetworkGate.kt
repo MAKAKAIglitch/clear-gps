@@ -31,7 +31,8 @@ internal object NetworkGate {
         AIRPORT_CATALOG_READ,
         OPENSTREETMAP_CELL_SITE_LOOKUP,
         OVERPASS_ROAD_DOWNLOAD,
-        ROUTE_LOOKUP
+        ROUTE_LOOKUP,
+        GEOCODING_SEARCH
     }
 
     private const val BEACONDB_HOST = "api.beacondb.net"
@@ -45,6 +46,8 @@ internal object NetworkGate {
     private val OVERPASS_ROAD_HOSTS = setOf(OPENSTREETMAP_HOST, "overpass.kumi.systems", "overpass.private.coffee")
     private const val OPENSTREETMAP_PATH = "/api/interpreter"
     private const val ROUTING_HOST = "router.project-osrm.org"
+    private const val GEOCODING_HOST = "photon.komoot.io"
+    private const val GEOCODING_PATH = "/api"
     private const val MAX_OPENSTREETMAP_QUERY_LENGTH = 16_384
     private const val MAP_LOG_INTERVAL_MS = 60_000L
 
@@ -128,6 +131,30 @@ internal object NetworkGate {
                     host !in OVERPASS_ROAD_HOSTS || uri.rawPath != OPENSTREETMAP_PATH
                 ) reject()
                 validateOpenStreetMapRoadQuery(uri.rawQuery)
+            }
+            Operation.GEOCODING_SEARCH -> {
+                if (!consentGranted || normalizedMethod != "GET" ||
+                    host != GEOCODING_HOST || uri.rawPath != GEOCODING_PATH ||
+                    !uri.rawUserInfo.isNullOrEmpty()
+                ) reject()
+                val queryParts = uri.rawQuery.orEmpty().split("&").filter { it.isNotBlank() }
+                val parameters = queryParts.associate { part ->
+                        val name = part.substringBefore("=")
+                        val value = part.substringAfter("=", "")
+                        if (name.isBlank() || value.isBlank()) reject()
+                        name to value
+                    }
+                val allowed = setOf("q", "limit", "lang", "lat", "lon", "zoom", "location_bias_scale")
+                val decodedQuery = try { URLDecoder.decode(parameters["q"].orEmpty(), StandardCharsets.UTF_8.name()) } catch (_: Exception) { reject() }
+                if (parameters.size != queryParts.size || parameters.keys.any { it !in allowed } ||
+                    decodedQuery.isBlank() || decodedQuery.length > 160 ||
+                    parameters["limit"]?.toIntOrNull()?.let { it in 1..10 } != true ||
+                    parameters["lang"]?.let { it in setOf("ru", "en", "fi", "sv", "de") } != true ||
+                    (parameters.containsKey("lat") && parameters["lat"]!!.toDoubleOrNull()?.let { it in -90.0..90.0 } != true) ||
+                    (parameters.containsKey("lon") && parameters["lon"]!!.toDoubleOrNull()?.let { it in -180.0..180.0 } != true) ||
+                    (parameters.containsKey("zoom") && parameters["zoom"]!!.toIntOrNull()?.let { it in 1..18 } != true) ||
+                    (parameters.containsKey("location_bias_scale") && parameters["location_bias_scale"]!!.toDoubleOrNull()?.let { it in 0.0..1.0 } != true)
+                ) reject()
             }
             Operation.ROUTE_LOOKUP -> {
                 val path = uri.rawPath.orEmpty()

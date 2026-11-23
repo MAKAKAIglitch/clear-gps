@@ -922,6 +922,49 @@ internal class NavigationMapController {
         renderSelectedMapPoint()
     }
 
+    fun focusOn(coordinate: NavigationCoordinate) {
+        if (!coordinate.isValid()) return
+        isFollowingUser = false
+        isNavigationCameraMode = false
+        updateSelectedMapPoint(coordinate)
+        moveCameraToUser(coordinate, FOLLOW_ZOOM, animated = true)
+    }
+
+    fun searchNearby(categoryTitle: String, callback: (List<NavigationPoi>) -> Unit) {
+        val category = when (categoryTitle) {
+            "Заправки" -> NavigationPoiCategory.FUEL
+            "Электрозарядки" -> NavigationPoiCategory.ELECTRIC
+            "Аптеки" -> NavigationPoiCategory.PHARMACY
+            "Продукты" -> NavigationPoiCategory.GROCERY
+            "Магазины" -> NavigationPoiCategory.SHOP
+            "Кафе и рестораны" -> NavigationPoiCategory.FOOD
+            "Парковки" -> NavigationPoiCategory.PARKING
+            "Банкоматы" -> NavigationPoiCategory.ATM
+            else -> null
+        }
+        if (category == null) {
+            callback(emptyList())
+            return
+        }
+        val target = map?.cameraPosition?.target?.let {
+            NavigationCoordinate(it.latitude, it.longitude)
+        } ?: currentPosition ?: NavigationCoordinate(DEFAULT_LATITUDE, DEFAULT_LONGITUDE)
+        val latDelta = 10_000.0 / 111_000.0
+        val lonDelta = latDelta / kotlin.math.cos(Math.toRadians(target.latitude)).coerceAtLeast(0.15)
+        poiRepository.load(
+            (target.latitude - latDelta).coerceAtLeast(-90.0),
+            (target.longitude - lonDelta).coerceAtLeast(-180.0),
+            (target.latitude + latDelta).coerceAtMost(90.0),
+            (target.longitude + lonDelta).coerceAtMost(180.0)
+        ) { items ->
+            callback(items.filter { it.category == category }
+                .map { it to NavigationGuidanceEngine.distanceMeters(target, it.coordinate) }
+                .filter { it.second <= 10_000.0 }
+                .sortedBy { it.second }
+                .map { it.first })
+        }
+    }
+
     private fun renderSelectedMapPoint() {
         if (!styleReady) return
         val point = selectedMapPoint

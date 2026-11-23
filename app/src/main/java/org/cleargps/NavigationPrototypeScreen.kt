@@ -198,6 +198,8 @@ internal fun NavigationPrototypeScreen(
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var selectedNavigationTab by rememberSaveable { mutableStateOf("Карта") }
     var destinationQuery by rememberSaveable { mutableStateOf("") }
+    var nearbyCategory by rememberSaveable { mutableStateOf<String?>(null) }
+    var nearbyResults by remember { mutableStateOf<List<NavigationPoi>>(emptyList()) }
     var pendingPositionMode by remember { mutableStateOf<NavigationPositionMode?>(null) }
     var pendingCenterAfterPermission by remember { mutableStateOf(false) }
 
@@ -654,6 +656,8 @@ internal fun NavigationPrototypeScreen(
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable {
                             selectedNavigationTab = "Поиск"
+                            showSettings = false
+                            nearbyCategory = null
                             showSearch = true
                         }.padding(start = 15.dp, end = 7.dp, top = 7.dp, bottom = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1023,6 +1027,7 @@ internal fun NavigationPrototypeScreen(
                                 .clickable {
                                     selectedNavigationTab = "Поиск"
                                     showSettings = false
+                                    nearbyCategory = null
                                     showSearch = true
                                 },
                             shape = RoundedCornerShape(20.dp),
@@ -1210,8 +1215,10 @@ internal fun NavigationPrototypeScreen(
 
         }
 
-        BackHandler(enabled = showSettings || showLocationDetails || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
+        BackHandler(enabled = showSearch || showSettings || showLocationDetails || showLocationModePicker || showMapPointSheet || showRouteOptions || routeOptionsExpanded || routeDestination != null) {
             when {
+                showSearch -> { if (nearbyCategory != null) { nearbyCategory = null; nearbyResults = emptyList() } else { showSearch = false; selectedNavigationTab = "Карта" } }
+                showSettings -> { showSettings = false; selectedNavigationTab = "Карта" }
                 showRouteOptions -> showRouteOptions = false
                 showLocationDetails -> showLocationDetails = false
                 routeOptionsExpanded -> routeOptionsExpanded = false
@@ -1611,16 +1618,47 @@ internal fun NavigationPrototypeScreen(
         ) {
             NavigationSearchScreen(
                 query = destinationQuery,
+                position = navigationPosition?.coordinate,
+                nearbyCategory = nearbyCategory,
+                nearbyResults = nearbyResults,
                 onQueryChange = { query -> destinationQuery = query.take(160) },
                 onBack = {
                     showSearch = false
+                    nearbyCategory = null
                     selectedNavigationTab = "Карта"
                 },
                 onSelectCategory = { category ->
-                    destinationQuery = category
+                    if (category.isBlank()) {
+                        nearbyCategory = null
+                        nearbyResults = emptyList()
+                    } else {
+                        nearbyCategory = category
+                        destinationQuery = ""
+                        controller.searchNearby(category) { results -> nearbyResults = results }
+                    }
+                },
+                onSelectResult = { result ->
+                    destinationQuery = result.name
                     showSearch = false
+                    nearbyCategory = null
                     selectedNavigationTab = "Карта"
-                    Toast.makeText(context, "Категория: $category", Toast.LENGTH_SHORT).show()
+                    val intent = android.content.Intent(context, NavigationRoutePreviewActivity::class.java)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_LATITUDE, result.latitude)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_LONGITUDE, result.longitude)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_DESTINATION_NAME, result.name)
+                    context.startActivity(intent)
+                },
+                onSelectPoi = { poi ->
+                    destinationQuery = poi.name
+                    controller.focusOn(poi.coordinate)
+                    showSearch = false
+                    nearbyCategory = null
+                    selectedNavigationTab = "Карта"
+                    val intent = android.content.Intent(context, NavigationRoutePreviewActivity::class.java)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_LATITUDE, poi.latitude)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_LONGITUDE, poi.longitude)
+                        .putExtra(NavigationRoutePreviewActivity.EXTRA_DESTINATION_NAME, poi.name)
+                    context.startActivity(intent)
                 }
             )
         }

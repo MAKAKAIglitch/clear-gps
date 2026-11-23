@@ -347,4 +347,51 @@ class NetworkGateTest {
             )
         }
     }
+
+    @Test
+    fun photonGeocodingIsReadOnlyScopedAndRequiresConsent() {
+        val valid = NetworkGate.validateRequest(
+            "https://photon.komoot.io/api?q=Helsinki&limit=10&lang=ru&lat=60.17&lon=24.94&zoom=12&location_bias_scale=0.2",
+            "GET",
+            NetworkGate.Operation.GEOCODING_SEARCH,
+            consentGranted = true
+        )
+        assertEquals("photon.komoot.io", valid.host)
+        assertEquals("/api", valid.path)
+
+        val encodedQuery = NetworkGate.validateRequest(
+            "https://photon.komoot.io/api?q=%D0%A5%D0%B5%D0%BB%D1%8C%D1%81%D0%B8%D0%BD%D0%BA%D0%B8&limit=10&lang=ru",
+            "GET",
+            NetworkGate.Operation.GEOCODING_SEARCH,
+            consentGranted = true
+        )
+        assertEquals("photon.komoot.io", encodedQuery.host)
+
+        val invalid = listOf(
+            "https://photon.komoot.io/api?q=Helsinki&limit=10&lang=ru&extra=1",
+            "https://photon.komoot.io/private?q=Helsinki&limit=10&lang=ru",
+            "https://attacker.example/api?q=Helsinki&limit=10&lang=ru"
+        )
+        invalid.forEach { url ->
+            assertThrows(SecurityException::class.java) {
+                NetworkGate.validateRequest(url, "GET", NetworkGate.Operation.GEOCODING_SEARCH, consentGranted = true)
+            }
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://photon.komoot.io/api?q=Helsinki&limit=10&lang=ru",
+                "GET",
+                NetworkGate.Operation.GEOCODING_SEARCH,
+                consentGranted = false
+            )
+        }
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://photon.komoot.io/api?q=Helsinki&limit=10&lang=ru",
+                "POST",
+                NetworkGate.Operation.GEOCODING_SEARCH,
+                consentGranted = true
+            )
+        }
+    }
 }
