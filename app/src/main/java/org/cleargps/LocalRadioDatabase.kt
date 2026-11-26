@@ -206,7 +206,9 @@ data class RadioEstimate(
     /** Positioning providers that actually contributed to this combined fix. */
     val contributingSources: Set<String> = emptySet(),
     /** True when providers disagreed beyond their declared uncertainty. */
-    val sourceConflictDetected: Boolean = false
+    val sourceConflictDetected: Boolean = false,
+    /** Similar historical radio fingerprints also exist at distant coordinates. */
+    val ambiguousFingerprint: Boolean = false
 )
 
 data class RadioPointObservation(
@@ -828,7 +830,8 @@ internal fun lookupRadioFingerprintPosition(
             matchedRadioTypes = best.matchedSignals.map { it.type }.toSet(),
             matchedRadioIdentifiers = best.matchedSignals.map {
                 "${it.type}|${canonicalRadioIdentifier(it.identifier)}"
-            }.toSet()
+            }.toSet(),
+            ambiguousFingerprint = ambiguous
         ),
         ambiguous = ambiguous
     )
