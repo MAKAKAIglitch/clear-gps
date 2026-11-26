@@ -17,21 +17,21 @@ data class HorizontalAccelerationSample(
 )
 
 /**
- * Applies a deliberately short inertial correction to the constant-velocity fusion prediction.
+ * Applies a bounded inertial correction to the constant-velocity fusion prediction.
  *
  * The absolute-measurement timeline and its trust gates remain unchanged. Acceleration is integrated
  * only from valid, closely spaced samples after the last accepted absolute measurement, while the
- * estimate is still inside its two-second prediction horizon. A missing or noisy IMU window must
+ * estimate is still inside its ten-second inertial horizon. A missing or noisy IMU window must
  * fall back to the caller's existing estimate rather than extend its lifetime.
  */
 object PositionFusionMotionModel {
-    const val MAXIMUM_PREDICTION_AGE_NANOS = 2_000_000_000L
+    const val MAXIMUM_PREDICTION_AGE_NANOS = 10_000_000_000L
     const val MAXIMUM_SAMPLE_GAP_NANOS = 250_000_000L
 
     private const val NANOS_PER_SECOND = 1_000_000_000.0
     private const val EARTH_RADIUS_METERS = 6_371_008.8
     private const val MAXIMUM_HORIZONTAL_ACCELERATION_MPS2 = 12.0
-    private const val MAXIMUM_POSITION_CORRECTION_METERS = 15.0
+    private const val MAXIMUM_POSITION_CORRECTION_METERS = 40.0
     private const val ACCELERATION_UNCERTAINTY_STD_MPS2 = 1.5
     private const val ACCELERATION_DEADBAND_MPS2 = 0.12
     private const val MINIMUM_BEARING_SPEED_MPS = 0.5
