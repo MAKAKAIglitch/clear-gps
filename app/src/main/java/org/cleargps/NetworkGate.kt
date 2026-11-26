@@ -91,7 +91,13 @@ internal object NetworkGate {
 
             Operation.MAP_RESOURCE -> {
                 val path = uri.rawPath.orEmpty()
+                // OpenFreeMap's live Liberty/Dark styles use these resource paths:
+                // /backup_planet[/...], /natural_earth/..., /sprites/... and /fonts/...
+                // Keep the host and GET-only checks strict while allowing every style resource.
                 val approvedPath = path.startsWith("/styles/") ||
+                    path == "/backup_planet" || path.startsWith("/backup_planet/") ||
+                    path.startsWith("/natural_earth/") ||
+                    path.startsWith("/sprites/") ||
                     path.startsWith("/data/") ||
                     path.startsWith("/fonts/") ||
                     path.startsWith("/assets/")
