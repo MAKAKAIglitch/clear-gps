@@ -238,7 +238,8 @@ class RadioGeolocationRepository(private val context: Context) {
         // The locally calculated cell-site catalogue is independent of OpenCellID. It is
         // matched by exact Android cell identity and never triggers a network lookup.
         val localCellSiteEstimate = if (
-            localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked
+            localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked &&
+            localEstimateWithFreshness?.matchedRadioTypes?.contains("cell") != true
         ) {
             withContext(Dispatchers.IO) {
                 val cellSignals = snapshot.signals.filter { it.type == "cell" }
@@ -298,8 +299,8 @@ class RadioGeolocationRepository(private val context: Context) {
         DiagnosticLogStore.log(
             context,
             "RADIO_FUSION",
-            "Источников оценки=${sourceEstimates.size}, fusion=${fusionDurationMillis} мс, " +
-                "обработка после сбора сводки=${snapshotProcessingAgeMillis} мс"
+            "Источников оценки=${sourceEstimates.size}, локальная БД вышек: совпадений=${localCellSiteEstimate?.matchedCount ?: 0}, " +
+                "fusion=${fusionDurationMillis} мс, обработка после сбора сводки=${snapshotProcessingAgeMillis} мс"
         )
         val combinedEstimateBlocked = combinedEstimate?.let {
             spoofZoneService.assess(it.latitude, it.longitude, it.accuracyMeters).blocksRadioData
