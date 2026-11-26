@@ -65,6 +65,15 @@ class LocationMonitorService : Service(), LocationListener {
             maximumMeasurementGapNanos = 45_000_000_000L
         )
     )
+    // Radio-only has its own timeline and never shares state with the physical GNSS filter.
+    private val radioOnlyPositionFusionEngine = PositionFusionTimeline(
+        config = PositionFusionConfig(
+            maximumPredictionAgeNanos = AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS,
+            maximumMeasurementGapNanos = 45_000_000_000L
+        )
+    )
+    private var radioOnlyMotionAnchor: PositionMeasurement? = null
+    private var radioOnlyLocationTemplate: Location? = null
     private val riskZoneMembership = RiskZoneMembershipTracker()
     private val spoofZoneService by lazy(LazyThreadSafetyMode.NONE) { SpoofZoneService(applicationContext) }
     private var mock: MockLocationOutput? = null
@@ -1212,6 +1221,9 @@ class LocationMonitorService : Service(), LocationListener {
 
     private fun startRadioOnlyLoop() {
         radioOnlyJob?.cancel()
+        radioOnlyPositionFusionEngine.reset()
+        radioOnlyMotionAnchor = null
+        radioOnlyLocationTemplate = null
         radioOnlyJob = serviceScope.launch {
             val repository = RadioGeolocationRepository(applicationContext)
             // Auto fallback must not resurrect a radio fix from before the GNSS outage.
@@ -1287,6 +1299,9 @@ class LocationMonitorService : Service(), LocationListener {
                     val filteredAutoRadioOutput = if (autoRadioFallback && baseRadioAllowed) {
                         autoRadioFallbackLocation(requireNotNull(estimate), nowWallMillis, nowElapsedRealtimeNanos)
                     } else null
+                    val filteredRadioOnlyOutput = if (!autoRadioFallback && baseRadioAllowed) {
+                        radioOnlyFusedLocation(requireNotNull(estimate), nowWallMillis, nowElapsedRealtimeNanos)
+                    } else null
                     if (autoRadioFallback && baseRadioAllowed && filteredAutoRadioOutput == null) {
                         rejectionReason = "Auto RADIO: measurement rejected by timestamp, zone, continuity or position filter; waiting for next scan."
                     }
@@ -1304,7 +1319,7 @@ class LocationMonitorService : Service(), LocationListener {
                             prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false)) &&
                         (!autoRadioFallback || filteredAutoRadioOutput != null)
                     ) {
-                        val output = filteredAutoRadioOutput ?: Location(LocationManager.NETWORK_PROVIDER).apply {
+                        val output = filteredAutoRadioOutput ?: filteredRadioOnlyOutput ?: Location(LocationManager.NETWORK_PROVIDER).apply {
                             latitude = estimate.latitude
                             longitude = estimate.longitude
                             accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
@@ -1381,7 +1396,19 @@ class LocationMonitorService : Service(), LocationListener {
                                             nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
                                         )
                                     }
-                            } else null
+                            } else {
+                                val template = radioOnlyLocationTemplate ?: confirmed
+                                radioOnlyPositionFusionEngine.estimate(nowElapsedRealtimeNanos)
+                                    ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) }
+                                    ?.let {
+                                        PositionFusionLocationAdapter.toLocation(
+                                            estimate = it,
+                                            template = template,
+                                            wallTimeMillis = nowWallMillis,
+                                            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+                                        )
+                                    }
+                            }
                             val held = inertialPrediction ?: Location(confirmed).apply {
                                 accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
                                 // A repeated static publication doesn't create a new radio measurement.
@@ -1767,6 +1794,52 @@ class LocationMonitorService : Service(), LocationListener {
         probeFix?.let(::onLocationChanged)
     }
 
+    /**
+     * Fuses radio-only anchors in a timeline separate from GNSS/Auto. The filter predicts
+     * between accepted anchors and lets the shared IMU model correct short-term vehicle motion.
+     */
+    private fun radioOnlyFusedLocation(
+        estimate: RadioEstimate,
+        nowWallTimeMillis: Long,
+        nowElapsedRealtimeNanos: Long
+    ): Location? {
+        val measurement = PositionFusionLocationAdapter.radioMeasurement(
+            estimate, nowElapsedRealtimeNanos
+        ) ?: return null
+        val zones = ZoneStore.loadAll(this).filter { it.enabled }.map { it.points }
+        if (!RadioFusionZonePolicy.allowsFusion(measurement, zones) ||
+            !AutoRadioMotionPolicy.allows(radioOnlyMotionAnchor, measurement)
+        ) return null
+
+        val update = radioOnlyPositionFusionEngine.update(measurement)
+        if (update.status == org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED) {
+            DiagnosticLogStore.log(
+                this, "RADIO_FIX",
+                "Radio-only fusion rejected anchor: ${update.rejectionReason ?: "unknown"}",
+                "WARN"
+            )
+            return null
+        }
+        radioOnlyMotionAnchor = measurement
+        val template = Location(LocationManager.NETWORK_PROVIDER).apply {
+            latitude = estimate.latitude
+            longitude = estimate.longitude
+            accuracy = estimate.accuracyMeters.toFloat().coerceAtLeast(1f)
+            time = nowWallTimeMillis -
+                ((nowElapsedRealtimeNanos - measurement.elapsedRealtimeNanos) / 1_000_000L)
+            elapsedRealtimeNanos = measurement.elapsedRealtimeNanos
+        }
+        radioOnlyLocationTemplate = template
+        val fused = radioOnlyPositionFusionEngine.estimate(nowElapsedRealtimeNanos)
+            ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) } ?: return null
+        return PositionFusionLocationAdapter.toLocation(
+            estimate = fused,
+            template = template,
+            wallTimeMillis = nowWallTimeMillis,
+            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+        )
+    }
+
     private fun autoRadioFallbackLocation(
         estimate: RadioEstimate,
         nowWallTimeMillis: Long,
@@ -2134,6 +2207,9 @@ class LocationMonitorService : Service(), LocationListener {
         lastGpsProbeLocation = null
         autoRadioMotionAnchor = null
         autoRadioPositionFusionEngine.reset()
+        radioOnlyPositionFusionEngine.reset()
+        radioOnlyMotionAnchor = null
+        radioOnlyLocationTemplate = null
         lastTrustedGpsMotionSeed = null
         gpsAcquisitionJob?.cancel()
         gpsAcquisitionJob = null
