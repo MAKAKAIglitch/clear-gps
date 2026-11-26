@@ -8060,8 +8060,12 @@ private fun SettingsScreen(
     }
     val normalizedSearch = settingsSearchQuery.trim()
     val filteredSearchEntries = remember(normalizedSearch) {
-        if (normalizedSearch.isBlank()) emptyList()
-        else searchEntries.filter { it.first.contains(normalizedSearch, true) || it.second.contains(normalizedSearch, true) }
+        val tokens = normalizedSearch.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (tokens.isEmpty()) emptyList()
+        else searchEntries.filter { entry ->
+            val searchableText = "${entry.first} ${entry.second}"
+            tokens.all { token -> searchableText.contains(token, ignoreCase = true) }
+        }
     }
     fun recordSectionPosition(key: String, y: Float) {
         val offset = (y - settingsRootY + settingsScrollState.value).roundToInt()
@@ -8082,7 +8086,7 @@ private fun SettingsScreen(
     LaunchedEffect(pendingSearchTarget, settingsSearchQuery) {
         val target = pendingSearchTarget
         if (target != null && settingsSearchQuery.isBlank()) {
-            delay(90)
+            delay(260)
             settingsScrollState.animateScrollTo((sectionOffsets[target] ?: 0).coerceIn(0, settingsScrollState.maxValue))
             pendingSearchTarget = null
         }
