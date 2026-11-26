@@ -24,7 +24,10 @@ data class PositionMeasurement(
     val latitude: Double,
     val longitude: Double,
     val horizontalUncertaintyMeters: Double,
-    val elapsedRealtimeNanos: Long
+    val elapsedRealtimeNanos: Long,
+    /** Optional trusted motion seed from a recent physical fix; never inferred from a tower coordinate. */
+    val initialSpeedMetersPerSecond: Double? = null,
+    val initialBearingDegrees: Double? = null
 )
 
 enum class PositionFusionUpdateStatus {
@@ -43,6 +46,7 @@ enum class PositionFusionRejectionReason {
     INVALID_TIMESTAMP,
     OUT_OF_ORDER_TIMESTAMP,
     STATISTICAL_OUTLIER,
+    INVALID_INITIAL_VELOCITY,
     NUMERIC_FAILURE
 }
 
@@ -289,6 +293,20 @@ class PositionFusionEngine(
             measurement.horizontalUncertaintyMeters > config.maximumMeasurementUncertaintyMeters
         ) return PositionFusionRejectionReason.INVALID_UNCERTAINTY
         if (measurement.elapsedRealtimeNanos <= 0L) return PositionFusionRejectionReason.INVALID_TIMESTAMP
+        val initialSpeed = measurement.initialSpeedMetersPerSecond
+        val initialBearing = measurement.initialBearingDegrees
+        if (initialSpeed != null &&
+            (!initialSpeed.isFinite() || initialSpeed !in 0.0..MAXIMUM_INITIAL_SPEED_MPS)
+        ) return PositionFusionRejectionReason.INVALID_INITIAL_VELOCITY
+        if (initialBearing != null && (!initialBearing.isFinite() || initialBearing !in 0.0..<360.0)) {
+            return PositionFusionRejectionReason.INVALID_INITIAL_VELOCITY
+        }
+        if (initialSpeed != null && initialSpeed > MINIMUM_SEEDED_SPEED_MPS && initialBearing == null) {
+            return PositionFusionRejectionReason.INVALID_INITIAL_VELOCITY
+        }
+        if (initialBearing != null && initialSpeed == null) {
+            return PositionFusionRejectionReason.INVALID_INITIAL_VELOCITY
+        }
         return null
     }
 
@@ -305,7 +323,14 @@ class PositionFusionEngine(
         initialCovariance[1][1] = positionVariance
         initialCovariance[2][2] = config.initialVelocityVariance
         initialCovariance[3][3] = config.initialVelocityVariance
-        state = DoubleArray(STATE_SIZE)
+        val initialSpeed = measurement.initialSpeedMetersPerSecond ?: 0.0
+        val initialBearingRadians = Math.toRadians(measurement.initialBearingDegrees ?: 0.0)
+        state = doubleArrayOf(
+            0.0,
+            0.0,
+            initialSpeed * sin(initialBearingRadians),
+            initialSpeed * cos(initialBearingRadians)
+        )
         covariance = initialCovariance
         stateElapsedRealtimeNanos = measurement.elapsedRealtimeNanos
         acceptedMeasurementCount = 1
@@ -427,6 +452,8 @@ class PositionFusionEngine(
         const val MINIMUM_DETERMINANT = 1e-12
         const val MINIMUM_VARIANCE = 1e-9
         const val MIN_SPEED_FOR_BEARING_MPS = 0.5
+        const val MINIMUM_SEEDED_SPEED_MPS = 0.5
+        const val MAXIMUM_INITIAL_SPEED_MPS = 100.0
 
         fun normalizeLongitudeDegrees(value: Double): Double {
             val shifted = (value + 180.0) % 360.0
