@@ -87,6 +87,25 @@ class RadioGeolocationRepository(private val context: Context) {
     private val spoofZoneService = SpoofZoneService(context.applicationContext)
     private val applicationContext = context.applicationContext
 
+    /**
+     * Lets the foreground radio loop sleep until either Android reports fresh Wi-Fi results
+     * or its normal scan interval expires. This is passive: it never calls startScan().
+     */
+    suspend fun waitForWifiScanOrTimeout(
+        afterElapsedRealtimeMicros: Long,
+        timeoutMillis: Long
+    ) {
+        require(afterElapsedRealtimeMicros >= 0L)
+        require(timeoutMillis >= 0L)
+        if (timeoutMillis == 0L) return
+        val monitor = getWifiScanResultsMonitor(applicationContext)
+        if (!monitor.ensureRegistered()) {
+            delay(timeoutMillis)
+            return
+        }
+        monitor.awaitSuccessfulResultAfter(afterElapsedRealtimeMicros, timeoutMillis)
+    }
+
     suspend fun scan(
         record: Boolean,
         reference: RadioReference?,
