@@ -80,9 +80,9 @@ internal object ImuMotionSamplePolicy {
 
 /** Bounded, process-memory-only IMU history. Samples are never written to disk or exported. */
 internal object ImuMotionLiveStore {
-    private const val MAX_HISTORY_SAMPLES = 128
-    private const val HISTORY_RETENTION_NANOS = 12_000_000_000L
-    const val DEFAULT_HISTORY_SAMPLE_MAXIMUM_AGE_NANOS = 10_250_000_000L
+    private const val MAX_HISTORY_SAMPLES = 384
+    private const val HISTORY_RETENTION_NANOS = 32_000_000_000L
+    const val DEFAULT_HISTORY_SAMPLE_MAXIMUM_AGE_NANOS = 30_250_000_000L
 
     @Volatile
     private var latest: ImuHorizontalAccelerationSample? = null
