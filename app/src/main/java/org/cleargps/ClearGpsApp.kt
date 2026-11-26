@@ -64,6 +64,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -86,6 +87,7 @@ import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.RadioButtonChecked
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SignalCellularAlt
@@ -141,6 +143,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
@@ -8012,14 +8015,318 @@ private fun SettingsScreen(
         mutableStateOf(lowBatteryThresholdPercent.toFloat())
     }
 
+    var settingsSearchQuery by remember { mutableStateOf("") }
+    var pendingSearchTarget by remember { mutableStateOf<String?>(null) }
+    var settingsRootY by remember { mutableStateOf(0f) }
+    var sectionOffsets by remember { mutableStateOf(emptyMap<String, Int>()) }
+    val settingsScrollState = rememberScrollState()
+    val searchEntries = remember {
+        listOf(
+            Triple("Разрешение BeaconDB", "сеть интернет приватность отправка радиоданных согласие", "privacy"),
+            Triple("Автоуточнение Wi-Fi через BeaconDB", "wifi вайфай точки сети автоматическое обновление", "privacy"),
+            Triple("OpenCellID", "сотовые вышки мобильная сеть ключ api", "privacy"),
+            Triple("OpenStreetMap и Overpass", "osm вышки карты координаты запросы", "privacy"),
+            Triple("Пассивный сбор базы", "фоновая запись наблюдения база данных", "privacy"),
+            Triple("Режим положения", "авто gps радио геолокация источник координат", "position"),
+            Triple("GPS only", "спутники gnss точность", "position"),
+            Triple("Радио only", "соты wifi bluetooth без gps", "position"),
+            Triple("Источник карты", "онлайн офлайн тайлы openfreemap", "map"),
+            Triple("Тема карты", "светлая темная системная оформление", "map"),
+            Triple("Wi-Fi сканирование", "вайфай bssid rssi беспроводная сеть", "radio"),
+            Triple("Мобильные соты", "gsm wcdma lte nr 4g 5g сотовая связь", "radio"),
+            Triple("Bluetooth LE", "ble bluetooth low energy маяки", "radio"),
+            Triple("Фильтр SSID", "имена wifi blacklist исключения шаблоны", "radio"),
+            Triple("Интервал обновления", "частота фикса секунд сканирование период", "radio"),
+            Triple("Ускорение в движении", "адаптивное сканирование скорость автомобиль", "radio"),
+            Triple("Профиль энергопотребления", "eco normal max батарея расход", "radio"),
+            Triple("Фоновое энергосбережение", "аккумулятор заряд выключенный экран", "radio"),
+            Triple("Порог низкого заряда", "проценты батареи аккумулятор", "radio"),
+            Triple("Публикация низкой точности", "погрешность координаты фикса", "radio"),
+            Triple("Радиоточки на карте", "показывать точки слой карта", "radio"),
+            Triple("Возможности GNSS и датчиков", "спутники agc диапазоны барометр wifi rtt imu сенсоры", "device"),
+            Triple("Ручной ориентир", "резервная точка координаты карта", "advanced"),
+            Triple("Системная геолокация", "разрешения местоположение android gps", "advanced"),
+            Triple("Работа в фоне и батарея", "оптимизация исключение фон службы", "advanced"),
+            Triple("Приватность и сетевые источники", "beacondb opencellid osm данные", "advanced"),
+            Triple("Экспорт настроек", "резервная копия backup файл", "advanced"),
+            Triple("Импорт настроек", "восстановление backup файл", "advanced"),
+            Triple("Удалить локальную базу", "очистка данные база хранения", "advanced"),
+            Triple("Подробное логирование", "диагностика журнал ошибки", "diagnostics"),
+            Triple("Размер журнала", "логи лимит килобайты хранение", "diagnostics"),
+            Triple("Просмотр логов", "журнал диагностика посмотреть", "diagnostics"),
+            Triple("Очистить логи", "удалить журнал диагностика", "diagnostics")
+        )
+    }
+    val normalizedSearch = settingsSearchQuery.trim()
+    val filteredSearchEntries = remember(normalizedSearch) {
+        if (normalizedSearch.isBlank()) emptyList()
+        else searchEntries.filter { entry ->
+            entry.first.contains(normalizedSearch, ignoreCase = true) ||
+                entry.second.contains(normalizedSearch, ignoreCase = true)
+        }
+    }
+    fun recordSectionPosition(key: String, y: Float) {
+        val offset = (y - settingsRootY + settingsScrollState.value).roundToInt()
+        if (sectionOffsets[key] != offset) sectionOffsets = sectionOffsets + (key to offset)
+    }
+    fun openSearchTarget(target: String) {
+        when (target) {
+            "map" -> showMapOptions = true
+            "radio" -> showRadioOptions = true
+            "device" -> showDeviceCapabilities = true
+            "advanced" -> showAdvancedOptions = true
+            "diagnostics" -> showDiagnosticOptions = true
+        }
+        pendingSearchTarget = target
+        settingsSearchQuery = ""
+    }
+    LaunchedEffect(pendingSearchTarget, settingsSearchQuery, sectionOffsets) {
+        val target = pendingSearchTarget
+        if (target != null && settingsSearchQuery.isBlank()) {
+            delay(90)
+            val destination = sectionOffsets[target] ?: 0
+            settingsScrollState.animateScrollTo(destination.coerceIn(0, settingsScrollState.maxValue))
+            pendingSearchTarget = null
+        }
+    }
+
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        Modifier.fillMaxSize()
+            .onGloballyPositioned { settingsRootY = it.positionInRoot().y }
+            .verticalScroll(settingsScrollState)
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
 
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+        OutlinedTextField(
+            value = settingsSearchQuery,
+            onValueChange = { settingsSearchQuery = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            trailingIcon = {
+                AnimatedVisibility(
+                    visible = settingsSearchQuery.isNotEmpty(),
+                    enter = fadeIn(tween(120)) + androidx.compose.animation.scaleIn(
+                        initialScale = 0.75f, animationSpec = tween(160)
+                    ),
+                    exit = fadeOut(tween(90)) + androidx.compose.animation.scaleOut(
+                        targetScale = 0.75f, animationSpec = tween(120)
+                    )
+                ) {
+                    IconButton(onClick = { settingsSearchQuery = "" }) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Очистить поиск")
+                    }
+                }
+            },
+            placeholder = { Text("Поиск настроек") },
+            supportingText = {
+                Text("По названию или назначению параметра")
+            }
+        )
+
+        AnimatedVisibility(
+            visible = settingsSearchQuery.isNotBlank(),
+            enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
+            exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
+        ) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = colors.surfaceContainerLow
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (filteredSearchEntries.isEmpty()) "Ничего не найдено"
+                            else "Найдено: ${filteredSearchEntries.size}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (settingsSearchQuery.isNotBlank()) {
+                            TextButton(onClick = { settingsSearchQuery = "" }) { Text("Отмена") }
+                        }
+                    }
+                    Crossfade(
+                        targetState = filteredSearchEntries,
+                        animationSpec = tween(160),
+                        label = "settings-search-results"
+                    ) { results ->
+                        if (results.isEmpty()) {
+                            Text(
+                                "Попробуй другое название: например, «Bluetooth», «батарея» или «карта».",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                results.forEach { result ->
+                                    Row(
+                                        Modifier.fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .clickable { openSearchTarget(result.third) }
+                                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(result.first, style = MaterialTheme.typography.bodyLarge)
+                                            Text(
+                                                when (result.third) {
+                                                    "privacy" -> "Сеть и приватность"
+                                                    "position" -> "Режим положения"
+                                                    "map" -> "Карта и оформление"
+                                                    "radio" -> "Радиопоиск и частота фикса"
+                                                    "device" -> "Возможности устройства"
+                                                    "advanced" -> "Дополнительно и данные"
+                                                    else -> "Прочее и диагностика"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.onSurfaceVariant
+                                            )
+                                        }
+                                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Открыть раздел", tint = colors.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        AnimatedVisibility(
+            visible = settingsSearchQuery.isBlank(),
+            enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(240)),
+            exit = fadeOut(tween(140)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(180))
+        ) {
+            Column(
+                Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+
+            }
+        }
+}
+            .verticalScroll(settingsScrollState)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
+
+        OutlinedTextField(
+            value = settingsSearchQuery,
+            onValueChange = { settingsSearchQuery = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            trailingIcon = {
+                AnimatedVisibility(
+                    visible = settingsSearchQuery.isNotEmpty(),
+                    enter = fadeIn(tween(120)) + androidx.compose.animation.scaleIn(
+                        initialScale = 0.75f, animationSpec = tween(160)
+                    ),
+                    exit = fadeOut(tween(90)) + androidx.compose.animation.scaleOut(
+                        targetScale = 0.75f, animationSpec = tween(120)
+                    )
+                ) {
+                    IconButton(onClick = { settingsSearchQuery = "" }) {
+                        Icon(Icons.Outlined.Close, contentDescription = "Очистить поиск")
+                    }
+                }
+            },
+            placeholder = { Text("Поиск настроек") },
+            supportingText = {
+                Text("По названию или назначению параметра")
+            }
+        )
+
+        AnimatedVisibility(
+            visible = settingsSearchQuery.isNotBlank(),
+            enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
+            exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
+        ) {
+            Surface(
+                Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = colors.surfaceContainerLow
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (filteredSearchEntries.isEmpty()) "Ничего не найдено"
+                            else "Найдено: ${filteredSearchEntries.size}",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = colors.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (settingsSearchQuery.isNotBlank()) {
+                            TextButton(onClick = { settingsSearchQuery = "" }) { Text("Отмена") }
+                        }
+                    }
+                    Crossfade(
+                        targetState = filteredSearchEntries,
+                        animationSpec = tween(160),
+                        label = "settings-search-results"
+                    ) { results ->
+                        if (results.isEmpty()) {
+                            Text(
+                                "Попробуй другое название: например, «Bluetooth», «батарея» или «карта».",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                results.forEach { result ->
+                                    Row(
+                                        Modifier.fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .clickable { openSearchTarget(result.third) }
+                                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(result.first, style = MaterialTheme.typography.bodyLarge)
+                                            Text(
+                                                when (result.third) {
+                                                    "privacy" -> "Сеть и приватность"
+                                                    "position" -> "Режим положения"
+                                                    "map" -> "Карта и оформление"
+                                                    "radio" -> "Радиопоиск и частота фикса"
+                                                    "device" -> "Возможности устройства"
+                                                    "advanced" -> "Дополнительно и данные"
+                                                    else -> "Прочее и диагностика"
+                                                },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.onSurfaceVariant
+                                            )
+                                        }
+                                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Открыть раздел", tint = colors.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Surface(
+            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("privacy", it.positionInRoot().y) },
+            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
+        ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 SettingSwitch(
                     "Разрешить запросы к BeaconDB",
@@ -8069,7 +8376,10 @@ private fun SettingsScreen(
             }
         }
 
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+        Surface(
+            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("position", it.positionInRoot().y) },
+            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
+        ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 PositionMode.values().forEach { item ->
@@ -8102,7 +8412,7 @@ private fun SettingsScreen(
             summary = "Источник карты, тема и приватность тайлов",
             expanded = showMapOptions,
             onClick = { showMapOptions = !showMapOptions }
-        )
+        ,\n            onPositioned = { recordSectionPosition("map", it.toFloat()) }\n        )
         AnimatedVisibility(
             visible = showMapOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8156,7 +8466,7 @@ private fun SettingsScreen(
             summary = "Источники радиоданных и интервал 1–30 секунд",
             expanded = showRadioOptions,
             onClick = { showRadioOptions = !showRadioOptions }
-        )
+        ,\n            onPositioned = { recordSectionPosition("radio", it.toFloat()) }\n        )
         AnimatedVisibility(
             visible = showRadioOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8302,7 +8612,7 @@ private fun SettingsScreen(
             summary = "GNSS, AGC, частотные диапазоны, барометр, Wi-Fi RTT и датчики движения",
             expanded = showDeviceCapabilities,
             onClick = { showDeviceCapabilities = !showDeviceCapabilities }
-        )
+        ,\n            onPositioned = { recordSectionPosition("device", it.toFloat()) }\n        )
         AnimatedVisibility(
             visible = showDeviceCapabilities,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8323,7 +8633,7 @@ private fun SettingsScreen(
             summary = "Резервный ориентир, разрешения и локальная база",
             expanded = showAdvancedOptions,
             onClick = { showAdvancedOptions = !showAdvancedOptions }
-        )
+        ,\n            onPositioned = { recordSectionPosition("advanced", it.toFloat()) }\n        )
         AnimatedVisibility(
             visible = showAdvancedOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8421,7 +8731,7 @@ private fun SettingsScreen(
             summary = "Подробные логи, просмотр и копирование для поиска ошибок",
             expanded = showDiagnosticOptions,
             onClick = { showDiagnosticOptions = !showDiagnosticOptions }
-        )
+        ,\n            onPositioned = { recordSectionPosition("diagnostics", it.toFloat()) }\n        )
         AnimatedVisibility(
             visible = showDiagnosticOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8514,7 +8824,8 @@ private fun SettingsSectionToggle(
     title: String,
     summary: String,
     expanded: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onPositioned: (Int) -> Unit = {}
 ) {
     val colors = MaterialTheme.colorScheme
     val chevronRotation by animateFloatAsState(
@@ -8523,7 +8834,9 @@ private fun SettingsSectionToggle(
         label = "settings-section-chevron"
     )
     Surface(
-        Modifier.fillMaxWidth().clickable(onClick = onClick),
+        Modifier.fillMaxWidth()
+            .onGloballyPositioned { onPositioned(it.positionInRoot().y.toInt()) }
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(22.dp),
         color = colors.surfaceContainerLow
     ) {
