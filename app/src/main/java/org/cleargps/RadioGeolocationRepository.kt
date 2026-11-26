@@ -251,7 +251,10 @@ class RadioGeolocationRepository(private val context: Context) {
                 }
                 LocalCellSitePositionEstimator.estimate(evidence)
             }
-        } else null
+        } else {
+            LocalCellSitePositionEstimator.reset()
+            null
+        }
 
         val sourceEstimates = buildList {
             localEstimateWithFreshness?.let {
