@@ -394,6 +394,7 @@ class RadioGeolocationRepository(private val context: Context) {
                         "local" -> "локальная БД"
                         "beacondb" -> "BeaconDB (кэш)"
                         "opencellid" -> "OpenCellID (кэш вышек)"
+                        "cell-sites-local" -> "локальная база вышек"
                         else -> source
                     }
                 }
@@ -405,7 +406,9 @@ class RadioGeolocationRepository(private val context: Context) {
                     "Совпадений: ${estimate.matchedCount}; погрешность ±${estimate.accuracyMeters.toInt()} м.$conflictHint"
             }
             else ->
-                "Сканирование завершено: $summary. Совпадений идентификаторов в локальной базе: ${matchCounts.knownRadios}; пригодных координатных записей: ${matchCounts.usableCoordinateRadios}. " +
+                "Сканирование завершено: $summary. Совпадений идентификаторов в локальной базе: ${matchCounts.knownRadios}; " +
+                    "совпадений локального каталога вышек: ${localCellSiteEstimate?.matchedCount ?: 0}; " +
+                    "пригодных координатных записей: ${matchCounts.usableCoordinateRadios}. " +
                     "Координата не построена: может не хватать согласованных координатных точек или совпадения неоднозначны."
         }
         val cacheAgeHints = buildList {
