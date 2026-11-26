@@ -8282,8 +8282,7 @@ private fun SettingsScreen(
             title = "Карта и оформление",
             summary = "Источник карты, тема и приватность тайлов",
             expanded = showMapOptions,
-            onClick = { showMapOptions = !showMapOptions }
-            ,
+            onClick = { showMapOptions = !showMapOptions },
             onPositioned = { recordSectionPosition("map", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8338,8 +8337,7 @@ private fun SettingsScreen(
             title = "Радиопоиск и частота фикса",
             summary = "Источники радиоданных и интервал 1–30 секунд",
             expanded = showRadioOptions,
-            onClick = { showRadioOptions = !showRadioOptions }
-            ,
+            onClick = { showRadioOptions = !showRadioOptions },
             onPositioned = { recordSectionPosition("radio", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8486,8 +8484,7 @@ private fun SettingsScreen(
             title = "Возможности устройства",
             summary = "GNSS, AGC, частотные диапазоны, барометр, Wi-Fi RTT и датчики движения",
             expanded = showDeviceCapabilities,
-            onClick = { showDeviceCapabilities = !showDeviceCapabilities }
-            ,
+            onClick = { showDeviceCapabilities = !showDeviceCapabilities },
             onPositioned = { recordSectionPosition("device", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8509,8 +8506,7 @@ private fun SettingsScreen(
             title = "Дополнительно и данные",
             summary = "Резервный ориентир, разрешения и локальная база",
             expanded = showAdvancedOptions,
-            onClick = { showAdvancedOptions = !showAdvancedOptions }
-            ,
+            onClick = { showAdvancedOptions = !showAdvancedOptions },
             onPositioned = { recordSectionPosition("advanced", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8609,8 +8605,7 @@ private fun SettingsScreen(
             title = "Прочее и диагностика",
             summary = "Подробные логи, просмотр и копирование для поиска ошибок",
             expanded = showDiagnosticOptions,
-            onClick = { showDiagnosticOptions = !showDiagnosticOptions }
-            ,
+            onClick = { showDiagnosticOptions = !showDiagnosticOptions },
             onPositioned = { recordSectionPosition("diagnostics", it.toFloat()) }
         )
         AnimatedVisibility(
