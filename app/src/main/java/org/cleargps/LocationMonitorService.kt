@@ -47,6 +47,8 @@ import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
 import org.cleargps.fusion.PositionMeasurement
 
+private const val AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS = 15_000_000_000L
+
 private data class LastResortFallback(val source: String, val location: Location)
 
 class LocationMonitorService : Service(), LocationListener {
@@ -58,7 +60,10 @@ class LocationMonitorService : Service(), LocationListener {
     // Radio updates arrive less frequently than GNSS; keep their history separate and allow
     // the 45-second evidence window without changing normal GNSS fusion semantics.
     private val autoRadioPositionFusionEngine = PositionFusionTimeline(
-        config = PositionFusionConfig(maximumMeasurementGapNanos = 45_000_000_000L)
+        config = PositionFusionConfig(
+            maximumPredictionAgeNanos = AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS,
+            maximumMeasurementGapNanos = 45_000_000_000L
+        )
     )
     private val riskZoneMembership = RiskZoneMembershipTracker()
     private val spoofZoneService by lazy(LazyThreadSafetyMode.NONE) { SpoofZoneService(applicationContext) }
@@ -76,6 +81,8 @@ class LocationMonitorService : Service(), LocationListener {
     private var beaconDbOutputPositionMode: String? = null
     private var beaconDbOutputUntilElapsed = 0L
     private var lastTrustedGpsFixForObd2: Location? = null
+    // Snapshot the last physical GPS velocity before Auto mode switches to radio-only operation.
+    private var lastTrustedGpsMotionSeed: Location? = null
     private var obd2FallbackPublished = false
     private var lastRadioMockFix: Location? = null
     private var lastRadioMockFixAtElapsedMs = 0L
@@ -1588,6 +1595,7 @@ class LocationMonitorService : Service(), LocationListener {
         positionFusionEngine.reset()
         autoRadioPositionFusionEngine.reset()
         autoRadioMotionAnchor = null
+        lastTrustedGpsMotionSeed = lastTrustedGpsFixForObd2?.let { Location(it) }
         lastTrustedGpsFixForObd2 = null
         lastGpsProbeLocation = null
         lastRadioMockFix = null
@@ -1708,7 +1716,7 @@ class LocationMonitorService : Service(), LocationListener {
         val measuredAt = estimate.measurementElapsedRealtimeNanos ?: return null
         if (!RadioFixReliability.hasUsableRadioMeasurementTimestamp(measuredAt, nowElapsedRealtimeNanos)) return null
         val ageNanos = nowElapsedRealtimeNanos - measuredAt
-        if (ageNanos !in 0L..2_000_000_000L) return null
+        if (ageNanos !in 0L..AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS) return null
 
         val precise = PositionFusionLocationAdapter.radioMeasurement(estimate, nowElapsedRealtimeNanos)
         val measurement = precise ?: run {
@@ -1741,14 +1749,30 @@ class LocationMonitorService : Service(), LocationListener {
                 elapsedRealtimeNanos = measurement.elapsedRealtimeNanos
             }
         }
-        val update = autoRadioPositionFusionEngine.update(measurement)
+        val previous = autoRadioMotionAnchor
+        val motionSeed = if (previous == null) {
+            lastTrustedGpsMotionSeed?.takeIf { seed ->
+                val seedAgeNanos = measurement.elapsedRealtimeNanos - seed.elapsedRealtimeNanos
+                seedAgeNanos in 0L..5_000_000_000L &&
+                    seed.hasSpeed() && seed.hasBearing() &&
+                    seed.speed.isFinite() && seed.speed in 0.5f..100.0f &&
+                    seed.bearing.isFinite() && seed.bearing >= 0f && seed.bearing < 360f
+            }
+        } else null
+        val anchoredMeasurement = if (motionSeed != null) {
+            measurement.copy(
+                initialSpeedMetersPerSecond = motionSeed.speed.toDouble(),
+                initialBearingDegrees = motionSeed.bearing.toDouble()
+            )
+        } else measurement
+        val update = autoRadioPositionFusionEngine.update(anchoredMeasurement)
         if (update.status == org.cleargps.fusion.PositionFusionUpdateStatus.REJECTED) {
             DiagnosticLogStore.log(this, "AUTO_MODE", "Auto RADIO measurement rejected by position filter: ${update.rejectionReason ?: "unknown"}", "WARN")
             return null
         }
-        val previous = autoRadioMotionAnchor
-        if (previous == null || measurement.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
-            autoRadioMotionAnchor = measurement
+        if (previous == null) lastTrustedGpsMotionSeed = null
+        if (previous == null || anchoredMeasurement.elapsedRealtimeNanos > previous.elapsedRealtimeNanos) {
+            autoRadioMotionAnchor = anchoredMeasurement
         }
         val fused = autoRadioPositionFusionEngine.estimate(nowElapsedRealtimeNanos)
             ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) } ?: return null
@@ -2050,6 +2074,7 @@ class LocationMonitorService : Service(), LocationListener {
         lastGpsProbeLocation = null
         autoRadioMotionAnchor = null
         autoRadioPositionFusionEngine.reset()
+        lastTrustedGpsMotionSeed = null
         gpsAcquisitionJob?.cancel()
         gpsAcquisitionJob = null
         gpsAcquisitionStartedAtElapsedMs = 0L
