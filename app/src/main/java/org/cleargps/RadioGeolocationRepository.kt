@@ -235,11 +235,16 @@ class RadioGeolocationRepository(private val context: Context) {
             }
         } else null
 
-        // The locally calculated cell-site catalogue is independent of OpenCellID. It is
-        // matched by exact Android cell identity and never triggers a network lookup.
+        // Avoid counting the same live cell identifiers through multiple catalogues.
+        val primaryEstimateAlreadyUsesCells =
+            localEstimateWithFreshness?.matchedRadioTypes?.contains("cell") == true ||
+                beaconCachedResult?.cells?.isNotEmpty() == true
+
+        // The locally calculated cell-site catalogue is matched by exact Android cell identity
+        // and never triggers a network lookup.
         val localCellSiteEstimate = if (
             localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked &&
-            localEstimateWithFreshness?.matchedRadioTypes?.contains("cell") != true
+            !primaryEstimateAlreadyUsesCells
         ) {
             withContext(Dispatchers.IO) {
                 val cellSignals = snapshot.signals.filter { it.type == "cell" }
@@ -259,6 +264,7 @@ class RadioGeolocationRepository(private val context: Context) {
         // OpenCellID and the local site catalogue may describe the same physical towers.
         // Select one catalogue estimate instead of double-counting correlated cell evidence.
         val selectedCellCatalogueEstimate = when {
+            primaryEstimateAlreadyUsesCells -> null
             localCellSiteEstimate != null &&
                 (openCellIdEstimate == null ||
                     localCellSiteEstimate.accuracyMeters <= openCellIdEstimate.accuracyMeters) ->
