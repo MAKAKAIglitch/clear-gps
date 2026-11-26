@@ -72,7 +72,8 @@ internal object PositionFusionLocationAdapter {
                         location.bearing >= 0f && location.bearing < 360f))
             },
             initialBearingDegrees = location.bearing.toDouble().takeIf {
-                location.hasSpeed() && location.speed > 0.05f &&
+                location.hasSpeed() && location.speed.isFinite() &&
+                    location.speed in 0.05f..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND.toFloat() &&
                     location.hasBearing() && it.isFinite() && it >= 0.0 && it < 360.0
             }
         )
