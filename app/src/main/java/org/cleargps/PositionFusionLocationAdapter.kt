@@ -68,12 +68,12 @@ internal object PositionFusionLocationAdapter {
             elapsedRealtimeNanos = location.elapsedRealtimeNanos,
             initialSpeedMetersPerSecond = location.speed.toDouble().takeIf {
                 location.hasSpeed() && it.isFinite() && it in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND &&
-                    (it <= 0.05 || (location.hasBearing() && location.bearing.isFinite() &&
+                    (it <= 0.05 || (it >= 0.5 && location.hasBearing() && location.bearing.isFinite() &&
                         location.bearing >= 0f && location.bearing < 360f))
             },
             initialBearingDegrees = location.bearing.toDouble().takeIf {
                 location.hasSpeed() && location.speed.isFinite() &&
-                    location.speed in 0.05f..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND.toFloat() &&
+                    location.speed in 0.5f..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND.toFloat() &&
                     location.hasBearing() && it.isFinite() && it >= 0.0 && it < 360.0
             }
         )
