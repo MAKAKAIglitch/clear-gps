@@ -30,7 +30,7 @@ internal object LocalCellSitePositionEstimator {
 
         val valid = evidence.mapNotNull { (signal, site) ->
             val identity = signal.cellMetadata?.toIdentity() ?: return@mapNotNull null
-            if (signal.type != "cell" || identity !in site.members ||
+            if (signal.type != "cell" || !identity.mncLengthKnown || identity !in site.members ||
                 !site.latitude.isFinite() || site.latitude !in -90.0..90.0 ||
                 !site.longitude.isFinite() || site.longitude !in -180.0..180.0 ||
                 !site.uncertaintyMeters.isFinite() || site.uncertaintyMeters <= 0.0 ||
