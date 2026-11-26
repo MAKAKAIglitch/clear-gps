@@ -122,6 +122,23 @@ class CellSiteDatabaseTest {
     }
 
     @Test
+    fun liveCellLookupMatchesExactKnownWidthIdentityOnly() {
+        val known = identity(cellId = 7654321L)
+        database.saveCellSiteGroups(
+            listOf(group(listOf(known), latitude = 60.17, longitude = 24.94)),
+            calculatedAtMillis = 1_700_000_000_000L
+        )
+        val unknownWidth = known.copy(mncLengthKnown = false)
+
+        val matches = database.findCellSitesForIdentities(listOf(known, unknownWidth))
+
+        assertEquals(setOf(known.stableKey), matches.keys)
+        assertEquals(60.17, matches.getValue(known.stableKey).latitude, 0.0)
+        assertEquals(24.94, matches.getValue(known.stableKey).longitude, 0.0)
+        assertEquals(listOf(known.stableKey), matches.getValue(known.stableKey).members.map { it.stableKey })
+    }
+
+    @Test
     fun aNewCalculationRemovesStaleAutomaticSites() {
         val first = group(listOf(identity(cellId = 1001L)))
         val second = group(listOf(identity(cellId = 1002L, mnc = "10")), latitude = 51.51)
