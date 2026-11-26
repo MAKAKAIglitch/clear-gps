@@ -1567,7 +1567,18 @@ class LocationMonitorService : Service(), LocationListener {
                     cycleStartedAtElapsedMillis,
                     SystemClock.elapsedRealtime()
                 )
-                if (remainingDelayMillis > 0L) delay(remainingDelayMillis)
+                if (remainingDelayMillis > 0L) {
+                    if (prefs.getBoolean(ClearGpsPreferences.KEY_USE_WIFI, true)) {
+                        // A successful system/other-app Wi-Fi scan wakes the radio loop early.
+                        // The normal interval remains the fallback when Android emits no result.
+                        repository.waitForWifiScanOrTimeout(
+                            afterElapsedRealtimeMicros = cycleStartedAtElapsedMillis * 1_000L,
+                            timeoutMillis = remainingDelayMillis
+                        )
+                    } else {
+                        delay(remainingDelayMillis)
+                    }
+                }
             }
         }
     }
