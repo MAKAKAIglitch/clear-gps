@@ -452,7 +452,7 @@ class PositionFusionEngine(
         const val MINIMUM_DETERMINANT = 1e-12
         const val MINIMUM_VARIANCE = 1e-9
         const val MIN_SPEED_FOR_BEARING_MPS = 0.5
-        const val MINIMUM_SEEDED_SPEED_MPS = 0.05
+        const val MINIMUM_SEEDED_SPEED_MPS = 0.5
         const val MAXIMUM_INITIAL_SPEED_MPS = 100.0
 
         fun normalizeLongitudeDegrees(value: Double): Double {
