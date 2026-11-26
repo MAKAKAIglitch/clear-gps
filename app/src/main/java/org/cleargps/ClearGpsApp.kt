@@ -5267,7 +5267,7 @@ private fun MapHomeScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        (if (accuracy != null) "Точность около ±" + accuracy.toInt() + " м" else "Точность неизвестна") + " · " + source,
+                        (if (accuracy != null) (if (mode.usesRadio) "Радиооценка: неопределённость около ±" else "Точность GPS около ±") + accuracy.toInt() + " м" else "Точность неизвестна") + " · " + source,
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant,
                         maxLines = 2,
@@ -5275,10 +5275,17 @@ private fun MapHomeScreen(
                     )
                     if (mode.usesRadio && currentEstimate != null) {
                         Text(
-                            "Совпадений в базе: " + currentEstimate.matchedCount + ". Радиус — эвристическая оценка.",
+                            "Совпадений в базе: " + currentEstimate.matchedCount + ". Радиус — ориентировочная неопределённость, а не измеренная GPS-точность.",
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant
                         )
+                        if (currentEstimate.ambiguousFingerprint) {
+                            Text(
+                                "В базе найдены похожие радиоснимки в разных местах. Показан лучший кандидат, а радиус увеличен из-за неоднозначности.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.tertiary
+                            )
+                        }
                     }
                 } else {
                     Text(
