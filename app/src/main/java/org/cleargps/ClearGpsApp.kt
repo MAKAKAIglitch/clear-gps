@@ -27,6 +27,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
@@ -134,6 +136,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -8011,12 +8014,12 @@ private fun SettingsScreen(
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
 
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainer) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 SettingSwitch(
                     "Разрешить запросы к BeaconDB",
@@ -8066,7 +8069,7 @@ private fun SettingsScreen(
             }
         }
 
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = colors.surfaceContainerHigh) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 PositionMode.values().forEach { item ->
@@ -8100,8 +8103,18 @@ private fun SettingsScreen(
             expanded = showMapOptions,
             onClick = { showMapOptions = !showMapOptions }
         )
-        if (showMapOptions) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
+        AnimatedVisibility(
+            visible = showMapOptions,
+            enter = fadeIn(animationSpec = tween(180)) + expandVertically(
+                expandFrom = Alignment.Top,
+                animationSpec = tween(220)
+            ),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(
+                shrinkTowards = Alignment.Top,
+                animationSpec = tween(180)
+            )
+        ) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     Text("Источник карты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     MapSourceMode.values().forEach { item ->
@@ -8135,6 +8148,7 @@ private fun SettingsScreen(
                     }
                 }
             }
+        
         }
 
         SettingsSectionToggle(
@@ -8143,7 +8157,17 @@ private fun SettingsScreen(
             expanded = showRadioOptions,
             onClick = { showRadioOptions = !showRadioOptions }
         )
-        if (showRadioOptions) {
+        AnimatedVisibility(
+            visible = showRadioOptions,
+            enter = fadeIn(animationSpec = tween(180)) + expandVertically(
+                expandFrom = Alignment.Top,
+                animationSpec = tween(220)
+            ),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(
+                shrinkTowards = Alignment.Top,
+                animationSpec = tween(180)
+            )
+        ) {
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Text(
@@ -8270,6 +8294,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+        
         }
 
         SettingsSectionToggle(
@@ -8278,8 +8303,19 @@ private fun SettingsScreen(
             expanded = showDeviceCapabilities,
             onClick = { showDeviceCapabilities = !showDeviceCapabilities }
         )
-        if (showDeviceCapabilities) {
+        AnimatedVisibility(
+            visible = showDeviceCapabilities,
+            enter = fadeIn(animationSpec = tween(180)) + expandVertically(
+                expandFrom = Alignment.Top,
+                animationSpec = tween(220)
+            ),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(
+                shrinkTowards = Alignment.Top,
+                animationSpec = tween(180)
+            )
+        ) {
             DeviceCapabilitiesPanel()
+        
         }
 
         SettingsSectionToggle(
@@ -8288,7 +8324,17 @@ private fun SettingsScreen(
             expanded = showAdvancedOptions,
             onClick = { showAdvancedOptions = !showAdvancedOptions }
         )
-        if (showAdvancedOptions) {
+        AnimatedVisibility(
+            visible = showAdvancedOptions,
+            enter = fadeIn(animationSpec = tween(180)) + expandVertically(
+                expandFrom = Alignment.Top,
+                animationSpec = tween(220)
+            ),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(
+                shrinkTowards = Alignment.Top,
+                animationSpec = tween(180)
+            )
+        ) {
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     SettingSwitch(
@@ -8367,6 +8413,7 @@ private fun SettingsScreen(
                     )
                 }
             }
+        
         }
 
         SettingsSectionToggle(
@@ -8375,7 +8422,17 @@ private fun SettingsScreen(
             expanded = showDiagnosticOptions,
             onClick = { showDiagnosticOptions = !showDiagnosticOptions }
         )
-        if (showDiagnosticOptions) {
+        AnimatedVisibility(
+            visible = showDiagnosticOptions,
+            enter = fadeIn(animationSpec = tween(180)) + expandVertically(
+                expandFrom = Alignment.Top,
+                animationSpec = tween(220)
+            ),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(
+                shrinkTowards = Alignment.Top,
+                animationSpec = tween(180)
+            )
+        ) {
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     SettingSwitch(
@@ -8427,6 +8484,7 @@ private fun SettingsScreen(
                     }
                 }
             }
+        
         }
     }
     if (showSettingsZoneBackupImportConfirm) AlertDialog(
@@ -8459,32 +8517,46 @@ private fun SettingsSectionToggle(
     onClick: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(180),
+        label = "settings-section-chevron"
+    )
     Surface(
         Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        color = colors.surfaceContainerHigh
+        shape = RoundedCornerShape(22.dp),
+        color = colors.surfaceContainerLow
     ) {
         Row(
-            Modifier.padding(horizontal = 13.dp, vertical = 12.dp),
+            Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
-            Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null)
+            Icon(
+                Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "Свернуть раздел" else "Развернуть раздел",
+                modifier = Modifier.rotate(chevronRotation)
+            )
         }
     }
 }
 
 @Composable
 private fun SettingSwitch(title: String, description: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChecked)
+            .padding(vertical = 8.dp)
+    ) {
         Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Medium)
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
             Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
