@@ -8020,7 +8020,7 @@ private fun SettingsScreen(
         Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
 
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 SettingSwitch(
                     "Разрешить запросы к BeaconDB",
                     "По умолчанию выключено. При ручном поиске отправляются доступные Wi-Fi BSSID/RSSI, стабильные BLE MAC/RSSI и поддерживаемые GSM/WCDMA/LTE ID/RSSI. IP-адрес виден серверу. SSID, имена Bluetooth, payload, GPS-координаты и история не отправляются; скрытые сети и SSID с _nomap, а также private/random BLE MAC исключаются. Загрузка вкладов/наблюдений не используется.",
@@ -8070,7 +8070,7 @@ private fun SettingsScreen(
         }
 
         Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 PositionMode.values().forEach { item ->
                     Row(
@@ -8115,7 +8115,7 @@ private fun SettingsScreen(
             )
         ) {
             Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     Text("Источник карты", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     MapSourceMode.values().forEach { item ->
                         Row(
@@ -8168,8 +8168,8 @@ private fun SettingsScreen(
                 animationSpec = tween(180)
             )
         ) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     Text(
                         "Переключатели влияют на локальный поиск. Сохранение наблюдений работает только при включённой записи.",
                         style = MaterialTheme.typography.bodySmall,
@@ -8335,8 +8335,8 @@ private fun SettingsScreen(
                 animationSpec = tween(180)
             )
         ) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     SettingSwitch(
                         "Ручной ориентир как резерв",
                         "Используется только как грубый запасной вариант; оценка может ошибаться на километры.",
@@ -8433,8 +8433,8 @@ private fun SettingsScreen(
                 animationSpec = tween(180)
             )
         ) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = colors.surfaceContainer) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                     SettingSwitch(
                         "Подробное логирование",
                         "Записывает результаты радио-сканов, причины отказа фикса, ошибки mock GPS и состояние службы.",
