@@ -29,6 +29,39 @@ class PositionFusionEngineTest {
     }
 
     @Test
+    fun trustedInitialVelocitySupportsBoundedDeadReckoningBeforeSecondFix() {
+        val engine = PositionFusionEngine(
+            PositionFusionConfig(maximumPredictionAgeNanos = seconds(15))
+        )
+        val initialized = engine.update(
+            measurement(52.0, 0.0, 5.0, 1, PositionMeasurementSource.GNSS).copy(
+                initialSpeedMetersPerSecond = 20.0,
+                initialBearingDegrees = 90.0
+            )
+        )
+
+        assertEquals(PositionFusionUpdateStatus.INITIALIZED, initialized.status)
+        val predicted = engine.estimate(seconds(11))
+        assertNotNull(predicted)
+        assertTrue(predicted!!.longitude > 0.0)
+        assertEquals(20.0, predicted.speedMetersPerSecond, 1e-6)
+        assertEquals(90.0, predicted.bearingDegrees!!, 1e-6)
+        assertEquals(seconds(1), predicted.lastMeasurementElapsedRealtimeNanos)
+    }
+
+    @Test
+    fun rejectsSeededSpeedWithoutAHeading() {
+        val engine = PositionFusionEngine()
+        val result = engine.update(
+            measurement(52.0, 0.0, 5.0, 1).copy(initialSpeedMetersPerSecond = 15.0)
+        )
+
+        assertEquals(PositionFusionUpdateStatus.REJECTED, result.status)
+        assertEquals(PositionFusionRejectionReason.INVALID_INITIAL_VELOCITY, result.rejectionReason)
+        assertNull(engine.estimate(seconds(1)))
+    }
+
+    @Test
     fun consistentRadioAndGnssFixesProduceSmoothedMotionEstimate() {
         val engine = PositionFusionEngine()
         engine.update(measurement(52.0, 0.0, 5.0, 1, PositionMeasurementSource.GNSS))
