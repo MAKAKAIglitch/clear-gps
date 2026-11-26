@@ -65,7 +65,13 @@ internal object PositionFusionLocationAdapter {
             latitude = location.latitude,
             longitude = location.longitude,
             horizontalUncertaintyMeters = uncertainty,
-            elapsedRealtimeNanos = location.elapsedRealtimeNanos
+            elapsedRealtimeNanos = location.elapsedRealtimeNanos,
+            initialSpeedMetersPerSecond = location.speed.toDouble().takeIf {
+                location.hasSpeed() && it.isFinite() && it in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
+            },
+            initialBearingDegrees = location.bearing.toDouble().takeIf {
+                location.hasBearing() && it.isFinite() && it >= 0.0 && it < 360.0
+            }
         )
     }
 
@@ -132,13 +138,13 @@ internal object PositionFusionLocationAdapter {
             time = wallTimeMillis
             elapsedRealtimeNanos = estimate.elapsedRealtimeNanos
 
-            if (!hasSpeed() && estimate.acceptedMeasurementCount >= 2 &&
-                estimate.speedMetersPerSecond.isFinite() &&
-                estimate.speedMetersPerSecond in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
+            if (!hasSpeed() && estimate.speedMetersPerSecond.isFinite() &&
+                estimate.speedMetersPerSecond in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND &&
+                estimate.speedMetersPerSecond > 0.05
             ) {
                 speed = estimate.speedMetersPerSecond.toFloat()
             }
-            if (!hasBearing() && estimate.acceptedMeasurementCount >= 2) {
+            if (!hasBearing()) {
                 estimate.bearingDegrees?.takeIf {
                     it.isFinite() && it >= 0.0 && it < 360.0
                 }?.let { bearing = it.toFloat() }
