@@ -5389,13 +5389,33 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
     /** Fetch geolocated points only; unlocated rows cannot consume the map marker limit. */
     fun listMapPoints(limit: Int = RadioMapPointLimitPolicy.DEFAULT_LIMIT): List<RadioPointRecord> {
-        val result = ArrayList<RadioPointRecord>()
-        readableDatabase.rawQuery(
-            "SELECT * FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
-                "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 " +
-                "ORDER BY last_seen DESC LIMIT ?",
-            arrayOf(limit.coerceIn(1, RadioMapPointLimitPolicy.MAX_LIMIT).toString())
-        ).use { cursor -> while (cursor.moveToNext()) result.add(cursor.toRadioPoint()) }
+        val safeLimit = limit.coerceIn(1, RadioMapPointLimitPolicy.MAX_LIMIT)
+        val db = readableDatabase
+        val counts = LinkedHashMap<String, Int>()
+        db.rawQuery(
+            "SELECT type, COUNT(*) FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
+                "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 GROUP BY type",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) counts[cursor.getString(0)] = cursor.getInt(1)
+        }
+
+        // Reserve a fair share for Wi-Fi, cells and BLE before applying the global map cap.
+        // Without this, a large burst of recent BLE sightings could hide all older Wi-Fi/cell
+        // points even though the map renderer already supports clustering for every type.
+        val perTypeLimits = RadioMapPointLimitPolicy.allocatePerTypeLimits(counts, safeLimit)
+        val result = ArrayList<RadioPointRecord>(safeLimit)
+        for ((type, typeLimit) in perTypeLimits) {
+            db.rawQuery(
+                "SELECT * FROM radio_points WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL " +
+                    "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 " +
+                    "ORDER BY last_seen DESC, id DESC LIMIT ?",
+                arrayOf(type, typeLimit.toString())
+            ).use { cursor ->
+                while (cursor.moveToNext()) result.add(cursor.toRadioPoint())
+            }
+        }
+        result.sortWith(compareByDescending<RadioPointRecord> { it.lastSeen }.thenByDescending { it.id })
         return result
     }
 
