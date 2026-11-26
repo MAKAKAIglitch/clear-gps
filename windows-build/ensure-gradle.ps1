@@ -107,7 +107,8 @@ try {
     }
     if (Test-Path -LiteralPath $ExtractRoot) { Remove-Item -LiteralPath $ExtractRoot -Recurse -Force }
     New-Item -ItemType Directory -Path $ExtractRoot | Out-Null
-    Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractRoot -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $ExtractRoot)
     $Extracted = Join-Path $ExtractRoot "gradle-$GradleVersion"
     if (-not (Test-Path -LiteralPath (Join-Path $Extracted 'bin\gradle.bat'))) {
         throw 'Expected Gradle executable not found in the verified archive.'
