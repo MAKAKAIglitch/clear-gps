@@ -50,6 +50,32 @@ class WifiScanResultsMonitorTest {
     }
 
     @Test
+    fun serviceWaitsForSuccessfulBroadcastAfterAnUnsuccessfulOne() = runBlocking {
+        val monitor = WifiScanResultsMonitor(context)
+        assertTrue(monitor.ensureRegistered())
+        val startedAtMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
+        val waiting = async {
+            monitor.awaitSuccessfulResultAfter(startedAtMicros, timeoutMillis = 2_000L)
+        }
+        yield()
+
+        context.sendBroadcast(
+            Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+                .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
+        )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(!waiting.isCompleted)
+
+        context.sendBroadcast(
+            Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+                .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, true)
+        )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertTrue(waiting.await())
+    }
+
+    @Test
     fun failedScanBroadcastIsReportedWithoutBeingTreatedAsFreshResults() = runBlocking {
         val monitor = WifiScanResultsMonitor(context)
         assertTrue(monitor.ensureRegistered())
