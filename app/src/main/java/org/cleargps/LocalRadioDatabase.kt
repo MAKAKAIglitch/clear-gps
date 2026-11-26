@@ -5256,6 +5256,67 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         }
     }
 
+    /**
+     * Resolves currently observed, exact cell identities against the locally calculated tower
+     * catalogue. Unknown MNC width is deliberately excluded: a numeric MNC match alone can
+     * alias a different operator identity when leading zeroes were lost by legacy imports.
+     */
+    fun findCellSitesForIdentities(identities: List<CellIdentity>): Map<String, CellSiteRecord> {
+        val requested = identities.asSequence()
+            .filter { it.mncLengthKnown }
+            .distinctBy { it.stableKey }
+            .take(64)
+            .toList()
+        if (requested.isEmpty()) return emptyMap()
+
+        val result = LinkedHashMap<String, CellSiteRecord>()
+        val placeholders = requested.joinToString(",") { "?" }
+        val arguments = requested.map { it.stableKey }.toTypedArray()
+        readableDatabase.rawQuery(
+            """
+            SELECT l.identity_key, s.id, s.stable_key, s.latitude, s.longitude,
+                   s.uncertainty_m, s.confidence, s.locked_by_user, s.algorithm_version,
+                   s.calculated_at, s.batch_id, l.rat, l.mcc, l.mnc, l.area_code, l.cell_id
+            FROM cell_site_links l
+            INNER JOIN cell_sites s ON s.id = l.site_id
+            WHERE l.identity_key IN ($placeholders)
+            ORDER BY s.locked_by_user DESC, s.confidence DESC, s.calculated_at DESC, s.id
+            """.trimIndent(),
+            arguments
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val identityKey = cursor.getString(0)
+                if (identityKey in result) continue
+                val technology = CellTechnology.fromToken(cursor.getString(11)) ?: continue
+                val identity = runCatching {
+                    CellIdentity(
+                        technology = technology,
+                        mcc = cursor.getString(12),
+                        mnc = cursor.getString(13),
+                        areaCode = cursor.getLong(14),
+                        cellId = cursor.getLong(15),
+                        mncLengthKnown = true
+                    )
+                }.getOrNull() ?: continue
+                if (identity.stableKey != identityKey) continue
+                result[identityKey] = CellSiteRecord(
+                    id = cursor.getLong(1),
+                    stableKey = cursor.getString(2),
+                    latitude = cursor.getDouble(3),
+                    longitude = cursor.getDouble(4),
+                    uncertaintyMeters = cursor.getDouble(5),
+                    confidenceScore = cursor.getDouble(6),
+                    lockedByUser = cursor.getInt(7) != 0,
+                    algorithmVersion = cursor.getString(8),
+                    calculatedAtMillis = cursor.getLong(9),
+                    batchId = cursor.getString(10),
+                    members = listOf(identity)
+                )
+            }
+        }
+        return result
+    }
+
     fun listCellSiteBatches(limit: Int = 50): List<CellSiteBatchRecord> {
         val result = ArrayList<CellSiteBatchRecord>()
         readableDatabase.rawQuery(
