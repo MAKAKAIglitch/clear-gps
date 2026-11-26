@@ -47,7 +47,7 @@ import org.cleargps.fusion.PositionFusionMotionModel
 import org.cleargps.fusion.PositionFusionTimeline
 import org.cleargps.fusion.PositionMeasurement
 
-private const val AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS = 15_000_000_000L
+private const val AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS = 30_000_000_000L
 
 private data class LastResortFallback(val source: String, val location: Location)
 
