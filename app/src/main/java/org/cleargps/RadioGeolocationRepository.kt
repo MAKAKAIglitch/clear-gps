@@ -95,6 +95,7 @@ class RadioGeolocationRepository(private val context: Context) {
         useBle: Boolean,
         awaitFreshWifiScan: Boolean = true
     ): RadioLookupResult = scanMutex.withLock {
+        val scanStartedAtNanos = System.nanoTime()
         DiagnosticLogStore.log(context, "RADIO", "Сканирование начато; mode=$mode, Wi-Fi=$useWifi, соты=$useCells, BLE=$useBle, запись=$record")
         // The UI, recording loop and foreground service can all request a scan. Serialize
         // them process-wide so concurrent Wi-Fi/BLE scans do not cancel or throttle each other.
@@ -108,6 +109,7 @@ class RadioGeolocationRepository(private val context: Context) {
             )) {
             " Precise location permission is required for this app to use nearby Wi‑Fi, cellular and Bluetooth identifiers for positioning. Grant Precise location in app permissions. Radio-only mode still does not request GPS fixes."
         } else ""
+        val snapshotStartedAtNanos = System.nanoTime()
         val snapshot = withContext(Dispatchers.Main.immediate) {
             collectSnapshot(
                 useWifi = useWifi,
@@ -116,6 +118,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 awaitFreshWifiScan = awaitFreshWifiScan
             )
         }
+        val snapshotDurationMillis = ((System.nanoTime() - snapshotStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        DiagnosticLogStore.log(context, "RADIO_SCAN", "Сбор радиосводки=" + snapshotDurationMillis + " мс; сигналов=" + snapshot.signals.size + " (Wi-Fi=" + snapshot.wifiCount + ", соты=" + snapshot.cellCount + ", BLE=" + snapshot.bleCount + "); ожидание свежего Wi-Fi=" + awaitFreshWifiScan)
         val localSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_LOCAL_ENABLED, true)
         val beaconSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_BEACONDB_ENABLED, true)
         val openCellIdSourceEnabled = prefs.getBoolean(ClearGpsPreferences.KEY_RADIO_SOURCE_OPENCELLID_ENABLED, true)
@@ -135,6 +139,7 @@ class RadioGeolocationRepository(private val context: Context) {
             spoofZoneService.assess(latitude, longitude, accuracy).blocksRadioData
         }
 
+        val localDbStartedAtNanos = System.nanoTime()
         val localEvaluation = if (localSourceEnabled && !preferredPositionBlocked) {
             withContext(Dispatchers.IO) {
                 database.evaluatePosition(
@@ -143,6 +148,15 @@ class RadioGeolocationRepository(private val context: Context) {
                 )
             }
         } else null
+        val localDbStageDurationMillis = ((System.nanoTime() - localDbStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        if (localEvaluation == null) {
+            val skipReason = when {
+                !localSourceEnabled -> "источник локальной БД выключен"
+                preferredPositionBlocked -> "предпочтительная позиция попала в зону исключения"
+                else -> "неизвестно"
+            }
+            DiagnosticLogStore.log(context, "RADIO_DB", "Локальный поиск пропущен: " + skipReason + "; проверка условий=" + localDbStageDurationMillis + " мс")
+        }
         localEvaluation?.let { evaluation ->
             DiagnosticLogStore.log(
                 context,
@@ -222,6 +236,8 @@ class RadioGeolocationRepository(private val context: Context) {
 
         // OpenCellID tower coordinates are read from the local catalogue only. Periodic radio
         // scans never call /cell/get; refreshing that catalogue remains an explicit, quota-guarded action.
+        val openCellIdStartedAtNanos = System.nanoTime()
+        var openCellIdMatchedRows = 0
         val openCellIdEstimate = if (openCellIdSourceEnabled && useCells && !safeMode && !preferredPositionBlocked) {
             withContext(Dispatchers.IO) {
                 val evidence = snapshot.signals.asSequence()
@@ -231,9 +247,12 @@ class RadioGeolocationRepository(private val context: Context) {
                         val record = database.getOpenCellIdCell(key) ?: return@mapNotNull null
                         signal to record
                     }.toList()
+                openCellIdMatchedRows = evidence.size
                 OpenCellIdPositionEstimator.estimate(evidence)
             }
         } else null
+        val openCellIdDurationMillis = ((System.nanoTime() - openCellIdStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        DiagnosticLogStore.log(context, "RADIO_DB", "Локальный каталог OpenCellID: совпавших записей=" + openCellIdMatchedRows + ", оценка=" + (openCellIdEstimate != null) + ", время=" + openCellIdDurationMillis + " мс" + if (openCellIdSourceEnabled && useCells && !safeMode && !preferredPositionBlocked) "" else "; поиск пропущен по условиям")
 
         // Avoid counting the same live cell identifiers through multiple catalogues.
         val primaryEstimateAlreadyUsesCells =
@@ -242,6 +261,9 @@ class RadioGeolocationRepository(private val context: Context) {
 
         // The locally calculated cell-site catalogue is matched by exact Android cell identity
         // and never triggers a network lookup.
+        val localCellSiteStartedAtNanos = System.nanoTime()
+        var localCellSiteIdentityCount = 0
+        var localCellSiteMatchCount = 0
         val localCellSiteEstimate = if (
             localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked &&
             !primaryEstimateAlreadyUsesCells
@@ -249,17 +271,21 @@ class RadioGeolocationRepository(private val context: Context) {
             withContext(Dispatchers.IO) {
                 val cellSignals = snapshot.signals.filter { it.type == "cell" }
                 val identities = cellSignals.mapNotNull { it.cellMetadata?.toIdentity() }
+                localCellSiteIdentityCount = identities.size
                 val sitesByIdentity = database.findCellSitesForIdentities(identities)
                 val evidence = cellSignals.mapNotNull { signal ->
                     val identity = signal.cellMetadata?.toIdentity() ?: return@mapNotNull null
                     sitesByIdentity[identity.stableKey]?.let { signal to it }
                 }
+                localCellSiteMatchCount = evidence.size
                 LocalCellSitePositionEstimator.estimate(evidence)
             }
         } else {
             LocalCellSitePositionEstimator.reset()
             null
         }
+        val localCellSiteDurationMillis = ((System.nanoTime() - localCellSiteStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        DiagnosticLogStore.log(context, "RADIO_DB", "Локальная база вышек: кандидатов-сот=" + localCellSiteIdentityCount + ", совпадений=" + localCellSiteMatchCount + ", оценка=" + (localCellSiteEstimate != null) + ", время=" + localCellSiteDurationMillis + " мс" + if (localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked && !primaryEstimateAlreadyUsesCells) "" else "; поиск пропущен или не нужен")
 
         // OpenCellID and the local site catalogue may describe the same physical towers.
         // Select one catalogue estimate instead of double-counting correlated cell evidence.
@@ -364,6 +390,7 @@ class RadioGeolocationRepository(private val context: Context) {
             } else null
             signal.copy(cellMetadata = metadata.copy(timingAdvancePositionDeltaMillis = deltaMillis))
         }
+        val recordStartedAtNanos = System.nanoTime()
         val recorded = withContext(Dispatchers.IO) {
             database.recordScan(
                 signals = recordSignals,
@@ -377,6 +404,8 @@ class RadioGeolocationRepository(private val context: Context) {
                 allowRadioWrite = radioDataAllowed
             )
         }
+        val recordDurationMillis = ((System.nanoTime() - recordStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        DiagnosticLogStore.log(context, "RADIO_DB", "Запись результата в SQLite=" + recordDurationMillis + " мс; записано=" + recorded + ", запрошена запись=" + record + ", запись разрешена=" + radioDataAllowed)
         if (record && radioDataAllowed && referenceForRecord != null &&
             snapshot.cellCount > 0 && recorded > 0
         ) {
@@ -445,9 +474,11 @@ class RadioGeolocationRepository(private val context: Context) {
             ?.joinToString(prefix = " Используется кэш радиосигналов (", postfix = "); погрешность увеличена.")
             .orEmpty()
         val fullMessage = message + cacheAgeHints + precisePermissionHint
+        val totalScanDurationMillis = ((System.nanoTime() - scanStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         DiagnosticLogStore.log(
             context, "RADIO",
-            "Сканирование завершено: Wi-Fi=${snapshot.wifiCount}, соты=${snapshot.cellCount}, BLE=${snapshot.bleCount}, " +
+            "Сканирование завершено за " + totalScanDurationMillis + " мс: сбор=" + snapshotDurationMillis + " мс, локальная БД=" + localDbStageDurationMillis + " мс, OpenCellID=" + openCellIdDurationMillis + " мс, база вышек=" + localCellSiteDurationMillis + " мс, fusion=" + fusionDurationMillis + " мс, запись SQLite=" + recordDurationMillis + " мс; " +
+            "Wi-Fi=${snapshot.wifiCount}, соты=${snapshot.cellCount}, BLE=${snapshot.bleCount}, " +
                 "Wi-Fi age=${snapshot.wifiAgeMillis?.div(1_000) ?: "unknown"}s, cell age=${snapshot.cellAgeMillis?.div(1_000) ?: "unknown"}s, " +
                 "BLE age=${snapshot.bleAgeMillis?.div(1_000) ?: "unknown"}s, " +
                 (estimate?.let { "оценка есть, источники=${it.contributingSources.joinToString("+")}, совпадений=${it.matchedCount}, точность≈${it.accuracyMeters.toInt()} м, конфликт=${it.sourceConflictDetected}" }
