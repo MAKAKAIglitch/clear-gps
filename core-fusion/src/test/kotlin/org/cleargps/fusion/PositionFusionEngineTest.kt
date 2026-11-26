@@ -31,7 +31,7 @@ class PositionFusionEngineTest {
     @Test
     fun trustedInitialVelocitySupportsBoundedDeadReckoningBeforeSecondFix() {
         val engine = PositionFusionEngine(
-            PositionFusionConfig(maximumPredictionAgeNanos = seconds(15))
+            PositionFusionConfig(maximumPredictionAgeNanos = seconds(30))
         )
         val initialized = engine.update(
             measurement(52.0, 0.0, 5.0, 1, PositionMeasurementSource.GNSS).copy(
@@ -41,7 +41,7 @@ class PositionFusionEngineTest {
         )
 
         assertEquals(PositionFusionUpdateStatus.INITIALIZED, initialized.status)
-        val predicted = engine.estimate(seconds(11))
+        val predicted = engine.estimate(seconds(21))
         assertNotNull(predicted)
         assertTrue(predicted!!.longitude > 0.0)
         assertEquals(20.0, predicted.speedMetersPerSecond, 1e-6)
