@@ -1383,8 +1383,14 @@ class LocationMonitorService : Service(), LocationListener {
                         val confirmedAt = lastRadioMockFixAtElapsedMs
                         val ageMs = if (confirmedAt > 0L && nowElapsedMs >= confirmedAt) nowElapsedMs - confirmedAt else Long.MAX_VALUE
                         val intervalMs = configuredUpdateIntervalMillis()
+                        val hasBoundedFusionPrediction = if (autoRadioFallback) {
+                            autoRadioPositionFusionEngine.estimate(nowElapsedRealtimeNanos) != null
+                        } else {
+                            radioOnlyPositionFusionEngine.estimate(nowElapsedRealtimeNanos) != null
+                        }
                         val canHold = mockRequested && confirmed != null &&
-                            RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs)
+                            (hasBoundedFusionPrediction ||
+                                RadioFixReliability.shouldHoldLastRadioMockFix(confirmedAt, nowElapsedMs, intervalMs))
                         DiagnosticLogStore.log(
                             this@LocationMonitorService, "RADIO_FIX",
                             "Резерв radio fix: $canHold; возраст подтверждённой позиции=${if (ageMs == Long.MAX_VALUE) "unknown" else ageMs / 1_000} s; причина=$rejectionReason"
