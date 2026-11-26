@@ -22,6 +22,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -8120,14 +8121,16 @@ private fun SettingsScreen(
                 }
             },
             placeholder = { Text("Поиск настроек") },
-            supportingText = { Text("По названию или назначению параметра") }
         )
         AnimatedVisibility(
             visible = settingsSearchQuery.isNotBlank(),
             enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
             exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
         ) {
-            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
+            Surface(
+                Modifier.fillMaxWidth().animateContentSize(animationSpec = tween(200)),
+                shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
+            ) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
