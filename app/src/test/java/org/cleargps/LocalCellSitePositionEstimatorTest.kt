@@ -42,6 +42,18 @@ class LocalCellSitePositionEstimatorTest {
         assertNotNull(repeated)
         assertEquals(10_000_000_000L, first!!.measurementElapsedRealtimeNanos)
         assertEquals(10_000_000_000L, repeated!!.measurementElapsedRealtimeNanos)
+
+        val recalculatedSite = site.copy(
+            calculatedAtMillis = 2L,
+            latitude = 60.1,
+            longitude = 24.1
+        )
+        val recalculated = LocalCellSitePositionEstimator.estimate(
+            listOf(laterSignal to recalculatedSite)
+        )
+        assertNotNull(recalculated)
+        assertEquals(20_000_000_000L, recalculated!!.measurementElapsedRealtimeNanos)
+        assertEquals(60.1, recalculated.latitude, 1e-9)
         LocalCellSitePositionEstimator.reset()
     }
 
