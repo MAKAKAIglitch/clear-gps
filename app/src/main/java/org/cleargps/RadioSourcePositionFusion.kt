@@ -59,7 +59,8 @@ internal object LocalCellSitePositionEstimator {
             reset()
             return null
         }
-        val signature = valid.map { it.site.id }.sorted().joinToString("|")
+        val signature = valid.map { "${it.site.id}:${it.site.calculatedAtMillis}" }
+            .sorted().joinToString("|")
         val observedAt = valid.mapNotNull { it.signal.observedAtElapsedRealtimeNanos }.minOrNull()
         val measurementTime = synchronized(this) {
             if (signature != lastSiteSignature) {
