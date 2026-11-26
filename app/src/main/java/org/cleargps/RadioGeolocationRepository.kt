@@ -235,9 +235,29 @@ class RadioGeolocationRepository(private val context: Context) {
             }
         } else null
 
+        // The locally calculated cell-site catalogue is independent of OpenCellID. It is
+        // matched by exact Android cell identity and never triggers a network lookup.
+        val localCellSiteEstimate = if (
+            localSourceEnabled && useCells && !safeMode && !preferredPositionBlocked
+        ) {
+            withContext(Dispatchers.IO) {
+                val cellSignals = snapshot.signals.filter { it.type == "cell" }
+                val identities = cellSignals.mapNotNull { it.cellMetadata?.toIdentity() }
+                val sitesByIdentity = database.findCellSitesForIdentities(identities)
+                val evidence = cellSignals.mapNotNull { signal ->
+                    val identity = signal.cellMetadata?.toIdentity() ?: return@mapNotNull null
+                    sitesByIdentity[identity.stableKey]?.let { signal to it }
+                }
+                LocalCellSitePositionEstimator.estimate(evidence)
+            }
+        } else null
+
         val sourceEstimates = buildList {
             localEstimateWithFreshness?.let {
                 add(RadioPositionFusion.SourceEstimate("local", it, trustWeight = 1.0))
+            }
+            localCellSiteEstimate?.let {
+                add(RadioPositionFusion.SourceEstimate("cell-sites-local", it, trustWeight = 0.20))
             }
             beaconCachedResult?.let { cachedResult ->
                 cachedResult.coordinate?.let { coordinate ->
