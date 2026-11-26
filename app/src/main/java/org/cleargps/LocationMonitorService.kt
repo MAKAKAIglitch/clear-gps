@@ -1302,6 +1302,13 @@ class LocationMonitorService : Service(), LocationListener {
                     val filteredRadioOnlyOutput = if (!autoRadioFallback && baseRadioAllowed) {
                         radioOnlyFusedLocation(requireNotNull(estimate), nowWallMillis, nowElapsedRealtimeNanos)
                     } else null
+                    val radioOnlyFusionRequired = !autoRadioFallback && baseRadioAllowed &&
+                        estimate?.let {
+                            PositionFusionLocationAdapter.radioMeasurement(it, nowElapsedRealtimeNanos) != null
+                        } == true
+                    if (radioOnlyFusionRequired && filteredRadioOnlyOutput == null) {
+                        rejectionReason = "Radio-only fusion rejected the new anchor; using only the previous bounded prediction."
+                    }
                     if (autoRadioFallback && baseRadioAllowed && filteredAutoRadioOutput == null) {
                         rejectionReason = "Auto RADIO: measurement rejected by timestamp, zone, continuity or position filter; waiting for next scan."
                     }
@@ -1317,7 +1324,8 @@ class LocationMonitorService : Service(), LocationListener {
                         estimate.matchedCount >= RADIO_MIN_MATCHES &&
                         (estimate.accuracyMeters <= RADIO_FALLBACK_MAX_ACCURACY_METERS ||
                             prefs.getBoolean(KEY_PUBLISH_LOW_ACCURACY, false)) &&
-                        (!autoRadioFallback || filteredAutoRadioOutput != null)
+                        (!autoRadioFallback || filteredAutoRadioOutput != null) &&
+                        (!radioOnlyFusionRequired || filteredRadioOnlyOutput != null)
                     ) {
                         val output = filteredAutoRadioOutput ?: filteredRadioOnlyOutput ?: Location(LocationManager.NETWORK_PROVIDER).apply {
                             latitude = estimate.latitude
