@@ -69,9 +69,9 @@ internal class WifiScanResultsMonitor(context: Context) {
             }
             registered = true
             true
-        } catch (_: RuntimeException) {
-            false
         } catch (_: SecurityException) {
+            false
+        } catch (_: RuntimeException) {
             false
         }
     }
