@@ -67,10 +67,13 @@ internal object PositionFusionLocationAdapter {
             horizontalUncertaintyMeters = uncertainty,
             elapsedRealtimeNanos = location.elapsedRealtimeNanos,
             initialSpeedMetersPerSecond = location.speed.toDouble().takeIf {
-                location.hasSpeed() && it.isFinite() && it in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
+                location.hasSpeed() && it.isFinite() && it in 0.0..MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND &&
+                    (it <= 0.05 || (location.hasBearing() && location.bearing.isFinite() &&
+                        location.bearing >= 0f && location.bearing < 360f))
             },
             initialBearingDegrees = location.bearing.toDouble().takeIf {
-                location.hasBearing() && it.isFinite() && it >= 0.0 && it < 360.0
+                location.hasSpeed() && location.speed > 0.05f &&
+                    location.hasBearing() && it.isFinite() && it >= 0.0 && it < 360.0
             }
         )
     }
