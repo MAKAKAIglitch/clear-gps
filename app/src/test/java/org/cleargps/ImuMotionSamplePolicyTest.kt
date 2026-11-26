@@ -102,19 +102,19 @@ class ImuMotionSamplePolicyTest {
 
     @Test
     fun sampleHistoryStaysBoundedAndDropsOldestEntries() {
-        for (timestamp in 1L..140L) {
+        for (timestamp in 1L..400L) {
             ImuMotionLiveStore.publish(sample(timestamp))
         }
 
         val result = ImuMotionLiveStore.samplesSince(
             afterElapsedRealtimeNanos = 1L,
-            nowElapsedRealtimeNanos = 140L,
+            nowElapsedRealtimeNanos = 400L,
             maximumAgeNanos = 1_000L
         )
 
-        assertEquals(128, result.size)
-        assertEquals(13L, result.first().elapsedRealtimeNanos)
-        assertEquals(140L, result.last().elapsedRealtimeNanos)
+        assertEquals(384, result.size)
+        assertEquals(17L, result.first().elapsedRealtimeNanos)
+        assertEquals(400L, result.last().elapsedRealtimeNanos)
     }
 
     private fun sample(timestampNanos: Long) = ImuMotionSamplePolicy.fromHorizontalAcceleration(
