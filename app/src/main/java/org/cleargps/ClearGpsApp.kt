@@ -64,7 +64,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -88,6 +87,7 @@ import androidx.compose.material.icons.outlined.RadioButtonChecked
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SignalCellularAlt
@@ -8060,10 +8060,7 @@ private fun SettingsScreen(
     val normalizedSearch = settingsSearchQuery.trim()
     val filteredSearchEntries = remember(normalizedSearch) {
         if (normalizedSearch.isBlank()) emptyList()
-        else searchEntries.filter { entry ->
-            entry.first.contains(normalizedSearch, ignoreCase = true) ||
-                entry.second.contains(normalizedSearch, ignoreCase = true)
-        }
+        else searchEntries.filter { it.first.contains(normalizedSearch, true) || it.second.contains(normalizedSearch, true) }
     }
     fun recordSectionPosition(key: String, y: Float) {
         val offset = (y - settingsRootY + settingsScrollState.value).roundToInt()
@@ -8084,8 +8081,7 @@ private fun SettingsScreen(
         val target = pendingSearchTarget
         if (target != null && settingsSearchQuery.isBlank()) {
             delay(90)
-            val destination = sectionOffsets[target] ?: 0
-            settingsScrollState.animateScrollTo(destination.coerceIn(0, settingsScrollState.maxValue))
+            settingsScrollState.animateScrollTo((sectionOffsets[target] ?: 0).coerceIn(0, settingsScrollState.maxValue))
             pendingSearchTarget = null
         }
     }
@@ -8109,12 +8105,8 @@ private fun SettingsScreen(
             trailingIcon = {
                 AnimatedVisibility(
                     visible = settingsSearchQuery.isNotEmpty(),
-                    enter = fadeIn(tween(120)) + androidx.compose.animation.scaleIn(
-                        initialScale = 0.75f, animationSpec = tween(160)
-                    ),
-                    exit = fadeOut(tween(90)) + androidx.compose.animation.scaleOut(
-                        targetScale = 0.75f, animationSpec = tween(120)
-                    )
+                    enter = fadeIn(tween(120)) + androidx.compose.animation.scaleIn(initialScale = 0.75f, animationSpec = tween(160)),
+                    exit = fadeOut(tween(90)) + androidx.compose.animation.scaleOut(targetScale = 0.75f, animationSpec = tween(120))
                 ) {
                     IconButton(onClick = { settingsSearchQuery = "" }) {
                         Icon(Icons.Outlined.Close, contentDescription = "Очистить поиск")
@@ -8122,55 +8114,37 @@ private fun SettingsScreen(
                 }
             },
             placeholder = { Text("Поиск настроек") },
-            supportingText = {
-                Text("По названию или назначению параметра")
-            }
+            supportingText = { Text("По названию или назначению параметра") }
         )
-
         AnimatedVisibility(
             visible = settingsSearchQuery.isNotBlank(),
             enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
             exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
         ) {
             Surface(
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = colors.surfaceContainerLow
-            ) {
+            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("privacy", it.positionInRoot().y) },
+            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
+        ) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (filteredSearchEntries.isEmpty()) "Ничего не найдено"
-                            else "Найдено: ${filteredSearchEntries.size}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = colors.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
+                            if (filteredSearchEntries.isEmpty()) "Ничего не найдено" else "Найдено: ${filteredSearchEntries.size}",
+                            style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f)
                         )
-                        if (settingsSearchQuery.isNotBlank()) {
-                            TextButton(onClick = { settingsSearchQuery = "" }) { Text("Отмена") }
-                        }
+                        TextButton(onClick = { settingsSearchQuery = "" }) { Text("Отмена") }
                     }
-                    Crossfade(
-                        targetState = filteredSearchEntries,
-                        animationSpec = tween(160),
-                        label = "settings-search-results"
-                    ) { results ->
+                    Crossfade(targetState = filteredSearchEntries, animationSpec = tween(160), label = "settings-search-results") { results ->
                         if (results.isEmpty()) {
                             Text(
                                 "Попробуй другое название: например, «Bluetooth», «батарея» или «карта».",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = colors.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
                             )
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 results.forEach { result ->
                                     Row(
-                                        Modifier.fillMaxWidth()
-                                            .clip(RoundedCornerShape(16.dp))
+                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
                                             .clickable { openSearchTarget(result.third) }
                                             .padding(horizontal = 10.dp, vertical = 12.dp),
                                         verticalAlignment = Alignment.CenterVertically
@@ -8187,8 +8161,7 @@ private fun SettingsScreen(
                                                     "advanced" -> "Дополнительно и данные"
                                                     else -> "Прочее и диагностика"
                                                 },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = colors.onSurfaceVariant
+                                                style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
                                             )
                                         }
                                         Icon(Icons.Outlined.ArrowForward, contentDescription = "Открыть раздел", tint = colors.onSurfaceVariant)
@@ -8207,124 +8180,9 @@ private fun SettingsScreen(
             enter = fadeIn(tween(220)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(240)),
             exit = fadeOut(tween(140)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(180))
         ) {
-            Column(
-                Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-
-            }
-        }
-}
-            .verticalScroll(settingsScrollState)
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
-
-        OutlinedTextField(
-            value = settingsSearchQuery,
-            onValueChange = { settingsSearchQuery = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = RoundedCornerShape(24.dp),
-            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-            trailingIcon = {
-                AnimatedVisibility(
-                    visible = settingsSearchQuery.isNotEmpty(),
-                    enter = fadeIn(tween(120)) + androidx.compose.animation.scaleIn(
-                        initialScale = 0.75f, animationSpec = tween(160)
-                    ),
-                    exit = fadeOut(tween(90)) + androidx.compose.animation.scaleOut(
-                        targetScale = 0.75f, animationSpec = tween(120)
-                    )
-                ) {
-                    IconButton(onClick = { settingsSearchQuery = "" }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Очистить поиск")
-                    }
-                }
-            },
-            placeholder = { Text("Поиск настроек") },
-            supportingText = {
-                Text("По названию или назначению параметра")
-            }
-        )
-
-        AnimatedVisibility(
-            visible = settingsSearchQuery.isNotBlank(),
-            enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
-            exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
-        ) {
-            Surface(
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                color = colors.surfaceContainerLow
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            if (filteredSearchEntries.isEmpty()) "Ничего не найдено"
-                            else "Найдено: ${filteredSearchEntries.size}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = colors.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (settingsSearchQuery.isNotBlank()) {
-                            TextButton(onClick = { settingsSearchQuery = "" }) { Text("Отмена") }
-                        }
-                    }
-                    Crossfade(
-                        targetState = filteredSearchEntries,
-                        animationSpec = tween(160),
-                        label = "settings-search-results"
-                    ) { results ->
-                        if (results.isEmpty()) {
-                            Text(
-                                "Попробуй другое название: например, «Bluetooth», «батарея» или «карта».",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = colors.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp)
-                            )
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                results.forEach { result ->
-                                    Row(
-                                        Modifier.fillMaxWidth()
-                                            .clip(RoundedCornerShape(16.dp))
-                                            .clickable { openSearchTarget(result.third) }
-                                            .padding(horizontal = 10.dp, vertical = 12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(Modifier.weight(1f)) {
-                                            Text(result.first, style = MaterialTheme.typography.bodyLarge)
-                                            Text(
-                                                when (result.third) {
-                                                    "privacy" -> "Сеть и приватность"
-                                                    "position" -> "Режим положения"
-                                                    "map" -> "Карта и оформление"
-                                                    "radio" -> "Радиопоиск и частота фикса"
-                                                    "device" -> "Возможности устройства"
-                                                    "advanced" -> "Дополнительно и данные"
-                                                    else -> "Прочее и диагностика"
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = colors.onSurfaceVariant
-                                            )
-                                        }
-                                        Icon(Icons.Outlined.ArrowForward, contentDescription = "Открыть раздел", tint = colors.onSurfaceVariant)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Surface(
-            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("privacy", it.positionInRoot().y) },
+            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("position", it.positionInRoot().y) },
             shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
         ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -8376,10 +8234,7 @@ private fun SettingsScreen(
             }
         }
 
-        Surface(
-            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("position", it.positionInRoot().y) },
-            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
-        ) {
+        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 PositionMode.values().forEach { item ->
@@ -8412,7 +8267,9 @@ private fun SettingsScreen(
             summary = "Источник карты, тема и приватность тайлов",
             expanded = showMapOptions,
             onClick = { showMapOptions = !showMapOptions }
-        ,\n            onPositioned = { recordSectionPosition("map", it.toFloat()) }\n        )
+        ,
+            onPositioned = { recordSectionPosition("map", it.toFloat()) }
+        )
         AnimatedVisibility(
             visible = showMapOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8466,7 +8323,9 @@ private fun SettingsScreen(
             summary = "Источники радиоданных и интервал 1–30 секунд",
             expanded = showRadioOptions,
             onClick = { showRadioOptions = !showRadioOptions }
-        ,\n            onPositioned = { recordSectionPosition("radio", it.toFloat()) }\n        )
+        ,
+            onPositioned = { recordSectionPosition("radio", it.toFloat()) }
+        )
         AnimatedVisibility(
             visible = showRadioOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8612,7 +8471,9 @@ private fun SettingsScreen(
             summary = "GNSS, AGC, частотные диапазоны, барометр, Wi-Fi RTT и датчики движения",
             expanded = showDeviceCapabilities,
             onClick = { showDeviceCapabilities = !showDeviceCapabilities }
-        ,\n            onPositioned = { recordSectionPosition("device", it.toFloat()) }\n        )
+        ,
+            onPositioned = { recordSectionPosition("device", it.toFloat()) }
+        )
         AnimatedVisibility(
             visible = showDeviceCapabilities,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8633,7 +8494,9 @@ private fun SettingsScreen(
             summary = "Резервный ориентир, разрешения и локальная база",
             expanded = showAdvancedOptions,
             onClick = { showAdvancedOptions = !showAdvancedOptions }
-        ,\n            onPositioned = { recordSectionPosition("advanced", it.toFloat()) }\n        )
+        ,
+            onPositioned = { recordSectionPosition("advanced", it.toFloat()) }
+        )
         AnimatedVisibility(
             visible = showAdvancedOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8731,7 +8594,9 @@ private fun SettingsScreen(
             summary = "Подробные логи, просмотр и копирование для поиска ошибок",
             expanded = showDiagnosticOptions,
             onClick = { showDiagnosticOptions = !showDiagnosticOptions }
-        ,\n            onPositioned = { recordSectionPosition("diagnostics", it.toFloat()) }\n        )
+        ,
+            onPositioned = { recordSectionPosition("diagnostics", it.toFloat()) }
+        )
         AnimatedVisibility(
             visible = showDiagnosticOptions,
             enter = fadeIn(animationSpec = tween(180)) + expandVertically(
@@ -8796,7 +8661,10 @@ private fun SettingsScreen(
             }
         
         }
-    }
+    
+            }
+        }
+}
     if (showSettingsZoneBackupImportConfirm) AlertDialog(
         onDismissRequest = { showSettingsZoneBackupImportConfirm = false },
         title = { Text("Импорт настроек и зон?") },
