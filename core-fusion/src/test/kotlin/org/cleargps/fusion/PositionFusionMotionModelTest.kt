@@ -71,7 +71,7 @@ class PositionFusionMotionModelTest {
         val now = seconds(2)
         val estimate = estimate(0.0, 0.0, 0.0, null, anchorTime, now)
 
-        val staleNow = seconds(12)
+        val staleNow = seconds(32)
         assertNull(
             PositionFusionMotionModel.compensate(
                 estimate.copy(elapsedRealtimeNanos = staleNow),
@@ -134,7 +134,7 @@ class PositionFusionMotionModelTest {
         assertTrue(corrected!!.longitude < -179.9999)
         assertTrue(corrected.longitude in -180.0..180.0)
 
-        val longNow = seconds(5)
+        val longNow = seconds(7)
         val longEstimate = estimate(
             latitude = 0.0,
             longitude = 179.999999,
