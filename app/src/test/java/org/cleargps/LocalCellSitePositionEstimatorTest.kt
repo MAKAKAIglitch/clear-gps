@@ -7,9 +7,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 
 class LocalCellSitePositionEstimatorTest {
+    @Before
+    fun resetEstimatorState() {
+        LocalCellSitePositionEstimator.reset()
+    }
+
+    @After
+    fun clearEstimatorState() {
+        LocalCellSitePositionEstimator.reset()
+    }
+
     @Test
     fun exactLocalTowerMatchProducesCoarseTimestampedEstimate() {
         val identity = identity()
