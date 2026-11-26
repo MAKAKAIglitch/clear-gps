@@ -1367,31 +1367,54 @@ class LocationMonitorService : Service(), LocationListener {
                             "Резерв radio fix: $canHold; возраст подтверждённой позиции=${if (ageMs == Long.MAX_VALUE) "unknown" else ageMs / 1_000} s; причина=$rejectionReason"
                         )
                         if (canHold && confirmed != null) {
-                            // A single missed/throttled radio scan must not unregister GPS.
-                            // Briefly hold the last confirmed position with a growing accuracy
-                            // radius, but never extend the hold based on another failed scan.
-                            val held = Location(confirmed).apply {
+                            // In Auto RADIO mode, continue the fused trajectory from the last
+                            // absolute anchor while its bounded prediction window remains valid.
+                            // Other radio-only modes retain the existing static, uncertainty-grown hold.
+                            val inertialPrediction = if (autoRadioFallback) {
+                                autoRadioPositionFusionEngine.estimate(nowElapsedRealtimeNanos)
+                                    ?.let { motionCompensatedEstimate(it, nowElapsedRealtimeNanos) }
+                                    ?.let {
+                                        PositionFusionLocationAdapter.toLocation(
+                                            estimate = it,
+                                            template = confirmed,
+                                            wallTimeMillis = nowWallMillis,
+                                            nowElapsedRealtimeNanos = nowElapsedRealtimeNanos
+                                        )
+                                    }
+                            } else null
+                            val held = inertialPrediction ?: Location(confirmed).apply {
                                 accuracy = RadioFixReliability.mockAccuracyWithAge(confirmed.accuracy, ageMs)
-                                // A repeated publication doesn't create a new radio measurement.
+                                // A repeated static publication doesn't create a new radio measurement.
                             }
                             if (mock?.publish(
                                     held, alsoPublishNetworkProvider = true, publishGpsProvider = true
                                 ) == true) {
+                                if (inertialPrediction != null) lastRadioMockFix = Location(held)
+                                val inertialStatus = inertialPrediction != null
                                 prefs.edit()
-                                    .putString(KEY_SOURCE, "LOCAL_RADIO_STALE")
+                                    .putString(KEY_SOURCE, if (inertialStatus) "LOCAL_RADIO_INERTIAL" else "LOCAL_RADIO_STALE")
                                     .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, true)
                                     .putString(KEY_STATE, FilterState.CORRECTING.name)
                                     .putInt(KEY_SCORE, 0)
-                                    .putString(KEY_REASONS, "Временный пропуск радиосканирования; точность последней позиции снижена.")
+                                    .putString(
+                                        KEY_REASONS,
+                                        if (inertialStatus) "Инерциальное продолжение от последней подтверждённой радио-точки."
+                                        else "Временный пропуск радиосканирования; точность последней позиции снижена."
+                                    )
                                     .putBoolean(KEY_HAS_OUTPUT, true)
                                     .putString(KEY_LAT, held.latitude.toString())
                                     .putString(KEY_LON, held.longitude.toString())
                                     .putFloat(KEY_ACCURACY, held.accuracy)
                                     .apply()
                                 saveServiceStatus(
-                                    radioMockProviderStatus() + " · scan missed · holding last fix for " +
-                                        (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m. " +
-                                        rejectionReason
+                                    if (inertialStatus) {
+                                        radioMockProviderStatus() + " · inertial prediction · anchor age " +
+                                            (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m"
+                                    } else {
+                                        radioMockProviderStatus() + " · scan missed · holding last fix for " +
+                                            (ageMs / 1_000L) + " s · uncertainty ±" + held.accuracy.toInt() + " m. " +
+                                            rejectionReason
+                                    }
                                 )
                             } else {
                                 lastRadioMockFix = null
