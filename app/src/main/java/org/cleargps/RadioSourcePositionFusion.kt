@@ -9,6 +9,105 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
+ * Turns exact matches in the app's own cell-site catalogue into a deliberately coarse radio
+ * anchor. A mast coordinate is not the handset coordinate, so this estimator has a 5 km
+ * uncertainty floor and includes the spread between matched sites.
+ */
+internal object LocalCellSitePositionEstimator {
+    private const val EARTH_RADIUS_METERS = 6_371_000.0
+    private const val MINIMUM_HANDSET_UNCERTAINTY_METERS = 5_000.0
+
+    fun estimate(
+        evidence: List<Pair<RadioSignal, CellSiteRecord>>,
+        nowMillis: Long = System.currentTimeMillis()
+    ): RadioEstimate? {
+        data class Anchor(
+            val signal: RadioSignal,
+            val site: CellSiteRecord,
+            val uncertainty: Double,
+            val weight: Double
+        )
+
+        val valid = evidence.mapNotNull { (signal, site) ->
+            val identity = signal.cellMetadata?.toIdentity() ?: return@mapNotNull null
+            if (signal.type != "cell" || identity !in site.members ||
+                !site.latitude.isFinite() || site.latitude !in -90.0..90.0 ||
+                !site.longitude.isFinite() || site.longitude !in -180.0..180.0 ||
+                !site.uncertaintyMeters.isFinite() || site.uncertaintyMeters <= 0.0 ||
+                !site.confidenceScore.isFinite() || site.confidenceScore !in 0.0..1.0 ||
+                (site.confidenceScore <= 0.0 && !site.lockedByUser)
+            ) return@mapNotNull null
+
+            val uncertainty = max(MINIMUM_HANDSET_UNCERTAINTY_METERS, site.uncertaintyMeters)
+            val signalWeight = (0.4 + (signal.rssi + 120).coerceIn(0, 80) / 100.0)
+                .coerceIn(0.4, 1.2)
+            val siteConfidence = if (site.lockedByUser) 1.0 else site.confidenceScore
+            val weight = signalWeight * siteConfidence / uncertainty.pow(2.0)
+            if (!weight.isFinite() || weight <= 0.0) return@mapNotNull null
+            Anchor(signal, site, uncertainty, weight)
+        }.distinctBy { it.site.id }.take(16)
+
+        if (valid.isEmpty()) return null
+        val totalWeight = valid.sumOf { it.weight }
+        if (!totalWeight.isFinite() || totalWeight <= 0.0) return null
+
+        var x = 0.0
+        var y = 0.0
+        var z = 0.0
+        valid.forEach { anchor ->
+            val latitude = Math.toRadians(anchor.site.latitude)
+            val longitude = Math.toRadians(anchor.site.longitude)
+            x += cos(latitude) * cos(longitude) * anchor.weight
+            y += cos(latitude) * sin(longitude) * anchor.weight
+            z += sin(latitude) * anchor.weight
+        }
+        val horizontal = kotlin.math.sqrt(x * x + y * y)
+        if (!horizontal.isFinite() || (horizontal < 1e-12 && kotlin.math.abs(z) < 1e-12)) return null
+        val latitude = Math.toDegrees(atan2(z, horizontal))
+        val longitude = Math.toDegrees(atan2(y, x))
+        val spreadSquared = valid.sumOf { anchor ->
+            val distance = distanceMeters(latitude, longitude, anchor.site.latitude, anchor.site.longitude)
+            anchor.weight * distance * distance
+        } / totalWeight
+        val siteUncertaintySquared = valid.sumOf {
+            it.weight * it.uncertainty * it.uncertainty
+        } / totalWeight
+        val accuracy = max(
+            MINIMUM_HANDSET_UNCERTAINTY_METERS,
+            kotlin.math.sqrt(spreadSquared + siteUncertaintySquared)
+        ).coerceAtMost(100_000.0)
+        val identifiers = valid.map { "cell|${it.signal.identifier}" }.toSet()
+        val measurementTime = valid.mapNotNull { it.signal.observedAtElapsedRealtimeNanos }.minOrNull()
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(valid.map { it.site.stableKey }.sorted().joinToString("|").toByteArray())
+            .take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+        return RadioEstimate(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracy,
+            updatedAt = nowMillis,
+            fingerprint = "local-cell-sites:$digest",
+            fallbackUsed = true,
+            matchedCount = valid.size,
+            matchedRadioTypes = setOf("cell"),
+            matchedRadioIdentifiers = identifiers,
+            measurementElapsedRealtimeNanos = measurementTime,
+            contributingSources = setOf("cell-sites-local")
+        )
+    }
+
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(((lon2 - lon1 + 540.0) % 360.0) - 180.0)
+        val a = (sin(dLat / 2.0).let { it * it } +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) *
+            sin(dLon / 2.0).let { it * it }).coerceIn(0.0, 1.0)
+        return EARTH_RADIUS_METERS * 2.0 * kotlin.math.asin(kotlin.math.sqrt(a))
+    }
+}
+
+/**
  * Converts cached OpenCellID cell-position estimates into a deliberately coarse radio anchor.
  * Cell positions are community-derived estimates, not surveyed mast locations or handset fixes; uncertainty therefore has
  * a conservative 5 km floor, includes the reported cell range and grows with cache age.
