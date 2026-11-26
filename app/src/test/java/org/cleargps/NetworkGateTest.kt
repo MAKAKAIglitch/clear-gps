@@ -190,6 +190,41 @@ class NetworkGateTest {
     }
 
     @Test
+    fun allowsEveryResourcePathUsedByTheLiveOpenFreeMapStyles() {
+        val styleResources = listOf(
+            "https://tiles.openfreemap.org/styles/liberty",
+            "https://tiles.openfreemap.org/backup_planet",
+            "https://tiles.openfreemap.org/backup_planet/20261122_124456_pt/1/1/1.pbf",
+            "https://tiles.openfreemap.org/natural_earth/ne2sr/0/0/0.png",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json",
+            "https://tiles.openfreemap.org/sprites/ofm_f384/ofm.png",
+            "https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf"
+        )
+
+        styleResources.forEach { url ->
+            val uri = NetworkGate.validateRequest(
+                url,
+                "GET",
+                NetworkGate.Operation.MAP_RESOURCE,
+                mapOnline = true
+            )
+            assertEquals("tiles.openfreemap.org", uri.host)
+        }
+    }
+
+    @Test
+    fun mapResourceAllowlistStillRejectsUnrelatedPaths() {
+        assertThrows(SecurityException::class.java) {
+            NetworkGate.validateRequest(
+                "https://tiles.openfreemap.org/private/data-export",
+                "GET",
+                NetworkGate.Operation.MAP_RESOURCE,
+                mapOnline = true
+            )
+        }
+    }
+
+    @Test
     fun mapRequestsAreBlockedWhenOfflineOrRedirectedOutsideTheAllowlist() {
         assertThrows(SecurityException::class.java) {
             NetworkGate.validateRequest(
