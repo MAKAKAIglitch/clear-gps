@@ -5396,8 +5396,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val db = readableDatabase
         val counts = LinkedHashMap<String, Int>()
         db.rawQuery(
-            "SELECT type, COUNT(*) FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
-                "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 GROUP BY type",
+            "SELECT radio_type, COUNT(*) FROM radio_points WHERE latitude IS NOT NULL AND longitude IS NOT NULL " +
+                "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 GROUP BY radio_type",
             null
         ).use { cursor ->
             while (cursor.moveToNext()) counts[cursor.getString(0)] = cursor.getInt(1)
@@ -5410,7 +5410,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val result = ArrayList<RadioPointRecord>(safeLimit)
         for ((type, typeLimit) in perTypeLimits) {
             db.rawQuery(
-                "SELECT * FROM radio_points WHERE type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL " +
+                "SELECT * FROM radio_points WHERE radio_type = ? AND latitude IS NOT NULL AND longitude IS NOT NULL " +
                     "AND latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180 " +
                     "ORDER BY last_seen DESC, id DESC LIMIT ?",
                 arrayOf(type, typeLimit.toString())
