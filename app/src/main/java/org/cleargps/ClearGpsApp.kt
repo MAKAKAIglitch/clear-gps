@@ -8009,6 +8009,7 @@ private fun SettingsScreen(
     var showAdvancedOptions by remember { mutableStateOf(false) }
     var showDiagnosticOptions by remember { mutableStateOf(false) }
     var showDeviceCapabilities by remember { mutableStateOf(false) }
+    var showPrivacyOptions by remember { mutableStateOf(false) }
     var pendingDiagnosticLogMaxKb by remember(diagnosticLogMaxKb) { mutableStateOf(diagnosticLogMaxKb.toFloat()) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
     var pendingLowBatteryThreshold by remember(lowBatteryThresholdPercent) {
@@ -8068,6 +8069,7 @@ private fun SettingsScreen(
     }
     fun openSearchTarget(target: String) {
         when (target) {
+            "privacy" -> showPrivacyOptions = true
             "map" -> showMapOptions = true
             "radio" -> showRadioOptions = true
             "device" -> showDeviceCapabilities = true
@@ -8077,7 +8079,7 @@ private fun SettingsScreen(
         pendingSearchTarget = target
         settingsSearchQuery = ""
     }
-    LaunchedEffect(pendingSearchTarget, settingsSearchQuery, sectionOffsets) {
+    LaunchedEffect(pendingSearchTarget, settingsSearchQuery) {
         val target = pendingSearchTarget
         if (target != null && settingsSearchQuery.isBlank()) {
             delay(90)
@@ -8121,10 +8123,7 @@ private fun SettingsScreen(
             enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
             exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(160))
         ) {
-            Surface(
-            Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("privacy", it.positionInRoot().y) },
-            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
-        ) {
+            Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -8185,6 +8184,49 @@ private fun SettingsScreen(
             Modifier.fillMaxWidth().onGloballyPositioned { recordSectionPosition("position", it.positionInRoot().y) },
             shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
         ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                PositionMode.values().forEach { item ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { if (mode != item) onMode(item) }.padding(vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(item.title, fontWeight = FontWeight.Medium)
+                            Text(
+                                when (item) {
+                                    PositionMode.AUTO -> "Android location с резервом локальной радиобазы; свежая скорость OBD-II учитывается автоматически, когда доступна."
+                                    PositionMode.GPS_ONLY -> "GPS — основной источник; при подключённом OBD-II свежая скорость помогает краткому прогнозу по достоверному GPS-курсу."
+                                    PositionMode.RADIO_ONLY -> "Локальная радиобаза; OBD-II может адаптировать частоту сканирования, но без курса не определяет координаты. GPS не запрашивается."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        RadioButton(selected = mode == item, onClick = { onMode(item) })
+                    }
+                }
+            }
+        }
+
+        SettingsSectionToggle(
+            title = "Сеть и приватность",
+            summary = "BeaconDB, OpenCellID, Overpass и пассивный сбор",
+            expanded = showPrivacyOptions,
+            onClick = { showPrivacyOptions = !showPrivacyOptions },
+            onPositioned = { recordSectionPosition("privacy", it.toFloat()) }
+        )
+        AnimatedVisibility(
+            visible = showPrivacyOptions,
+            enter = fadeIn(tween(180)) + expandVertically(expandFrom = Alignment.Top, animationSpec = tween(220)),
+            exit = fadeOut(tween(120)) + shrinkVertically(shrinkTowards = Alignment.Top, animationSpec = tween(180))
+        ) {
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow
+        ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 SettingSwitch(
                     "Разрешить запросы к BeaconDB",
@@ -8233,41 +8275,15 @@ private fun SettingsScreen(
                 )
             }
         }
-
-        Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), color = colors.surfaceContainerLow) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("Режим положения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                PositionMode.values().forEach { item ->
-                    Row(
-                        Modifier.fillMaxWidth().clickable { if (mode != item) onMode(item) }.padding(vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(item.title, fontWeight = FontWeight.Medium)
-                            Text(
-                                when (item) {
-                                    PositionMode.AUTO -> "Android location с резервом локальной радиобазы; свежая скорость OBD-II учитывается автоматически, когда доступна."
-                                    PositionMode.GPS_ONLY -> "GPS — основной источник; при подключённом OBD-II свежая скорость помогает краткому прогнозу по достоверному GPS-курсу."
-                                    PositionMode.RADIO_ONLY -> "Локальная радиобаза; OBD-II может адаптировать частоту сканирования, но без курса не определяет координаты. GPS не запрашивается."
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        RadioButton(selected = mode == item, onClick = { onMode(item) })
-                    }
-                }
-            }
         }
+
 
         SettingsSectionToggle(
             title = "Карта и оформление",
             summary = "Источник карты, тема и приватность тайлов",
             expanded = showMapOptions,
             onClick = { showMapOptions = !showMapOptions }
-        ,
+            ,
             onPositioned = { recordSectionPosition("map", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8323,7 +8339,7 @@ private fun SettingsScreen(
             summary = "Источники радиоданных и интервал 1–30 секунд",
             expanded = showRadioOptions,
             onClick = { showRadioOptions = !showRadioOptions }
-        ,
+            ,
             onPositioned = { recordSectionPosition("radio", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8471,7 +8487,7 @@ private fun SettingsScreen(
             summary = "GNSS, AGC, частотные диапазоны, барометр, Wi-Fi RTT и датчики движения",
             expanded = showDeviceCapabilities,
             onClick = { showDeviceCapabilities = !showDeviceCapabilities }
-        ,
+            ,
             onPositioned = { recordSectionPosition("device", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8494,7 +8510,7 @@ private fun SettingsScreen(
             summary = "Резервный ориентир, разрешения и локальная база",
             expanded = showAdvancedOptions,
             onClick = { showAdvancedOptions = !showAdvancedOptions }
-        ,
+            ,
             onPositioned = { recordSectionPosition("advanced", it.toFloat()) }
         )
         AnimatedVisibility(
@@ -8594,7 +8610,7 @@ private fun SettingsScreen(
             summary = "Подробные логи, просмотр и копирование для поиска ошибок",
             expanded = showDiagnosticOptions,
             onClick = { showDiagnosticOptions = !showDiagnosticOptions }
-        ,
+            ,
             onPositioned = { recordSectionPosition("diagnostics", it.toFloat()) }
         )
         AnimatedVisibility(
