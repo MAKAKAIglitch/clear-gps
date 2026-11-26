@@ -76,6 +76,23 @@ internal class WifiScanResultsMonitor(context: Context) {
         }
     }
 
+    suspend fun awaitSuccessfulResultAfter(
+        startedAtElapsedRealtimeMicros: Long,
+        timeoutMillis: Long
+    ): Boolean {
+        require(startedAtElapsedRealtimeMicros >= 0L)
+        require(timeoutMillis >= 0L)
+        val deadlineElapsedMillis = SystemClock.elapsedRealtime() + timeoutMillis
+        var cursorMicros = startedAtElapsedRealtimeMicros
+        while (true) {
+            val remainingMillis = deadlineElapsedMillis - SystemClock.elapsedRealtime()
+            if (remainingMillis <= 0L) return false
+            val event = awaitResultAfter(cursorMicros, remainingMillis) ?: return false
+            cursorMicros = event.receivedAtElapsedRealtimeMicros
+            if (event.resultsUpdated) return true
+        }
+    }
+
     suspend fun awaitResultAfter(
         startedAtElapsedRealtimeMicros: Long,
         timeoutMillis: Long
