@@ -1618,11 +1618,48 @@ class LocationMonitorService : Service(), LocationListener {
         positionFusionEngine.reset()
         autoRadioPositionFusionEngine.reset()
         autoRadioMotionAnchor = null
-        lastTrustedGpsMotionSeed = lastTrustedGpsFixForObd2?.let { Location(it) }
+        val recentTrustedGpsAnchor = lastTrustedGpsFixForObd2?.let { Location(it) }
+        lastTrustedGpsMotionSeed = recentTrustedGpsAnchor
         lastTrustedGpsFixForObd2 = null
         lastGpsProbeLocation = null
         lastRadioMockFix = null
         lastRadioMockFixAtElapsedMs = 0L
+
+        // Keep a very recent, already-trusted physical fix as the initial dead-reckoning anchor.
+        // It does not change TrustEngine state and is discarded if stale or inside a blocked zone.
+        val gpsAnchorAgeNanos = recentTrustedGpsAnchor?.let {
+            SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos
+        } ?: Long.MAX_VALUE
+        val gpsAnchorAllowed = recentTrustedGpsAnchor != null &&
+            gpsAnchorAgeNanos in 0L..5_000_000_000L &&
+            !spoofZoneService.assess(
+                recentTrustedGpsAnchor.latitude,
+                recentTrustedGpsAnchor.longitude,
+                if (recentTrustedGpsAnchor.hasAccuracy()) recentTrustedGpsAnchor.accuracy.toDouble() else 100.0
+            ).blocksRadioData
+        val gpsSeedMeasurement = if (gpsAnchorAllowed) {
+            PositionFusionLocationAdapter.trustedGnssMeasurement(
+                requireNotNull(recentTrustedGpsAnchor),
+                FilterState.NORMAL,
+                "GPS",
+                inRiskZone = false
+            )
+        } else null
+        if (gpsSeedMeasurement != null) {
+            autoRadioPositionFusionEngine.update(gpsSeedMeasurement)
+            val anchor = requireNotNull(recentTrustedGpsAnchor)
+            lastRadioMockFix = Location(LocationManager.NETWORK_PROVIDER).apply {
+                latitude = anchor.latitude
+                longitude = anchor.longitude
+                accuracy = if (anchor.hasAccuracy()) anchor.accuracy else 100f
+                time = anchor.time
+                elapsedRealtimeNanos = anchor.elapsedRealtimeNanos
+                if (anchor.hasSpeed()) speed = anchor.speed
+                if (anchor.hasBearing()) bearing = anchor.bearing
+            }
+            lastRadioMockFixAtElapsedMs = anchor.elapsedRealtimeNanos / 1_000_000L
+            lastTrustedGpsMotionSeed = null
+        }
         mock?.disable()
         prefs.edit()
             .putBoolean(KEY_MOCK_OUTPUT_ACTIVE, false)
