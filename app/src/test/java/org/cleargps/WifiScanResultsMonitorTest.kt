@@ -2,6 +2,7 @@ package org.cleargps
 
 import android.content.Intent
 import android.net.wifi.WifiManager
+import android.os.Looper
 import android.os.SystemClock
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -13,6 +14,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -39,6 +41,7 @@ class WifiScanResultsMonitorTest {
             Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
                 .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, true)
         )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         val event = waiting.await()
         assertNotNull(event)
@@ -60,6 +63,7 @@ class WifiScanResultsMonitorTest {
             Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
                 .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
         )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         val event = waiting.await()
         assertNotNull(event)
