@@ -16,6 +16,14 @@ import kotlin.math.sqrt
 internal object LocalCellSitePositionEstimator {
     private const val EARTH_RADIUS_METERS = 6_371_000.0
     private const val MINIMUM_HANDSET_UNCERTAINTY_METERS = 5_000.0
+    private var lastSiteSignature: String? = null
+    private var firstObservedAtElapsedRealtimeNanos: Long? = null
+
+    @Synchronized
+    fun reset() {
+        lastSiteSignature = null
+        firstObservedAtElapsedRealtimeNanos = null
+    }
 
     fun estimate(
         evidence: List<Pair<RadioSignal, CellSiteRecord>>,
@@ -47,7 +55,21 @@ internal object LocalCellSitePositionEstimator {
             Anchor(signal, site, uncertainty, weight)
         }.distinctBy { it.site.id }.take(16)
 
-        if (valid.isEmpty()) return null
+        if (valid.isEmpty()) {
+            reset()
+            return null
+        }
+        val signature = valid.map { it.site.id }.sorted().joinToString("|")
+        val observedAt = valid.mapNotNull { it.signal.observedAtElapsedRealtimeNanos }.minOrNull()
+        val measurementTime = synchronized(this) {
+            if (signature != lastSiteSignature) {
+                lastSiteSignature = signature
+                firstObservedAtElapsedRealtimeNanos = observedAt
+            } else if (firstObservedAtElapsedRealtimeNanos == null) {
+                firstObservedAtElapsedRealtimeNanos = observedAt
+            }
+            firstObservedAtElapsedRealtimeNanos
+        }
         val totalWeight = valid.sumOf { it.weight }
         if (!totalWeight.isFinite() || totalWeight <= 0.0) return null
 
@@ -77,7 +99,6 @@ internal object LocalCellSitePositionEstimator {
             kotlin.math.sqrt(spreadSquared + siteUncertaintySquared)
         ).coerceAtMost(100_000.0)
         val identifiers = valid.map { "cell|${it.signal.identifier}" }.toSet()
-        val measurementTime = valid.mapNotNull { it.signal.observedAtElapsedRealtimeNanos }.minOrNull()
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(valid.map { it.site.stableKey }.sorted().joinToString("|").toByteArray())
             .take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
