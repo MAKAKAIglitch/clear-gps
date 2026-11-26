@@ -1660,13 +1660,13 @@ class LocationMonitorService : Service(), LocationListener {
         lastRadioMockFix = null
         lastRadioMockFixAtElapsedMs = 0L
 
-        // Keep a very recent, already-trusted physical fix as the initial dead-reckoning anchor.
-        // It does not change TrustEngine state and is discarded if stale or inside a blocked zone.
+        // Keep a recent, already-trusted physical fix as the initial dead-reckoning anchor.
+        // Its uncertainty grows through the fusion model; it is discarded if older than 30 s or blocked.
         val gpsAnchorAgeNanos = recentTrustedGpsAnchor?.let {
             SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos
         } ?: Long.MAX_VALUE
         val gpsAnchorAllowed = recentTrustedGpsAnchor != null &&
-            gpsAnchorAgeNanos in 0L..5_000_000_000L &&
+            gpsAnchorAgeNanos in 0L..AUTO_RADIO_MAXIMUM_PREDICTION_AGE_NANOS &&
             !spoofZoneService.assess(
                 recentTrustedGpsAnchor.latitude,
                 recentTrustedGpsAnchor.longitude,
