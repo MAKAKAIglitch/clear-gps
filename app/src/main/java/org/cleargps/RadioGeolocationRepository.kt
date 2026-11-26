@@ -256,12 +256,29 @@ class RadioGeolocationRepository(private val context: Context) {
             null
         }
 
+        // OpenCellID and the local site catalogue may describe the same physical towers.
+        // Select one catalogue estimate instead of double-counting correlated cell evidence.
+        val selectedCellCatalogueEstimate = when {
+            localCellSiteEstimate != null &&
+                (openCellIdEstimate == null ||
+                    localCellSiteEstimate.accuracyMeters <= openCellIdEstimate.accuracyMeters) ->
+                "cell-sites-local" to localCellSiteEstimate
+            openCellIdEstimate != null -> "opencellid" to openCellIdEstimate
+            else -> null
+        }
+
         val sourceEstimates = buildList {
             localEstimateWithFreshness?.let {
                 add(RadioPositionFusion.SourceEstimate("local", it, trustWeight = 1.0))
             }
-            localCellSiteEstimate?.let {
-                add(RadioPositionFusion.SourceEstimate("cell-sites-local", it, trustWeight = 0.20))
+            selectedCellCatalogueEstimate?.let { (source, cellEstimate) ->
+                add(
+                    RadioPositionFusion.SourceEstimate(
+                        source,
+                        cellEstimate,
+                        trustWeight = if (source == "cell-sites-local") 0.20 else 0.30
+                    )
+                )
             }
             beaconCachedResult?.let { cachedResult ->
                 cachedResult.coordinate?.let { coordinate ->
@@ -287,9 +304,6 @@ class RadioGeolocationRepository(private val context: Context) {
                     )
                     add(RadioPositionFusion.SourceEstimate("beacondb", beaconEstimate, trustWeight = 0.85))
                 }
-            }
-            openCellIdEstimate?.let {
-                add(RadioPositionFusion.SourceEstimate("opencellid", it, trustWeight = 0.30))
             }
         }
         val fusionStartedAtNanos = System.nanoTime()
