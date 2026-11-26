@@ -30,6 +30,22 @@ class LocalCellSitePositionEstimatorTest {
     }
 
     @Test
+    fun repeatedScansOfTheSameTowerDoNotRefreshTheAbsoluteAnchorTimestamp() {
+        LocalCellSitePositionEstimator.reset()
+        val identity = identity()
+        val site = site(identity)
+        val first = LocalCellSitePositionEstimator.estimate(listOf(signal(identity) to site))
+        val laterSignal = signal(identity).copy(observedAtElapsedRealtimeNanos = 20_000_000_000L)
+        val repeated = LocalCellSitePositionEstimator.estimate(listOf(laterSignal to site))
+
+        assertNotNull(first)
+        assertNotNull(repeated)
+        assertEquals(10_000_000_000L, first!!.measurementElapsedRealtimeNanos)
+        assertEquals(10_000_000_000L, repeated!!.measurementElapsedRealtimeNanos)
+        LocalCellSitePositionEstimator.reset()
+    }
+
+    @Test
     fun mismatchedIdentityAndUnknownMncWidthAreNotUsed() {
         val liveIdentity = identity()
         val otherIdentity = liveIdentity.copy(cellId = 54321L)
