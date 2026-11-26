@@ -85,6 +85,7 @@ class RadioGeolocationRepository(private val context: Context) {
     private val database = LocalRadioDatabase(context.applicationContext)
     private val prefs = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
     private val spoofZoneService = SpoofZoneService(context.applicationContext)
+    private val applicationContext = context.applicationContext
 
     suspend fun scan(
         record: Boolean,
@@ -1219,6 +1220,16 @@ class RadioGeolocationRepository(private val context: Context) {
             return TimedRadioSignals(emptyList(), null)
         }
 
+        val wifiMonitor = getWifiScanResultsMonitor(applicationContext)
+        val receiverReady = wifiMonitor.ensureRegistered()
+        if (!receiverReady) {
+            DiagnosticLogStore.log(
+                context, "RADIO_WIFI",
+                "Receiver Wi-Fi scan results не зарегистрирован; используется доступный системный кэш",
+                "WARN"
+            )
+        }
+
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val scanRequestedAllowed = RadioFixReliability.shouldRequestWifiScan(
             nowElapsedMs, lastWifiScanRequestAtElapsedMs
@@ -1248,23 +1259,35 @@ class RadioGeolocationRepository(private val context: Context) {
         catch (_: SecurityException) { emptyList() }
         catch (_: RuntimeException) { emptyList() }
 
-        if (scanRequested && awaitFreshResult) {
-            val deadline = SystemClock.elapsedRealtime() + WIFI_SCAN_WAIT_MS
-            while (SystemClock.elapsedRealtime() < deadline) {
-                delay(WIFI_SCAN_POLL_MS)
-                val latest = try { manager.scanResults }
-                catch (_: SecurityException) { emptyList() }
-                catch (_: RuntimeException) { emptyList() }
-                if (latest.any { it.timestamp >= scanStartedAtMicros }) {
-                    rawResults = latest
-                    break
+        if (scanRequested && awaitFreshResult && receiverReady) {
+            val completion = wifiMonitor.awaitResultAfter(scanStartedAtMicros, WIFI_SCAN_WAIT_MS)
+            when {
+                completion == null -> DiagnosticLogStore.log(
+                    context, "RADIO_WIFI",
+                    "Тайм-аут ожидания SCAN_RESULTS_AVAILABLE_ACTION; оставляем текущий кэш"
+                )
+                !completion.resultsUpdated -> DiagnosticLogStore.log(
+                    context, "RADIO_WIFI",
+                    "Android сообщил об окончании Wi-Fi scan без обновления результатов"
+                )
+                else -> {
+                    rawResults = try { manager.scanResults }
+                    catch (_: SecurityException) { emptyList() }
+                    catch (_: RuntimeException) { emptyList() }
+                    DiagnosticLogStore.log(
+                        context, "RADIO_WIFI",
+                        "Получен broadcast успешного Wi-Fi scan за ${(completion.receivedAtElapsedRealtimeMicros - scanStartedAtMicros).coerceAtLeast(0L) / 1_000L} мс"
+                    )
                 }
-                rawResults = latest
             }
         } else if (scanRequested) {
             DiagnosticLogStore.log(
                 context, "RADIO_WIFI",
-                "Периодический поиск: не ждём завершения Wi-Fi scan; используем текущий системный кэш с проверкой меток времени"
+                if (awaitFreshResult) {
+                    "Wi-Fi scan принят; receiver недоступен, используем текущий кэш без polling"
+                } else {
+                    "Периодический поиск: не ждём завершения Wi-Fi scan; используем текущий системный кэш с проверкой меток времени"
+                }
             )
         }
 
@@ -1871,6 +1894,8 @@ class RadioGeolocationRepository(private val context: Context) {
     companion object {
         private val scanMutex = Mutex()
         private val AUTO_REFRESH_LOCK = Any()
+        private val WIFI_SCAN_MONITOR_LOCK = Any()
+        private var wifiScanResultsMonitor: WifiScanResultsMonitor? = null
         private var lastAutomaticDatabaseSnapshotElapsedMs = 0L
         private const val AUTO_REFRESH_PREFS = "external_radio_database_auto_refresh"
         private const val KEY_BEACON_IDENTITY = "beacondb_identity_sha256"
@@ -1884,11 +1909,17 @@ class RadioGeolocationRepository(private val context: Context) {
         private var cachedBleProtocols: Set<String> = emptySet()
         private var cachedBleDetails: List<String> = emptyList()
         private const val WIFI_SCAN_WAIT_MS = 3_000L
-        private const val WIFI_SCAN_POLL_MS = 250L
         private const val BLE_SCAN_MS = 2_500L
         private const val MAX_WIFI = 64
         private const val MAX_CELLS = 16
         private val MAC_REGEX = Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+
+        private fun getWifiScanResultsMonitor(context: Context): WifiScanResultsMonitor =
+            synchronized(WIFI_SCAN_MONITOR_LOCK) {
+                wifiScanResultsMonitor ?: WifiScanResultsMonitor(context.applicationContext).also {
+                    wifiScanResultsMonitor = it
+                }
+            }
 
         fun loadLastEstimate(context: Context): RadioEstimate? {
             val p = context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE)
