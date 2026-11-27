@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -34,22 +35,28 @@ internal class WifiScanResultsMonitor(context: Context) {
     private val lock = Any()
     private var registered = false
     private var latestBroadcast: WifiScanBroadcast? = null
-    private var pendingWaiter: PendingWaiter? = null
+    private val pendingWaiters = LinkedHashSet<PendingWaiter>()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) return
-            val event = WifiScanBroadcast(
-                resultsUpdated = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false),
-                receivedAtElapsedRealtimeMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
-            )
-            val waiter = synchronized(lock) {
-                latestBroadcast = event
-                pendingWaiter?.takeIf {
-                    event.receivedAtElapsedRealtimeMicros > it.afterElapsedRealtimeMicros
-                }?.also { pendingWaiter = null }
-            }
-            waiter?.continuation?.let { continuation ->
+            handleScanResultsBroadcast(intent)
+        }
+    }
+
+    internal fun handleScanResultsBroadcast(intent: Intent?) {
+        if (intent?.action != WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) return
+        val event = WifiScanBroadcast(
+            resultsUpdated = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false),
+            receivedAtElapsedRealtimeMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
+        )
+        val waiters = synchronized(lock) {
+            latestBroadcast = event
+            pendingWaiters.filter {
+                event.receivedAtElapsedRealtimeMicros > it.afterElapsedRealtimeMicros
+            }.also { pendingWaiters.removeAll(it.toSet()) }
+        }
+        waiters.forEach { waiter ->
+            waiter.continuation.let { continuation ->
                 if (continuation.isActive) continuation.resume(event)
             }
         }
@@ -69,9 +76,11 @@ internal class WifiScanResultsMonitor(context: Context) {
             }
             registered = true
             true
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Unable to register Wi-Fi scan receiver (permission)", error)
             false
-        } catch (_: RuntimeException) {
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Unable to register Wi-Fi scan receiver", error)
             false
         }
     }
@@ -105,17 +114,21 @@ internal class WifiScanResultsMonitor(context: Context) {
                     latestBroadcast?.takeIf {
                         it.receivedAtElapsedRealtimeMicros > startedAtElapsedRealtimeMicros
                     } ?: run {
-                        pendingWaiter = PendingWaiter(startedAtElapsedRealtimeMicros, continuation)
+                        PendingWaiter(startedAtElapsedRealtimeMicros, continuation).also(pendingWaiters::add)
                         null
                     }
                 }
                 if (immediate != null) continuation.resume(immediate)
                 continuation.invokeOnCancellation {
                     synchronized(lock) {
-                        if (pendingWaiter?.continuation === continuation) pendingWaiter = null
+                        pendingWaiters.removeAll { it.continuation === continuation }
                     }
                 }
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "WifiScanMonitor"
     }
 }
