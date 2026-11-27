@@ -789,6 +789,15 @@ fun ClearGpsApp(
         hadLiveLocation = hasLocation
     }
 
+    var hadRadioEstimate by remember { mutableStateOf(currentRadioEstimate != null) }
+    LaunchedEffect(currentRadioEstimate != null, positionMode) {
+        val hasEstimate = currentRadioEstimate != null
+        if (hasEstimate && !hadRadioEstimate && appVisible && positionMode.usesRadio) {
+            premiumHaptics.play(PremiumHapticEvent.FIX_ACQUIRED)
+        }
+        hadRadioEstimate = hasEstimate
+    }
+
     fun navigateToTab(tab: AppTab) {
         if (selectedTab != tab) premiumHaptics.play(PremiumHapticEvent.SELECTION)
         selectedTab = tab
@@ -8154,9 +8163,9 @@ private fun SettingsScreen(
                     hapticsEnabled,
                     onHapticsEnabled
                 )
-                Text("Интенсивность · ${(hapticsIntensity * 100).roundToInt()}%", style = MaterialTheme.typography.labelLarge)
+                Text("Интенсивность · ${(pendingHapticsIntensity * 100).roundToInt()}%", style = MaterialTheme.typography.labelLarge)
                 Slider(
-                    value = hapticsIntensity,
+                    value = pendingHapticsIntensity,
                     onValueChange = { pendingHapticsIntensity = it },
                     onValueChangeFinished = { onHapticsIntensity(pendingHapticsIntensity) },
                     valueRange = 0.25f..1f,
