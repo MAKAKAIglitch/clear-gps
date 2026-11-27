@@ -43,11 +43,14 @@ internal class WifiScanResultsMonitor(context: Context) {
         }
     }
 
-    internal fun handleScanResultsBroadcast(intent: Intent?) {
+    internal fun handleScanResultsBroadcast(
+        intent: Intent?,
+        receivedAtElapsedRealtimeMicros: Long = SystemClock.elapsedRealtimeNanos() / 1_000L
+    ) {
         if (intent?.action != WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) return
         val event = WifiScanBroadcast(
             resultsUpdated = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false),
-            receivedAtElapsedRealtimeMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
+            receivedAtElapsedRealtimeMicros = receivedAtElapsedRealtimeMicros
         )
         val waiters = synchronized(lock) {
             latestBroadcast = event
