@@ -86,7 +86,8 @@ class WifiScanResultsMonitorTest {
 
         monitor.handleScanResultsBroadcast(
             Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-                .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
+                .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, false),
+            receivedAtElapsedRealtimeMicros = startedAtMicros + 1L
         )
 
         val event = waiting.await()
