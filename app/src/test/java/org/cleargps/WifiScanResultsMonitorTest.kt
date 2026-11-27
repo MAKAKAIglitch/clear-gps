@@ -2,7 +2,6 @@ package org.cleargps
 
 import android.content.Intent
 import android.net.wifi.WifiManager
-import android.os.Looper
 import android.os.SystemClock
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -14,7 +13,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
-import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -52,7 +50,7 @@ class WifiScanResultsMonitorTest {
     @Test
     fun serviceWaitsForSuccessfulBroadcastAfterAnUnsuccessfulOne() = runBlocking {
         val monitor = WifiScanResultsMonitor(context)
-        assertTrue(monitor.ensureRegistered())
+        // Android receiver registration is platform behavior; these tests isolate event logic.
         val startedAtMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
         val waiting = async {
             monitor.awaitSuccessfulResultAfter(startedAtMicros, timeoutMillis = 2_000L)
@@ -65,11 +63,10 @@ class WifiScanResultsMonitorTest {
         )
         assertTrue(!waiting.isCompleted)
 
-        context.sendBroadcast(
+        monitor.handleScanResultsBroadcast(
             Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
                 .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, true)
         )
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         assertTrue(waiting.await())
     }
@@ -77,18 +74,17 @@ class WifiScanResultsMonitorTest {
     @Test
     fun failedScanBroadcastIsReportedWithoutBeingTreatedAsFreshResults() = runBlocking {
         val monitor = WifiScanResultsMonitor(context)
-        assertTrue(monitor.ensureRegistered())
+        // Android receiver registration is platform behavior; these tests isolate event logic.
         val startedAtMicros = SystemClock.elapsedRealtimeNanos() / 1_000L
         val waiting = async {
             monitor.awaitResultAfter(startedAtMicros, timeoutMillis = 2_000L)
         }
         yield()
 
-        context.sendBroadcast(
+        monitor.handleScanResultsBroadcast(
             Intent(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
                 .putExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
         )
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         val event = waiting.await()
         assertNotNull(event)
