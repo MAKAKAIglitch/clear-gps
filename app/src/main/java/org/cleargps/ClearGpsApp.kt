@@ -8046,6 +8046,7 @@ private fun SettingsScreen(
     var showDeviceCapabilities by remember { mutableStateOf(false) }
     var showPrivacyOptions by remember { mutableStateOf(false) }
     var pendingDiagnosticLogMaxKb by remember(diagnosticLogMaxKb) { mutableStateOf(diagnosticLogMaxKb.toFloat()) }
+    var pendingHapticsIntensity by remember(hapticsIntensity) { mutableStateOf(hapticsIntensity) }
     var pendingScanInterval by remember(scanIntervalSeconds) { mutableStateOf(scanIntervalSeconds.toFloat()) }
     var pendingLowBatteryThreshold by remember(lowBatteryThresholdPercent) {
         mutableStateOf(lowBatteryThresholdPercent.toFloat())
@@ -8156,7 +8157,8 @@ private fun SettingsScreen(
                 Text("Интенсивность · ${(hapticsIntensity * 100).roundToInt()}%", style = MaterialTheme.typography.labelLarge)
                 Slider(
                     value = hapticsIntensity,
-                    onValueChange = { onHapticsIntensity(it) },
+                    onValueChange = { pendingHapticsIntensity = it },
+                    onValueChangeFinished = { onHapticsIntensity(pendingHapticsIntensity) },
                     valueRange = 0.25f..1f,
                     steps = 2,
                     enabled = hapticsEnabled,
@@ -8791,7 +8793,10 @@ private fun SettingsSectionToggle(
     Surface(
         Modifier.fillMaxWidth()
             .onGloballyPositioned { onPositioned(it.positionInRoot().y.toInt()) }
-            .clickable(onClick = onClick),
+            .clickable {
+                haptics.play(PremiumHapticEvent.TAP)
+                onClick()
+            },
         shape = RoundedCornerShape(22.dp),
         color = colors.surfaceContainerLow
     ) {
