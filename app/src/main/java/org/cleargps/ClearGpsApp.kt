@@ -311,6 +311,9 @@ fun ClearGpsApp(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val prefs = remember { context.getSharedPreferences(ClearGpsPreferences.PREFS, Context.MODE_PRIVATE) }
+    val premiumHaptics = remember { PremiumHaptics(context.applicationContext) }
+    var hapticsEnabled by remember { mutableStateOf(premiumHaptics.isEnabled()) }
+    var hapticsIntensity by remember { mutableStateOf(premiumHaptics.intensity()) }
     val repository = remember { RadioGeolocationRepository(context.applicationContext) }
     val database = remember { LocalRadioDatabase(context.applicationContext) }
     val radioRepository = remember { RadioRepository(database) }
@@ -777,7 +780,17 @@ fun ClearGpsApp(
     }
 
 
+    var hadLiveLocation by remember { mutableStateOf(liveLocation != null) }
+    LaunchedEffect(liveLocation != null) {
+        val hasLocation = liveLocation != null
+        if (hasLocation && !hadLiveLocation && appVisible) {
+            premiumHaptics.play(PremiumHapticEvent.FIX_ACQUIRED)
+        }
+        hadLiveLocation = hasLocation
+    }
+
     fun navigateToTab(tab: AppTab) {
+        if (selectedTab != tab) premiumHaptics.play(PremiumHapticEvent.SELECTION)
         selectedTab = tab
         if (tab != AppTab.MAP) {
             showMapLayers = false
@@ -3971,6 +3984,18 @@ fun ClearGpsApp(
                                     }
                                 )
                                 AppTab.SETTINGS -> SettingsScreen(
+                                    hapticsEnabled = hapticsEnabled,
+                                    hapticsIntensity = hapticsIntensity,
+                                    onHapticsEnabled = { enabled ->
+                                        hapticsEnabled = enabled
+                                        premiumHaptics.setEnabled(enabled)
+                                        if (enabled) premiumHaptics.play(PremiumHapticEvent.TOGGLE)
+                                    },
+                                    onHapticsIntensity = { value ->
+                                        hapticsIntensity = value
+                                        premiumHaptics.setIntensity(value)
+                                        premiumHaptics.play(PremiumHapticEvent.SELECTION)
+                                    },
                                     mode = positionMode, mapTheme = mapThemeMode, useWifi = useWifi, useCells = useCells,
                                     useBle = useBle, showRadioPoints = showRadioPointsOnMap,
                                     wifiSsidBlacklist = wifiSsidBlacklist,
@@ -7980,6 +8005,8 @@ private fun ZonesScreen(
 
 @Composable
 private fun SettingsScreen(
+    hapticsEnabled: Boolean, hapticsIntensity: Float,
+    onHapticsEnabled: (Boolean) -> Unit, onHapticsIntensity: (Float) -> Unit,
     mode: PositionMode, mapTheme: MapThemeMode, useWifi: Boolean, useCells: Boolean, useBle: Boolean,
     showRadioPoints: Boolean, manualFallbackEnabled: Boolean, databaseFacts: String,
     wifiSsidBlacklist: String, onWifiSsidBlacklist: (String) -> Unit,
@@ -8108,6 +8135,39 @@ private fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("Настройки", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Normal)
+
+        Surface(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            color = colors.surfaceContainerLow
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Premium Haptics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Точная тактильная отдача для навигации, переключателей и получения первой геопозиции. Паттерны автоматически адаптируются к возможностям вибромотора.",
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+                )
+                SettingSwitch(
+                    "Тактильная отдача",
+                    "Включить короткие, выразительные отклики интерфейса и фиксации.",
+                    hapticsEnabled,
+                    onHapticsEnabled
+                )
+                Text("Интенсивность · ${(hapticsIntensity * 100).roundToInt()}%", style = MaterialTheme.typography.labelLarge)
+                Slider(
+                    value = hapticsIntensity,
+                    onValueChange = { onHapticsIntensity(it) },
+                    valueRange = 0.25f..1f,
+                    steps = 2,
+                    enabled = hapticsEnabled,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "Используются системный вибромотор и короткие тактильные сигнатуры. Звук и сетевые запросы не используются.",
+                    style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant
+                )
+            }
+        }
 
         OutlinedTextField(
             value = settingsSearchQuery,
@@ -8721,6 +8781,8 @@ private fun SettingsSectionToggle(
     onPositioned: (Int) -> Unit = {}
 ) {
     val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val haptics = remember(context) { PremiumHaptics(context.applicationContext) }
     val chevronRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = tween(180),
@@ -8752,10 +8814,15 @@ private fun SettingsSectionToggle(
 
 @Composable
 private fun SettingSwitch(title: String, description: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val haptics = remember(context) { PremiumHaptics(context.applicationContext) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth()
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onChecked)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = {
+                haptics.play(PremiumHapticEvent.TOGGLE)
+                onChecked(it)
+            })
             .padding(vertical = 8.dp)
     ) {
         Column(Modifier.weight(1f)) {
