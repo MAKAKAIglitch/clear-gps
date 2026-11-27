@@ -190,6 +190,7 @@ class RadioGeolocationRepository(private val context: Context) {
                     "${evaluation.fingerprintCandidateTimestampCount} времён, " +
                     "раскрытие=${evaluation.fingerprintExpansionQueryDurationMillis} мс / " +
                     "${evaluation.fingerprintSampleCount} образцов, " +
+                    "этапы загрузки: ${evaluation.fingerprintLoadStageTimings}, " +
                     "ключи MAC/точные=${evaluation.fingerprintMacKeyCount}/${evaluation.fingerprintExactKeyCount}, " +
                     "SQLite schema=${evaluation.fingerprintDatabaseVersion}, " +
                     "fingerprint-cache=${if (evaluation.fingerprintCacheHit) "HIT" else "MISS"}, " +
