@@ -449,6 +449,7 @@ internal data class RadioPositionEvaluation(
     val fingerprintQueryDurationMillis: Long,
     val fingerprintCandidateQueryDurationMillis: Long,
     val fingerprintExpansionQueryDurationMillis: Long,
+    val fingerprintLoadStageTimings: String,
     val fingerprintCandidateTimestampCount: Int,
     val fingerprintMacKeyCount: Int,
     val fingerprintExactKeyCount: Int,
@@ -1750,6 +1751,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             fingerprintQueryDurationMillis = estimateCalculation.fingerprintQueryDurationMillis,
             fingerprintCandidateQueryDurationMillis = estimateCalculation.fingerprintCandidateQueryDurationMillis,
             fingerprintExpansionQueryDurationMillis = estimateCalculation.fingerprintExpansionQueryDurationMillis,
+            fingerprintLoadStageTimings = estimateCalculation.fingerprintLoadStageTimings,
             fingerprintCandidateTimestampCount = estimateCalculation.fingerprintCandidateTimestampCount,
             fingerprintMacKeyCount = estimateCalculation.fingerprintMacKeyCount,
             fingerprintExactKeyCount = estimateCalculation.fingerprintExactKeyCount,
@@ -1847,6 +1849,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val samples: List<RadioFingerprintSample> = emptyList(),
         val candidateQueryDurationMillis: Long = 0L,
         val expansionQueryDurationMillis: Long = 0L,
+        val stageTimings: String = "не измерено",
         val candidateTimestampCount: Int = 0,
         val macKeyCount: Int = 0,
         val exactKeyCount: Int = 0,
@@ -1864,6 +1867,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         val fingerprintSampleCount: Int,
         val fingerprintCandidateQueryDurationMillis: Long = 0L,
         val fingerprintExpansionQueryDurationMillis: Long = 0L,
+        val fingerprintLoadStageTimings: String = "не измерено",
         val fingerprintCandidateTimestampCount: Int = 0,
         val fingerprintMacKeyCount: Int = 0,
         val fingerprintExactKeyCount: Int = 0,
@@ -1891,11 +1895,14 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         // not an average of the physical positions of nearby transmitters.
         val fingerprintQueryStartedAtNanos = System.nanoTime()
         val fingerprintLoad = loadFingerprintSamples(current, now)
+        val sampleFilterStartedAtNanos = System.nanoTime()
         val usableHistory = fingerprintLoad.samples.filterNot { sample ->
             val latitude = sample.latitude ?: return@filterNot false
             val longitude = sample.longitude ?: return@filterNot false
             excludeCoordinate?.invoke(latitude, longitude, sample.accuracyMeters) == true
         }
+        val sampleFilterDurationMillis =
+            ((System.nanoTime() - sampleFilterStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
         val fingerprintQueryDurationMillis =
             ((System.nanoTime() - fingerprintQueryStartedAtNanos) / 1_000_000L).coerceAtLeast(0L)
 
@@ -1923,6 +1930,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 fingerprintSampleCount = usableHistory.size,
                 fingerprintCandidateQueryDurationMillis = fingerprintLoad.candidateQueryDurationMillis,
                 fingerprintExpansionQueryDurationMillis = fingerprintLoad.expansionQueryDurationMillis,
+                fingerprintLoadStageTimings = fingerprintLoad.stageTimings +
+                    ", фильтр образцов=" + sampleFilterDurationMillis + " мс",
                 fingerprintCandidateTimestampCount = fingerprintLoad.candidateTimestampCount,
                 fingerprintMacKeyCount = fingerprintLoad.macKeyCount,
                 fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
@@ -1976,6 +1985,8 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             fingerprintSampleCount = usableHistory.size,
             fingerprintCandidateQueryDurationMillis = fingerprintLoad.candidateQueryDurationMillis,
             fingerprintExpansionQueryDurationMillis = fingerprintLoad.expansionQueryDurationMillis,
+            fingerprintLoadStageTimings = fingerprintLoad.stageTimings +
+                ", фильтр образцов=" + sampleFilterDurationMillis + " мс",
             fingerprintCandidateTimestampCount = fingerprintLoad.candidateTimestampCount,
             fingerprintMacKeyCount = fingerprintLoad.macKeyCount,
             fingerprintExactKeyCount = fingerprintLoad.exactKeyCount,
@@ -1995,12 +2006,19 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
         signals: List<RadioSignal>,
         now: Long
     ): FingerprintSampleLoadResult {
+        val loadStartedAtNanos = System.nanoTime()
+        fun elapsedMillis(startedAtNanos: Long): Long =
+            ((System.nanoTime() - startedAtNanos) / 1_000_000L).coerceAtLeast(0L)
+        val keyPreparationStartedAtNanos = System.nanoTime()
         val keys = signals.asSequence()
             .filter { it.type in VALID_TYPES && it.identifier.isNotBlank() }
             .distinctBy { it.type + "|" + it.identifier }
             .toList()
             .take(MAX_FINGERPRINT_KEYS)
-        if (keys.size < 2) return FingerprintSampleLoadResult()
+        val keyPreparationDurationMillis = elapsedMillis(keyPreparationStartedAtNanos)
+        if (keys.size < 2) return FingerprintSampleLoadResult(
+            stageTimings = "подготовка ключей=" + keyPreparationDurationMillis + " мс"
+        )
 
         val macKeys = keys.mapNotNull { signal ->
             val compact = if (signal.type == "wifi" || signal.type == "ble") {
@@ -2012,25 +2030,49 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             signal.type !in setOf("wifi", "ble") ||
                 compactRadioMacIdentifier(signal.identifier) == null
         }
+        val databaseOpenStartedAtNanos = System.nanoTime()
         val db = readableDatabase
+        val databaseOpenDurationMillis = elapsedMillis(databaseOpenStartedAtNanos)
+        val databaseVersionStartedAtNanos = System.nanoTime()
         val databaseVersion = db.version
+        val databaseVersionDurationMillis = elapsedMillis(databaseVersionStartedAtNanos)
         val startTime = now - FINGERPRINT_HISTORY_AGE_MS
+        val cacheKeyStartedAtNanos = System.nanoTime()
         val cacheKey = fingerprintCacheKey(keys)
+        val cacheKeyDurationMillis = elapsedMillis(cacheKeyStartedAtNanos)
+        val generationStartedAtNanos = System.nanoTime()
         val cacheGeneration = readFingerprintCacheGeneration(db)
-        getCachedFingerprintSamples(cacheKey, cacheGeneration, startTime)?.let { cached ->
+        val generationQueryDurationMillis = elapsedMillis(generationStartedAtNanos)
+        val cacheLookupStartedAtNanos = System.nanoTime()
+        val cachedSamples = getCachedFingerprintSamples(cacheKey, cacheGeneration, startTime)
+        val cacheLookupDurationMillis = elapsedMillis(cacheLookupStartedAtNanos)
+        cachedSamples?.let { cached ->
+            val totalDuration = elapsedMillis(loadStartedAtNanos)
+            val accountedDuration = keyPreparationDurationMillis + databaseOpenDurationMillis +
+                databaseVersionDurationMillis + cacheKeyDurationMillis + generationQueryDurationMillis +
+                cacheLookupDurationMillis
             return cached.copy(
+                stageTimings = "всего загрузка=" + totalDuration + " мс, подготовка ключей=" +
+                    keyPreparationDurationMillis + " мс, readableDatabase=" + databaseOpenDurationMillis +
+                    " мс, db.version=" + databaseVersionDurationMillis + " мс, cache key=" +
+                    cacheKeyDurationMillis + " мс, generation SQL=" + generationQueryDurationMillis +
+                    " мс, cache lookup/lock=" + cacheLookupDurationMillis + " мс, неразложенный остаток=" +
+                    (totalDuration - accountedDuration).coerceAtLeast(0L) + " мс, cache=HIT",
+
                 databaseVersion = databaseVersion,
                 candidateQueryDurationMillis = 0L,
                 expansionQueryDurationMillis = 0L,
                 cacheHit = true
             )
         }
+        val indexMetadataStartedAtNanos = System.nanoTime()
         val compactMacIndexAvailable = if (macKeys.isNotEmpty()) {
             db.rawQuery(
                 "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? LIMIT 1",
                 arrayOf("radio_obs_radio_compact_located_time")
             ).use { it.moveToFirst() }
         } else false
+        val indexMetadataDurationMillis = elapsedMillis(indexMetadataStartedAtNanos)
 
         // A key-value CTE lets SQLite seek the existing radio/time indexes per heard identity.
         // Empty CTEs use a blank sentinel that cannot match VALID_TYPES.
@@ -2121,6 +2163,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
 
         // Only ask SQLite for an execution plan after a slow candidate search; this is diagnostic
         // and keeps EXPLAIN out of the normal scan hot path.
+        val queryPlanStartedAtNanos = System.nanoTime()
         val candidatePlanUsesCompactMacIndex = if (
             macKeys.isNotEmpty() && candidateQueryDurationMillis >= SLOW_FINGERPRINT_QUERY_PLAN_THRESHOLD_MS
         ) {
@@ -2135,6 +2178,7 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 }
             }.getOrNull()
         } else null
+        val queryPlanDurationMillis = elapsedMillis(queryPlanStartedAtNanos)
 
         if (timestamps.isEmpty()) {
             val emptyResult = FingerprintSampleLoadResult(
@@ -2146,8 +2190,25 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
                 compactMacIndexAvailable = compactMacIndexAvailable,
                 candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
             )
+            val cacheStoreStartedAtNanos = System.nanoTime()
             cacheFingerprintSamples(cacheKey, cacheGeneration, timestamps, emptyResult)
-            return emptyResult
+            val cacheStoreDurationMillis = elapsedMillis(cacheStoreStartedAtNanos)
+            val totalDuration = elapsedMillis(loadStartedAtNanos)
+            val accountedDuration = keyPreparationDurationMillis + databaseOpenDurationMillis +
+                databaseVersionDurationMillis + cacheKeyDurationMillis + generationQueryDurationMillis +
+                cacheLookupDurationMillis + indexMetadataDurationMillis + candidateQueryDurationMillis +
+                queryPlanDurationMillis + cacheStoreDurationMillis
+            return emptyResult.copy(
+                stageTimings = "всего загрузка=" + totalDuration + " мс, подготовка ключей=" +
+                    keyPreparationDurationMillis + " мс, readableDatabase=" + databaseOpenDurationMillis +
+                    " мс, db.version=" + databaseVersionDurationMillis + " мс, cache key=" +
+                    cacheKeyDurationMillis + " мс, generation SQL=" + generationQueryDurationMillis +
+                    " мс, cache lookup/lock=" + cacheLookupDurationMillis + " мс, index metadata=" +
+                    indexMetadataDurationMillis + " мс, candidates=" + candidateQueryDurationMillis +
+                    " мс, EXPLAIN=" + queryPlanDurationMillis + " мс, cache store/lock=" +
+                    cacheStoreDurationMillis + " мс, неразложенный остаток=" +
+                    (totalDuration - accountedDuration).coerceAtLeast(0L) + " мс, cache=MISS"
+            )
         }
 
         val placeholders = timestamps.joinToString(",") { "?" }
@@ -2207,8 +2268,26 @@ class LocalRadioDatabase(context: Context, databaseName: String? = DB_NAME) : SQ
             compactMacIndexAvailable = compactMacIndexAvailable,
             candidatePlanUsesCompactMacIndex = candidatePlanUsesCompactMacIndex
         )
+        val cacheStoreStartedAtNanos = System.nanoTime()
         cacheFingerprintSamples(cacheKey, cacheGeneration, timestamps, result)
-        return result
+        val cacheStoreDurationMillis = elapsedMillis(cacheStoreStartedAtNanos)
+        val totalDuration = elapsedMillis(loadStartedAtNanos)
+        val accountedDuration = keyPreparationDurationMillis + databaseOpenDurationMillis +
+            databaseVersionDurationMillis + cacheKeyDurationMillis + generationQueryDurationMillis +
+            cacheLookupDurationMillis + indexMetadataDurationMillis + candidateQueryDurationMillis +
+            queryPlanDurationMillis + expansionQueryDurationMillis + cacheStoreDurationMillis
+        return result.copy(
+            stageTimings = "всего загрузка=" + totalDuration + " мс, подготовка ключей=" +
+                keyPreparationDurationMillis + " мс, readableDatabase=" + databaseOpenDurationMillis +
+                " мс, db.version=" + databaseVersionDurationMillis + " мс, cache key=" +
+                cacheKeyDurationMillis + " мс, generation SQL=" + generationQueryDurationMillis +
+                " мс, cache lookup/lock=" + cacheLookupDurationMillis + " мс, index metadata=" +
+                indexMetadataDurationMillis + " мс, candidates=" + candidateQueryDurationMillis +
+                " мс, EXPLAIN=" + queryPlanDurationMillis + " мс, expansion=" +
+                expansionQueryDurationMillis + " мс, cache store/lock=" + cacheStoreDurationMillis +
+                " мс, неразложенный остаток=" + (totalDuration - accountedDuration).coerceAtLeast(0L) +
+                " мс, cache=MISS"
+        )
     }
 
     private fun fingerprintCacheKey(keys: List<RadioSignal>): String =
